@@ -65,6 +65,8 @@ En desarrollo local con Docker, el login de navegador queda en:
 
 - `http://localhost:8080/backend/login`
 
+La raíz `http://localhost:8080/` y `/login` redirigen al login canónico del backend.
+
 El login técnico JSON sigue disponible en:
 
 - `http://localhost:8080/backend/api/login`
@@ -76,6 +78,8 @@ El panel HTML usa sesión de navegador y el login JSON responde con JWT.
 El backend humano está pensado como un CRM clásico:
 
 - sidebar con navegación por módulos
+- estado activo con fondo gris claro en el módulo seleccionado
+- menú superior con dropdown de usuario, `Mi perfil` y `Salir`
 - dashboard con tarjetas, métricas y accesos directos
 - shell visual separado de la API técnica
 

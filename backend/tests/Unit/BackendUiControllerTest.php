@@ -115,6 +115,9 @@ final class BackendUiControllerTest extends TestCase
         self::assertStringContainsString('/logout', $response->getContent());
         self::assertStringContainsString('/backend/profile', $response->getContent());
         self::assertStringContainsString('/backend/playbooks', $response->getContent());
+        self::assertStringContainsString('Admin', $response->getContent());
+        self::assertStringContainsString('Usuarios', $response->getContent());
+        self::assertStringContainsString('Salir', $response->getContent());
         self::assertStringContainsString('Sales Agent CRM', $response->getContent());
     }
 
@@ -144,7 +147,7 @@ final class BackendUiControllerTest extends TestCase
         self::assertSame(Response::HTTP_OK, $response->getStatusCode());
         self::assertStringContainsString('Mi perfil', $response->getContent());
         self::assertStringContainsString('admin@example.com', $response->getContent());
-        self::assertStringContainsString('/backend/logout', $response->getContent());
+        self::assertStringContainsString('/backend/dashboard', $response->getContent());
     }
 
     public function testDashboardRedirectsWhenNoUserIsAuthenticated(): void

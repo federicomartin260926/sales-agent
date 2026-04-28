@@ -135,6 +135,8 @@ En local con Docker, el login de navegador está en:
 
 - `http://localhost:8080/backend/login`
 
+La raíz `http://localhost:8080/` y `/login` redirigen al login canónico del backend.
+
 El login JSON para integraciones queda en:
 
 - `http://localhost:8080/backend/api/login`

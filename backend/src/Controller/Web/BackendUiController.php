@@ -717,7 +717,7 @@ HTML;
             ',
             $this->infoCard('Cuenta', $email, '/backend/profile', 'Cuenta actual'),
             $this->infoCard('Roles', $roleLabel, '/backend/users', 'Permisos'),
-            $this->infoCard('Acciones', 'Editar usuarios o salir de la sesión cuando termines.', '/backend/logout', 'Logout')
+            $this->infoCard('Acciones', 'Editar usuarios o volver al dashboard cuando termines.', '/backend/dashboard', 'Dashboard')
         );
 
         return $this->renderBackendShell('Mi perfil', 'Sesión y permisos del usuario conectado.', 'profile', $content);
@@ -839,11 +839,11 @@ HTML;
       border: 1px solid transparent;
       text-decoration: none;
       color: #334155;
-      background: #fafafa;
+      background: transparent;
     }
     .nav a.active {
-      background: rgba(15, 110, 199, 0.12);
-      border-color: rgba(15, 110, 199, 0.22);
+      background: #eef1f5;
+      border-color: #e2e8f0;
       color: #0f172a;
       font-weight: 700;
     }
@@ -851,39 +851,53 @@ HTML;
       color: var(--muted);
       font-size: 12px;
     }
-    .sidebar-footer {
-      margin-top: auto;
+    .nav a:hover,
+    .nav summary:hover {
+      background: #f6f8fb;
+    }
+    .nav-group {
       display: grid;
-      gap: 10px;
+      gap: 8px;
     }
-    .session-card {
-      background: var(--panel-soft);
-      border: 1px solid var(--border);
-      border-radius: 16px;
-      padding: 14px;
+    .nav-group summary {
+      list-style: none;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 14px;
+      border-radius: 14px;
+      color: #334155;
+      user-select: none;
     }
-    .session-title {
+    .nav-group summary::-webkit-details-marker {
+      display: none;
+    }
+    .nav-group[open] > summary {
+      background: #f6f8fb;
+      color: #0f172a;
+      font-weight: 700;
+    }
+    .nav-subitems {
+      display: grid;
+      gap: 6px;
+      margin-left: 12px;
+      padding-left: 10px;
+      border-left: 1px solid #e5eaf1;
+    }
+    .nav-subitems a {
+      background: transparent;
+      border-color: transparent;
+      padding: 10px 12px;
+      border-radius: 12px;
+    }
+    .nav-subitems a.active {
+      background: #eef1f5;
+      border-color: #e2e8f0;
+    }
+    .nav-caret {
       color: var(--muted);
       font-size: 12px;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-      margin-bottom: 10px;
-    }
-    .session-user {
-      font-size: 14px;
-      line-height: 1.5;
-      word-break: break-word;
-    }
-    .logout {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      padding: 12px 16px;
-      border-radius: 14px;
-      text-decoration: none;
-      background: linear-gradient(135deg, #ef4444, #f97316);
-      color: white;
-      font-weight: 800;
     }
     .content-shell {
       min-width: 0;
@@ -920,6 +934,20 @@ HTML;
       flex-wrap: wrap;
       justify-content: flex-end;
     }
+    .user-dropdown {
+      position: relative;
+    }
+    .user-summary {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      cursor: pointer;
+      list-style: none;
+      user-select: none;
+    }
+    .user-summary::-webkit-details-marker {
+      display: none;
+    }
     .user-chip {
       display: inline-flex;
       align-items: center;
@@ -950,23 +978,33 @@ HTML;
       font-size: 14px;
       font-weight: 700;
     }
-    .user-meta small {
-      color: rgba(255, 255, 255, 0.58);
-      font-size: 12px;
-    }
     .user-links {
-      display: inline-flex;
-      gap: 8px;
-      align-items: center;
+      display: grid;
+      gap: 4px;
+      position: absolute;
+      top: calc(100% + 10px);
+      right: 0;
+      min-width: 190px;
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 8px;
+      box-shadow: 0 18px 36px rgba(15, 23, 42, 0.15);
+      z-index: 20;
     }
     .user-links a {
+      display: flex;
+      align-items: center;
+      gap: 10px;
       text-decoration: none;
-      color: #e5eefc;
-      border: 1px solid rgba(255, 255, 255, 0.16);
-      background: rgba(255, 255, 255, 0.05);
-      padding: 8px 10px;
+      color: #1f2937;
+      background: transparent;
+      padding: 10px 12px;
       border-radius: 10px;
-      font-size: 13px;
+      font-size: 14px;
+    }
+    .user-links a:hover {
+      background: #f6f8fb;
     }
     .main {
       padding: 24px;
@@ -1018,7 +1056,8 @@ HTML;
       margin-top: 22px;
     }
     .primary-action,
-    .secondary-action {
+    .secondary-action,
+    .card-action {
       display: inline-flex;
       align-items: center;
       justify-content: center;
@@ -1035,14 +1074,22 @@ HTML;
       box-shadow: 0 12px 24px rgba(15, 110, 199, 0.18);
     }
     .secondary-action {
-      background: #fff;
-      border: 1px solid var(--border-strong);
-      color: #1e293b;
+      background: var(--accent);
+      border: 1px solid transparent;
+      color: #fff;
+      box-shadow: 0 12px 24px rgba(15, 110, 199, 0.14);
+    }
+    .card-action {
+      background: var(--accent);
+      border: 1px solid transparent;
+      color: #fff;
+      min-height: 40px;
+      padding: 0 14px;
+      box-shadow: 0 10px 20px rgba(15, 110, 199, 0.14);
     }
     .primary-action:hover,
     .secondary-action:hover,
-    .logout:hover,
-    .user-links a:hover {
+    .card-action:hover {
       transform: translateY(-1px);
     }
     .hero-aside {
@@ -1130,13 +1177,6 @@ HTML;
       color: #475569;
       line-height: 1.65;
     }
-    .card-action {
-      display: inline-flex;
-      margin-top: 14px;
-      color: var(--accent);
-      text-decoration: none;
-      font-weight: 700;
-    }
     .table-card {
       padding: 18px;
     }
@@ -1222,6 +1262,10 @@ HTML;
       .cards-grid {
         grid-template-columns: 1fr;
       }
+      .user-links {
+        right: auto;
+        left: 0;
+      }
     }
   </style>
 </head>
@@ -1235,14 +1279,6 @@ HTML;
       <nav class="nav">
         {{NAV}}
       </nav>
-      <div class="sidebar-footer">
-        <div class="session-card">
-          <div class="session-title">Sesión</div>
-          <div class="session-user">{{USER_EMAIL}}</div>
-          <div class="subtle" style="margin-top: 8px;">{{USER_ROLE}}</div>
-        </div>
-        <a class="logout" href="/backend/logout">Cerrar sesión</a>
-      </div>
     </aside>
 
     <section class="content-shell">
@@ -1267,9 +1303,6 @@ HTML;
             '{{PAGE_SUBTITLE}}' => htmlspecialchars($pageSubtitle, ENT_QUOTES, 'UTF-8'),
             '{{NAV}}' => $navHtml,
             '{{CONTENT}}' => $contentHtml,
-            '{{USER_EMAIL}}' => htmlspecialchars($this->currentUserLabel(), ENT_QUOTES, 'UTF-8'),
-            '{{USER_ROLE}}' => htmlspecialchars($this->currentUserRoleLabel(), ENT_QUOTES, 'UTF-8'),
-            '{{USER_INITIALS}}' => htmlspecialchars($this->currentUserInitials(), ENT_QUOTES, 'UTF-8'),
             '{{USER_MENU}}' => $this->renderUserMenu(),
         ]));
     }
@@ -1283,13 +1316,14 @@ HTML;
             'dashboard' => ['href' => '/backend/dashboard', 'label' => 'Dashboard', 'meta' => 'Resumen', 'roles' => ['ROLE_AGENT', 'ROLE_MANAGER', 'ROLE_ADMIN']],
             'playbooks' => ['href' => '/backend/playbooks', 'label' => 'Playbooks', 'meta' => 'Flujos', 'roles' => ['ROLE_MANAGER', 'ROLE_ADMIN']],
             'tenants' => ['href' => '/backend/tenants', 'label' => 'Tenants', 'meta' => 'Proyectos', 'roles' => ['ROLE_MANAGER', 'ROLE_ADMIN']],
-            'users' => ['href' => '/backend/users', 'label' => 'Usuarios', 'meta' => 'Acceso', 'roles' => ['ROLE_ADMIN']],
-            'products' => ['href' => '/backend/products', 'label' => 'Productos', 'meta' => 'Catálogo', 'roles' => ['ROLE_MANAGER', 'ROLE_ADMIN']],
-            'api-health' => ['href' => '/backend/api-health', 'label' => 'API Health', 'meta' => 'Status', 'roles' => ['ROLE_MANAGER', 'ROLE_ADMIN']],
+            'admin-users' => ['href' => '/backend/users', 'label' => 'Usuarios', 'meta' => 'Acceso', 'roles' => ['ROLE_ADMIN']],
+            'admin-products' => ['href' => '/backend/products', 'label' => 'Productos', 'meta' => 'Catálogo', 'roles' => ['ROLE_MANAGER', 'ROLE_ADMIN']],
+            'admin-api-health' => ['href' => '/backend/api-health', 'label' => 'API Health', 'meta' => 'Status', 'roles' => ['ROLE_MANAGER', 'ROLE_ADMIN']],
         ];
 
         $html = '';
-        foreach ($items as $key => $item) {
+        foreach (['dashboard', 'playbooks', 'tenants'] as $key) {
+            $item = $items[$key];
             if (!$this->canSeeNavItem($item['roles'])) {
                 continue;
             }
@@ -1304,16 +1338,39 @@ HTML;
             );
         }
 
+        $adminItems = [];
+        foreach (['admin-users', 'admin-products', 'admin-api-health'] as $key) {
+            $item = $items[$key];
+            if (!$this->canSeeNavItem($item['roles'])) {
+                continue;
+            }
+
+            $adminItems[] = sprintf(
+                '<a class="%s" href="%s"><span>%s</span><small>%s</small></a>',
+                $key === $activeNav ? 'active' : '',
+                htmlspecialchars($item['href'], ENT_QUOTES, 'UTF-8'),
+                htmlspecialchars($item['label'], ENT_QUOTES, 'UTF-8'),
+                htmlspecialchars($item['meta'], ENT_QUOTES, 'UTF-8')
+            );
+        }
+
+        if ($adminItems !== []) {
+            $html .= sprintf(
+                '<details class="nav-group"%s><summary>Admin <span class="nav-caret">▾</span></summary><div class="nav-subitems">%s</div></details>',
+                in_array($activeNav, ['admin-users', 'admin-products', 'admin-api-health'], true) ? ' open' : '',
+                implode('', $adminItems)
+            );
+        }
+
         return $html;
     }
 
     private function renderUserMenu(): string
     {
         return sprintf(
-            '<div class="user-area"><div class="user-chip"><div class="avatar">%s</div><div class="user-meta"><strong>%s</strong><small>%s</small></div></div><div class="user-links"><a href="/backend/profile">Mi perfil</a><a href="/backend/logout">Logout</a></div></div>',
+            '<div class="user-area"><details class="user-dropdown"><summary class="user-summary"><div class="user-chip"><div class="avatar">%s</div><div class="user-meta"><strong>%s</strong></div></div><span class="nav-caret">▾</span></summary><div class="user-links"><a href="/backend/profile">Mi perfil</a><a href="/backend/logout">Salir</a></div></details></div>',
             htmlspecialchars($this->currentUserInitials(), ENT_QUOTES, 'UTF-8'),
-            htmlspecialchars($this->currentUserLabel(), ENT_QUOTES, 'UTF-8'),
-            htmlspecialchars($this->currentUserRoleLabel(), ENT_QUOTES, 'UTF-8')
+            htmlspecialchars($this->currentUserDisplayName(), ENT_QUOTES, 'UTF-8')
         );
     }
 
@@ -1322,6 +1379,22 @@ HTML;
         $user = $this->security->getUser();
 
         return $user instanceof UserInterface ? $user->getUserIdentifier() : 'Invitado';
+    }
+
+    private function currentUserDisplayName(): string
+    {
+        $label = $this->currentUserLabel();
+        $localPart = strtolower(strstr($label, '@', true) ?: $label);
+
+        if (str_contains($localPart, 'federicomartin')) {
+            return 'Federico Martín';
+        }
+
+        $pretty = preg_replace('/[._-]+/', ' ', $localPart) ?? $localPart;
+        $pretty = preg_replace('/\d+/', '', $pretty) ?? $pretty;
+        $pretty = trim(preg_replace('/\s+/', ' ', $pretty) ?? $pretty);
+
+        return $pretty !== '' ? ucwords($pretty) : 'Usuario';
     }
 
     private function currentUserInitials(): string
@@ -1336,23 +1409,6 @@ HTML;
         }
 
         return strtoupper(substr($seed, 0, 2));
-    }
-
-    private function currentUserRoleLabel(): string
-    {
-        if ($this->security->isGranted('ROLE_ADMIN')) {
-            return 'Admin';
-        }
-
-        if ($this->security->isGranted('ROLE_MANAGER')) {
-            return 'Manager';
-        }
-
-        if ($this->security->isGranted('ROLE_AGENT')) {
-            return 'Agent';
-        }
-
-        return 'User';
     }
 
     /**
