@@ -73,7 +73,7 @@ final class BootstrapDefaultDataCommandTest extends TestCase
 
         $playbook = $persisted[2];
         self::assertInstanceOf(Playbook::class, $playbook);
-        self::assertSame('Playbook de prueba', $playbook->getName());
+        self::assertSame('Guía comercial de prueba', $playbook->getName());
         self::assertArrayHasKey('fallback_action', $playbook->getConfig());
     }
 
@@ -82,9 +82,9 @@ final class BootstrapDefaultDataCommandTest extends TestCase
         $entityManager = $this->createMock(EntityManagerInterface::class);
         $passwordHasher = $this->createMock(UserPasswordHasherInterface::class);
 
-        $tenant = new Tenant('Federico Martin Demo', 'federico-martin-demo');
-        $user = new User('federicomartin2609@gmail.com', ['admin']);
-        $playbook = new Playbook($tenant, 'Playbook de prueba');
+        $tenant = new Tenant('Negocio demo Federico Martín', 'federico-martin-demo');
+        $user = new User('federicomartin2609@gmail.com', ['admin'], 'Federico Martín');
+        $playbook = new Playbook($tenant, 'Guía comercial de prueba');
 
         $tenantRepository = $this->createStub(EntityRepository::class);
         $userRepository = $this->createStub(EntityRepository::class);

@@ -9,18 +9,25 @@ use App\Entity\User;
 use App\Repository\PlaybookRepository;
 use App\Repository\ProductRepository;
 use App\Repository\TenantRepository;
-use App\Repository\UserRepository;
+use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\SecurityBundle\Security;
 use Symfony\Component\HttpFoundation\RedirectResponse;
+use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Routing\Attribute\Route;
+use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
 use Symfony\Component\Security\Core\User\UserInterface;
+use Symfony\Component\Security\Csrf\CsrfToken;
+use Symfony\Component\Security\Csrf\CsrfTokenManagerInterface;
 use Symfony\Component\Security\Http\Authentication\AuthenticationUtils;
 
 final class BackendUiController
 {
     public function __construct(
         private readonly Security $security,
+        private readonly EntityManagerInterface $entityManager,
+        private readonly UserPasswordHasherInterface $passwordHasher,
+        private readonly ?CsrfTokenManagerInterface $csrfTokenManager = null,
     ) {
     }
 
@@ -226,10 +233,10 @@ final class BackendUiController
     <section class="hero">
       <div>
         <div class="eyebrow">Sales Agent Backend</div>
-        <h1>Acceso administrativo para proyectos, usuarios y playbooks.</h1>
+        <h1>Gestiona negocios y agentes IA desde un solo lugar.</h1>
         <p>
-          Este panel es la entrada humana al backend Symfony. Se separa del API JSON y del servicio FastAPI
-          para evitar confusión entre navegación de administrador e integración técnica.
+          Desde aquí defines cómo se comporta cada negocio, producto o servicio: qué usuarios lo administran,
+          qué conocimiento utiliza el agente y qué enfoque comercial aplica con cada cliente.
         </p>
       </div>
     </section>
@@ -297,24 +304,18 @@ HTML;
 
         $content = sprintf(
             '
-            <section class="hero-panel">
+            <section class="hero-panel hero-panel-single">
               <div class="hero-copy">
-                <div class="eyebrow-dark">Operación administrativa</div>
-                <h2>Backend administrativo</h2>
+                <div class="eyebrow-dark">Operación comercial</div>
+                <h2>Panel comercial de negocios</h2>
                 <p>
-                  Sales Agent Symfony panel para gestión interna. Desde aquí se crean tenants, usuarios, playbooks
-                  y la configuración que consume el runtime del agente. La API técnica queda separada y el tráfico
-                  de WhatsApp entra por <code>wa-gateway-api</code>.
+                  Gestiona negocios, productos/servicios y usuarios desde un mismo lugar. Aquí defines cómo se comporta el
+                  agente IA por negocio o producto: su conocimiento, su tono y el enfoque comercial que aplica.
                 </p>
                 <div class="hero-actions">
-                  <a class="primary-action" href="/backend/playbooks">Ver playbooks</a>
-                  <a class="secondary-action" href="/backend/tenants">Revisar tenants</a>
+                  <a class="primary-action" href="/backend/tenants">Ver negocios</a>
+                  <a class="secondary-action" href="/backend/users">Revisar usuarios</a>
                 </div>
-              </div>
-              <div class="hero-aside">
-                <div class="badge-live">Online</div>
-                <div class="hero-aside-title">Acceso</div>
-                <p>Este panel usa sesión de navegador. Los sistemas entre servicios usan bearer token.</p>
               </div>
             </section>
 
@@ -334,51 +335,51 @@ HTML;
               %s
             </section>
             ',
-            $this->metricCard('Tenants', (string) $tenantCount, 'Arranque inicial listo'),
-            $this->metricCard('Usuarios', (string) $userCount, 'Admin bootstrap'),
-            $this->metricCard('Playbooks', (string) $playbookCount, 'Playbook de prueba'),
-            $this->metricCard('Productos', (string) $productCount, 'Catálogo base'),
+            $this->metricCard('Negocios', (string) $tenantCount, 'Contextos comerciales listos'),
+            $this->metricCard('Usuarios', (string) $userCount, 'Cuentas de administración'),
+            $this->metricCard('Guías comerciales', (string) $playbookCount, 'Cualificación, scoring y handoff'),
+            $this->metricCard('Productos / servicios', (string) $productCount, 'Catálogo comercial base'),
             $this->infoCard(
                 'Usuarios',
-                'Administración de cuentas, roles y acceso interno.',
+                'Cuentas que administran negocios, productos/servicios y acceso interno.',
                 '/backend/users',
                 'Gestionar'
             ),
             $this->infoCard(
-                'Playbooks',
-                'Catálogo de playbooks para automatización y flujos del backend.',
+                'Guías comerciales',
+                'Ajustes del agente para cada negocio o producto: enfoque, tono, scoring y reglas.',
                 '/backend/playbooks',
                 'Abrir'
             ),
             $this->infoCard(
-                'Tenants',
-                'Separación de proyectos y contexto operativo por tenant.',
+                'Negocios',
+                'Cada negocio agrupa su contexto, usuarios y reglas del agente.',
                 '/backend/tenants',
                 'Abrir'
             ),
             $this->infoCard(
-                'Productos',
-                'Catálogo comercial asociado a cada tenant y playbook.',
+                'Productos / servicios',
+                'Propuestas comerciales asociadas al trabajo de cada negocio.',
                 '/backend/products',
                 'Abrir'
             ),
             $this->infoCard(
-                'API administrativa',
-                'Los endpoints JSON siguen disponibles bajo /backend/api para integraciones internas.',
+                'Integración técnica',
+                'La API sigue disponible para automatizaciones y servicios internos.',
                 '/backend/api/health',
                 'Health check'
             ),
             $this->infoCard(
                 'Estado',
-                'Backend Symfony activo y listo para administración.',
+                'Panel comercial activo y listo para operar.',
                 '/backend/profile',
                 'Mi perfil'
             ),
         );
 
         return $this->renderBackendShell(
-            'Backend administrativo',
-            'Sales Agent Symfony panel para gestión interna.',
+            'Panel comercial',
+            'Resumen de negocios, usuarios y configuración comercial del agente.',
             'dashboard',
             $content
         );
@@ -415,20 +416,20 @@ HTML;
             '
             <section class="hero-panel">
               <div class="hero-copy">
-                <div class="eyebrow-dark">Flujos comerciales</div>
-                <h2>Playbooks</h2>
-                <p>Catálogo operativo de playbooks ligado a tenants y productos. Aquí se prepara la lógica que luego consume la API de runtime.</p>
+                <div class="eyebrow-dark">Configuración comercial</div>
+                <h2>Guías comerciales</h2>
+                <p>Ajustes del comportamiento del agente por negocio o producto. Aquí defines el enfoque, el tono, el scoring y las reglas de respuesta.</p>
               </div>
               <div class="hero-aside">
                 <div class="badge-live">Manager</div>
-                <div class="hero-aside-title">Configuración</div>
-                <p>Los playbooks se activan y ajustan desde este backend, manteniendo separada la API técnica.</p>
+                <div class="hero-aside-title">Reglas</div>
+                <p>Los ajustes se activan y mantienen desde este panel, por negocio y sin mezclar la API técnica.</p>
               </div>
             </section>
             <section class="table-card">
               <div class="table-header">
                 <div>
-                  <h3>Playbooks activos e inactivos</h3>
+                  <h3>Guías comerciales activas e inactivas</h3>
                   <p>Vista rápida del catálogo y su contexto.</p>
                 </div>
                 <a class="secondary-action" href="/backend/dashboard">Volver al dashboard</a>
@@ -436,17 +437,17 @@ HTML;
               <div class="table-responsive">
                 <table>
                   <thead>
-                    <tr><th>Nombre</th><th>Tenant</th><th>Producto</th><th>Estado</th></tr>
+                    <tr><th>Guía comercial</th><th>Negocio</th><th>Producto / servicio</th><th>Estado</th></tr>
                   </thead>
                   <tbody>%s</tbody>
                 </table>
               </div>
             </section>
             ',
-            $rows !== [] ? implode('', $rows) : '<tr><td colspan="4" class="empty-row">No hay playbooks todavía.</td></tr>'
+            $rows !== [] ? implode('', $rows) : '<tr><td colspan="4" class="empty-row">No hay guías comerciales todavía.</td></tr>'
         );
 
-        return $this->renderBackendShell('Playbooks', 'Flujos comerciales y configuración por tenant.', 'playbooks', $content);
+        return $this->renderBackendShell('Guías comerciales', 'Ajustes del agente por negocio o producto.', 'playbooks', $content);
     }
 
     #[Route('/tenants', methods: ['GET'])]
@@ -480,38 +481,38 @@ HTML;
             '
             <section class="hero-panel">
               <div class="hero-copy">
-                <div class="eyebrow-dark">Separación operativa</div>
-                <h2>Tenants</h2>
-                <p>Separación de proyectos y contexto operativo por tenant. Desde aquí se mantiene el aislamiento lógico del backend.</p>
+                <div class="eyebrow-dark">Negocios y contexto</div>
+                <h2>Negocios</h2>
+                <p>Cada negocio agrupa usuarios, reglas y contexto comercial del agente IA. Así mantienes separada la relación con cada cliente.</p>
               </div>
               <div class="hero-aside">
                 <div class="badge-live">Admin</div>
                 <div class="hero-aside-title">Contexto</div>
-                <p>Cada tenant agrupa configuración, playbooks y reglas comerciales de forma aislada.</p>
+                <p>Cada negocio agrupa contexto, usuarios y reglas comerciales de forma aislada.</p>
               </div>
             </section>
             <section class="table-card">
               <div class="table-header">
                 <div>
-                  <h3>Tenants registrados</h3>
-                  <p>Nombre, slug y policy de arranque.</p>
+                  <h3>Negocios registrados</h3>
+                  <p>Nombre, slug y política comercial de arranque.</p>
                 </div>
                 <a class="secondary-action" href="/backend/dashboard">Volver al dashboard</a>
               </div>
               <div class="table-responsive">
                 <table>
                   <thead>
-                    <tr><th>Tenant</th><th>Slug</th><th>Policy</th><th>Estado</th></tr>
+                    <tr><th>Negocio</th><th>Slug</th><th>Política comercial</th><th>Estado</th></tr>
                   </thead>
                   <tbody>%s</tbody>
                 </table>
               </div>
             </section>
             ',
-            $rows !== [] ? implode('', $rows) : '<tr><td colspan="4" class="empty-row">No hay tenants todavía.</td></tr>'
+            $rows !== [] ? implode('', $rows) : '<tr><td colspan="4" class="empty-row">No hay negocios todavía.</td></tr>'
         );
 
-        return $this->renderBackendShell('Tenants', 'Proyectos y contexto operativo.', 'tenants', $content);
+        return $this->renderBackendShell('Negocios', 'Negocios y contextos operativos.', 'tenants', $content);
     }
 
     #[Route('/users', methods: ['GET'])]
@@ -609,77 +610,200 @@ HTML;
             <section class="hero-panel">
               <div class="hero-copy">
                 <div class="eyebrow-dark">Catálogo comercial</div>
-                <h2>Productos</h2>
-                <p>Catálogo de productos y propuestas de valor asociadas a cada tenant. Esto alimenta la lógica comercial del backend.</p>
+                <h2>Productos / servicios</h2>
+                <p>Catálogo de productos y servicios asociados a cada negocio. Esto alimenta la lógica comercial del backend.</p>
               </div>
               <div class="hero-aside">
                 <div class="badge-live">Manager</div>
                 <div class="hero-aside-title">Oferta</div>
-                <p>Los productos agrupan descripción, propuesta de valor y policy de venta para el runtime.</p>
+                <p>Los productos y servicios agrupan descripción, propuesta de valor y política de venta para el runtime.</p>
               </div>
             </section>
             <section class="table-card">
               <div class="table-header">
                 <div>
-                  <h3>Productos registrados</h3>
-                  <p>Tenant, propuesta de valor y estado.</p>
+                  <h3>Productos / servicios registrados</h3>
+                  <p>Negocio, propuesta de valor y estado.</p>
                 </div>
                 <a class="secondary-action" href="/backend/dashboard">Volver al dashboard</a>
               </div>
               <div class="table-responsive">
                 <table>
                   <thead>
-                    <tr><th>Producto</th><th>Tenant</th><th>Propuesta de valor</th><th>Estado</th></tr>
+                    <tr><th>Producto / servicio</th><th>Negocio</th><th>Propuesta de valor</th><th>Estado</th></tr>
                   </thead>
                   <tbody>%s</tbody>
                 </table>
               </div>
             </section>
             ',
-            $rows !== [] ? implode('', $rows) : '<tr><td colspan="4" class="empty-row">No hay productos todavía.</td></tr>'
+            $rows !== [] ? implode('', $rows) : '<tr><td colspan="4" class="empty-row">No hay productos o servicios todavía.</td></tr>'
         );
 
-        return $this->renderBackendShell('Productos', 'Catálogo comercial por tenant.', 'products', $content);
+        return $this->renderBackendShell('Productos / servicios', 'Catálogo comercial por negocio.', 'products', $content);
     }
 
     #[Route('/profile', methods: ['GET'])]
-    public function profile(): Response
+    public function profile(Request $request): Response
     {
-        if (!$this->security->getUser() instanceof UserInterface) {
+        if (!$this->security->isGranted('ROLE_MANAGER')) {
             return new RedirectResponse('/backend/login');
         }
 
-        $user = $this->security->getUser();
-        $email = htmlspecialchars($user->getUserIdentifier(), ENT_QUOTES, 'UTF-8');
-        $roles = array_map(static fn (string $role): string => strtoupper($role), $user->getRoles());
-        $roleLabel = implode(', ', $roles);
+        $user = $this->currentUser();
+        if (!$user instanceof User) {
+            return new RedirectResponse('/backend/login');
+        }
+
+        $feedbackHtml = $this->renderProfileFeedback($request);
+        $roleLabel = implode(', ', array_map(
+            static fn (string $role): string => strtolower(str_replace('ROLE_', '', $role)),
+            $user->getRoles()
+        ));
 
         $content = sprintf(
             '
-            <section class="hero-panel">
+            <section class="hero-panel hero-panel-single">
               <div class="hero-copy">
                 <div class="eyebrow-dark">Sesión</div>
                 <h2>Mi perfil</h2>
-                <p>Resumen rápido de tu cuenta activa en el backend. La contraseña se gestiona desde administración de usuarios.</p>
-              </div>
-              <div class="hero-aside">
-                <div class="badge-live">Online</div>
-                <div class="hero-aside-title">Sesión activa</div>
-                <p>El acceso del navegador está separado de la API técnica y funciona por sesión Symfony.</p>
+                <p>Actualiza tu nombre visible y tu clave de acceso. El panel humano sigue separado de la API técnica y de las integraciones entre servicios.</p>
               </div>
             </section>
-            <section class="cards-grid">
-              %s
-              %s
-              %s
+            %s
+            <section class="profile-grid">
+              <article class="profile-card">
+                <div class="profile-card-header">Datos de usuario</div>
+                <div class="profile-card-body">
+                  <div class="profile-meta">
+                    <div><strong>Email:</strong> %s</div>
+                    <div><strong>Rol:</strong> %s</div>
+                    <div><strong>Creado:</strong> %s</div>
+                  </div>
+
+                  <form method="post" action="/backend/profile/name" class="profile-form">
+                    <input type="hidden" name="_csrf_token" value="%s">
+                    <div class="field">
+                      <label for="profile-name">Nombre</label>
+                      <input id="profile-name" name="name" type="text" value="%s" maxlength="180" required>
+                    </div>
+                    <div class="profile-actions">
+                      <button class="primary-action" type="submit">Guardar nombre</button>
+                    </div>
+                  </form>
+                </div>
+              </article>
+
+              <article class="profile-card">
+                <div class="profile-card-header">Cambiar clave</div>
+                <div class="profile-card-body">
+                  <form method="post" action="/backend/profile/password" class="profile-form">
+                    <input type="hidden" name="_csrf_token" value="%s">
+                    <div class="field">
+                      <label for="profile-current-password">Clave actual</label>
+                      <input id="profile-current-password" name="currentPassword" type="password" autocomplete="current-password" required>
+                    </div>
+
+                    <div class="field">
+                      <label for="profile-new-password">Nueva clave</label>
+                      <input id="profile-new-password" name="newPassword" type="password" autocomplete="new-password" minlength="8" required>
+                      <div class="field-note">Mínimo 8 caracteres.</div>
+                    </div>
+
+                    <div class="profile-actions">
+                      <button class="primary-action" type="submit">Actualizar clave</button>
+                    </div>
+                  </form>
+                </div>
+              </article>
             </section>
             ',
-            $this->infoCard('Cuenta', $email, '/backend/profile', 'Cuenta actual'),
-            $this->infoCard('Roles', $roleLabel, '/backend/users', 'Permisos'),
-            $this->infoCard('Acciones', 'Editar usuarios o volver al dashboard cuando termines.', '/backend/dashboard', 'Dashboard')
+            $feedbackHtml,
+            htmlspecialchars($user->getEmail(), ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($roleLabel, ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($user->getCreatedAt()->format('Y-m-d H:i'), ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($this->profileTokenValue('profile_name'), ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($user->getName(), ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($this->profileTokenValue('profile_password'), ENT_QUOTES, 'UTF-8')
         );
 
-        return $this->renderBackendShell('Mi perfil', 'Sesión y permisos del usuario conectado.', 'profile', $content);
+        return $this->renderBackendShell('Mi perfil', 'Datos de cuenta y seguridad del usuario conectado.', 'profile', $content);
+    }
+
+    #[Route('/profile/name', methods: ['POST'])]
+    public function profileName(Request $request): Response
+    {
+        if (!$this->security->isGranted('ROLE_MANAGER')) {
+            return new RedirectResponse('/backend/login');
+        }
+
+        $user = $this->currentUser();
+        if (!$user instanceof User) {
+            return new RedirectResponse('/backend/login');
+        }
+
+        if (!$this->isValidProfileToken('profile_name', (string) $request->request->get('_csrf_token'))) {
+            return new RedirectResponse('/backend/profile');
+        }
+
+        $name = trim((string) $request->request->get('name', ''));
+        if ($name === '') {
+            $this->addProfileFlash($request, 'error', 'Nombre requerido.');
+
+            return new RedirectResponse('/backend/profile');
+        }
+
+        $user->setName($name);
+        $this->entityManager->persist($user);
+        $this->entityManager->flush();
+        $this->addProfileFlash($request, 'success', 'Nombre actualizado.');
+
+        return new RedirectResponse('/backend/profile');
+    }
+
+    #[Route('/profile/password', methods: ['POST'])]
+    public function profilePassword(Request $request): Response
+    {
+        if (!$this->security->isGranted('ROLE_MANAGER')) {
+            return new RedirectResponse('/backend/login');
+        }
+
+        $user = $this->currentUser();
+        if (!$user instanceof User) {
+            return new RedirectResponse('/backend/login');
+        }
+
+        if (!$this->isValidProfileToken('profile_password', (string) $request->request->get('_csrf_token'))) {
+            return new RedirectResponse('/backend/profile');
+        }
+
+        $currentPassword = (string) $request->request->get('currentPassword', '');
+        $newPassword = (string) $request->request->get('newPassword', '');
+
+        if ($currentPassword === '' || $newPassword === '') {
+            $this->addProfileFlash($request, 'error', 'Completa la clave actual y la nueva clave.');
+
+            return new RedirectResponse('/backend/profile');
+        }
+
+        if (strlen($newPassword) < 8) {
+            $this->addProfileFlash($request, 'error', 'La nueva clave debe tener al menos 8 caracteres.');
+
+            return new RedirectResponse('/backend/profile');
+        }
+
+        if (!$this->passwordHasher->isPasswordValid($user, $currentPassword)) {
+            $this->addProfileFlash($request, 'error', 'La clave actual no es correcta.');
+
+            return new RedirectResponse('/backend/profile');
+        }
+
+        $user->setPassword($this->passwordHasher->hashPassword($user, $newPassword));
+        $this->entityManager->persist($user);
+        $this->entityManager->flush();
+        $this->addProfileFlash($request, 'success', 'Clave actualizada.');
+
+        return new RedirectResponse('/backend/profile');
     }
 
     #[Route('/api-health', methods: ['GET'])]
@@ -792,7 +916,8 @@ HTML;
     .nav a {
       display: flex;
       align-items: center;
-      justify-content: space-between;
+      justify-content: flex-start;
+      gap: 8px;
       padding: 12px 14px;
       border-radius: 14px;
       border: 1px solid transparent;
@@ -805,10 +930,6 @@ HTML;
       border-color: #e2e8f0;
       color: #0f172a;
       font-weight: 700;
-    }
-    .nav small {
-      color: var(--muted);
-      font-size: 12px;
     }
     .nav a:hover,
     .nav summary:hover {
@@ -986,6 +1107,9 @@ HTML;
         linear-gradient(135deg, rgba(15, 110, 199, 0.08), rgba(19, 79, 191, 0.05)),
         #ffffff;
     }
+    .hero-panel-single {
+      grid-template-columns: minmax(0, 1fr);
+    }
     .eyebrow-dark {
       color: var(--accent);
       font-size: 12px;
@@ -1082,6 +1206,23 @@ HTML;
       color: rgba(255, 255, 255, 0.72);
       margin-top: 6px;
     }
+    .alert {
+      border-radius: 16px;
+      padding: 14px 16px;
+      margin-bottom: 16px;
+      font-size: 14px;
+      border: 1px solid transparent;
+    }
+    .alert-success {
+      background: rgba(15, 110, 199, 0.08);
+      border-color: rgba(15, 110, 199, 0.18);
+      color: #134fbf;
+    }
+    .alert-error {
+      background: rgba(195, 52, 52, 0.08);
+      border-color: rgba(195, 52, 52, 0.18);
+      color: #a42222;
+    }
     .stats-grid {
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1116,6 +1257,75 @@ HTML;
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 16px;
+    }
+    .profile-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }
+    .profile-card {
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+    .profile-card-header {
+      padding: 16px 18px;
+      border-bottom: 1px solid var(--border);
+      font-size: 18px;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      color: #0f172a;
+    }
+    .profile-card-body {
+      padding: 18px;
+    }
+    .profile-meta {
+      display: grid;
+      gap: 10px;
+      margin-bottom: 18px;
+      color: #0f172a;
+      line-height: 1.5;
+    }
+    .profile-meta strong {
+      color: #0f172a;
+    }
+    .profile-form {
+      display: grid;
+      gap: 16px;
+    }
+    .field label {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 14px;
+      color: var(--muted);
+      font-weight: 700;
+    }
+    .field input {
+      width: 100%;
+      border-radius: 14px;
+      border: 1px solid var(--border);
+      background: var(--panel-soft);
+      color: var(--text);
+      padding: 14px 16px;
+      font-size: 15px;
+      outline: none;
+      transition: border-color 120ms ease, box-shadow 120ms ease;
+    }
+    .field input:focus {
+      border-color: rgba(15, 110, 199, 0.55);
+      box-shadow: 0 0 0 4px rgba(15, 110, 199, 0.1);
+    }
+    .field-note {
+      margin-top: 8px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .profile-actions {
+      display: flex;
+      justify-content: flex-end;
+      margin-top: 2px;
     }
     .info-card {
       background: #fff;
@@ -1218,7 +1428,8 @@ HTML;
       .sidebar { border-right: 0; border-bottom: 1px solid var(--border); }
       .hero-panel,
       .stats-grid,
-      .cards-grid {
+      .cards-grid,
+      .profile-grid {
         grid-template-columns: 1fr;
       }
       .user-links {
@@ -1233,7 +1444,7 @@ HTML;
     <aside class="sidebar">
       <div class="brand">
         <div class="brand-name">Sales Agent CRM</div>
-        <div class="brand-sub">Backend Symfony para configuración y gestión interna.</div>
+        <div class="brand-sub">Panel para definir negocios, productos/servicios y comportamiento del agente IA.</div>
       </div>
       <nav class="nav">
         {{NAV}}
@@ -1272,12 +1483,12 @@ HTML;
     private function renderNav(string $activeNav): string
     {
         $items = [
-            'dashboard' => ['href' => '/backend/dashboard', 'label' => 'Dashboard', 'meta' => 'Resumen', 'roles' => ['ROLE_AGENT', 'ROLE_MANAGER', 'ROLE_ADMIN']],
-            'playbooks' => ['href' => '/backend/playbooks', 'label' => 'Playbooks', 'meta' => 'Flujos', 'roles' => ['ROLE_MANAGER', 'ROLE_ADMIN']],
-            'tenants' => ['href' => '/backend/tenants', 'label' => 'Tenants', 'meta' => 'Proyectos', 'roles' => ['ROLE_MANAGER', 'ROLE_ADMIN']],
-            'admin-users' => ['href' => '/backend/users', 'label' => 'Usuarios', 'meta' => 'Acceso', 'roles' => ['ROLE_ADMIN']],
-            'admin-products' => ['href' => '/backend/products', 'label' => 'Productos', 'meta' => 'Catálogo', 'roles' => ['ROLE_MANAGER', 'ROLE_ADMIN']],
-            'admin-api-health' => ['href' => '/backend/api-health', 'label' => 'API Health', 'meta' => 'Status', 'roles' => ['ROLE_MANAGER', 'ROLE_ADMIN']],
+            'dashboard' => ['href' => '/backend/dashboard', 'label' => 'Resumen', 'roles' => ['ROLE_AGENT', 'ROLE_MANAGER', 'ROLE_ADMIN']],
+            'playbooks' => ['href' => '/backend/playbooks', 'label' => 'Guías comerciales', 'roles' => ['ROLE_MANAGER', 'ROLE_ADMIN']],
+            'tenants' => ['href' => '/backend/tenants', 'label' => 'Negocios', 'roles' => ['ROLE_MANAGER', 'ROLE_ADMIN']],
+            'admin-users' => ['href' => '/backend/users', 'label' => 'Usuarios', 'roles' => ['ROLE_ADMIN']],
+            'admin-products' => ['href' => '/backend/products', 'label' => 'Productos / servicios', 'roles' => ['ROLE_MANAGER', 'ROLE_ADMIN']],
+            'admin-api-health' => ['href' => '/backend/api-health', 'label' => 'Integración técnica', 'roles' => ['ROLE_MANAGER', 'ROLE_ADMIN']],
         ];
 
         $html = '';
@@ -1289,11 +1500,10 @@ HTML;
 
             $class = $key === $activeNav ? 'active' : '';
             $html .= sprintf(
-                '<a class="%s" href="%s"><span>%s</span><small>%s</small></a>',
+                '<a class="%s" href="%s">%s</a>',
                 $class,
                 htmlspecialchars($item['href'], ENT_QUOTES, 'UTF-8'),
-                htmlspecialchars($item['label'], ENT_QUOTES, 'UTF-8'),
-                htmlspecialchars($item['meta'], ENT_QUOTES, 'UTF-8')
+                htmlspecialchars($item['label'], ENT_QUOTES, 'UTF-8')
             );
         }
 
@@ -1305,17 +1515,16 @@ HTML;
             }
 
             $adminItems[] = sprintf(
-                '<a class="%s" href="%s"><span>%s</span><small>%s</small></a>',
+                '<a class="%s" href="%s">%s</a>',
                 $key === $activeNav ? 'active' : '',
                 htmlspecialchars($item['href'], ENT_QUOTES, 'UTF-8'),
-                htmlspecialchars($item['label'], ENT_QUOTES, 'UTF-8'),
-                htmlspecialchars($item['meta'], ENT_QUOTES, 'UTF-8')
+                htmlspecialchars($item['label'], ENT_QUOTES, 'UTF-8')
             );
         }
 
         if ($adminItems !== []) {
             $html .= sprintf(
-                '<details class="nav-group"%s><summary>Admin <span class="nav-caret">▾</span></summary><div class="nav-subitems">%s</div></details>',
+                '<details class="nav-group"%s><summary>Administración <span class="nav-caret">▾</span></summary><div class="nav-subitems">%s</div></details>',
                 in_array($activeNav, ['admin-users', 'admin-products', 'admin-api-health'], true) ? ' open' : '',
                 implode('', $adminItems)
             );
@@ -1342,6 +1551,11 @@ HTML;
 
     private function currentUserDisplayName(): string
     {
+        $user = $this->currentUser();
+        if ($user instanceof User && $user->getName() !== '') {
+            return $user->getName();
+        }
+
         $label = $this->currentUserLabel();
         $localPart = strtolower(strstr($label, '@', true) ?: $label);
 
@@ -1358,8 +1572,8 @@ HTML;
 
     private function currentUserInitials(): string
     {
-        $label = $this->currentUserLabel();
-        $parts = preg_split('/[^a-z0-9]+/i', strtolower($label)) ?: [];
+        $label = $this->currentUserDisplayName();
+        $parts = preg_split('/\s+/', trim($label)) ?: [];
         $parts = array_values(array_filter($parts, static fn (string $part): bool => $part !== ''));
         $seed = implode('', array_slice($parts, 0, 2));
 
@@ -1368,6 +1582,67 @@ HTML;
         }
 
         return strtoupper(substr($seed, 0, 2));
+    }
+
+    private function currentUser(): ?User
+    {
+        $user = $this->security->getUser();
+
+        return $user instanceof User ? $user : null;
+    }
+
+    private function isValidProfileToken(string $id, string $value): bool
+    {
+        if ($this->csrfTokenManager === null) {
+            return true;
+        }
+
+        return $this->csrfTokenManager->isTokenValid(new CsrfToken($id, $value));
+    }
+
+    private function profileTokenValue(string $id): string
+    {
+        if ($this->csrfTokenManager === null) {
+            return '';
+        }
+
+        return $this->csrfTokenManager->getToken($id)->getValue();
+    }
+
+    private function addProfileFlash(Request $request, string $type, string $message): void
+    {
+        if (!$request->hasSession()) {
+            return;
+        }
+
+        $request->getSession()->getFlashBag()->add($type, $message);
+    }
+
+    private function renderProfileFeedback(Request $request): string
+    {
+        if (!$request->hasSession()) {
+            return '';
+        }
+
+        $flashBag = $request->getSession()->getFlashBag();
+        $success = $flashBag->get('success');
+        $errors = $flashBag->get('error');
+
+        $html = '';
+        foreach ($success as $message) {
+            $html .= sprintf(
+                '<div class="alert alert-success">%s</div>',
+                htmlspecialchars((string) $message, ENT_QUOTES, 'UTF-8')
+            );
+        }
+        foreach ($errors as $message) {
+            $html .= sprintf(
+                '<div class="alert alert-error">%s</div>',
+                htmlspecialchars((string) $message, ENT_QUOTES, 'UTF-8')
+            );
+        }
+
+        return $html;
     }
 
     /**

@@ -19,6 +19,9 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     #[ORM\Column(length: 180, unique: true)]
     private string $email;
 
+    #[ORM\Column(length: 180, nullable: true)]
+    private ?string $name = null;
+
     /**
      * Logical roles: agent, manager, admin.
      *
@@ -36,11 +39,12 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     #[ORM\Column(type: 'datetime_immutable')]
     private \DateTimeImmutable $createdAt;
 
-    public function __construct(string $email = '', array $roles = ['agent'])
+    public function __construct(string $email = '', array $roles = ['agent'], ?string $name = null)
     {
         $this->id = Uuid::v7();
         $this->email = strtolower(trim($email));
         $this->roles = $this->normalizeRoles($roles);
+        $this->name = $this->normalizeName($name);
         $this->createdAt = new \DateTimeImmutable();
     }
 
@@ -57,6 +61,16 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
     public function setEmail(string $email): void
     {
         $this->email = strtolower(trim($email));
+    }
+
+    public function getName(): string
+    {
+        return $this->name ?? '';
+    }
+
+    public function setName(?string $name): void
+    {
+        $this->name = $this->normalizeName($name);
     }
 
     public function getRoles(): array
@@ -120,6 +134,7 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
         return [
             'id' => $this->id->toRfc4122(),
             'email' => $this->email,
+            'name' => $this->getName(),
             'roles' => $this->roles,
             'isActive' => $this->isActive,
             'createdAt' => $this->createdAt->format(\DateTimeInterface::ATOM),
@@ -147,5 +162,16 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
         $normalized = array_values(array_filter($normalized, static fn (string $role): bool => $role !== ''));
 
         return $normalized !== [] ? $normalized : ['agent'];
+    }
+
+    private function normalizeName(?string $name): ?string
+    {
+        if ($name === null) {
+            return null;
+        }
+
+        $name = trim($name);
+
+        return $name !== '' ? $name : null;
     }
 }

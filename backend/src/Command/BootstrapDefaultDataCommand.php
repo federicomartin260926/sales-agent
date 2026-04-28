@@ -15,15 +15,15 @@ use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
 
 #[AsCommand(
     name: 'app:bootstrap:default-data',
-    description: 'Create the initial admin user and demo playbook if they do not exist.',
+    description: 'Create the initial admin user and demo commercial guide if they do not exist.',
 )]
 final class BootstrapDefaultDataCommand extends Command
 {
     private const ADMIN_EMAIL = 'federicomartin2609@gmail.com';
     private const INITIAL_PASSWORD = '1234';
-    private const TENANT_NAME = 'Federico Martin Demo';
+    private const TENANT_NAME = 'Negocio demo Federico Martín';
     private const TENANT_SLUG = 'federico-martin-demo';
-    private const PLAYBOOK_NAME = 'Playbook de prueba';
+    private const PLAYBOOK_NAME = 'Guía comercial de prueba';
 
     public function __construct(
         private readonly EntityManagerInterface $entityManager,
@@ -46,7 +46,7 @@ final class BootstrapDefaultDataCommand extends Command
         $tenant = $tenantRepository->findOneBy(['slug' => self::TENANT_SLUG]);
         if (!$tenant instanceof Tenant) {
             $tenant = new Tenant(self::TENANT_NAME, self::TENANT_SLUG);
-            $tenant->setBusinessContext('Tenant de arranque para pruebas del backend administrativo.');
+            $tenant->setBusinessContext('Negocio de arranque para pruebas del backend administrativo.');
             $tenant->setTone('consultivo');
             $tenant->setSalesPolicy([
                 'welcome' => 'Responder de forma clara y breve.',
@@ -60,12 +60,15 @@ final class BootstrapDefaultDataCommand extends Command
 
         $user = $userRepository->findOneBy(['email' => self::ADMIN_EMAIL]);
         if (!$user instanceof User) {
-            $user = new User(self::ADMIN_EMAIL, ['admin']);
+            $user = new User(self::ADMIN_EMAIL, ['admin'], 'Federico Martín');
             $user->setPassword($this->passwordHasher->hashPassword($user, self::INITIAL_PASSWORD));
             $user->setActive(true);
 
             $this->entityManager->persist($user);
             $changes[] = 'admin user';
+        } elseif ($user->getName() === '') {
+            $user->setName('Federico Martín');
+            $changes[] = 'admin user name';
         }
 
         $playbook = $playbookRepository->findOneBy([
@@ -75,7 +78,7 @@ final class BootstrapDefaultDataCommand extends Command
         if (!$playbook instanceof Playbook) {
             $playbook = new Playbook($tenant, self::PLAYBOOK_NAME);
             $playbook->setConfig([
-                'goal' => 'Responder a pruebas iniciales del backend',
+                'goal' => 'Responder a pruebas iniciales del panel comercial',
                 'tone' => 'consultivo',
                 'steps' => [
                     'saludar',

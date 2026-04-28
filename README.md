@@ -101,18 +101,19 @@ Rutas públicas a través de Nginx:
 - Panel humano:
   - `GET /backend/login`
   - `GET /backend/dashboard`
+  - `GET /backend/profile`
 - `GET /backend/api/health`
 - CRUD REST básico:
-  - `/backend/api/tenants`
+  - `/backend/api/tenants` para negocios
   - `/backend/api/products`
-  - `/backend/api/playbooks`
+  - `/backend/api/playbooks` para guías comerciales
 - `POST /backend/api/login` para el patrón de seguridad basado en JWT
 
-El backend humano sigue un layout tipo CRM con sidebar, métricas y navegación por módulos.
+El backend humano sigue un layout tipo CRM con sidebar, métricas, navegación por módulos y perfil editable para nombre y clave.
 
 ## Bootstrap inicial del backend
 
-El backend Symfony incluye un bootstrap idempotente para crear el primer usuario administrador y un playbook de prueba.
+El backend Symfony incluye un bootstrap idempotente para crear el primer usuario administrador y una guía comercial de prueba.
 
 ```bash
 make schema-update
@@ -149,9 +150,9 @@ Ese token se configura con `SALES_AGENT_BEARER_TOKEN`.
 ### Symfony
 
 - `User`
-- `Tenant`
-- `Product`
-- `Playbook`
+- `Negocio` (`Tenant`)
+- `Producto / servicio` (`Product`)
+- `Guía comercial` (`Playbook`)
 
 ### Roles
 
@@ -170,5 +171,8 @@ Se mantiene el contrato conceptual del CRM:
 
 ## Documentación adicional
 
+- [Guía funcional del sistema](docs/operating-model.md)
+- [Glosario oficial](docs/glossary.md)
+- [TODO del proyecto](docs/todo.md)
 - [Backend Symfony](backend/README.md)
 - [API FastAPI](api/README.md)
