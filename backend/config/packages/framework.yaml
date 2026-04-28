@@ -1,0 +1,15 @@
+framework:
+  secret: '%env(APP_SECRET)%'
+  csrf_protection: false
+  http_method_override: false
+  handle_all_throwables: true
+  session:
+    enabled: true
+    cookie_secure: auto
+    cookie_samesite: lax
+
+when@test:
+  framework:
+    test: true
+    session:
+      storage_factory_id: session.storage.factory.mock_file

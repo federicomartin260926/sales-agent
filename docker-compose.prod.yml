@@ -1,0 +1,46 @@
+services:
+  sales-agent-backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.prod
+    environment:
+      APP_ENV: prod
+      APP_DEBUG: "0"
+    volumes:
+      - sales_agent_backend_var:/var/www/html/backend/var
+    restart: unless-stopped
+
+  sales-agent-api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    environment:
+      PYTHONPATH: /app
+      APP_ENV: prod
+      LLM_PROVIDER: ${LLM_PROVIDER:-openai}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-}
+      CRM_BASE_URL: ${CRM_BASE_URL:-}
+      RAG_API_URL: ${RAG_API_URL:-}
+      SALES_AGENT_BEARER_TOKEN: ${SALES_AGENT_BEARER_TOKEN:-change-me-sales-agent-bearer-token}
+    restart: unless-stopped
+
+  sales-agent-nginx:
+    volumes:
+      - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - sales-agent-net
+      - proxy
+    restart: unless-stopped
+
+  sales-agent-db:
+    restart: unless-stopped
+
+volumes:
+  sales_agent_backend_var:
+
+networks:
+  proxy:
+    external: true
+    name: proxy

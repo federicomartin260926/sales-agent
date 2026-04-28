@@ -1,0 +1,14 @@
+.DS_Store
+
+.env
+
+backend/vendor/
+backend/var/
+backend/.phpunit.cache/
+backend/config/jwt/*.pem
+
+api/.venv/
+api/**/__pycache__/
+api/.pytest_cache/
+
+docker-compose.override.yml

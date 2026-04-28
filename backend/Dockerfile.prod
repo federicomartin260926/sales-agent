@@ -1,0 +1,25 @@
+FROM php:8.3-fpm
+
+RUN apt-get update && apt-get install -y \
+    git unzip openssl libicu-dev libzip-dev libpq-dev \
+ && docker-php-ext-install intl zip opcache pdo_pgsql \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
+
+WORKDIR /var/www/html/backend
+
+COPY composer.json ./
+COPY composer.lock ./
+RUN composer install --no-interaction --prefer-dist --no-dev --optimize-autoloader
+
+COPY . ./
+
+RUN mkdir -p var/cache var/log \
+ && chown -R www-data:www-data var
+
+COPY docker/php/prod-entrypoint.sh /usr/local/bin/sales-agent-php-entrypoint
+RUN chmod +x /usr/local/bin/sales-agent-php-entrypoint
+
+ENTRYPOINT ["/usr/local/bin/sales-agent-php-entrypoint"]
+CMD ["php-fpm"]
