@@ -1,4 +1,8 @@
 security:
+  role_hierarchy:
+    ROLE_MANAGER: [ROLE_AGENT]
+    ROLE_ADMIN: [ROLE_MANAGER, ROLE_AGENT]
+
   password_hashers:
     Symfony\Component\Security\Core\User\PasswordAuthenticatedUserInterface: auto
 
@@ -49,7 +53,8 @@ security:
     - { path: ^/$, roles: PUBLIC_ACCESS }
     - { path: ^/login, roles: PUBLIC_ACCESS }
     - { path: ^/(backend/)?logout$, roles: PUBLIC_ACCESS }
-    - { path: ^/(dashboard|playbooks|tenants|products|profile|api-health), roles: ROLE_MANAGER }
+    - { path: ^/(dashboard|profile), roles: [ROLE_AGENT, ROLE_MANAGER, ROLE_ADMIN] }
+    - { path: ^/(playbooks|tenants|products|api-health), roles: [ROLE_MANAGER, ROLE_ADMIN] }
     - { path: ^/users, roles: ROLE_ADMIN }
     - { path: ^/api/health, roles: PUBLIC_ACCESS }
     - { path: ^/api/login, roles: PUBLIC_ACCESS }

@@ -114,7 +114,7 @@ El backend humano sigue un layout tipo CRM con sidebar, métricas, navegación p
 
 ## Bootstrap inicial del backend
 
-El backend Symfony incluye un bootstrap idempotente para crear el primer usuario administrador y una guía comercial de prueba.
+El backend Symfony incluye un bootstrap idempotente para crear el primer usuario administrador, un negocio de prueba, un producto de prueba y guías comerciales de prueba general y por producto.
 
 ```bash
 make schema-update
@@ -174,6 +174,7 @@ Se mantiene el contrato conceptual del CRM:
 
 - [Modelo de dominio](docs/domain-model.md)
 - [Contrato de CRM](docs/crm-contract.md)
+- [Matriz de acceso](docs/access-matrix.md)
 - [Guía funcional del sistema](docs/operating-model.md)
 - [Glosario oficial](docs/glossary.md)
 - [TODO del proyecto](docs/todo.md)

@@ -2,6 +2,7 @@
 
 namespace App\Controller\Web;
 
+use App\Domain\CommercialDomainSchema;
 use App\Entity\Playbook;
 use App\Entity\Product;
 use App\Entity\Tenant;
@@ -9,6 +10,7 @@ use App\Entity\User;
 use App\Repository\PlaybookRepository;
 use App\Repository\ProductRepository;
 use App\Repository\TenantRepository;
+use App\Repository\UserRepository;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\SecurityBundle\Security;
 use Symfony\Component\HttpFoundation\RedirectResponse;
@@ -293,7 +295,7 @@ HTML;
         ?PlaybookRepository $playbooks = null,
         ?ProductRepository $products = null,
     ): Response {
-        if (!$this->security->isGranted('ROLE_MANAGER')) {
+        if (!$this->security->isGranted('ROLE_AGENT')) {
             return new RedirectResponse('/backend/login');
         }
 
@@ -301,20 +303,25 @@ HTML;
         $userCount = $users ? count($users->findBy([], ['createdAt' => 'DESC'])) : 0;
         $playbookCount = $playbooks ? count($playbooks->findAllOrdered()) : 0;
         $productCount = $products ? count($products->findAllOrdered()) : 0;
+        $canManageUsers = $this->security->isGranted('ROLE_ADMIN');
+        $heroActions = sprintf(
+            '<a class="primary-action" href="/backend/tenants">Ver negocios</a>%s',
+            $canManageUsers ? '<a class="secondary-action" href="/backend/users">Revisar usuarios</a>' : ''
+        );
 
         $content = sprintf(
             '
             <section class="hero-panel hero-panel-single">
               <div class="hero-copy">
                 <div class="eyebrow-dark">Operación comercial</div>
-                <h2>Panel comercial de negocios</h2>
+                <h2>Dashboard comercial de negocios</h2>
                 <p>
-                  Gestiona negocios, productos/servicios y usuarios desde un mismo lugar. Aquí defines cómo se comporta el
-                  agente IA por negocio o producto: su conocimiento, su tono y el enfoque comercial que aplica.
+                  Consulta el estado operativo de tus negocios y, si tienes permisos de gestión, accede a productos/servicios,
+                  guías comerciales y usuarios. Aquí defines cómo se comporta el agente IA por negocio o producto: su conocimiento,
+                  su tono y el enfoque comercial que aplica.
                 </p>
                 <div class="hero-actions">
-                  <a class="primary-action" href="/backend/tenants">Ver negocios</a>
-                  <a class="secondary-action" href="/backend/users">Revisar usuarios</a>
+                  %s
                 </div>
               </div>
             </section>
@@ -331,19 +338,18 @@ HTML;
               %s
               %s
               %s
-              %s
-              %s
             </section>
             ',
+            $heroActions,
             $this->metricCard('Negocios', (string) $tenantCount, 'Contextos comerciales listos'),
-            $this->metricCard('Usuarios', (string) $userCount, 'Cuentas de administración'),
             $this->metricCard('Guías comerciales', (string) $playbookCount, 'Cualificación, scoring y handoff'),
             $this->metricCard('Productos / servicios', (string) $productCount, 'Catálogo comercial base'),
+            $this->metricCard('Usuarios', (string) $userCount, 'Cuentas de administración'),
             $this->infoCard(
-                'Usuarios',
-                'Cuentas que administran negocios, productos/servicios y acceso interno.',
-                '/backend/users',
-                'Gestionar'
+                'Negocios',
+                'Cada negocio agrupa su contexto, usuarios y reglas del agente.',
+                '/backend/tenants',
+                'Abrir'
             ),
             $this->infoCard(
                 'Guías comerciales',
@@ -352,26 +358,19 @@ HTML;
                 'Abrir'
             ),
             $this->infoCard(
-                'Negocios',
-                'Cada negocio agrupa su contexto, usuarios y reglas del agente.',
-                '/backend/tenants',
-                'Abrir'
-            ),
-            $this->infoCard(
                 'Productos / servicios',
                 'Propuestas comerciales asociadas al trabajo de cada negocio.',
                 '/backend/products',
                 'Abrir'
             ),
-            $this->infoCard(
-                'Integración técnica',
-                'La API sigue disponible para automatizaciones y servicios internos.',
-                '/backend/api/health',
-                'Health check'
-            ),
-            $this->infoCard(
-                'Estado',
-                'Panel comercial activo y listo para operar.',
+            $canManageUsers ? $this->infoCard(
+                'Usuarios',
+                'Cuentas que administran negocios, productos/servicios y acceso interno.',
+                '/backend/users',
+                'Gestionar'
+            ) : $this->infoCard(
+                'Usuarios',
+                'La gestión de usuarios está reservada al rol admin.',
                 '/backend/profile',
                 'Mi perfil'
             ),
@@ -396,6 +395,7 @@ HTML;
             $tenant = $playbook->getTenant();
             $product = $playbook->getProduct();
             $status = $playbook->isActive() ? '<span class="status-ok">Activo</span>' : '<span class="status-off">Inactivo</span>';
+            $editUrl = sprintf('/backend/playbooks/%s/edit', rawurlencode($playbook->getId()->toRfc4122()));
 
             return sprintf(
                 '<tr>
@@ -403,12 +403,15 @@ HTML;
                     <td>%s</td>
                     <td>%s</td>
                     <td>%s</td>
+                    <td class="text-right"><a class="icon-action" href="%s" title="Editar guía comercial" aria-label="Editar guía comercial">%s</a></td>
                   </tr>',
                 htmlspecialchars($playbook->getName(), ENT_QUOTES, 'UTF-8'),
                 htmlspecialchars($playbook->getConfigSummary(), ENT_QUOTES, 'UTF-8'),
                 htmlspecialchars($tenant->getName(), ENT_QUOTES, 'UTF-8'),
                 $product ? htmlspecialchars($product->getName(), ENT_QUOTES, 'UTF-8') : 'Sin producto',
-                $status
+                $status,
+                htmlspecialchars($editUrl, ENT_QUOTES, 'UTF-8'),
+                self::iconEditSvg()
             );
         }, $playbooks ? $playbooks->findAllOrdered() : []);
 
@@ -432,22 +435,114 @@ HTML;
                   <h3>Guías comerciales activas e inactivas</h3>
                   <p>Vista rápida del catálogo y su contexto.</p>
                 </div>
-                <a class="secondary-action" href="/backend/dashboard">Volver al dashboard</a>
+                <a class="primary-action" href="/backend/playbooks/new">Crear guía comercial</a>
               </div>
               <div class="table-responsive">
                 <table>
                   <thead>
-                    <tr><th>Guía comercial</th><th>Negocio</th><th>Producto / servicio</th><th>Estado</th></tr>
+                    <tr><th>Guía comercial</th><th>Negocio</th><th>Producto / servicio</th><th>Estado</th><th class="text-right">Acciones</th></tr>
                   </thead>
                   <tbody>%s</tbody>
                 </table>
               </div>
             </section>
             ',
-            $rows !== [] ? implode('', $rows) : '<tr><td colspan="4" class="empty-row">No hay guías comerciales todavía.</td></tr>'
+            $rows !== [] ? implode('', $rows) : '<tr><td colspan="5" class="empty-row">No hay guías comerciales todavía.</td></tr>'
         );
 
         return $this->renderBackendShell('Guías comerciales', 'Ajustes del agente por negocio o producto.', 'playbooks', $content);
+    }
+
+    #[Route('/playbooks/new', methods: ['GET', 'POST'])]
+    public function playbookCreate(Request $request, ?TenantRepository $tenants = null, ?ProductRepository $products = null, ?PlaybookRepository $playbooks = null): Response
+    {
+        if (!$this->security->isGranted('ROLE_MANAGER')) {
+            return new RedirectResponse('/backend/login');
+        }
+
+        $values = $this->playbookFormDefaults();
+        $error = null;
+
+        if ($request->isMethod('POST')) {
+            if (!$this->isValidPlaybookToken('/backend/playbooks/new', (string) $request->request->get('_csrf_token'))) {
+                $error = 'La sesión del formulario ha expirado. Vuelve a intentarlo.';
+            } else {
+                $values = $this->playbookFormValuesFromRequest($request);
+                $error = $this->validatePlaybookForm($values, null, $tenants, $products, $playbooks);
+
+                if ($error === null) {
+                    $tenant = $tenants instanceof TenantRepository ? $tenants->find($values['tenantId']) : null;
+                    $playbook = new Playbook($tenant, $values['name']);
+                    $this->hydratePlaybookFromForm($playbook, $values, $tenant, $products);
+                    $this->entityManager->persist($playbook);
+                    $this->entityManager->flush();
+
+                    return new RedirectResponse('/backend/playbooks');
+                }
+            }
+        }
+
+        return $this->renderPlaybookForm(
+            'Crear guía comercial',
+            'Define la estrategia conversacional, el scoring y las reglas de handoff del negocio.',
+            'Crear guía comercial',
+            'Crear guía comercial',
+            '/backend/playbooks/new',
+            $values,
+            $tenants,
+            $products,
+            $error
+        );
+    }
+
+    #[Route('/playbooks/{id}/edit', methods: ['GET', 'POST'])]
+    public function playbookEdit(string $id, Request $request, ?TenantRepository $tenants = null, ?ProductRepository $products = null, ?PlaybookRepository $playbooks = null): Response
+    {
+        if (!$this->security->isGranted('ROLE_MANAGER')) {
+            return new RedirectResponse('/backend/login');
+        }
+
+        if (!$playbooks instanceof PlaybookRepository) {
+            return new RedirectResponse('/backend/playbooks');
+        }
+
+        $playbook = $playbooks->find($id);
+        if (!$playbook instanceof Playbook) {
+            return new RedirectResponse('/backend/playbooks');
+        }
+
+        $values = $this->playbookFormDefaults($playbook);
+        $error = null;
+
+        if ($request->isMethod('POST')) {
+            if (!$this->isValidPlaybookToken('/backend/playbooks/'.$playbook->getId()->toRfc4122().'/edit', (string) $request->request->get('_csrf_token'))) {
+                $error = 'La sesión del formulario ha expirado. Vuelve a intentarlo.';
+            } else {
+                $values = $this->playbookFormValuesFromRequest($request);
+                $error = $this->validatePlaybookForm($values, $playbook, $tenants, $products, $playbooks);
+
+                if ($error === null) {
+                    $tenant = $tenants instanceof TenantRepository ? $tenants->find($values['tenantId']) : $playbook->getTenant();
+                    $this->hydratePlaybookFromForm($playbook, $values, $tenant, $products);
+                    $this->entityManager->persist($playbook);
+                    $this->entityManager->flush();
+
+                    return new RedirectResponse('/backend/playbooks');
+                }
+            }
+        }
+
+        return $this->renderPlaybookForm(
+            'Editar guía comercial',
+            'Ajusta el playbook para que el agente siga la estrategia correcta del negocio.',
+            'Editar guía comercial',
+            'Guardar cambios',
+            '/backend/playbooks/'.$playbook->getId()->toRfc4122().'/edit',
+            $values,
+            $tenants,
+            $products,
+            $error
+        );
     }
 
     #[Route('/tenants', methods: ['GET'])]
@@ -460,6 +555,7 @@ HTML;
         $rows = array_map(static function (Tenant $tenant): string {
             $policySummary = $tenant->getSalesPolicySummary();
             $status = $tenant->isActive() ? '<span class="status-ok">Activo</span>' : '<span class="status-off">Inactivo</span>';
+            $editUrl = sprintf('/backend/tenants/%s/edit', rawurlencode($tenant->getId()->toRfc4122()));
 
             return sprintf(
                 '<tr>
@@ -467,12 +563,15 @@ HTML;
                     <td><code>%s</code></td>
                     <td>%s</td>
                     <td>%s</td>
+                    <td class="text-right"><a class="icon-action" href="%s" title="Editar negocio" aria-label="Editar negocio">%s</a></td>
                   </tr>',
                 htmlspecialchars($tenant->getName(), ENT_QUOTES, 'UTF-8'),
                 htmlspecialchars($tenant->getBusinessContext(), ENT_QUOTES, 'UTF-8'),
                 htmlspecialchars($tenant->getSlug(), ENT_QUOTES, 'UTF-8'),
                 htmlspecialchars($policySummary, ENT_QUOTES, 'UTF-8'),
-                $status
+                $status,
+                htmlspecialchars($editUrl, ENT_QUOTES, 'UTF-8'),
+                self::iconEditSvg()
             );
         }, $tenants ? $tenants->findAllOrdered() : []);
 
@@ -496,22 +595,108 @@ HTML;
                   <h3>Negocios registrados</h3>
                   <p>Nombre, slug y política comercial de arranque.</p>
                 </div>
-                <a class="secondary-action" href="/backend/dashboard">Volver al dashboard</a>
+                <a class="primary-action" href="/backend/tenants/new">Crear negocio</a>
               </div>
               <div class="table-responsive">
                 <table>
                   <thead>
-                    <tr><th>Negocio</th><th>Slug</th><th>Política comercial</th><th>Estado</th></tr>
+                    <tr><th>Negocio</th><th>Slug</th><th>Política comercial</th><th>Estado</th><th class="text-right">Acciones</th></tr>
                   </thead>
                   <tbody>%s</tbody>
                 </table>
               </div>
             </section>
             ',
-            $rows !== [] ? implode('', $rows) : '<tr><td colspan="4" class="empty-row">No hay negocios todavía.</td></tr>'
+            $rows !== [] ? implode('', $rows) : '<tr><td colspan="5" class="empty-row">No hay negocios todavía.</td></tr>'
         );
 
         return $this->renderBackendShell('Negocios', 'Negocios y contextos operativos.', 'tenants', $content);
+    }
+
+    #[Route('/tenants/new', methods: ['GET', 'POST'])]
+    public function tenantCreate(Request $request, ?TenantRepository $tenants = null): Response
+    {
+        if (!$this->security->isGranted('ROLE_MANAGER')) {
+            return new RedirectResponse('/backend/login');
+        }
+
+        $values = $this->tenantFormDefaults();
+        $error = null;
+
+        if ($request->isMethod('POST')) {
+            if (!$this->isValidTenantToken('/backend/tenants/new', (string) $request->request->get('_csrf_token'))) {
+                $error = 'La sesión del formulario ha expirado. Vuelve a intentarlo.';
+            } else {
+                $values = $this->tenantFormValuesFromRequest($request);
+                $error = $this->validateTenantForm($values, null, $tenants);
+
+                if ($error === null) {
+                    $tenant = new Tenant();
+                    $this->hydrateTenantFromForm($tenant, $values);
+                    $this->entityManager->persist($tenant);
+                    $this->entityManager->flush();
+
+                    return new RedirectResponse('/backend/tenants');
+                }
+            }
+        }
+
+        return $this->renderTenantForm(
+            'Crear negocio',
+            'Alta de un nuevo contexto comercial. Define nombre, contexto, tono y política comercial inicial.',
+            'Crear negocio',
+            'Crear negocio',
+            '/backend/tenants/new',
+            $values,
+            $error
+        );
+    }
+
+    #[Route('/tenants/{id}/edit', methods: ['GET', 'POST'])]
+    public function tenantEdit(string $id, Request $request, ?TenantRepository $tenants = null): Response
+    {
+        if (!$this->security->isGranted('ROLE_MANAGER')) {
+            return new RedirectResponse('/backend/login');
+        }
+
+        if (!$tenants instanceof TenantRepository) {
+            return new RedirectResponse('/backend/tenants');
+        }
+
+        $tenant = $tenants->find($id);
+        if (!$tenant instanceof Tenant) {
+            return new RedirectResponse('/backend/tenants');
+        }
+
+        $values = $this->tenantFormDefaults($tenant);
+        $error = null;
+
+        if ($request->isMethod('POST')) {
+            if (!$this->isValidTenantToken('/backend/tenants/'.$tenant->getId()->toRfc4122().'/edit', (string) $request->request->get('_csrf_token'))) {
+                $error = 'La sesión del formulario ha expirado. Vuelve a intentarlo.';
+            } else {
+                $values = $this->tenantFormValuesFromRequest($request);
+                $error = $this->validateTenantForm($values, $tenant, $tenants);
+
+                if ($error === null) {
+                    $this->hydrateTenantFromForm($tenant, $values);
+                    $this->entityManager->persist($tenant);
+                    $this->entityManager->flush();
+
+                    return new RedirectResponse('/backend/tenants');
+                }
+            }
+        }
+
+        return $this->renderTenantForm(
+            'Editar negocio',
+            'Ajusta el contexto comercial, el tono y la política de venta del negocio seleccionado.',
+            'Editar negocio',
+            'Guardar cambios',
+            '/backend/tenants/'.$tenant->getId()->toRfc4122().'/edit',
+            $values,
+            $error
+        );
     }
 
     #[Route('/users', methods: ['GET'])]
@@ -588,6 +773,7 @@ HTML;
 
         $rows = array_map(static function (Product $product): string {
             $status = $product->isActive() ? '<span class="status-ok">Activo</span>' : '<span class="status-off">Inactivo</span>';
+            $editUrl = sprintf('/backend/products/%s/edit', rawurlencode($product->getId()->toRfc4122()));
 
             return sprintf(
                 '<tr>
@@ -595,12 +781,15 @@ HTML;
                     <td>%s</td>
                     <td>%s</td>
                     <td>%s</td>
+                    <td class="text-right"><a class="icon-action" href="%s" title="Editar producto / servicio" aria-label="Editar producto / servicio">%s</a></td>
                   </tr>',
                 htmlspecialchars($product->getName(), ENT_QUOTES, 'UTF-8'),
                 htmlspecialchars($product->getDescription(), ENT_QUOTES, 'UTF-8'),
                 htmlspecialchars($product->getTenant()->getName(), ENT_QUOTES, 'UTF-8'),
                 htmlspecialchars($product->getValueProposition(), ENT_QUOTES, 'UTF-8'),
-                $status
+                $status,
+                htmlspecialchars($editUrl, ENT_QUOTES, 'UTF-8'),
+                self::iconEditSvg()
             );
         }, $products ? $products->findAllOrdered() : []);
 
@@ -624,28 +813,118 @@ HTML;
                   <h3>Productos / servicios registrados</h3>
                   <p>Negocio, propuesta de valor y estado.</p>
                 </div>
-                <a class="secondary-action" href="/backend/dashboard">Volver al dashboard</a>
+                <a class="primary-action" href="/backend/products/new">Crear producto / servicio</a>
               </div>
               <div class="table-responsive">
                 <table>
                   <thead>
-                    <tr><th>Producto / servicio</th><th>Negocio</th><th>Propuesta de valor</th><th>Estado</th></tr>
+                    <tr><th>Producto / servicio</th><th>Negocio</th><th>Propuesta de valor</th><th>Estado</th><th class="text-right">Acciones</th></tr>
                   </thead>
                   <tbody>%s</tbody>
                 </table>
               </div>
             </section>
             ',
-            $rows !== [] ? implode('', $rows) : '<tr><td colspan="4" class="empty-row">No hay productos o servicios todavía.</td></tr>'
+            $rows !== [] ? implode('', $rows) : '<tr><td colspan="5" class="empty-row">No hay productos o servicios todavía.</td></tr>'
         );
 
         return $this->renderBackendShell('Productos / servicios', 'Catálogo comercial por negocio.', 'products', $content);
     }
 
+    #[Route('/products/new', methods: ['GET', 'POST'])]
+    public function productCreate(Request $request, ?TenantRepository $tenants = null, ?ProductRepository $products = null): Response
+    {
+        if (!$this->security->isGranted('ROLE_MANAGER')) {
+            return new RedirectResponse('/backend/login');
+        }
+
+        $values = $this->productFormDefaults();
+        $error = null;
+
+        if ($request->isMethod('POST')) {
+            if (!$this->isValidProductToken('/backend/products/new', (string) $request->request->get('_csrf_token'))) {
+                $error = 'La sesión del formulario ha expirado. Vuelve a intentarlo.';
+            } else {
+                $values = $this->productFormValuesFromRequest($request);
+                $error = $this->validateProductForm($values, null, $tenants, $products);
+
+                if ($error === null) {
+                    $tenant = $tenants instanceof TenantRepository ? $tenants->find($values['tenantId']) : null;
+                    $product = new Product($tenant, $values['name']);
+                    $this->hydrateProductFromForm($product, $values, $tenant);
+                    $this->entityManager->persist($product);
+                    $this->entityManager->flush();
+
+                    return new RedirectResponse('/backend/products');
+                }
+            }
+        }
+
+        return $this->renderProductForm(
+            'Crear producto / servicio',
+            'Define la oferta, la propuesta de valor y la política comercial específica de este negocio.',
+            'Crear producto / servicio',
+            'Crear producto / servicio',
+            '/backend/products/new',
+            $values,
+            $tenants,
+            $error
+        );
+    }
+
+    #[Route('/products/{id}/edit', methods: ['GET', 'POST'])]
+    public function productEdit(string $id, Request $request, ?TenantRepository $tenants = null, ?ProductRepository $products = null): Response
+    {
+        if (!$this->security->isGranted('ROLE_MANAGER')) {
+            return new RedirectResponse('/backend/login');
+        }
+
+        if (!$products instanceof ProductRepository) {
+            return new RedirectResponse('/backend/products');
+        }
+
+        $product = $products->find($id);
+        if (!$product instanceof Product) {
+            return new RedirectResponse('/backend/products');
+        }
+
+        $values = $this->productFormDefaults($product);
+        $error = null;
+
+        if ($request->isMethod('POST')) {
+            if (!$this->isValidProductToken('/backend/products/'.$product->getId()->toRfc4122().'/edit', (string) $request->request->get('_csrf_token'))) {
+                $error = 'La sesión del formulario ha expirado. Vuelve a intentarlo.';
+            } else {
+                $values = $this->productFormValuesFromRequest($request);
+                $error = $this->validateProductForm($values, $product, $tenants, $products);
+
+                if ($error === null) {
+                    $tenant = $tenants instanceof TenantRepository ? $tenants->find($values['tenantId']) : $product->getTenant();
+                    $this->hydrateProductFromForm($product, $values, $tenant);
+                    $this->entityManager->persist($product);
+                    $this->entityManager->flush();
+
+                    return new RedirectResponse('/backend/products');
+                }
+            }
+        }
+
+        return $this->renderProductForm(
+            'Editar producto / servicio',
+            'Ajusta el producto, su propuesta de valor y la política comercial que lo acompaña.',
+            'Editar producto / servicio',
+            'Guardar cambios',
+            '/backend/products/'.$product->getId()->toRfc4122().'/edit',
+            $values,
+            $tenants,
+            $error
+        );
+    }
+
     #[Route('/profile', methods: ['GET'])]
     public function profile(Request $request): Response
     {
-        if (!$this->security->isGranted('ROLE_MANAGER')) {
+        if (!$this->security->isGranted('ROLE_AGENT')) {
             return new RedirectResponse('/backend/login');
         }
 
@@ -732,7 +1011,7 @@ HTML;
     #[Route('/profile/name', methods: ['POST'])]
     public function profileName(Request $request): Response
     {
-        if (!$this->security->isGranted('ROLE_MANAGER')) {
+        if (!$this->security->isGranted('ROLE_AGENT')) {
             return new RedirectResponse('/backend/login');
         }
 
@@ -763,7 +1042,7 @@ HTML;
     #[Route('/profile/password', methods: ['POST'])]
     public function profilePassword(Request $request): Response
     {
-        if (!$this->security->isGranted('ROLE_MANAGER')) {
+        if (!$this->security->isGranted('ROLE_AGENT')) {
             return new RedirectResponse('/backend/login');
         }
 
@@ -1294,6 +1573,20 @@ HTML;
       display: grid;
       gap: 16px;
     }
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 18px;
+    }
+    .field-full {
+      grid-column: 1 / -1;
+    }
+    .field-check {
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-start;
+      gap: 8px;
+    }
     .field label {
       display: block;
       margin-bottom: 8px;
@@ -1316,6 +1609,163 @@ HTML;
       border-color: rgba(15, 110, 199, 0.55);
       box-shadow: 0 0 0 4px rgba(15, 110, 199, 0.1);
     }
+    .field select {
+      width: 100%;
+      border-radius: 14px;
+      border: 1px solid var(--border);
+      background: var(--panel-soft);
+      color: var(--text);
+      padding: 14px 16px;
+      font-size: 15px;
+      outline: none;
+      transition: border-color 120ms ease, box-shadow 120ms ease;
+      min-height: 52px;
+      font-family: inherit;
+    }
+    .field select:focus {
+      border-color: rgba(15, 110, 199, 0.55);
+      box-shadow: 0 0 0 4px rgba(15, 110, 199, 0.1);
+    }
+    .field textarea {
+      width: 100%;
+      border-radius: 14px;
+      border: 1px solid var(--border);
+      background: var(--panel-soft);
+      color: var(--text);
+      padding: 14px 16px;
+      font-size: 15px;
+      outline: none;
+      transition: border-color 120ms ease, box-shadow 120ms ease;
+      resize: vertical;
+      min-height: 160px;
+      font-family: inherit;
+    }
+    .field textarea:focus {
+      border-color: rgba(15, 110, 199, 0.55);
+      box-shadow: 0 0 0 4px rgba(15, 110, 199, 0.1);
+    }
+    .checkbox-inline {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
+      min-height: 0;
+      padding: 2px 0;
+      border: 0;
+      background: transparent;
+      font-size: 15px;
+      color: var(--text);
+      font-weight: 600;
+      cursor: pointer;
+      width: fit-content;
+    }
+    .checkbox-inline input {
+      appearance: none;
+      width: 42px;
+      height: 24px;
+      margin: 0;
+      padding: 0;
+      border-radius: 999px;
+      border: 1px solid #cbd5e1;
+      background: #d7e1ec;
+      position: relative;
+      outline: none;
+      transition: background 140ms ease, border-color 140ms ease, box-shadow 140ms ease;
+      flex: 0 0 auto;
+      cursor: pointer;
+    }
+    .checkbox-inline span {
+      display: inline-flex;
+      align-items: center;
+      min-height: 24px;
+    }
+    .checkbox-inline input::before {
+      content: '';
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 18px;
+      height: 18px;
+      border-radius: 999px;
+      background: #fff;
+      box-shadow: 0 2px 6px rgba(15, 23, 42, 0.18);
+      transition: transform 140ms ease;
+    }
+    .checkbox-inline input:checked {
+      background: linear-gradient(135deg, var(--accent), #134fbf);
+      border-color: transparent;
+    }
+    .checkbox-inline input:checked::before {
+      transform: translateX(18px);
+    }
+    .checkbox-inline input:focus-visible {
+      box-shadow: 0 0 0 4px rgba(15, 110, 199, 0.12);
+    }
+    .field-check .field-note {
+      margin-top: 4px;
+      padding-left: 16px;
+    }
+    .section-label {
+      font-size: 14px;
+      color: var(--muted);
+      font-weight: 700;
+      margin-bottom: 6px;
+    }
+    .section-note {
+      font-size: 13px;
+      color: var(--muted);
+      line-height: 1.5;
+      margin-bottom: 14px;
+    }
+    .policy-tabs {
+      margin-top: 14px;
+    }
+    .policy-tablist {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+    .policy-tab {
+      appearance: none;
+      border: 1px solid #d7e1ec;
+      background: #f7f9fc;
+      color: #334155;
+      border-radius: 999px;
+      padding: 10px 14px;
+      font-weight: 700;
+      font-size: 14px;
+      cursor: pointer;
+      transition: background 120ms ease, color 120ms ease, border-color 120ms ease, transform 120ms ease;
+    }
+    .policy-tab:hover {
+      transform: translateY(-1px);
+    }
+    .policy-tab.active {
+      background: linear-gradient(135deg, var(--accent), #134fbf);
+      color: #fff;
+      border-color: transparent;
+      box-shadow: 0 10px 22px rgba(15, 110, 199, 0.16);
+    }
+    .policy-panels {
+      display: grid;
+      gap: 14px;
+    }
+    .policy-panel {
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      background: var(--panel-soft);
+      padding: 16px;
+    }
+    .policy-panel label {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 14px;
+      color: var(--muted);
+      font-weight: 700;
+    }
+    .policy-panel .form-grid {
+      gap: 14px;
+    }
     .field-note {
       margin-top: 8px;
       font-size: 13px;
@@ -1325,6 +1775,24 @@ HTML;
       display: flex;
       justify-content: flex-end;
       margin-top: 2px;
+    }
+    .form-actions {
+      display: flex;
+      justify-content: flex-end;
+      margin-top: 24px;
+      padding-top: 14px;
+    }
+    .form-alert {
+      border-radius: 14px;
+      padding: 14px 16px;
+      margin-bottom: 18px;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    .form-alert-error {
+      background: rgba(195, 52, 52, 0.08);
+      border: 1px solid rgba(195, 52, 52, 0.18);
+      color: #a61b1b;
     }
     .info-card {
       background: #fff;
@@ -1354,6 +1822,34 @@ HTML;
       align-items: flex-start;
       gap: 16px;
       margin-bottom: 14px;
+    }
+    .table-header-actions {
+      display: flex;
+      gap: 10px;
+      align-items: flex-start;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+    .icon-action {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 42px;
+      height: 42px;
+      border-radius: 14px;
+      background: #f1f5fb;
+      border: 1px solid #d8e2ee;
+      color: #0f172a;
+      text-decoration: none;
+      transition: transform 120ms ease, box-shadow 120ms ease, background 120ms ease;
+      box-shadow: 0 8px 18px rgba(15, 23, 42, 0.06);
+    }
+    .icon-action:hover {
+      transform: translateY(-1px);
+      background: #eaf1fb;
+    }
+    .icon-action svg {
+      display: block;
     }
     .table-header h3 {
       margin: 0 0 6px;
@@ -1428,8 +1924,16 @@ HTML;
       .hero-panel,
       .stats-grid,
       .cards-grid,
-      .profile-grid {
+      .profile-grid,
+      .form-grid {
         grid-template-columns: 1fr;
+      }
+      .policy-tablist {
+        flex-direction: column;
+      }
+      .policy-tab {
+        width: 100%;
+        text-align: left;
       }
       .user-links {
         right: auto;
@@ -1482,16 +1986,16 @@ HTML;
     private function renderNav(string $activeNav): string
     {
         $items = [
-            'dashboard' => ['href' => '/backend/dashboard', 'label' => 'Resumen', 'roles' => ['ROLE_AGENT', 'ROLE_MANAGER', 'ROLE_ADMIN']],
-            'playbooks' => ['href' => '/backend/playbooks', 'label' => 'Guías comerciales', 'roles' => ['ROLE_MANAGER', 'ROLE_ADMIN']],
+            'dashboard' => ['href' => '/backend/dashboard', 'label' => 'Dashboard', 'roles' => ['ROLE_AGENT', 'ROLE_MANAGER', 'ROLE_ADMIN']],
             'tenants' => ['href' => '/backend/tenants', 'label' => 'Negocios', 'roles' => ['ROLE_MANAGER', 'ROLE_ADMIN']],
-            'admin-users' => ['href' => '/backend/users', 'label' => 'Usuarios', 'roles' => ['ROLE_ADMIN']],
+            'playbooks' => ['href' => '/backend/playbooks', 'label' => 'Guías comerciales', 'roles' => ['ROLE_MANAGER', 'ROLE_ADMIN']],
             'admin-products' => ['href' => '/backend/products', 'label' => 'Productos / servicios', 'roles' => ['ROLE_MANAGER', 'ROLE_ADMIN']],
+            'admin-users' => ['href' => '/backend/users', 'label' => 'Usuarios', 'roles' => ['ROLE_ADMIN']],
             'admin-api-health' => ['href' => '/backend/api-health', 'label' => 'Integración técnica', 'roles' => ['ROLE_MANAGER', 'ROLE_ADMIN']],
         ];
 
         $html = '';
-        foreach (['dashboard', 'playbooks', 'tenants'] as $key) {
+        foreach (['dashboard', 'tenants', 'playbooks', 'admin-products'] as $key) {
             $item = $items[$key];
             if (!$this->canSeeNavItem($item['roles'])) {
                 continue;
@@ -1507,7 +2011,7 @@ HTML;
         }
 
         $adminItems = [];
-        foreach (['admin-users', 'admin-products', 'admin-api-health'] as $key) {
+        foreach (['admin-users'] as $key) {
             $item = $items[$key];
             if (!$this->canSeeNavItem($item['roles'])) {
                 continue;
@@ -1524,7 +2028,7 @@ HTML;
         if ($adminItems !== []) {
             $html .= sprintf(
                 '<details class="nav-group"%s><summary>Administración <span class="nav-caret">▾</span></summary><div class="nav-subitems">%s</div></details>',
-                in_array($activeNav, ['admin-users', 'admin-products', 'admin-api-health'], true) ? ' open' : '',
+                in_array($activeNav, ['admin-users'], true) ? ' open' : '',
                 implode('', $adminItems)
             );
         }
@@ -1588,6 +2092,1058 @@ HTML;
         $user = $this->security->getUser();
 
         return $user instanceof User ? $user : null;
+    }
+
+    /**
+     * @return array{name: string, slug: string, businessContext: string, tone: string, positioning: string, qualificationFocus: string, handoffRules: string, salesBoundaries: string, notes: string, isActive: bool}
+     */
+    private function tenantFormDefaults(?Tenant $tenant = null): array
+    {
+        $salesPolicy = $tenant?->getSalesPolicy() ?? [];
+
+        return [
+            'name' => $tenant?->getName() ?? '',
+            'slug' => $tenant?->getSlug() ?? '',
+            'businessContext' => $tenant?->getBusinessContext() ?? '',
+            'tone' => $tenant?->getTone() ?? '',
+            'positioning' => $this->tenantPolicyValue($salesPolicy, 'positioning'),
+            'qualificationFocus' => $this->tenantPolicyValue($salesPolicy, 'qualificationFocus'),
+            'handoffRules' => $this->tenantPolicyValue($salesPolicy, 'handoffRules'),
+            'salesBoundaries' => $this->tenantPolicyLines($salesPolicy, 'salesBoundaries'),
+            'notes' => $this->tenantPolicyValue($salesPolicy, 'notes'),
+            'isActive' => $tenant?->isActive() ?? true,
+        ];
+    }
+
+    /**
+     * @return array{name: string, slug: string, businessContext: string, tone: string, positioning: string, qualificationFocus: string, handoffRules: string, salesBoundaries: string, notes: string, isActive: bool}
+     */
+    private function tenantFormValuesFromRequest(Request $request): array
+    {
+        return [
+            'name' => trim((string) $request->request->get('name', '')),
+            'slug' => trim((string) $request->request->get('slug', '')),
+            'businessContext' => trim((string) $request->request->get('businessContext', '')),
+            'tone' => trim((string) $request->request->get('tone', '')),
+            'positioning' => trim((string) $request->request->get('positioning', '')),
+            'qualificationFocus' => trim((string) $request->request->get('qualificationFocus', '')),
+            'handoffRules' => trim((string) $request->request->get('handoffRules', '')),
+            'salesBoundaries' => trim((string) $request->request->get('salesBoundaries', '')),
+            'notes' => trim((string) $request->request->get('notes', '')),
+            'isActive' => $request->request->has('isActive'),
+        ];
+    }
+
+    private function renderTenantForm(
+        string $pageTitle,
+        string $pageSubtitle,
+        string $heroTitle,
+        string $submitLabel,
+        string $actionUrl,
+        array $values,
+        ?string $error = null,
+    ): Response {
+        $errorHtml = $error !== null ? sprintf(
+            '<div class="form-alert form-alert-error">%s</div>',
+            htmlspecialchars($error, ENT_QUOTES, 'UTF-8')
+        ) : '';
+
+        $content = sprintf(
+            '
+            <section class="hero-panel">
+              <div class="hero-copy">
+                <div class="eyebrow-dark">Negocios y contexto</div>
+                <h2>%s</h2>
+                <p>%s</p>
+              </div>
+              <div class="hero-aside">
+                <div class="badge-live">Manager</div>
+                <div class="hero-aside-title">Contexto comercial</div>
+                <p>Define el negocio con su tono, contexto, política comercial y estado operativo para que el agente IA actúe con criterio.</p>
+              </div>
+            </section>
+            <section class="table-card">
+              <div class="table-header">
+                <div>
+                  <h3>Ficha del negocio</h3>
+                  <p>Completa los campos principales y guarda el contexto comercial.</p>
+                </div>
+              </div>
+              %s
+              <form method="post" action="%s" class="tenant-form">
+                <input type="hidden" name="_csrf_token" value="%s">
+                <div class="form-grid">
+                  <div class="field">
+                    <label for="tenant-name">Nombre del negocio</label>
+                    <input id="tenant-name" name="name" type="text" value="%s" maxlength="255" required>
+                    <div class="field-note">Nombre visible para el equipo. Ejemplo: "Clínica Demo".</div>
+                  </div>
+                  <div class="field">
+                    <label for="tenant-slug">Slug</label>
+                    <input id="tenant-slug" name="slug" type="text" value="%s" maxlength="180" required>
+                    <div class="field-note">Identificador corto, en minúsculas y sin espacios. Ejemplo: "clinica-demo".</div>
+                  </div>
+                  <div class="field">
+                    <label for="tenant-tone">Tono</label>
+                    <input id="tenant-tone" name="tone" type="text" value="%s" maxlength="120" placeholder="Cercano, profesional, directo...">
+                    <div class="field-note">Cómo debe expresarse el agente en este negocio.</div>
+                  </div>
+                  <div class="field field-check">
+                    <label for="tenant-active">Estado</label>
+                    <label class="checkbox-inline" for="tenant-active">
+                      <input id="tenant-active" name="isActive" type="checkbox" value="1"%s>
+                      <span>Negocio activo</span>
+                    </label>
+                  </div>
+                  <div class="field field-full">
+                    <label for="tenant-context">Contexto del negocio</label>
+                    <textarea id="tenant-context" name="businessContext" rows="7" maxlength="5000" placeholder="Qué vende, a quién y cómo trabaja.">%s</textarea>
+                    <div class="field-note">Describe el negocio de forma simple para que el agente entienda el escenario comercial.</div>
+                  </div>
+                  <div class="field field-full">
+                    <div class="section-label">Política comercial</div>
+                    <div class="section-note">Define aquí la forma de vender, de calificar y de derivar a una persona cuando haga falta. Puedes completar solo lo que necesites.</div>
+                    <div class="policy-tabs" data-policy-tabs>
+                      <div class="policy-tablist" role="tablist" aria-label="Política comercial">
+                        <button class="policy-tab active" type="button" role="tab" aria-selected="true" data-policy-tab="positioning">Welcome</button>
+                        <button class="policy-tab" type="button" role="tab" aria-selected="false" data-policy-tab="qualification">Qualification</button>
+                        <button class="policy-tab" type="button" role="tab" aria-selected="false" data-policy-tab="handoff">Handoff</button>
+                        <button class="policy-tab" type="button" role="tab" aria-selected="false" data-policy-tab="boundaries">Límites</button>
+                        <button class="policy-tab" type="button" role="tab" aria-selected="false" data-policy-tab="notes">Notas</button>
+                      </div>
+                      <div class="policy-panels">
+                        <div class="policy-panel active" role="tabpanel" data-policy-panel="positioning">
+                          <label for="tenant-policy-positioning">Welcome / posicionamiento</label>
+                          <textarea id="tenant-policy-positioning" name="positioning" rows="4" maxlength="2000" required placeholder="Cómo se presenta este negocio y cuál es su enfoque comercial.">%s</textarea>
+                          <div class="field-note">La idea principal de venta y cómo debe arrancar la conversación.</div>
+                        </div>
+                        <div class="policy-panel" role="tabpanel" data-policy-panel="qualification" hidden>
+                          <label for="tenant-policy-qualification">Qualification / cualificación</label>
+                          <textarea id="tenant-policy-qualification" name="qualificationFocus" rows="4" maxlength="2000" required placeholder="Qué datos o señales quiere descubrir el agente.">%s</textarea>
+                          <div class="field-note">Lo que el agente debe averiguar para saber si hay encaje real.</div>
+                        </div>
+                        <div class="policy-panel" role="tabpanel" data-policy-panel="handoff" hidden>
+                          <label for="tenant-policy-handoff">Handoff / derivación</label>
+                          <textarea id="tenant-policy-handoff" name="handoffRules" rows="4" maxlength="2000" required placeholder="Cuándo y cómo debe pasar el caso a una persona.">%s</textarea>
+                          <div class="field-note">Reglas para escalar a humano sin fricción.</div>
+                        </div>
+                        <div class="policy-panel" role="tabpanel" data-policy-panel="boundaries" hidden>
+                          <label for="tenant-policy-boundaries">Sales boundaries / límites</label>
+                          <textarea id="tenant-policy-boundaries" name="salesBoundaries" rows="4" maxlength="2000" placeholder="Una regla por línea.">%s</textarea>
+                          <div class="field-note">Límites de venta, promesas prohibidas o condiciones que no se pueden saltar.</div>
+                        </div>
+                        <div class="policy-panel" role="tabpanel" data-policy-panel="notes" hidden>
+                          <label for="tenant-policy-notes">Notas</label>
+                          <textarea id="tenant-policy-notes" name="notes" rows="4" maxlength="2000" placeholder="Cualquier matiz extra para el equipo.">%s</textarea>
+                          <div class="field-note">Observaciones generales, ejemplos o aclaraciones adicionales.</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div class="form-actions">
+                  <button class="primary-action" type="submit">%s</button>
+                </div>
+              </form>
+            </section>
+            <script>
+              (() => {
+                const root = document.querySelector("[data-policy-tabs]");
+                if (!root) {
+                  return;
+                }
+
+                const tabs = Array.from(root.querySelectorAll("[data-policy-tab]"));
+                const panels = Array.from(root.querySelectorAll("[data-policy-panel]"));
+
+                const setActive = (key) => {
+                  tabs.forEach((tab) => {
+                    const isActive = tab.dataset.policyTab === key;
+                    tab.classList.toggle("active", isActive);
+                    tab.setAttribute("aria-selected", isActive ? "true" : "false");
+                  });
+
+                  panels.forEach((panel) => {
+                    const isActive = panel.dataset.policyPanel === key;
+                    panel.classList.toggle("active", isActive);
+                    if (isActive) {
+                      panel.removeAttribute("hidden");
+                    } else {
+                      panel.setAttribute("hidden", "");
+                    }
+                  });
+                };
+
+                tabs.forEach((tab) => {
+                  tab.addEventListener("click", () => setActive(tab.dataset.policyTab));
+                });
+              })();
+            </script>
+            ',
+            htmlspecialchars($heroTitle, ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($pageSubtitle, ENT_QUOTES, 'UTF-8'),
+            $errorHtml,
+            htmlspecialchars($actionUrl, ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($this->tenantTokenValue($actionUrl), ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($values['name'], ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($values['slug'], ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($values['tone'], ENT_QUOTES, 'UTF-8'),
+            $values['isActive'] ? ' checked' : '',
+            htmlspecialchars($values['businessContext'], ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($values['positioning'], ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($values['qualificationFocus'], ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($values['handoffRules'], ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($values['salesBoundaries'], ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($values['notes'], ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($submitLabel, ENT_QUOTES, 'UTF-8')
+        );
+
+        return $this->renderBackendShell($pageTitle, $pageSubtitle, 'tenants', $content);
+    }
+
+    private function validateTenantForm(array $values, ?Tenant $tenant, ?TenantRepository $tenants): ?string
+    {
+        if ($values['name'] === '') {
+            return 'El nombre del negocio es obligatorio.';
+        }
+
+        if (mb_strlen($values['name']) > 255) {
+            return 'El nombre del negocio no puede superar 255 caracteres.';
+        }
+
+        if ($values['slug'] === '') {
+            return 'El slug del negocio es obligatorio.';
+        }
+
+        if (mb_strlen($values['slug']) > 180) {
+            return 'El slug del negocio no puede superar 180 caracteres.';
+        }
+
+        if ($values['businessContext'] !== '' && mb_strlen($values['businessContext']) > 5000) {
+            return 'El contexto del negocio no puede superar 5000 caracteres.';
+        }
+
+        if ($values['tone'] !== '' && mb_strlen($values['tone']) > 120) {
+            return 'El tono no puede superar 120 caracteres.';
+        }
+
+        $salesPolicy = $this->tenantSalesPolicyFromForm($values);
+        $error = CommercialDomainSchema::validateTenantSalesPolicy($salesPolicy);
+        if ($error !== null) {
+            return sprintf('La política comercial no es válida: %s', $error);
+        }
+
+        if ($tenants instanceof TenantRepository) {
+            $existing = $tenants->findOneBy(['slug' => $values['slug']]);
+            if ($existing instanceof Tenant) {
+                if ($tenant === null || $existing->getId()->toRfc4122() !== $tenant->getId()->toRfc4122()) {
+                    return 'Ya existe otro negocio con ese slug.';
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private function hydrateTenantFromForm(Tenant $tenant, array $values): void
+    {
+        $tenant->setName($values['name']);
+        $tenant->setSlug($values['slug']);
+        $tenant->setBusinessContext($values['businessContext']);
+        $tenant->setTone($values['tone'] !== '' ? $values['tone'] : null);
+        $tenant->setSalesPolicy($this->tenantSalesPolicyFromForm($values));
+        $tenant->setActive($values['isActive']);
+    }
+
+    /**
+     * @param array{name: string, slug: string, businessContext: string, tone: string, positioning: string, qualificationFocus: string, handoffRules: string, salesBoundaries: string, notes: string, isActive: bool} $values
+     * @return array<string, mixed>
+     */
+    private function tenantSalesPolicyFromForm(array $values): array
+    {
+        $salesBoundaries = preg_split('/\R+/', $values['salesBoundaries']) ?: [];
+        $salesBoundaries = array_values(array_filter(array_map('trim', $salesBoundaries), static fn (string $value): bool => $value !== ''));
+
+        return CommercialDomainSchema::normalizeTenantSalesPolicy([
+            'positioning' => $values['positioning'],
+            'qualificationFocus' => $values['qualificationFocus'],
+            'handoffRules' => $values['handoffRules'],
+            'salesBoundaries' => $salesBoundaries,
+            'notes' => $values['notes'],
+        ]);
+    }
+
+    private function tenantPolicyValue(array $salesPolicy, string $key): string
+    {
+        $value = $salesPolicy[$key] ?? '';
+
+        return is_string($value) ? $value : '';
+    }
+
+    private function tenantPolicyLines(array $salesPolicy, string $key): string
+    {
+        $value = $salesPolicy[$key] ?? [];
+        if (!is_array($value)) {
+            return '';
+        }
+
+        $lines = array_values(array_filter(array_map(static function (mixed $item): string {
+            return is_string($item) ? trim($item) : '';
+        }, $value), static fn (string $item): bool => $item !== ''));
+
+        return implode("\n", $lines);
+    }
+
+    private static function iconEditSvg(): string
+    {
+        return '<svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>';
+    }
+
+    private function tenantTokenValue(string $actionUrl): string
+    {
+        if ($this->csrfTokenManager === null) {
+            return '';
+        }
+
+        return $this->csrfTokenManager->getToken($this->tenantTokenId($actionUrl))->getValue();
+    }
+
+    private function isValidTenantToken(string $actionUrl, string $value): bool
+    {
+        if ($this->csrfTokenManager === null) {
+            return true;
+        }
+
+        return $this->csrfTokenManager->isTokenValid(new CsrfToken($this->tenantTokenId($actionUrl), $value));
+    }
+
+    private function tenantTokenId(string $actionUrl): string
+    {
+        return 'tenant_'.md5($actionUrl);
+    }
+
+    /**
+     * @return array{tenantId: string, productId: string, name: string, objective: string, qualificationQuestions: string, maxScore: string, handoffThreshold: string, positiveSignals: string, negativeSignals: string, agendaRules: string, handoffRules: string, allowedActions: string, notes: string, isActive: bool}
+     */
+    private function playbookFormDefaults(?Playbook $playbook = null): array
+    {
+        $config = $playbook?->getConfig() ?? [];
+        $scoring = is_array($config['scoring'] ?? null) ? $config['scoring'] : [];
+
+        return [
+            'tenantId' => $playbook?->getTenant()->getId()->toRfc4122() ?? '',
+            'productId' => $playbook?->getProduct()?->getId()->toRfc4122() ?? '',
+            'name' => $playbook?->getName() ?? '',
+            'objective' => $this->playbookConfigValue($config, 'objective'),
+            'qualificationQuestions' => $this->playbookConfigLines($config, 'qualificationQuestions'),
+            'maxScore' => isset($scoring['maxScore']) && is_int($scoring['maxScore']) ? (string) $scoring['maxScore'] : '10',
+            'handoffThreshold' => isset($scoring['handoffThreshold']) && is_int($scoring['handoffThreshold']) ? (string) $scoring['handoffThreshold'] : '7',
+            'positiveSignals' => $this->playbookConfigLines($scoring, 'positiveSignals'),
+            'negativeSignals' => $this->playbookConfigLines($scoring, 'negativeSignals'),
+            'agendaRules' => $this->playbookConfigLines($config, 'agendaRules'),
+            'handoffRules' => $this->playbookConfigLines($config, 'handoffRules'),
+            'allowedActions' => $this->playbookConfigLines($config, 'allowedActions'),
+            'notes' => $this->playbookConfigValue($config, 'notes'),
+            'isActive' => $playbook?->isActive() ?? true,
+        ];
+    }
+
+    /**
+     * @return array{tenantId: string, productId: string, name: string, objective: string, qualificationQuestions: string, maxScore: string, handoffThreshold: string, positiveSignals: string, negativeSignals: string, agendaRules: string, handoffRules: string, allowedActions: string, notes: string, isActive: bool}
+     */
+    private function playbookFormValuesFromRequest(Request $request): array
+    {
+        return [
+            'tenantId' => trim((string) $request->request->get('tenantId', '')),
+            'productId' => trim((string) $request->request->get('productId', '')),
+            'name' => trim((string) $request->request->get('name', '')),
+            'objective' => trim((string) $request->request->get('objective', '')),
+            'qualificationQuestions' => trim((string) $request->request->get('qualificationQuestions', '')),
+            'maxScore' => trim((string) $request->request->get('maxScore', '10')),
+            'handoffThreshold' => trim((string) $request->request->get('handoffThreshold', '7')),
+            'positiveSignals' => trim((string) $request->request->get('positiveSignals', '')),
+            'negativeSignals' => trim((string) $request->request->get('negativeSignals', '')),
+            'agendaRules' => trim((string) $request->request->get('agendaRules', '')),
+            'handoffRules' => trim((string) $request->request->get('handoffRules', '')),
+            'allowedActions' => trim((string) $request->request->get('allowedActions', '')),
+            'notes' => trim((string) $request->request->get('notes', '')),
+            'isActive' => $request->request->has('isActive'),
+        ];
+    }
+
+    private function renderPlaybookForm(
+        string $pageTitle,
+        string $pageSubtitle,
+        string $heroTitle,
+        string $submitLabel,
+        string $actionUrl,
+        array $values,
+        ?TenantRepository $tenants,
+        ?ProductRepository $products,
+        ?string $error = null,
+    ): Response {
+        $tenantOptions = $this->renderTenantOptions($tenants, $values['tenantId'] ?? '');
+        $productOptions = $this->renderProductOptions($products, $values['productId'] ?? '');
+        $errorHtml = $error !== null ? sprintf(
+            '<div class="form-alert form-alert-error">%s</div>',
+            htmlspecialchars($error, ENT_QUOTES, 'UTF-8')
+        ) : '';
+
+        $content = sprintf(
+            '
+            <section class="hero-panel">
+              <div class="hero-copy">
+                <div class="eyebrow-dark">Guías comerciales</div>
+                <h2>%s</h2>
+                <p>%s</p>
+              </div>
+              <div class="hero-aside">
+                <div class="badge-live">Manager</div>
+                <div class="hero-aside-title">Playbook</div>
+                <p>Organiza la estrategia comercial por negocio o por producto, con scoring, reglas y derivación a humano.</p>
+              </div>
+            </section>
+            <section class="table-card">
+              <div class="table-header">
+                <div>
+                  <h3>Ficha de la guía comercial</h3>
+                  <p>Selecciona el negocio y completa el playbook con un enfoque humano.</p>
+                </div>
+              </div>
+              %s
+              <form method="post" action="%s" class="tenant-form">
+                <input type="hidden" name="_csrf_token" value="%s">
+                <div class="form-grid">
+                  <div class="field">
+                    <label for="playbook-tenant">Negocio</label>
+                    <select id="playbook-tenant" name="tenantId" required>%s</select>
+                    <div class="field-note">El playbook vive dentro de un negocio concreto.</div>
+                  </div>
+                  <div class="field">
+                    <label for="playbook-product">Producto / servicio</label>
+                    <select id="playbook-product" name="productId">%s</select>
+                    <div class="field-note">Opcional: vincúlalo a un producto específico si aplica.</div>
+                  </div>
+                  <div class="field field-full">
+                    <label for="playbook-name">Nombre de la guía comercial</label>
+                    <input id="playbook-name" name="name" type="text" value="%s" maxlength="255" required>
+                    <div class="field-note">Nombre visible para distinguir la estrategia comercial.</div>
+                  </div>
+                  <div class="field field-check">
+                    <label for="playbook-active">Estado</label>
+                    <label class="checkbox-inline" for="playbook-active">
+                      <input id="playbook-active" name="isActive" type="checkbox" value="1"%s>
+                      <span>Guía activa</span>
+                    </label>
+                  </div>
+                  <div class="field field-full">
+                    <div class="section-label">Contenido de la guía</div>
+                    <div class="section-note">Trabaja por pestañas para dejar clara la intención comercial, la cualificación y las reglas de handoff.</div>
+                    <div class="policy-tabs" data-policy-tabs>
+                      <div class="policy-tablist" role="tablist" aria-label="Guía comercial">
+                        <button class="policy-tab active" type="button" role="tab" aria-selected="true" data-policy-tab="objective">Objetivo</button>
+                        <button class="policy-tab" type="button" role="tab" aria-selected="false" data-policy-tab="qualification">Cualificación</button>
+                        <button class="policy-tab" type="button" role="tab" aria-selected="false" data-policy-tab="scoring">Scoring</button>
+                        <button class="policy-tab" type="button" role="tab" aria-selected="false" data-policy-tab="agenda">Agenda</button>
+                        <button class="policy-tab" type="button" role="tab" aria-selected="false" data-policy-tab="handoff">Handoff</button>
+                        <button class="policy-tab" type="button" role="tab" aria-selected="false" data-policy-tab="actions">Acciones</button>
+                        <button class="policy-tab" type="button" role="tab" aria-selected="false" data-policy-tab="notes">Notas</button>
+                      </div>
+                      <div class="policy-panels">
+                        <div class="policy-panel active" role="tabpanel" data-policy-panel="objective">
+                          <label for="playbook-objective">Objetivo</label>
+                          <textarea id="playbook-objective" name="objective" rows="4" maxlength="2000" required placeholder="Qué persigue la guía comercial.">%s</textarea>
+                          <div class="field-note">Qué debe conseguir el agente cuando este playbook está activo.</div>
+                        </div>
+                        <div class="policy-panel" role="tabpanel" data-policy-panel="qualification" hidden>
+                          <label for="playbook-qualification-questions">Preguntas de cualificación</label>
+                          <textarea id="playbook-qualification-questions" name="qualificationQuestions" rows="4" maxlength="4000" required placeholder="Una pregunta por línea.">%s</textarea>
+                          <div class="field-note">Escribe las preguntas que el agente debe usar para cualificar.</div>
+                        </div>
+                        <div class="policy-panel" role="tabpanel" data-policy-panel="scoring" hidden>
+                          <div class="form-grid">
+                            <div class="field">
+                              <label for="playbook-max-score">Puntuación máxima</label>
+                              <input id="playbook-max-score" name="maxScore" type="number" min="1" step="1" value="%s" required>
+                            </div>
+                            <div class="field">
+                              <label for="playbook-handoff-threshold">Umbral de handoff</label>
+                              <input id="playbook-handoff-threshold" name="handoffThreshold" type="number" min="0" step="1" value="%s" required>
+                            </div>
+                            <div class="field">
+                              <label for="playbook-positive-signals">Señales positivas</label>
+                              <textarea id="playbook-positive-signals" name="positiveSignals" rows="4" maxlength="4000" placeholder="Una señal por línea.">%s</textarea>
+                            </div>
+                            <div class="field">
+                              <label for="playbook-negative-signals">Señales negativas</label>
+                              <textarea id="playbook-negative-signals" name="negativeSignals" rows="4" maxlength="4000" placeholder="Una señal por línea.">%s</textarea>
+                            </div>
+                          </div>
+                          <div class="field-note">Scoring y señales para decidir cuándo avanzar y cuándo derivar.</div>
+                        </div>
+                        <div class="policy-panel" role="tabpanel" data-policy-panel="agenda" hidden>
+                          <label for="playbook-agenda-rules">Reglas de agenda</label>
+                          <textarea id="playbook-agenda-rules" name="agendaRules" rows="4" maxlength="4000" placeholder="Una regla por línea.">%s</textarea>
+                          <div class="field-note">Define cuándo el agente debe proponer agenda, llamada o siguiente paso.</div>
+                        </div>
+                        <div class="policy-panel" role="tabpanel" data-policy-panel="handoff" hidden>
+                          <label for="playbook-handoff-rules">Reglas de handoff</label>
+                          <textarea id="playbook-handoff-rules" name="handoffRules" rows="4" maxlength="4000" required placeholder="Una regla por línea.">%s</textarea>
+                          <div class="field-note">Cuándo el caso pasa a una persona y qué debe indicar el agente.</div>
+                        </div>
+                        <div class="policy-panel" role="tabpanel" data-policy-panel="actions" hidden>
+                          <label for="playbook-allowed-actions">Acciones permitidas</label>
+                          <textarea id="playbook-allowed-actions" name="allowedActions" rows="4" maxlength="4000" required placeholder="Una acción por línea.">%s</textarea>
+                          <div class="field-note">Acciones que este playbook permite al runtime comercial.</div>
+                        </div>
+                        <div class="policy-panel" role="tabpanel" data-policy-panel="notes" hidden>
+                          <label for="playbook-notes">Notas</label>
+                          <textarea id="playbook-notes" name="notes" rows="4" maxlength="4000" placeholder="Aclaraciones adicionales.">%s</textarea>
+                          <div class="field-note">Aterriza matices o excepciones que el equipo deba conocer.</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div class="form-actions">
+                  <button class="primary-action" type="submit">%s</button>
+                </div>
+              </form>
+            </section>
+            <script>
+              (() => {
+                const root = document.querySelector("[data-policy-tabs]");
+                if (!root) {
+                  return;
+                }
+
+                const tabs = Array.from(root.querySelectorAll("[data-policy-tab]"));
+                const panels = Array.from(root.querySelectorAll("[data-policy-panel]"));
+
+                const setActive = (key) => {
+                  tabs.forEach((tab) => {
+                    const isActive = tab.dataset.policyTab === key;
+                    tab.classList.toggle("active", isActive);
+                    tab.setAttribute("aria-selected", isActive ? "true" : "false");
+                  });
+
+                  panels.forEach((panel) => {
+                    const isActive = panel.dataset.policyPanel === key;
+                    panel.classList.toggle("active", isActive);
+                    if (isActive) {
+                      panel.removeAttribute("hidden");
+                    } else {
+                      panel.setAttribute("hidden", "");
+                    }
+                  });
+                };
+
+                tabs.forEach((tab) => {
+                  tab.addEventListener("click", () => setActive(tab.dataset.policyTab));
+                });
+              })();
+            </script>
+            ',
+            htmlspecialchars($heroTitle, ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($pageSubtitle, ENT_QUOTES, 'UTF-8'),
+            $errorHtml,
+            htmlspecialchars($actionUrl, ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($this->playbookTokenValue($actionUrl), ENT_QUOTES, 'UTF-8'),
+            $tenantOptions,
+            $productOptions,
+            htmlspecialchars($values['name'], ENT_QUOTES, 'UTF-8'),
+            $values['isActive'] ? ' checked' : '',
+            htmlspecialchars($values['objective'], ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($values['qualificationQuestions'], ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($values['maxScore'], ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($values['handoffThreshold'], ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($values['positiveSignals'], ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($values['negativeSignals'], ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($values['agendaRules'], ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($values['handoffRules'], ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($values['allowedActions'], ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($values['notes'], ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($submitLabel, ENT_QUOTES, 'UTF-8')
+        );
+
+        return $this->renderBackendShell($pageTitle, $pageSubtitle, 'playbooks', $content);
+    }
+
+    private function validatePlaybookForm(array $values, ?Playbook $playbook, ?TenantRepository $tenants, ?ProductRepository $products, ?PlaybookRepository $playbooks): ?string
+    {
+        if ($values['tenantId'] === '') {
+            return 'Debes seleccionar un negocio.';
+        }
+
+        if (!$tenants instanceof TenantRepository || !$tenants->find($values['tenantId']) instanceof Tenant) {
+            return 'El negocio seleccionado no existe.';
+        }
+
+        if ($values['productId'] !== '') {
+            if (!$products instanceof ProductRepository || !$products->find($values['productId']) instanceof Product) {
+                return 'El producto seleccionado no existe.';
+            }
+        }
+
+        if ($values['name'] === '') {
+            return 'El nombre de la guía comercial es obligatorio.';
+        }
+
+        $config = $this->playbookConfigFromForm($values);
+        $error = CommercialDomainSchema::validatePlaybookConfig($config);
+        if ($error !== null) {
+            return sprintf('La guía comercial no es válida: %s', $error);
+        }
+
+        return null;
+    }
+
+    private function hydratePlaybookFromForm(Playbook $playbook, array $values, ?Tenant $tenant, ?ProductRepository $products): void
+    {
+        if ($tenant instanceof Tenant) {
+            $playbook->setTenant($tenant);
+        }
+
+        $product = null;
+        if ($values['productId'] !== '' && $products instanceof ProductRepository) {
+            $candidate = $products->find($values['productId']);
+            if ($candidate instanceof Product) {
+                $product = $candidate;
+            }
+        }
+
+        $playbook->setProduct($product);
+        $playbook->setName($values['name']);
+        $playbook->setConfig($this->playbookConfigFromForm($values));
+        $playbook->setActive($values['isActive']);
+    }
+
+    /**
+     * @param array{tenantId: string, productId: string, name: string, objective: string, qualificationQuestions: string, maxScore: string, handoffThreshold: string, positiveSignals: string, negativeSignals: string, agendaRules: string, handoffRules: string, allowedActions: string, notes: string, isActive: bool} $values
+     * @return array<string, mixed>
+     */
+    private function playbookConfigFromForm(array $values): array
+    {
+        return CommercialDomainSchema::normalizePlaybookConfig([
+            'objective' => $values['objective'],
+            'qualificationQuestions' => $this->linesFromTextarea($values['qualificationQuestions'], true),
+            'scoring' => [
+                'maxScore' => (int) $values['maxScore'],
+                'handoffThreshold' => (int) $values['handoffThreshold'],
+                'positiveSignals' => $this->linesFromTextarea($values['positiveSignals']),
+                'negativeSignals' => $this->linesFromTextarea($values['negativeSignals']),
+            ],
+            'agendaRules' => $this->linesFromTextarea($values['agendaRules']),
+            'handoffRules' => $this->linesFromTextarea($values['handoffRules'], true),
+            'allowedActions' => $this->linesFromTextarea($values['allowedActions'], true),
+            'notes' => $values['notes'],
+        ]);
+    }
+
+    private function playbookConfigValue(array $config, string $key): string
+    {
+        $value = $config[$key] ?? '';
+
+        return is_string($value) ? $value : '';
+    }
+
+    private function playbookConfigLines(array $config, string $key): string
+    {
+        $value = $config[$key] ?? [];
+        if (!is_array($value)) {
+            return '';
+        }
+
+        $lines = array_values(array_filter(array_map(static fn (mixed $item): string => is_string($item) ? trim($item) : '', $value), static fn (string $item): bool => $item !== ''));
+
+        return implode("\n", $lines);
+    }
+
+    private function playbookTokenValue(string $actionUrl): string
+    {
+        if ($this->csrfTokenManager === null) {
+            return '';
+        }
+
+        return $this->csrfTokenManager->getToken($this->playbookTokenId($actionUrl))->getValue();
+    }
+
+    private function isValidPlaybookToken(string $actionUrl, string $value): bool
+    {
+        if ($this->csrfTokenManager === null) {
+            return true;
+        }
+
+        return $this->csrfTokenManager->isTokenValid(new CsrfToken($this->playbookTokenId($actionUrl), $value));
+    }
+
+    private function playbookTokenId(string $actionUrl): string
+    {
+        return 'playbook_'.md5($actionUrl);
+    }
+
+    /**
+     * @return array{tenantId: string, name: string, description: string, valueProposition: string, positioning: string, pricingNotes: string, objections: string, handoffRules: string, notes: string, isActive: bool}
+     */
+    private function productFormDefaults(?Product $product = null): array
+    {
+        $salesPolicy = $product?->getSalesPolicy() ?? [];
+
+        return [
+            'tenantId' => $product?->getTenant()->getId()->toRfc4122() ?? '',
+            'name' => $product?->getName() ?? '',
+            'description' => $product?->getDescription() ?? '',
+            'valueProposition' => $product?->getValueProposition() ?? '',
+            'positioning' => $this->productPolicyValue($salesPolicy, 'positioning'),
+            'pricingNotes' => $this->productPolicyValue($salesPolicy, 'pricingNotes'),
+            'objections' => $this->productPolicyLines($salesPolicy, 'objections'),
+            'handoffRules' => $this->productPolicyValue($salesPolicy, 'handoffRules'),
+            'notes' => $this->productPolicyValue($salesPolicy, 'notes'),
+            'isActive' => $product?->isActive() ?? true,
+        ];
+    }
+
+    /**
+     * @return array{tenantId: string, name: string, description: string, valueProposition: string, positioning: string, pricingNotes: string, objections: string, handoffRules: string, notes: string, isActive: bool}
+     */
+    private function productFormValuesFromRequest(Request $request): array
+    {
+        return [
+            'tenantId' => trim((string) $request->request->get('tenantId', '')),
+            'name' => trim((string) $request->request->get('name', '')),
+            'description' => trim((string) $request->request->get('description', '')),
+            'valueProposition' => trim((string) $request->request->get('valueProposition', '')),
+            'positioning' => trim((string) $request->request->get('positioning', '')),
+            'pricingNotes' => trim((string) $request->request->get('pricingNotes', '')),
+            'objections' => trim((string) $request->request->get('objections', '')),
+            'handoffRules' => trim((string) $request->request->get('handoffRules', '')),
+            'notes' => trim((string) $request->request->get('notes', '')),
+            'isActive' => $request->request->has('isActive'),
+        ];
+    }
+
+    private function renderProductForm(
+        string $pageTitle,
+        string $pageSubtitle,
+        string $heroTitle,
+        string $submitLabel,
+        string $actionUrl,
+        array $values,
+        ?TenantRepository $tenants,
+        ?string $error = null,
+    ): Response {
+        $tenantOptions = $this->renderTenantOptions($tenants, $values['tenantId'] ?? '');
+        $errorHtml = $error !== null ? sprintf(
+            '<div class="form-alert form-alert-error">%s</div>',
+            htmlspecialchars($error, ENT_QUOTES, 'UTF-8')
+        ) : '';
+
+        $content = sprintf(
+            '
+            <section class="hero-panel">
+              <div class="hero-copy">
+                <div class="eyebrow-dark">Productos / servicios</div>
+                <h2>%s</h2>
+                <p>%s</p>
+              </div>
+              <div class="hero-aside">
+                <div class="badge-live">Manager</div>
+                <div class="hero-aside-title">Oferta comercial</div>
+                <p>Ordena cada producto o servicio con su mensaje, precio orientativo, objeciones y límites de venta.</p>
+              </div>
+            </section>
+            <section class="table-card">
+              <div class="table-header">
+                <div>
+                  <h3>Ficha del producto / servicio</h3>
+                  <p>Define la oferta asociada al negocio y cómo debe venderla el agente.</p>
+                </div>
+              </div>
+              %s
+              <form method="post" action="%s" class="tenant-form">
+                <input type="hidden" name="_csrf_token" value="%s">
+                <div class="form-grid">
+                  <div class="field">
+                    <label for="product-tenant">Negocio</label>
+                    <select id="product-tenant" name="tenantId" required>%s</select>
+                    <div class="field-note">Cada producto pertenece a un negocio concreto.</div>
+                  </div>
+                  <div class="field">
+                    <label for="product-name">Nombre del producto / servicio</label>
+                    <input id="product-name" name="name" type="text" value="%s" maxlength="255" required>
+                    <div class="field-note">Nombre visible para el catálogo comercial.</div>
+                  </div>
+                  <div class="field field-check">
+                    <label for="product-active">Estado</label>
+                    <label class="checkbox-inline" for="product-active">
+                      <input id="product-active" name="isActive" type="checkbox" value="1"%s>
+                      <span>Producto activo</span>
+                    </label>
+                  </div>
+                  <div class="field field-full">
+                    <label for="product-description">Descripción</label>
+                    <textarea id="product-description" name="description" rows="4" maxlength="5000" placeholder="Qué es, a quién va dirigido y qué resuelve.">%s</textarea>
+                    <div class="field-note">Explica el producto o servicio de forma clara y comercial.</div>
+                  </div>
+                  <div class="field field-full">
+                    <label for="product-value">Propuesta de valor</label>
+                    <textarea id="product-value" name="valueProposition" rows="4" maxlength="5000" placeholder="Por qué debería comprarlo.">%s</textarea>
+                    <div class="field-note">Resumen de la promesa comercial y la diferencia respecto a otras opciones.</div>
+                  </div>
+                  <div class="field field-full">
+                    <div class="section-label">Política comercial</div>
+                    <div class="section-note">La política del producto se organiza en pestañas para facilitar la edición y mantener el criterio comercial visible.</div>
+                    <div class="policy-tabs" data-policy-tabs>
+                      <div class="policy-tablist" role="tablist" aria-label="Política de producto">
+                        <button class="policy-tab active" type="button" role="tab" aria-selected="true" data-policy-tab="positioning">Welcome</button>
+                        <button class="policy-tab" type="button" role="tab" aria-selected="false" data-policy-tab="pricing">Pricing</button>
+                        <button class="policy-tab" type="button" role="tab" aria-selected="false" data-policy-tab="objections">Objeciones</button>
+                        <button class="policy-tab" type="button" role="tab" aria-selected="false" data-policy-tab="handoff">Handoff</button>
+                        <button class="policy-tab" type="button" role="tab" aria-selected="false" data-policy-tab="notes">Notas</button>
+                      </div>
+                      <div class="policy-panels">
+                        <div class="policy-panel active" role="tabpanel" data-policy-panel="positioning">
+                          <label for="product-positioning">Welcome / posicionamiento</label>
+                          <textarea id="product-positioning" name="positioning" rows="4" maxlength="2000" required placeholder="Cómo se presenta este producto o servicio.">%s</textarea>
+                          <div class="field-note">Cómo debe arrancar la conversación comercial sobre esta oferta.</div>
+                        </div>
+                        <div class="policy-panel" role="tabpanel" data-policy-panel="pricing" hidden>
+                          <label for="product-pricing">Pricing notes</label>
+                          <textarea id="product-pricing" name="pricingNotes" rows="4" maxlength="2000" placeholder="Notas de precio, rangos o condiciones.">%s</textarea>
+                          <div class="field-note">Aclara precios, condiciones o matices que el agente deba tener presentes.</div>
+                        </div>
+                        <div class="policy-panel" role="tabpanel" data-policy-panel="objections" hidden>
+                          <label for="product-objections">Objeciones</label>
+                          <textarea id="product-objections" name="objections" rows="4" maxlength="4000" placeholder="Una objeción por línea.">%s</textarea>
+                          <div class="field-note">Respuestas o señales para gestionar dudas comunes del cliente.</div>
+                        </div>
+                        <div class="policy-panel" role="tabpanel" data-policy-panel="handoff" hidden>
+                          <label for="product-handoff">Handoff / derivación</label>
+                          <textarea id="product-handoff" name="handoffRules" rows="4" maxlength="2000" placeholder="Cuándo derivar a una persona.">%s</textarea>
+                          <div class="field-note">Cuándo el agente debe pasar la conversación a humano.</div>
+                        </div>
+                        <div class="policy-panel" role="tabpanel" data-policy-panel="notes" hidden>
+                          <label for="product-notes">Notas</label>
+                          <textarea id="product-notes" name="notes" rows="4" maxlength="2000" placeholder="Matices adicionales.">%s</textarea>
+                          <div class="field-note">Observaciones generales para el equipo comercial.</div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div class="form-actions">
+                  <button class="primary-action" type="submit">%s</button>
+                </div>
+              </form>
+            </section>
+            <script>
+              (() => {
+                const root = document.querySelector("[data-policy-tabs]");
+                if (!root) {
+                  return;
+                }
+
+                const tabs = Array.from(root.querySelectorAll("[data-policy-tab]"));
+                const panels = Array.from(root.querySelectorAll("[data-policy-panel]"));
+
+                const setActive = (key) => {
+                  tabs.forEach((tab) => {
+                    const isActive = tab.dataset.policyTab === key;
+                    tab.classList.toggle("active", isActive);
+                    tab.setAttribute("aria-selected", isActive ? "true" : "false");
+                  });
+
+                  panels.forEach((panel) => {
+                    const isActive = panel.dataset.policyPanel === key;
+                    panel.classList.toggle("active", isActive);
+                    if (isActive) {
+                      panel.removeAttribute("hidden");
+                    } else {
+                      panel.setAttribute("hidden", "");
+                    }
+                  });
+                };
+
+                tabs.forEach((tab) => {
+                  tab.addEventListener("click", () => setActive(tab.dataset.policyTab));
+                });
+              })();
+            </script>
+            ',
+            htmlspecialchars($heroTitle, ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($pageSubtitle, ENT_QUOTES, 'UTF-8'),
+            $errorHtml,
+            htmlspecialchars($actionUrl, ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($this->productTokenValue($actionUrl), ENT_QUOTES, 'UTF-8'),
+            $tenantOptions,
+            htmlspecialchars($values['name'], ENT_QUOTES, 'UTF-8'),
+            $values['isActive'] ? ' checked' : '',
+            htmlspecialchars($values['description'], ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($values['valueProposition'], ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($values['positioning'], ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($values['pricingNotes'], ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($values['objections'], ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($values['handoffRules'], ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($values['notes'], ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($submitLabel, ENT_QUOTES, 'UTF-8')
+        );
+
+        return $this->renderBackendShell($pageTitle, $pageSubtitle, 'products', $content);
+    }
+
+    private function validateProductForm(array $values, ?Product $product, ?TenantRepository $tenants, ?ProductRepository $products): ?string
+    {
+        if ($values['tenantId'] === '') {
+            return 'Debes seleccionar un negocio.';
+        }
+
+        if (!$tenants instanceof TenantRepository || !$tenants->find($values['tenantId']) instanceof Tenant) {
+            return 'El negocio seleccionado no existe.';
+        }
+
+        if ($values['name'] === '') {
+            return 'El nombre del producto o servicio es obligatorio.';
+        }
+
+        $salesPolicy = $this->productPolicyFromForm($values);
+        $error = CommercialDomainSchema::validateProductSalesPolicy($salesPolicy);
+        if ($error !== null) {
+            return sprintf('La política comercial del producto no es válida: %s', $error);
+        }
+
+        return null;
+    }
+
+    private function hydrateProductFromForm(Product $product, array $values, ?Tenant $tenant): void
+    {
+        if ($tenant instanceof Tenant) {
+            $product->setTenant($tenant);
+        }
+
+        $product->setName($values['name']);
+        $product->setDescription($values['description']);
+        $product->setValueProposition($values['valueProposition']);
+        $product->setSalesPolicy($this->productPolicyFromForm($values));
+        $product->setActive($values['isActive']);
+    }
+
+    /**
+     * @param array{tenantId: string, name: string, description: string, valueProposition: string, positioning: string, pricingNotes: string, objections: string, handoffRules: string, notes: string, isActive: bool} $values
+     * @return array<string, mixed>
+     */
+    private function productPolicyFromForm(array $values): array
+    {
+        return CommercialDomainSchema::normalizeProductSalesPolicy([
+            'positioning' => $values['positioning'],
+            'pricingNotes' => $values['pricingNotes'],
+            'objections' => $this->linesFromTextarea($values['objections']),
+            'handoffRules' => $values['handoffRules'],
+            'notes' => $values['notes'],
+        ]);
+    }
+
+    private function productPolicyValue(array $salesPolicy, string $key): string
+    {
+        $value = $salesPolicy[$key] ?? '';
+
+        return is_string($value) ? $value : '';
+    }
+
+    private function productPolicyLines(array $salesPolicy, string $key): string
+    {
+        $value = $salesPolicy[$key] ?? [];
+        if (!is_array($value)) {
+            return '';
+        }
+
+        $lines = array_values(array_filter(array_map(static fn (mixed $item): string => is_string($item) ? trim($item) : '', $value), static fn (string $item): bool => $item !== ''));
+
+        return implode("\n", $lines);
+    }
+
+    private function productTokenValue(string $actionUrl): string
+    {
+        if ($this->csrfTokenManager === null) {
+            return '';
+        }
+
+        return $this->csrfTokenManager->getToken($this->productTokenId($actionUrl))->getValue();
+    }
+
+    private function isValidProductToken(string $actionUrl, string $value): bool
+    {
+        if ($this->csrfTokenManager === null) {
+            return true;
+        }
+
+        return $this->csrfTokenManager->isTokenValid(new CsrfToken($this->productTokenId($actionUrl), $value));
+    }
+
+    private function productTokenId(string $actionUrl): string
+    {
+        return 'product_'.md5($actionUrl);
+    }
+
+    /**
+     * @return string
+     */
+    private function renderTenantOptions(?TenantRepository $tenants, string $selectedId): string
+    {
+        $options = ['<option value="">Selecciona un negocio</option>'];
+        if ($tenants instanceof TenantRepository) {
+            foreach ($tenants->findAllOrdered() as $tenant) {
+                $options[] = sprintf(
+                    '<option value="%s"%s>%s</option>',
+                    htmlspecialchars($tenant->getId()->toRfc4122(), ENT_QUOTES, 'UTF-8'),
+                    $tenant->getId()->toRfc4122() === $selectedId ? ' selected' : '',
+                    htmlspecialchars($tenant->getName(), ENT_QUOTES, 'UTF-8')
+                );
+            }
+        }
+
+        return implode('', $options);
+    }
+
+    /**
+     * @return string
+     */
+    private function renderProductOptions(?ProductRepository $products, string $selectedId): string
+    {
+        $options = ['<option value="">Sin producto</option>'];
+        if ($products instanceof ProductRepository) {
+            foreach ($products->findAllOrdered() as $product) {
+                $options[] = sprintf(
+                    '<option value="%s"%s>%s · %s</option>',
+                    htmlspecialchars($product->getId()->toRfc4122(), ENT_QUOTES, 'UTF-8'),
+                    $product->getId()->toRfc4122() === $selectedId ? ' selected' : '',
+                    htmlspecialchars($product->getTenant()->getName(), ENT_QUOTES, 'UTF-8'),
+                    htmlspecialchars($product->getName(), ENT_QUOTES, 'UTF-8')
+                );
+            }
+        }
+
+        return implode('', $options);
+    }
+
+    /**
+     * @return string[]
+     */
+    private function linesFromTextarea(string $value, bool $required = false): array
+    {
+        $lines = preg_split('/\R+/', $value) ?: [];
+        $lines = array_values(array_filter(array_map('trim', $lines), static fn (string $line): bool => $line !== ''));
+
+        return $required ? $lines : $lines;
+    }
+
+    /**
+     * @param array<string, mixed> $config
+     */
+    private function playbookConfigValueFromArray(array $config, string $key): string
+    {
+        $value = $config[$key] ?? '';
+
+        return is_string($value) ? $value : '';
     }
 
     private function isValidProfileToken(string $id, string $value): bool

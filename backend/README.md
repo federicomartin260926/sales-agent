@@ -7,10 +7,11 @@ Este directorio contiene el backend administrativo de `sales-agent`.
 - expone la API REST administrativa para negocios, productos/servicios y guías comerciales
 - ofrece un formulario de login en navegador para operar el backend como panel humano
 - incluye `Mi perfil` para actualizar nombre visible y clave de acceso
+- permite crear y editar `negocios`, `guías comerciales` y `productos / servicios` desde la vista humana con formularios guiados
 - presenta un layout tipo CRM para navegación operativa por módulos
 - mantiene el modelo de usuarios y roles compatible conceptualmente con el CRM
 - prepara la autenticación basada en JWT con `json_login`
-- incluye un bootstrap idempotente para crear el primer administrador y una guía comercial de prueba
+- incluye un bootstrap idempotente para crear el primer administrador, un negocio de prueba, un producto de prueba y guías comerciales de prueba general y por producto
 
 ## Stack
 
@@ -34,6 +35,11 @@ Este directorio contiene el backend administrativo de `sales-agent`.
   - `GET /backend/login`
   - `POST /backend/login-check`
   - `GET /backend/dashboard`
+  - `GET /backend/tenants`
+  - `GET /backend/tenants/new`
+  - `POST /backend/tenants/new`
+  - `GET /backend/tenants/{id}/edit`
+  - `POST /backend/tenants/{id}/edit`
   - `GET /backend/profile`
   - `POST /backend/profile/name`
   - `POST /backend/profile/password`
@@ -46,7 +52,7 @@ Este directorio contiene el backend administrativo de `sales-agent`.
 
 ## Bootstrap inicial
 
-Para crear el primer usuario administrador y la guía comercial de prueba:
+Para crear el primer usuario administrador, el negocio de prueba, el producto de prueba y las guías comerciales de prueba:
 
 ```bash
 make schema-update
@@ -103,3 +109,4 @@ La UI del backend usa esta terminología para usuarios no técnicos:
 - `producto / servicio` para el `product`
 
 Consulta el glosario oficial en [docs/glossary.md](../docs/glossary.md).
+La matriz de permisos está en [docs/access-matrix.md](../docs/access-matrix.md).

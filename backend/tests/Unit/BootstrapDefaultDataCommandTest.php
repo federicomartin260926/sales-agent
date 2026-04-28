@@ -4,6 +4,7 @@ namespace App\Tests\Unit;
 
 use App\Command\BootstrapDefaultDataCommand;
 use App\Entity\Playbook;
+use App\Entity\Product;
 use App\Entity\Tenant;
 use App\Entity\User;
 use Doctrine\ORM\EntityManagerInterface;
@@ -21,25 +22,34 @@ final class BootstrapDefaultDataCommandTest extends TestCase
 
         $tenantRepository = $this->createStub(EntityRepository::class);
         $userRepository = $this->createStub(EntityRepository::class);
+        $productRepository = $this->createStub(EntityRepository::class);
         $playbookRepository = $this->createStub(EntityRepository::class);
 
         $tenantRepository->method('findOneBy')->willReturn(null);
         $userRepository->method('findOneBy')->willReturn(null);
-        $playbookRepository->method('findOneBy')->willReturn(null);
+        $productRepository->method('findOneBy')->willReturn(null);
+        $playbookRepository->method('findOneBy')->willReturnCallback(static function (array $criteria) {
+            return match ($criteria['name'] ?? null) {
+                'Guía comercial de prueba' => null,
+                'Guía comercial de WhatsApp Automation' => null,
+                default => null,
+            };
+        });
 
-        $entityManager->expects(self::exactly(3))
+        $entityManager->expects(self::exactly(4))
             ->method('getRepository')
-            ->willReturnCallback(static function (string $class) use ($tenantRepository, $userRepository, $playbookRepository) {
+            ->willReturnCallback(static function (string $class) use ($tenantRepository, $userRepository, $productRepository, $playbookRepository) {
                 return match ($class) {
                     Tenant::class => $tenantRepository,
                     User::class => $userRepository,
+                    Product::class => $productRepository,
                     Playbook::class => $playbookRepository,
                     default => throw new \RuntimeException(sprintf('Unexpected repository %s', $class)),
                 };
             });
 
         $persisted = [];
-        $entityManager->expects(self::exactly(3))
+        $entityManager->expects(self::exactly(7))
             ->method('persist')
             ->willReturnCallback(static function (object $entity) use (&$persisted): void {
                 $persisted[] = $entity;
@@ -58,9 +68,28 @@ final class BootstrapDefaultDataCommandTest extends TestCase
         $exitCode = $tester->execute([]);
 
         self::assertSame(0, $exitCode);
-        self::assertCount(3, $persisted);
+        self::assertCount(7, $persisted);
 
-        $user = $persisted[1];
+        $product = $persisted[1];
+        self::assertInstanceOf(Product::class, $product);
+        self::assertSame('WhatsApp Automation', $product->getName());
+        self::assertSame('Producto demo para validar el flujo comercial de WhatsApp.', $product->getDescription());
+        self::assertSame('Permite automatizar conversaciones de WhatsApp con contexto comercial.', $product->getValueProposition());
+        self::assertArrayHasKey('positioning', $product->getSalesPolicy());
+        self::assertArrayHasKey('pricingNotes', $product->getSalesPolicy());
+        self::assertArrayHasKey('handoffRules', $product->getSalesPolicy());
+
+        $secondProduct = $persisted[2];
+        self::assertInstanceOf(Product::class, $secondProduct);
+        self::assertSame('Lead Qualification Pack', $secondProduct->getName());
+        self::assertArrayHasKey('positioning', $secondProduct->getSalesPolicy());
+
+        $thirdProduct = $persisted[3];
+        self::assertInstanceOf(Product::class, $thirdProduct);
+        self::assertSame('Follow-up Assistant', $thirdProduct->getName());
+        self::assertArrayHasKey('positioning', $thirdProduct->getSalesPolicy());
+
+        $user = $persisted[4];
         self::assertInstanceOf(User::class, $user);
         self::assertSame('federicomartin2609@gmail.com', $user->getEmail());
         self::assertContains('ROLE_ADMIN', $user->getRoles());
@@ -74,13 +103,23 @@ final class BootstrapDefaultDataCommandTest extends TestCase
         self::assertArrayHasKey('qualificationFocus', $tenant->getSalesPolicy());
         self::assertArrayHasKey('handoffRules', $tenant->getSalesPolicy());
 
-        $playbook = $persisted[2];
-        self::assertInstanceOf(Playbook::class, $playbook);
-        self::assertSame('Guía comercial de prueba', $playbook->getName());
-        self::assertArrayHasKey('objective', $playbook->getConfig());
-        self::assertArrayHasKey('qualificationQuestions', $playbook->getConfig());
-        self::assertArrayHasKey('scoring', $playbook->getConfig());
-        self::assertArrayHasKey('allowedActions', $playbook->getConfig());
+        $generalPlaybook = $persisted[5];
+        self::assertInstanceOf(Playbook::class, $generalPlaybook);
+        self::assertSame('Guía comercial de prueba', $generalPlaybook->getName());
+        self::assertNull($generalPlaybook->getProduct());
+        self::assertArrayHasKey('objective', $generalPlaybook->getConfig());
+        self::assertArrayHasKey('qualificationQuestions', $generalPlaybook->getConfig());
+        self::assertArrayHasKey('scoring', $generalPlaybook->getConfig());
+        self::assertArrayHasKey('allowedActions', $generalPlaybook->getConfig());
+
+        $productPlaybook = $persisted[6];
+        self::assertInstanceOf(Playbook::class, $productPlaybook);
+        self::assertSame('Guía comercial de WhatsApp Automation', $productPlaybook->getName());
+        self::assertSame($product, $productPlaybook->getProduct());
+        self::assertArrayHasKey('objective', $productPlaybook->getConfig());
+        self::assertArrayHasKey('qualificationQuestions', $productPlaybook->getConfig());
+        self::assertArrayHasKey('scoring', $productPlaybook->getConfig());
+        self::assertArrayHasKey('allowedActions', $productPlaybook->getConfig());
     }
 
     public function testItSkipsWhenDataAlreadyExists(): void
@@ -90,22 +129,42 @@ final class BootstrapDefaultDataCommandTest extends TestCase
 
         $tenant = new Tenant('Negocio demo Federico Martín', 'federico-martin-demo');
         $user = new User('federicomartin2609@gmail.com', ['admin'], 'Federico Martín');
-        $playbook = new Playbook($tenant, 'Guía comercial de prueba');
+        $product = new Product($tenant, 'WhatsApp Automation');
+        $secondProduct = new Product($tenant, 'Lead Qualification Pack');
+        $thirdProduct = new Product($tenant, 'Follow-up Assistant');
+        $generalPlaybook = new Playbook($tenant, 'Guía comercial de prueba');
+        $productPlaybook = new Playbook($tenant, 'Guía comercial de WhatsApp Automation', $product);
 
         $tenantRepository = $this->createStub(EntityRepository::class);
         $userRepository = $this->createStub(EntityRepository::class);
+        $productRepository = $this->createStub(EntityRepository::class);
         $playbookRepository = $this->createStub(EntityRepository::class);
 
         $tenantRepository->method('findOneBy')->willReturn($tenant);
         $userRepository->method('findOneBy')->willReturn($user);
-        $playbookRepository->method('findOneBy')->willReturn($playbook);
+        $productRepository->method('findOneBy')->willReturnCallback(static function (array $criteria) use ($product, $secondProduct, $thirdProduct) {
+            return match ($criteria['name'] ?? null) {
+                'WhatsApp Automation' => $product,
+                'Lead Qualification Pack' => $secondProduct,
+                'Follow-up Assistant' => $thirdProduct,
+                default => null,
+            };
+        });
+        $playbookRepository->method('findOneBy')->willReturnCallback(static function (array $criteria) use ($generalPlaybook, $productPlaybook) {
+            return match ($criteria['name'] ?? null) {
+                'Guía comercial de prueba' => $generalPlaybook,
+                'Guía comercial de WhatsApp Automation' => $productPlaybook,
+                default => null,
+            };
+        });
 
-        $entityManager->expects(self::exactly(3))
+        $entityManager->expects(self::exactly(4))
             ->method('getRepository')
-            ->willReturnCallback(static function (string $class) use ($tenantRepository, $userRepository, $playbookRepository) {
+            ->willReturnCallback(static function (string $class) use ($tenantRepository, $userRepository, $productRepository, $playbookRepository) {
                 return match ($class) {
                     Tenant::class => $tenantRepository,
                     User::class => $userRepository,
+                    Product::class => $productRepository,
                     Playbook::class => $playbookRepository,
                     default => throw new \RuntimeException(sprintf('Unexpected repository %s', $class)),
                 };
