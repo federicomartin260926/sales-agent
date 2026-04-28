@@ -108,7 +108,15 @@ El backend humano sigue un layout tipo CRM con sidebar, métricas y navegación 
 El backend Symfony incluye un bootstrap idempotente para crear el primer usuario administrador y un playbook de prueba.
 
 ```bash
+make schema-update
 make bootstrap
+```
+
+En producción usa:
+
+```bash
+make prod-schema-update
+make prod-bootstrap
 ```
 
 Credenciales iniciales:

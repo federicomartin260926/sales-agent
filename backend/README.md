@@ -25,7 +25,7 @@ Este directorio contiene el backend administrativo de `sales-agent`.
 - `src/Controller/Web/`: páginas HTML para login y dashboard del backend
 - `src/Controller/Api/`: controladores REST
 - `src/Security/`: handlers de seguridad
-- `migrations/`: migraciones Doctrine
+- `migrations/`: definiciones históricas de esquema Doctrine, no forman parte del flujo operativo principal
 
 ## Endpoints
 
@@ -45,7 +45,15 @@ Este directorio contiene el backend administrativo de `sales-agent`.
 Para crear el primer usuario administrador y el playbook de prueba:
 
 ```bash
+make schema-update
 make bootstrap
+```
+
+En producción, el esquema se sincroniza con:
+
+```bash
+make prod-schema-update
+make prod-bootstrap
 ```
 
 Credenciales iniciales:
