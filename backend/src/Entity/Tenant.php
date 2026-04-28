@@ -2,9 +2,12 @@
 
 namespace App\Entity;
 
+use App\Domain\CommercialDomainSchema;
 use App\Repository\TenantRepository;
 use Doctrine\ORM\Mapping as ORM;
 use Symfony\Component\Uid\Uuid;
+use Symfony\Component\Validator\Constraints as Assert;
+use Symfony\Component\Validator\Context\ExecutionContextInterface;
 
 #[ORM\Entity(repositoryClass: TenantRepository::class)]
 #[ORM\Table(name: 'tenants')]
@@ -14,17 +17,32 @@ class Tenant
     #[ORM\Column(type: 'uuid')]
     private Uuid $id;
 
+    #[Assert\NotBlank]
+    #[Assert\Length(max: 255)]
     #[ORM\Column(length: 255)]
     private string $name;
 
+    #[Assert\NotBlank]
+    #[Assert\Length(max: 180)]
     #[ORM\Column(length: 180, unique: true)]
     private string $slug;
 
+    #[Assert\Length(max: 5000)]
     #[ORM\Column(type: 'text')]
     private string $businessContext = '';
 
+    #[Assert\Length(max: 120)]
     #[ORM\Column(length: 120, nullable: true)]
     private ?string $tone = null;
+
+    #[Assert\Callback]
+    public function validateSalesPolicy(ExecutionContextInterface $context): void
+    {
+        $error = CommercialDomainSchema::validateTenantSalesPolicy($this->salesPolicy);
+        if ($error !== null) {
+            $context->buildViolation($error)->atPath('salesPolicy')->addViolation();
+        }
+    }
 
     #[ORM\Column(type: 'json')]
     private array $salesPolicy = [];
@@ -96,6 +114,11 @@ class Tenant
     public function setSalesPolicy(array $salesPolicy): void
     {
         $this->salesPolicy = $salesPolicy;
+    }
+
+    public function getSalesPolicySummary(): string
+    {
+        return CommercialDomainSchema::summarizeTenantSalesPolicy($this->salesPolicy);
     }
 
     public function isActive(): bool

@@ -70,11 +70,17 @@ final class BootstrapDefaultDataCommandTest extends TestCase
         self::assertInstanceOf(Tenant::class, $tenant);
         self::assertSame('federico-martin-demo', $tenant->getSlug());
         self::assertSame('consultivo', $tenant->getTone());
+        self::assertArrayHasKey('positioning', $tenant->getSalesPolicy());
+        self::assertArrayHasKey('qualificationFocus', $tenant->getSalesPolicy());
+        self::assertArrayHasKey('handoffRules', $tenant->getSalesPolicy());
 
         $playbook = $persisted[2];
         self::assertInstanceOf(Playbook::class, $playbook);
         self::assertSame('Guía comercial de prueba', $playbook->getName());
-        self::assertArrayHasKey('fallback_action', $playbook->getConfig());
+        self::assertArrayHasKey('objective', $playbook->getConfig());
+        self::assertArrayHasKey('qualificationQuestions', $playbook->getConfig());
+        self::assertArrayHasKey('scoring', $playbook->getConfig());
+        self::assertArrayHasKey('allowedActions', $playbook->getConfig());
     }
 
     public function testItSkipsWhenDataAlreadyExists(): void

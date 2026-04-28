@@ -2,9 +2,12 @@
 
 namespace App\Entity;
 
+use App\Domain\CommercialDomainSchema;
 use App\Repository\ProductRepository;
 use Doctrine\ORM\Mapping as ORM;
 use Symfony\Component\Uid\Uuid;
+use Symfony\Component\Validator\Constraints as Assert;
+use Symfony\Component\Validator\Context\ExecutionContextInterface;
 
 #[ORM\Entity(repositoryClass: ProductRepository::class)]
 #[ORM\Table(name: 'products')]
@@ -18,14 +21,27 @@ class Product
     #[ORM\JoinColumn(nullable: false, onDelete: 'CASCADE')]
     private Tenant $tenant;
 
+    #[Assert\NotBlank]
+    #[Assert\Length(max: 255)]
     #[ORM\Column(length: 255)]
     private string $name;
 
+    #[Assert\Length(max: 5000)]
     #[ORM\Column(type: 'text')]
     private string $description = '';
 
+    #[Assert\Length(max: 5000)]
     #[ORM\Column(type: 'text')]
     private string $valueProposition = '';
+
+    #[Assert\Callback]
+    public function validateSalesPolicy(ExecutionContextInterface $context): void
+    {
+        $error = CommercialDomainSchema::validateProductSalesPolicy($this->salesPolicy);
+        if ($error !== null) {
+            $context->buildViolation($error)->atPath('salesPolicy')->addViolation();
+        }
+    }
 
     #[ORM\Column(type: 'json')]
     private array $salesPolicy = [];
@@ -93,6 +109,11 @@ class Product
     public function setSalesPolicy(array $salesPolicy): void
     {
         $this->salesPolicy = $salesPolicy;
+    }
+
+    public function getSalesPolicySummary(): string
+    {
+        return CommercialDomainSchema::summarizeProductSalesPolicy($this->salesPolicy);
     }
 
     public function isActive(): bool

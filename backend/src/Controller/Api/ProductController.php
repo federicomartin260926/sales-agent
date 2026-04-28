@@ -2,6 +2,7 @@
 
 namespace App\Controller\Api;
 
+use App\Domain\CommercialDomainSchema;
 use App\Entity\Product;
 use App\Entity\Tenant;
 use App\Repository\ProductRepository;
@@ -47,7 +48,11 @@ final class ProductController extends AbstractApiController
         $product = new Product($tenant, (string) $data['name']);
         $product->setDescription((string) ($data['description'] ?? ''));
         $product->setValueProposition((string) ($data['valueProposition'] ?? ''));
-        $product->setSalesPolicy($this->normalizeJsonField($data['salesPolicy'] ?? []));
+        $salesPolicy = CommercialDomainSchema::normalizeProductSalesPolicy($data['salesPolicy'] ?? []);
+        if (($error = CommercialDomainSchema::validateProductSalesPolicy($salesPolicy)) !== null) {
+            return $this->badRequest($error);
+        }
+        $product->setSalesPolicy($salesPolicy);
         $product->setActive((bool) ($data['isActive'] ?? true));
 
         $this->products->save($product);
@@ -99,7 +104,11 @@ final class ProductController extends AbstractApiController
         }
 
         if (array_key_exists('salesPolicy', $data)) {
-            $product->setSalesPolicy($this->normalizeJsonField($data['salesPolicy']));
+            $salesPolicy = CommercialDomainSchema::normalizeProductSalesPolicy($data['salesPolicy']);
+            if (($error = CommercialDomainSchema::validateProductSalesPolicy($salesPolicy)) !== null) {
+                return $this->badRequest($error);
+            }
+            $product->setSalesPolicy($salesPolicy);
         }
 
         if (array_key_exists('isActive', $data)) {

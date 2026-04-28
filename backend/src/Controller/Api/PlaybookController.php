@@ -2,6 +2,7 @@
 
 namespace App\Controller\Api;
 
+use App\Domain\CommercialDomainSchema;
 use App\Entity\Playbook;
 use App\Entity\Product;
 use App\Entity\Tenant;
@@ -59,7 +60,11 @@ final class PlaybookController extends AbstractApiController
         }
 
         $playbook = new Playbook($tenant, (string) $data['name'], $product);
-        $playbook->setConfig($this->normalizeJsonField($data['config'] ?? []));
+        $config = CommercialDomainSchema::normalizePlaybookConfig($data['config'] ?? []);
+        if (($error = CommercialDomainSchema::validatePlaybookConfig($config)) !== null) {
+            return $this->badRequest($error);
+        }
+        $playbook->setConfig($config);
         $playbook->setActive((bool) ($data['isActive'] ?? true));
 
         $this->playbooks->save($playbook);
@@ -121,7 +126,11 @@ final class PlaybookController extends AbstractApiController
         }
 
         if (array_key_exists('config', $data)) {
-            $playbook->setConfig($this->normalizeJsonField($data['config']));
+            $config = CommercialDomainSchema::normalizePlaybookConfig($data['config']);
+            if (($error = CommercialDomainSchema::validatePlaybookConfig($config)) !== null) {
+                return $this->badRequest($error);
+            }
+            $playbook->setConfig($config);
         }
 
         if (array_key_exists('isActive', $data)) {

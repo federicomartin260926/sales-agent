@@ -8,7 +8,7 @@ Terminología visible:
 - `guía comercial` para `playbook`
 - `producto / servicio` para `product`
 
-Consulta el [glosario oficial](glossary.md) para el uso exacto de cada término.
+Consulta el [glosario oficial](glossary.md) para el uso exacto de cada término y el [modelo de dominio](domain-model.md) para la forma estructurada de cada campo.
 
 ## Objetivo
 

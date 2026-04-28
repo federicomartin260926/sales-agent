@@ -2,9 +2,12 @@
 
 namespace App\Entity;
 
+use App\Domain\CommercialDomainSchema;
 use App\Repository\PlaybookRepository;
 use Doctrine\ORM\Mapping as ORM;
 use Symfony\Component\Uid\Uuid;
+use Symfony\Component\Validator\Constraints as Assert;
+use Symfony\Component\Validator\Context\ExecutionContextInterface;
 
 #[ORM\Entity(repositoryClass: PlaybookRepository::class)]
 #[ORM\Table(name: 'playbooks')]
@@ -22,8 +25,19 @@ class Playbook
     #[ORM\JoinColumn(nullable: true, onDelete: 'SET NULL')]
     private ?Product $product = null;
 
+    #[Assert\NotBlank]
+    #[Assert\Length(max: 255)]
     #[ORM\Column(length: 255)]
     private string $name;
+
+    #[Assert\Callback]
+    public function validateConfig(ExecutionContextInterface $context): void
+    {
+        $error = CommercialDomainSchema::validatePlaybookConfig($this->config);
+        if ($error !== null) {
+            $context->buildViolation($error)->atPath('config')->addViolation();
+        }
+    }
 
     #[ORM\Column(type: 'json')]
     private array $config = [];
@@ -82,6 +96,11 @@ class Playbook
     public function setConfig(array $config): void
     {
         $this->config = $config;
+    }
+
+    public function getConfigSummary(): string
+    {
+        return CommercialDomainSchema::summarizePlaybookConfig($this->config);
     }
 
     public function isActive(): bool

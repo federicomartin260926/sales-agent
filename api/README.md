@@ -25,6 +25,54 @@ Este directorio contiene el runtime del agente conversacional.
 3. ejecuta el `DecisionEngine`
 4. devuelve una respuesta estructurada con intención, score y acción sugerida
 
+## Contrato de dominio
+
+### Entrada
+
+`POST /agent/respond` acepta un payload normalizado con:
+
+- `tenant_id`
+- `message`
+- `contact`
+- `conversation`
+
+#### `message`
+
+`message` se normaliza internamente a una estructura con:
+
+- `id` opcional
+- `type`
+- `text`
+- `timestamp` opcional
+
+El runtime también acepta el formato simple `message: "..."` para pruebas o integraciones ligeras.
+
+#### `contact`
+
+`contact` requiere un teléfono y puede incluir:
+
+- `phone`
+- `wa_id`
+- `from`
+- `name`
+
+#### `conversation`
+
+`conversation.last_messages` es una lista de textos ya normalizados.
+
+### Salida
+
+`POST /agent/respond` devuelve siempre:
+
+- `reply`
+- `intent`
+- `score`
+- `action`
+- `needs_human`
+- `data_to_save`
+
+La respuesta debe ser estructurada para que `wa-gateway-api` decida cómo enviarla y el CRM decida qué persistir.
+
 ## Formato de entrada
 
 `POST /agent/respond` acepta:

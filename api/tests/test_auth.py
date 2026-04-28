@@ -81,3 +81,32 @@ def test_agent_endpoint_accepts_wa_gateway_payload_shape():
 
     assert response.status_code == 200
     assert response.json()["intent"] == "greeting"
+
+
+def test_agent_endpoint_accepts_string_message_payload():
+    response = client.post(
+        "/agent/respond",
+        headers={"Authorization": "Bearer test-internal-token"},
+        json={
+            "tenant_id": "tenant-1",
+            "message": "Necesito presupuesto",
+            "contact": {"phone": "+34999999999"},
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["intent"] == "qualification"
+
+
+def test_agent_endpoint_rejects_missing_contact_phone():
+    response = client.post(
+        "/agent/respond",
+        headers={"Authorization": "Bearer test-internal-token"},
+        json={
+            "tenant_id": "tenant-1",
+            "message": "Hola",
+            "contact": {"name": "Cliente Demo"},
+        },
+    )
+
+    assert response.status_code == 422

@@ -171,6 +171,7 @@ Se mantiene el contrato conceptual del CRM:
 
 ## Documentación adicional
 
+- [Modelo de dominio](docs/domain-model.md)
 - [Guía funcional del sistema](docs/operating-model.md)
 - [Glosario oficial](docs/glossary.md)
 - [TODO del proyecto](docs/todo.md)

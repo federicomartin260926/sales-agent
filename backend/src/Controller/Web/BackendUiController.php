@@ -405,7 +405,7 @@ HTML;
                     <td>%s</td>
                   </tr>',
                 htmlspecialchars($playbook->getName(), ENT_QUOTES, 'UTF-8'),
-                htmlspecialchars((string) $playbook->getId()->toRfc4122(), ENT_QUOTES, 'UTF-8'),
+                htmlspecialchars($playbook->getConfigSummary(), ENT_QUOTES, 'UTF-8'),
                 htmlspecialchars($tenant->getName(), ENT_QUOTES, 'UTF-8'),
                 $product ? htmlspecialchars($product->getName(), ENT_QUOTES, 'UTF-8') : 'Sin producto',
                 $status
@@ -458,8 +458,7 @@ HTML;
         }
 
         $rows = array_map(static function (Tenant $tenant): string {
-            $policy = $tenant->getSalesPolicy();
-            $policySummary = $policy !== [] ? implode(' · ', array_map(static fn ($item): string => (string) $item, array_slice($policy, 0, 2))) : 'Sin policy';
+            $policySummary = $tenant->getSalesPolicySummary();
             $status = $tenant->isActive() ? '<span class="status-ok">Activo</span>' : '<span class="status-off">Inactivo</span>';
 
             return sprintf(

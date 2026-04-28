@@ -2,6 +2,7 @@
 
 namespace App\Controller\Api;
 
+use App\Domain\CommercialDomainSchema;
 use App\Entity\Tenant;
 use App\Repository\TenantRepository;
 use Doctrine\ORM\EntityManagerInterface;
@@ -43,7 +44,11 @@ final class TenantController extends AbstractApiController
         $tenant = new Tenant((string) $data['name'], (string) $data['slug']);
         $tenant->setBusinessContext((string) ($data['businessContext'] ?? ''));
         $tenant->setTone(isset($data['tone']) ? (string) $data['tone'] : null);
-        $tenant->setSalesPolicy($this->normalizeJsonField($data['salesPolicy'] ?? []));
+        $salesPolicy = CommercialDomainSchema::normalizeTenantSalesPolicy($data['salesPolicy'] ?? []);
+        if (($error = CommercialDomainSchema::validateTenantSalesPolicy($salesPolicy)) !== null) {
+            return $this->badRequest($error);
+        }
+        $tenant->setSalesPolicy($salesPolicy);
         $tenant->setActive((bool) ($data['isActive'] ?? true));
 
         $this->tenants->save($tenant);
@@ -98,7 +103,11 @@ final class TenantController extends AbstractApiController
         }
 
         if (array_key_exists('salesPolicy', $data)) {
-            $tenant->setSalesPolicy($this->normalizeJsonField($data['salesPolicy']));
+            $salesPolicy = CommercialDomainSchema::normalizeTenantSalesPolicy($data['salesPolicy']);
+            if (($error = CommercialDomainSchema::validateTenantSalesPolicy($salesPolicy)) !== null) {
+                return $this->badRequest($error);
+            }
+            $tenant->setSalesPolicy($salesPolicy);
         }
 
         if (array_key_exists('isActive', $data)) {

@@ -49,8 +49,14 @@ final class BootstrapDefaultDataCommand extends Command
             $tenant->setBusinessContext('Negocio de arranque para pruebas del backend administrativo.');
             $tenant->setTone('consultivo');
             $tenant->setSalesPolicy([
-                'welcome' => 'Responder de forma clara y breve.',
-                'handoff' => 'Derivar a humano si el cliente pide seguimiento manual.',
+                'positioning' => 'Respuestas claras, breves y orientadas a discovery.',
+                'qualificationFocus' => 'Entender el negocio, el volumen y el canal principal.',
+                'handoffRules' => 'Derivar a humano si el cliente pide seguimiento manual o un cierre específico.',
+                'salesBoundaries' => [
+                    'No prometer integraciones inexistentes.',
+                    'No inventar plazos ni precios.',
+                ],
+                'notes' => 'Base de arranque para pruebas del backend administrativo.',
             ]);
             $tenant->setActive(true);
 
@@ -78,14 +84,37 @@ final class BootstrapDefaultDataCommand extends Command
         if (!$playbook instanceof Playbook) {
             $playbook = new Playbook($tenant, self::PLAYBOOK_NAME);
             $playbook->setConfig([
-                'goal' => 'Responder a pruebas iniciales del panel comercial',
-                'tone' => 'consultivo',
-                'steps' => [
-                    'saludar',
-                    'identificar necesidad',
-                    'ofrecer siguiente paso',
+                'objective' => 'Cualificar leads entrantes y proponer el siguiente paso comercial.',
+                'qualificationQuestions' => [
+                    '¿Qué tipo de negocio tienes?',
+                    '¿Cuántas conversaciones o leads gestionas al mes?',
+                    '¿Qué quieres automatizar exactamente?',
                 ],
-                'fallback_action' => 'handoff',
+                'scoring' => [
+                    'maxScore' => 10,
+                    'handoffThreshold' => 7,
+                    'positiveSignals' => [
+                        'El cliente conoce su volumen y caso de uso.',
+                        'Pide siguiente paso o demo.',
+                    ],
+                    'negativeSignals' => [
+                        'No tiene decisión clara.',
+                        'Pide soporte fuera de alcance.',
+                    ],
+                ],
+                'agendaRules' => [
+                    'Ofrecer agenda cuando el lead supera el umbral de interés.',
+                ],
+                'handoffRules' => [
+                    'Derivar a humano si pide seguimiento manual.',
+                ],
+                'allowedActions' => [
+                    'askQuestion',
+                    'qualifyLead',
+                    'proposeMeeting',
+                    'handoffToHuman',
+                ],
+                'notes' => 'Guía de prueba para validar el runtime conversacional.',
             ]);
             $playbook->setActive(true);
 
