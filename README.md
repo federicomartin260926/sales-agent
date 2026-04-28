@@ -14,6 +14,13 @@ El proyecto está preparado para integrarse más adelante con:
 - `ai-stack` para RAG
 - OpenAI u Ollama para LLM
 
+## Documentación común
+
+- [Platform hub](../platform/README.md)
+- [Projects](../platform/projects.md)
+- [Networking](../platform/networking.md)
+- [Tokens](../platform/tokens.md)
+
 ## Arquitectura
 
 - `backend/`: Symfony clásico con Controllers, Entities, Repositories y Services
