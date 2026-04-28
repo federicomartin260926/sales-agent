@@ -61,10 +61,16 @@ class User implements UserInterface, PasswordAuthenticatedUserInterface
 
     public function getRoles(): array
     {
-        return array_values(array_unique(array_map(
+        $roles = array_values(array_unique(array_map(
             static fn (string $role): string => 'ROLE_'.strtoupper($role),
             $this->roles
         )));
+
+        if (in_array('ROLE_ADMIN', $roles, true) && !in_array('ROLE_MANAGER', $roles, true)) {
+            $roles[] = 'ROLE_MANAGER';
+        }
+
+        return $roles;
     }
 
     /**

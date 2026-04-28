@@ -2,6 +2,14 @@
 
 namespace App\Controller\Web;
 
+use App\Entity\Playbook;
+use App\Entity\Product;
+use App\Entity\Tenant;
+use App\Entity\User;
+use App\Repository\PlaybookRepository;
+use App\Repository\ProductRepository;
+use App\Repository\TenantRepository;
+use App\Repository\UserRepository;
 use Symfony\Bundle\SecurityBundle\Security;
 use Symfony\Component\HttpFoundation\RedirectResponse;
 use Symfony\Component\HttpFoundation\Response;
@@ -49,16 +57,21 @@ final class BackendUiController
   <style>
     :root {
       color-scheme: light;
-      --bg: #08111f;
-      --panel: rgba(10, 19, 34, 0.92);
-      --panel-border: rgba(255, 255, 255, 0.08);
-      --text: #e5eefc;
-      --muted: #8ea4c1;
-      --accent: #7dd3fc;
-      --accent-strong: #38bdf8;
-      --danger: #fca5a5;
-      --shadow: 0 30px 90px rgba(0, 0, 0, 0.35);
-      --radius: 24px;
+      --page-bg: #f5f7fb;
+      --panel: #ffffff;
+      --panel-soft: #f8fafc;
+      --panel-dark: #1f242a;
+      --panel-darker: #151a20;
+      --border: #d9e0ea;
+      --border-strong: #c7d0dc;
+      --text: #182433;
+      --muted: #637287;
+      --accent: #0f6ec7;
+      --accent-strong: #134fbf;
+      --success: #16803d;
+      --danger: #c33434;
+      --shadow: 0 18px 42px rgba(15, 23, 42, 0.08);
+      --radius: 18px;
     }
     * { box-sizing: border-box; }
     body {
@@ -67,39 +80,38 @@ final class BackendUiController
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       color: var(--text);
       background:
-        radial-gradient(circle at top left, rgba(56, 189, 248, 0.24), transparent 34%),
-        radial-gradient(circle at top right, rgba(99, 102, 241, 0.22), transparent 30%),
-        linear-gradient(160deg, #020617 0%, #0f172a 48%, #111827 100%);
-      display: grid;
-      place-items: center;
-      padding: 32px 18px;
+        radial-gradient(circle at top left, rgba(15, 110, 199, 0.12), transparent 28%),
+        radial-gradient(circle at bottom right, rgba(19, 79, 191, 0.08), transparent 26%),
+        var(--page-bg);
+      padding: 28px 18px;
     }
     .shell {
-      width: min(1080px, 100%);
+      width: min(1160px, 100%);
+      margin: 0 auto;
       display: grid;
-      grid-template-columns: 1.1fr 0.9fr;
+      grid-template-columns: 1.08fr 0.92fr;
       gap: 24px;
       align-items: stretch;
     }
     .hero, .card {
-      border: 1px solid var(--panel-border);
+      border: 1px solid var(--border);
       border-radius: var(--radius);
       box-shadow: var(--shadow);
-      backdrop-filter: blur(16px);
     }
     .hero {
       padding: 34px;
-      background: linear-gradient(180deg, rgba(15, 23, 42, 0.84), rgba(2, 6, 23, 0.82));
+      background: linear-gradient(180deg, #20272f 0%, #131922 100%);
+      color: #f8fbff;
+      min-height: 560px;
       display: flex;
       flex-direction: column;
       justify-content: space-between;
-      min-height: 560px;
     }
     .eyebrow {
       display: inline-flex;
       align-items: center;
       gap: 10px;
-      color: var(--accent);
+      color: #9ed0ff;
       text-transform: uppercase;
       letter-spacing: 0.18em;
       font-size: 12px;
@@ -110,32 +122,32 @@ final class BackendUiController
       width: 10px;
       height: 10px;
       border-radius: 999px;
-      background: var(--accent-strong);
-      box-shadow: 0 0 0 6px rgba(56, 189, 248, 0.14);
+      background: #4fc3f7;
+      box-shadow: 0 0 0 6px rgba(79, 195, 247, 0.14);
     }
     h1 {
       margin: 18px 0 14px;
       font-size: clamp(36px, 5vw, 58px);
-      line-height: 0.95;
+      line-height: 0.96;
       letter-spacing: -0.06em;
     }
     p {
       margin: 0;
-      color: var(--muted);
+      color: rgba(248, 251, 255, 0.76);
       font-size: 16px;
       line-height: 1.7;
-      max-width: 58ch;
+      max-width: 60ch;
     }
-    .stack {
-      display: grid;
-      gap: 14px;
-      margin-top: 28px;
-    }
-    .pill-row {
+    .pill-row, .stack {
       display: flex;
       flex-wrap: wrap;
       gap: 10px;
       margin-top: 26px;
+    }
+    .stack {
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 12px;
     }
     .pill {
       display: inline-flex;
@@ -143,10 +155,13 @@ final class BackendUiController
       gap: 8px;
       padding: 10px 14px;
       border-radius: 999px;
-      background: rgba(148, 163, 184, 0.09);
-      border: 1px solid rgba(148, 163, 184, 0.14);
+      background: rgba(148, 163, 184, 0.11);
+      border: 1px solid rgba(148, 163, 184, 0.18);
       color: #dbeafe;
       font-size: 13px;
+    }
+    .pill code {
+      color: #f8fbff;
     }
     .card {
       background: var(--panel);
@@ -171,22 +186,22 @@ final class BackendUiController
       font-size: 14px;
     }
     .alert-error {
-      background: rgba(248, 113, 113, 0.12);
-      border: 1px solid rgba(248, 113, 113, 0.28);
-      color: #fecaca;
+      background: rgba(195, 52, 52, 0.08);
+      border: 1px solid rgba(195, 52, 52, 0.22);
+      color: #a42222;
     }
     label {
       display: block;
       margin-bottom: 8px;
       font-size: 14px;
-      color: #dbeafe;
-      font-weight: 600;
+      color: var(--muted);
+      font-weight: 700;
     }
     input {
       width: 100%;
       border-radius: 14px;
-      border: 1px solid rgba(148, 163, 184, 0.24);
-      background: rgba(15, 23, 42, 0.82);
+      border: 1px solid var(--border);
+      background: var(--panel-soft);
       color: var(--text);
       padding: 14px 16px;
       font-size: 15px;
@@ -194,8 +209,8 @@ final class BackendUiController
       transition: border-color 120ms ease, box-shadow 120ms ease;
     }
     input:focus {
-      border-color: rgba(56, 189, 248, 0.65);
-      box-shadow: 0 0 0 4px rgba(56, 189, 248, 0.12);
+      border-color: rgba(15, 110, 199, 0.55);
+      box-shadow: 0 0 0 4px rgba(15, 110, 199, 0.1);
     }
     .field + .field {
       margin-top: 16px;
@@ -209,8 +224,8 @@ final class BackendUiController
       border-radius: 14px;
       margin-top: 22px;
       padding: 14px 18px;
-      background: linear-gradient(135deg, var(--accent-strong), #22c55e);
-      color: #02111f;
+      background: linear-gradient(135deg, var(--accent), #18a35d);
+      color: white;
       font-weight: 800;
       cursor: pointer;
       text-decoration: none;
@@ -222,15 +237,12 @@ final class BackendUiController
       line-height: 1.6;
     }
     .footer code {
-      color: #dbeafe;
+      color: var(--text);
     }
     @media (max-width: 960px) {
-      .shell {
-        grid-template-columns: 1fr;
-      }
-      .hero {
-        min-height: auto;
-      }
+      body { padding: 18px 14px; }
+      .shell { grid-template-columns: 1fr; }
+      .hero { min-height: auto; }
     }
   </style>
 </head>
@@ -298,73 +310,517 @@ HTML;
         return new Response('', Response::HTTP_NO_CONTENT);
     }
 
+    #[Route('/logout', methods: ['GET'])]
+    public function logout(\Symfony\Component\HttpFoundation\Request $request): Response
+    {
+        if ($request->hasSession()) {
+            $request->getSession()->invalidate();
+        }
+
+        return new RedirectResponse('/backend/login');
+    }
+
     #[Route('/dashboard', methods: ['GET'])]
-    public function dashboard(): Response
+    public function dashboard(
+        ?TenantRepository $tenants = null,
+        ?UserRepository $users = null,
+        ?PlaybookRepository $playbooks = null,
+        ?ProductRepository $products = null,
+    ): Response {
+        if (!$this->security->isGranted('ROLE_MANAGER')) {
+            return new RedirectResponse('/backend/login');
+        }
+
+        $tenantCount = $tenants ? count($tenants->findAllOrdered()) : 0;
+        $userCount = $users ? count($users->findBy([], ['createdAt' => 'DESC'])) : 0;
+        $playbookCount = $playbooks ? count($playbooks->findAllOrdered()) : 0;
+        $productCount = $products ? count($products->findAllOrdered()) : 0;
+
+        $content = sprintf(
+            '
+            <section class="hero-panel">
+              <div class="hero-copy">
+                <div class="eyebrow-dark">Operación administrativa</div>
+                <h2>Backend administrativo</h2>
+                <p>
+                  Sales Agent Symfony panel para gestión interna. Desde aquí se crean tenants, usuarios, playbooks
+                  y la configuración que consume el runtime del agente. La API técnica queda separada y el tráfico
+                  de WhatsApp entra por <code>wa-gateway-api</code>.
+                </p>
+                <div class="hero-actions">
+                  <a class="primary-action" href="/backend/playbooks">Ver playbooks</a>
+                  <a class="secondary-action" href="/backend/tenants">Revisar tenants</a>
+                </div>
+              </div>
+              <div class="hero-aside">
+                <div class="badge-live">Online</div>
+                <div class="hero-aside-title">Acceso</div>
+                <p>Este panel usa sesión de navegador. Los sistemas entre servicios usan bearer token.</p>
+              </div>
+            </section>
+
+            <section class="stats-grid">
+              %s
+              %s
+              %s
+              %s
+            </section>
+
+            <section class="cards-grid">
+              %s
+              %s
+              %s
+              %s
+              %s
+              %s
+            </section>
+            ',
+            $this->metricCard('Tenants', (string) $tenantCount, 'Arranque inicial listo'),
+            $this->metricCard('Usuarios', (string) $userCount, 'Admin bootstrap'),
+            $this->metricCard('Playbooks', (string) $playbookCount, 'Playbook de prueba'),
+            $this->metricCard('Productos', (string) $productCount, 'Catálogo base'),
+            $this->infoCard(
+                'Usuarios',
+                'Administración de cuentas, roles y acceso interno.',
+                '/backend/users',
+                'Gestionar'
+            ),
+            $this->infoCard(
+                'Playbooks',
+                'Catálogo de playbooks para automatización y flujos del backend.',
+                '/backend/playbooks',
+                'Abrir'
+            ),
+            $this->infoCard(
+                'Tenants',
+                'Separación de proyectos y contexto operativo por tenant.',
+                '/backend/tenants',
+                'Abrir'
+            ),
+            $this->infoCard(
+                'Productos',
+                'Catálogo comercial asociado a cada tenant y playbook.',
+                '/backend/products',
+                'Abrir'
+            ),
+            $this->infoCard(
+                'API administrativa',
+                'Los endpoints JSON siguen disponibles bajo /backend/api para integraciones internas.',
+                '/backend/api/health',
+                'Health check'
+            ),
+            $this->infoCard(
+                'Estado',
+                'Backend Symfony activo y listo para administración.',
+                '/backend/profile',
+                'Mi perfil'
+            ),
+        );
+
+        return $this->renderBackendShell(
+            'Backend administrativo',
+            'Sales Agent Symfony panel para gestión interna.',
+            'dashboard',
+            $content
+        );
+    }
+
+    #[Route('/playbooks', methods: ['GET'])]
+    public function playbooks(?PlaybookRepository $playbooks = null): Response
+    {
+        if (!$this->security->isGranted('ROLE_MANAGER')) {
+            return new RedirectResponse('/backend/login');
+        }
+
+        $rows = array_map(static function (Playbook $playbook): string {
+            $tenant = $playbook->getTenant();
+            $product = $playbook->getProduct();
+            $status = $playbook->isActive() ? '<span class="status-ok">Activo</span>' : '<span class="status-off">Inactivo</span>';
+
+            return sprintf(
+                '<tr>
+                    <td><strong>%s</strong><div class="subtle">%s</div></td>
+                    <td>%s</td>
+                    <td>%s</td>
+                    <td>%s</td>
+                  </tr>',
+                htmlspecialchars($playbook->getName(), ENT_QUOTES, 'UTF-8'),
+                htmlspecialchars((string) $playbook->getId()->toRfc4122(), ENT_QUOTES, 'UTF-8'),
+                htmlspecialchars($tenant->getName(), ENT_QUOTES, 'UTF-8'),
+                $product ? htmlspecialchars($product->getName(), ENT_QUOTES, 'UTF-8') : 'Sin producto',
+                $status
+            );
+        }, $playbooks ? $playbooks->findAllOrdered() : []);
+
+        $content = sprintf(
+            '
+            <section class="hero-panel">
+              <div class="hero-copy">
+                <div class="eyebrow-dark">Flujos comerciales</div>
+                <h2>Playbooks</h2>
+                <p>Catálogo operativo de playbooks ligado a tenants y productos. Aquí se prepara la lógica que luego consume la API de runtime.</p>
+              </div>
+              <div class="hero-aside">
+                <div class="badge-live">Manager</div>
+                <div class="hero-aside-title">Configuración</div>
+                <p>Los playbooks se activan y ajustan desde este backend, manteniendo separada la API técnica.</p>
+              </div>
+            </section>
+            <section class="table-card">
+              <div class="table-header">
+                <div>
+                  <h3>Playbooks activos e inactivos</h3>
+                  <p>Vista rápida del catálogo y su contexto.</p>
+                </div>
+                <a class="secondary-action" href="/backend/dashboard">Volver al dashboard</a>
+              </div>
+              <div class="table-responsive">
+                <table>
+                  <thead>
+                    <tr><th>Nombre</th><th>Tenant</th><th>Producto</th><th>Estado</th></tr>
+                  </thead>
+                  <tbody>%s</tbody>
+                </table>
+              </div>
+            </section>
+            ',
+            $rows !== [] ? implode('', $rows) : '<tr><td colspan="4" class="empty-row">No hay playbooks todavía.</td></tr>'
+        );
+
+        return $this->renderBackendShell('Playbooks', 'Flujos comerciales y configuración por tenant.', 'playbooks', $content);
+    }
+
+    #[Route('/tenants', methods: ['GET'])]
+    public function tenants(?TenantRepository $tenants = null): Response
+    {
+        if (!$this->security->isGranted('ROLE_MANAGER')) {
+            return new RedirectResponse('/backend/login');
+        }
+
+        $rows = array_map(static function (Tenant $tenant): string {
+            $policy = $tenant->getSalesPolicy();
+            $policySummary = $policy !== [] ? implode(' · ', array_map(static fn ($item): string => (string) $item, array_slice($policy, 0, 2))) : 'Sin policy';
+            $status = $tenant->isActive() ? '<span class="status-ok">Activo</span>' : '<span class="status-off">Inactivo</span>';
+
+            return sprintf(
+                '<tr>
+                    <td><strong>%s</strong><div class="subtle">%s</div></td>
+                    <td><code>%s</code></td>
+                    <td>%s</td>
+                    <td>%s</td>
+                  </tr>',
+                htmlspecialchars($tenant->getName(), ENT_QUOTES, 'UTF-8'),
+                htmlspecialchars($tenant->getBusinessContext(), ENT_QUOTES, 'UTF-8'),
+                htmlspecialchars($tenant->getSlug(), ENT_QUOTES, 'UTF-8'),
+                htmlspecialchars($policySummary, ENT_QUOTES, 'UTF-8'),
+                $status
+            );
+        }, $tenants ? $tenants->findAllOrdered() : []);
+
+        $content = sprintf(
+            '
+            <section class="hero-panel">
+              <div class="hero-copy">
+                <div class="eyebrow-dark">Separación operativa</div>
+                <h2>Tenants</h2>
+                <p>Separación de proyectos y contexto operativo por tenant. Desde aquí se mantiene el aislamiento lógico del backend.</p>
+              </div>
+              <div class="hero-aside">
+                <div class="badge-live">Admin</div>
+                <div class="hero-aside-title">Contexto</div>
+                <p>Cada tenant agrupa configuración, playbooks y reglas comerciales de forma aislada.</p>
+              </div>
+            </section>
+            <section class="table-card">
+              <div class="table-header">
+                <div>
+                  <h3>Tenants registrados</h3>
+                  <p>Nombre, slug y policy de arranque.</p>
+                </div>
+                <a class="secondary-action" href="/backend/dashboard">Volver al dashboard</a>
+              </div>
+              <div class="table-responsive">
+                <table>
+                  <thead>
+                    <tr><th>Tenant</th><th>Slug</th><th>Policy</th><th>Estado</th></tr>
+                  </thead>
+                  <tbody>%s</tbody>
+                </table>
+              </div>
+            </section>
+            ',
+            $rows !== [] ? implode('', $rows) : '<tr><td colspan="4" class="empty-row">No hay tenants todavía.</td></tr>'
+        );
+
+        return $this->renderBackendShell('Tenants', 'Proyectos y contexto operativo.', 'tenants', $content);
+    }
+
+    #[Route('/users', methods: ['GET'])]
+    public function users(?UserRepository $users = null): Response
+    {
+        if (!$this->security->isGranted('ROLE_ADMIN')) {
+            return new RedirectResponse('/backend/dashboard');
+        }
+
+        $rows = array_map(static function (User $user): string {
+            $roles = implode(', ', array_map(static fn (string $role): string => strtoupper($role), $user->getRoles()));
+            $status = $user->isActive() ? '<span class="status-ok">Activo</span>' : '<span class="status-off">Inactivo</span>';
+
+            return sprintf(
+                '<tr>
+                    <td><strong>%s</strong></td>
+                    <td>%s</td>
+                    <td>%s</td>
+                    <td>%s</td>
+                    <td class="text-right">%s</td>
+                  </tr>',
+                htmlspecialchars($user->getEmail(), ENT_QUOTES, 'UTF-8'),
+                htmlspecialchars($roles, ENT_QUOTES, 'UTF-8'),
+                $status,
+                htmlspecialchars($user->getCreatedAt()->format('Y-m-d H:i'), ENT_QUOTES, 'UTF-8'),
+                $user->isActive() ? 'Login ok' : 'Sin acceso'
+            );
+        }, $users ? $users->findBy([], ['createdAt' => 'DESC']) : []);
+
+        $content = sprintf(
+            '
+            <section class="hero-panel">
+              <div class="hero-copy">
+                <div class="eyebrow-dark">Acceso interno</div>
+                <h2>Usuarios</h2>
+                <p>Administración de cuentas, roles y acceso interno. Este panel separa la sesión de navegador de la API técnica.</p>
+              </div>
+              <div class="hero-aside">
+                <div class="badge-live">Admin</div>
+                <div class="hero-aside-title">Control de acceso</div>
+                <p>Los usuarios con rol admin pueden gestionar cuentas; el resto de roles se mantiene orientado a operación.</p>
+              </div>
+            </section>
+            <section class="table-card">
+              <div class="table-header">
+                <div>
+                  <h3>Usuarios registrados</h3>
+                  <p>Email, roles y estado de acceso.</p>
+                </div>
+                <a class="secondary-action" href="/backend/dashboard">Volver al dashboard</a>
+              </div>
+              <div class="table-responsive">
+                <table>
+                  <thead>
+                    <tr><th>Email</th><th>Roles</th><th>Estado</th><th>Creado</th><th class="text-right">Login</th></tr>
+                  </thead>
+                  <tbody>%s</tbody>
+                </table>
+              </div>
+            </section>
+            ',
+            $rows !== [] ? implode('', $rows) : '<tr><td colspan="5" class="empty-row">No hay usuarios todavía.</td></tr>'
+        );
+
+        return $this->renderBackendShell('Usuarios', 'Cuentas y roles de acceso interno.', 'users', $content);
+    }
+
+    #[Route('/products', methods: ['GET'])]
+    public function products(?ProductRepository $products = null): Response
+    {
+        if (!$this->security->isGranted('ROLE_MANAGER')) {
+            return new RedirectResponse('/backend/login');
+        }
+
+        $rows = array_map(static function (Product $product): string {
+            $status = $product->isActive() ? '<span class="status-ok">Activo</span>' : '<span class="status-off">Inactivo</span>';
+
+            return sprintf(
+                '<tr>
+                    <td><strong>%s</strong><div class="subtle">%s</div></td>
+                    <td>%s</td>
+                    <td>%s</td>
+                    <td>%s</td>
+                  </tr>',
+                htmlspecialchars($product->getName(), ENT_QUOTES, 'UTF-8'),
+                htmlspecialchars($product->getDescription(), ENT_QUOTES, 'UTF-8'),
+                htmlspecialchars($product->getTenant()->getName(), ENT_QUOTES, 'UTF-8'),
+                htmlspecialchars($product->getValueProposition(), ENT_QUOTES, 'UTF-8'),
+                $status
+            );
+        }, $products ? $products->findAllOrdered() : []);
+
+        $content = sprintf(
+            '
+            <section class="hero-panel">
+              <div class="hero-copy">
+                <div class="eyebrow-dark">Catálogo comercial</div>
+                <h2>Productos</h2>
+                <p>Catálogo de productos y propuestas de valor asociadas a cada tenant. Esto alimenta la lógica comercial del backend.</p>
+              </div>
+              <div class="hero-aside">
+                <div class="badge-live">Manager</div>
+                <div class="hero-aside-title">Oferta</div>
+                <p>Los productos agrupan descripción, propuesta de valor y policy de venta para el runtime.</p>
+              </div>
+            </section>
+            <section class="table-card">
+              <div class="table-header">
+                <div>
+                  <h3>Productos registrados</h3>
+                  <p>Tenant, propuesta de valor y estado.</p>
+                </div>
+                <a class="secondary-action" href="/backend/dashboard">Volver al dashboard</a>
+              </div>
+              <div class="table-responsive">
+                <table>
+                  <thead>
+                    <tr><th>Producto</th><th>Tenant</th><th>Propuesta de valor</th><th>Estado</th></tr>
+                  </thead>
+                  <tbody>%s</tbody>
+                </table>
+              </div>
+            </section>
+            ',
+            $rows !== [] ? implode('', $rows) : '<tr><td colspan="4" class="empty-row">No hay productos todavía.</td></tr>'
+        );
+
+        return $this->renderBackendShell('Productos', 'Catálogo comercial por tenant.', 'products', $content);
+    }
+
+    #[Route('/profile', methods: ['GET'])]
+    public function profile(): Response
     {
         if (!$this->security->getUser() instanceof UserInterface) {
             return new RedirectResponse('/backend/login');
         }
 
+        $user = $this->security->getUser();
+        $email = htmlspecialchars($user->getUserIdentifier(), ENT_QUOTES, 'UTF-8');
+        $roles = array_map(static fn (string $role): string => strtoupper($role), $user->getRoles());
+        $roleLabel = implode(', ', $roles);
+
+        $content = sprintf(
+            '
+            <section class="hero-panel">
+              <div class="hero-copy">
+                <div class="eyebrow-dark">Sesión</div>
+                <h2>Mi perfil</h2>
+                <p>Resumen rápido de tu cuenta activa en el backend. La contraseña se gestiona desde administración de usuarios.</p>
+              </div>
+              <div class="hero-aside">
+                <div class="badge-live">Online</div>
+                <div class="hero-aside-title">Sesión activa</div>
+                <p>El acceso del navegador está separado de la API técnica y funciona por sesión Symfony.</p>
+              </div>
+            </section>
+            <section class="cards-grid">
+              %s
+              %s
+              %s
+            </section>
+            ',
+            $this->infoCard('Cuenta', $email, '/backend/profile', 'Cuenta actual'),
+            $this->infoCard('Roles', $roleLabel, '/backend/users', 'Permisos'),
+            $this->infoCard('Acciones', 'Editar usuarios o salir de la sesión cuando termines.', '/backend/logout', 'Logout')
+        );
+
+        return $this->renderBackendShell('Mi perfil', 'Sesión y permisos del usuario conectado.', 'profile', $content);
+    }
+
+    #[Route('/api-health', methods: ['GET'])]
+    public function apiHealth(): Response
+    {
+        if (!$this->security->isGranted('ROLE_MANAGER')) {
+            return new RedirectResponse('/backend/login');
+        }
+
+        $content = sprintf(
+            '
+            <section class="hero-panel">
+              <div class="hero-copy">
+                <div class="eyebrow-dark">API técnica</div>
+                <h2>API Health</h2>
+                <p>Verificación rápida del backend JSON y del runtime. La API sigue separada del panel humano y del servicio FastAPI.</p>
+              </div>
+              <div class="hero-aside">
+                <div class="badge-live">Status</div>
+                <div class="hero-aside-title">Backend API</div>
+                <p>Usa esta vista como puerta de entrada rápida antes de probar integraciones internas.</p>
+              </div>
+            </section>
+            <section class="cards-grid">
+              %s
+              %s
+              %s
+            </section>
+            ',
+            $this->infoCard('Health endpoint', '/backend/api/health', '/backend/api/health', 'GET'),
+            $this->infoCard('Login API', '/backend/api/login', '/backend/api/login', 'POST'),
+            $this->infoCard('Runtime', 'FastAPI / Symfony separados por diseño.', '/backend/dashboard', 'Panel')
+        );
+
+        return $this->renderBackendShell('API Health', 'Estado de la API técnica y rutas internas.', 'api-health', $content);
+    }
+
+    private function renderBackendShell(string $pageTitle, string $pageSubtitle, string $activeNav, string $contentHtml): Response
+    {
+        $navHtml = $this->renderNav($activeNav);
         $html = <<<'HTML'
 <!doctype html>
 <html lang="es">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Sales Agent Backend - Dashboard</title>
+  <title>{{PAGE_TITLE}} - Sales Agent CRM</title>
   <style>
     :root {
-      --bg: #08111f;
-      --sidebar: rgba(6, 11, 20, 0.96);
-      --panel: rgba(15, 23, 42, 0.86);
-      --panel-strong: rgba(12, 18, 31, 0.95);
-      --border: rgba(148, 163, 184, 0.16);
-      --border-strong: rgba(148, 163, 184, 0.24);
-      --text: #e5eefc;
-      --muted: #8ea4c1;
-      --accent: #38bdf8;
-      --accent-2: #22c55e;
-      --warn: #f59e0b;
-      --danger: #ef4444;
+      --page-bg: #f5f7fb;
+      --sidebar: #ffffff;
+      --topbar: #1f242a;
+      --topbar-soft: #2d343d;
+      --panel: #ffffff;
+      --panel-soft: #f8fafc;
+      --border: #d9e0ea;
+      --border-strong: #c7d0dc;
+      --text: #182433;
+      --muted: #637287;
+      --accent: #0f6ec7;
+      --accent-strong: #134fbf;
+      --success: #16803d;
+      --danger: #c33434;
+      --shadow: 0 14px 36px rgba(15, 23, 42, 0.08);
+      --radius: 18px;
     }
     * { box-sizing: border-box; }
+    html, body { min-height: 100%; }
     body {
       margin: 0;
-      min-height: 100vh;
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background:
-        radial-gradient(circle at top left, rgba(56, 189, 248, 0.16), transparent 28%),
-        radial-gradient(circle at bottom right, rgba(34, 197, 94, 0.14), transparent 24%),
-        linear-gradient(160deg, #020617 0%, #0f172a 55%, #111827 100%);
       color: var(--text);
+      background: var(--page-bg);
     }
     a { color: inherit; }
-    .shell {
+    .layout {
       min-height: 100vh;
       display: grid;
-      grid-template-columns: 280px minmax(0, 1fr);
+      grid-template-columns: 270px minmax(0, 1fr);
     }
     .sidebar {
-      background: linear-gradient(180deg, rgba(6, 11, 20, 0.98), rgba(8, 17, 31, 0.96));
+      background: var(--sidebar);
       border-right: 1px solid var(--border);
-      padding: 26px 20px;
+      padding: 24px 18px;
       display: flex;
       flex-direction: column;
-      gap: 24px;
+      gap: 18px;
     }
     .brand {
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-      padding-bottom: 18px;
+      padding-bottom: 16px;
       border-bottom: 1px solid var(--border);
     }
     .brand-name {
       font-size: 20px;
       font-weight: 800;
       letter-spacing: -0.04em;
+      color: #0f172a;
     }
     .brand-sub {
+      margin-top: 6px;
       color: var(--muted);
       font-size: 13px;
       line-height: 1.5;
@@ -372,8 +828,9 @@ HTML;
     .nav {
       display: grid;
       gap: 8px;
+      margin-top: 4px;
     }
-    .nav a, .nav .item {
+    .nav a {
       display: flex;
       align-items: center;
       justify-content: space-between;
@@ -381,12 +838,14 @@ HTML;
       border-radius: 14px;
       border: 1px solid transparent;
       text-decoration: none;
-      color: #dbeafe;
-      background: rgba(148, 163, 184, 0.06);
+      color: #334155;
+      background: #fafafa;
     }
     .nav a.active {
-      background: rgba(56, 189, 248, 0.14);
-      border-color: rgba(56, 189, 248, 0.24);
+      background: rgba(15, 110, 199, 0.12);
+      border-color: rgba(15, 110, 199, 0.22);
+      color: #0f172a;
+      font-weight: 700;
     }
     .nav small {
       color: var(--muted);
@@ -396,6 +855,24 @@ HTML;
       margin-top: auto;
       display: grid;
       gap: 10px;
+    }
+    .session-card {
+      background: var(--panel-soft);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 14px;
+    }
+    .session-title {
+      color: var(--muted);
+      font-size: 12px;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      margin-bottom: 10px;
+    }
+    .session-user {
+      font-size: 14px;
+      line-height: 1.5;
+      word-break: break-word;
     }
     .logout {
       display: inline-flex;
@@ -408,249 +885,508 @@ HTML;
       color: white;
       font-weight: 800;
     }
-    .content {
-      padding: 28px;
+    .content-shell {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
     }
     .topbar {
+      background: var(--topbar);
+      color: #fff;
+      padding: 12px 22px;
       display: flex;
-      justify-content: space-between;
       align-items: center;
-      gap: 18px;
-      margin-bottom: 24px;
-    }
-    .title {
-      margin: 0;
-      font-size: clamp(30px, 4vw, 46px);
-      letter-spacing: -0.06em;
-    }
-    .muted { color: var(--muted); }
-    .hero-strip {
-      display: grid;
-      grid-template-columns: 1.4fr 0.6fr;
+      justify-content: space-between;
       gap: 16px;
-      margin-bottom: 18px;
+      box-shadow: 0 4px 24px rgba(15, 23, 42, 0.2);
     }
-    .panel {
+    .page-title {
+      margin: 0;
+      font-size: 18px;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+    }
+    .page-subtitle {
+      margin-top: 4px;
+      color: rgba(255, 255, 255, 0.62);
+      font-size: 13px;
+      line-height: 1.4;
+    }
+    .user-area {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      color: #fff;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+    .user-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.07);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      white-space: nowrap;
+    }
+    .avatar {
+      width: 28px;
+      height: 28px;
+      border-radius: 999px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: linear-gradient(135deg, #0f6ec7, #22c55e);
+      font-size: 12px;
+      font-weight: 900;
+    }
+    .user-meta {
+      display: flex;
+      flex-direction: column;
+      line-height: 1.1;
+    }
+    .user-meta strong {
+      font-size: 14px;
+      font-weight: 700;
+    }
+    .user-meta small {
+      color: rgba(255, 255, 255, 0.58);
+      font-size: 12px;
+    }
+    .user-links {
+      display: inline-flex;
+      gap: 8px;
+      align-items: center;
+    }
+    .user-links a {
+      text-decoration: none;
+      color: #e5eefc;
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      background: rgba(255, 255, 255, 0.05);
+      padding: 8px 10px;
+      border-radius: 10px;
+      font-size: 13px;
+    }
+    .main {
+      padding: 24px;
+      min-width: 0;
+    }
+    .hero-panel,
+    .table-card {
       background: var(--panel);
       border: 1px solid var(--border);
-      border-radius: 22px;
-      padding: 20px;
-      box-shadow: 0 24px 80px rgba(0, 0, 0, 0.24);
+      border-radius: 18px;
+      box-shadow: var(--shadow);
     }
-    .stats {
+    .hero-panel {
+      display: grid;
+      grid-template-columns: minmax(0, 1.45fr) minmax(260px, 0.75fr);
+      gap: 18px;
+      padding: 24px;
+      margin-bottom: 18px;
+      background:
+        linear-gradient(135deg, rgba(15, 110, 199, 0.08), rgba(19, 79, 191, 0.05)),
+        #ffffff;
+    }
+    .eyebrow-dark {
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 800;
+      text-transform: uppercase;
+      letter-spacing: 0.12em;
+      margin-bottom: 10px;
+    }
+    .hero-copy h2 {
+      margin: 0 0 10px;
+      font-size: clamp(32px, 4vw, 48px);
+      letter-spacing: -0.05em;
+      line-height: 0.98;
+      color: #0f172a;
+    }
+    .hero-copy p,
+    .hero-aside p,
+    .table-header p {
+      margin: 0;
+      color: #475569;
+      line-height: 1.65;
+    }
+    .hero-actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 22px;
+    }
+    .primary-action,
+    .secondary-action {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 44px;
+      padding: 0 16px;
+      border-radius: 12px;
+      text-decoration: none;
+      font-weight: 700;
+      transition: transform 120ms ease, box-shadow 120ms ease;
+    }
+    .primary-action {
+      background: linear-gradient(135deg, var(--accent), #18a35d);
+      color: white;
+      box-shadow: 0 12px 24px rgba(15, 110, 199, 0.18);
+    }
+    .secondary-action {
+      background: #fff;
+      border: 1px solid var(--border-strong);
+      color: #1e293b;
+    }
+    .primary-action:hover,
+    .secondary-action:hover,
+    .logout:hover,
+    .user-links a:hover {
+      transform: translateY(-1px);
+    }
+    .hero-aside {
+      background: #0f172a;
+      color: #fff;
+      border-radius: 16px;
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      min-height: 170px;
+    }
+    .badge-live {
+      align-self: flex-start;
+      display: inline-flex;
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: rgba(22, 128, 61, 0.16);
+      border: 1px solid rgba(22, 128, 61, 0.3);
+      color: #bff7d0;
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .hero-aside-title {
+      margin-top: 10px;
+      font-size: 18px;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+    }
+    .hero-aside p {
+      color: rgba(255, 255, 255, 0.72);
+      margin-top: 6px;
+    }
+    .stats-grid {
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
       gap: 16px;
       margin-bottom: 18px;
     }
-    .stat {
-      background: linear-gradient(180deg, rgba(15, 23, 42, 0.94), rgba(11, 18, 32, 0.88));
-      border: 1px solid var(--border-strong);
-      border-radius: 22px;
+    .metric {
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: 16px;
       padding: 18px;
+      box-shadow: var(--shadow);
     }
-    .stat-label {
+    .metric-label {
       color: var(--muted);
       font-size: 13px;
       margin-bottom: 10px;
     }
-    .stat-value {
-      font-size: 28px;
+    .metric-value {
+      font-size: 32px;
       font-weight: 800;
-      letter-spacing: -0.05em;
+      letter-spacing: -0.06em;
+      color: #0f172a;
     }
-    .stat-note {
+    .metric-note {
       margin-top: 8px;
-      color: #cbd5e1;
+      color: #475569;
       font-size: 13px;
+      line-height: 1.5;
     }
-    .grid {
+    .cards-grid {
       display: grid;
       grid-template-columns: repeat(3, minmax(0, 1fr));
       gap: 16px;
     }
-    .card {
-      background: var(--panel);
+    .info-card {
+      background: #fff;
       border: 1px solid var(--border);
-      border-radius: 22px;
-      padding: 22px;
-      min-height: 170px;
+      border-radius: 16px;
+      padding: 18px;
+      box-shadow: var(--shadow);
+      min-height: 160px;
     }
-    .card h2 {
+    .info-card h3 {
       margin: 0 0 8px;
       font-size: 18px;
+      letter-spacing: -0.03em;
+      color: #0f172a;
     }
-    .card p {
+    .info-card p {
       margin: 0;
-      color: var(--muted);
-      line-height: 1.6;
+      color: #475569;
+      line-height: 1.65;
     }
-    .links {
-      display: grid;
-      gap: 10px;
-      margin-top: 14px;
-    }
-    a.btn {
+    .card-action {
       display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      padding: 12px 14px;
-      border-radius: 14px;
+      margin-top: 14px;
+      color: var(--accent);
       text-decoration: none;
-      background: rgba(56, 189, 248, 0.12);
-      border: 1px solid rgba(56, 189, 248, 0.22);
-      color: #dbeafe;
       font-weight: 700;
     }
-    .section-title {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      margin: 16px 0 12px;
+    .table-card {
+      padding: 18px;
     }
-    .section-title h2 {
-      margin: 0;
+    .table-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 16px;
+      margin-bottom: 14px;
+    }
+    .table-header h3 {
+      margin: 0 0 6px;
       font-size: 18px;
       letter-spacing: -0.03em;
+      color: #0f172a;
     }
-    .badge {
+    .table-responsive {
+      overflow-x: auto;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 760px;
+    }
+    thead th {
+      text-align: left;
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--muted);
+      padding: 12px 12px;
+      border-bottom: 1px solid var(--border);
+    }
+    tbody td {
+      padding: 14px 12px;
+      border-bottom: 1px solid #edf1f7;
+      vertical-align: top;
+    }
+    tbody tr:last-child td {
+      border-bottom: 0;
+    }
+    .subtle {
+      color: var(--muted);
+      font-size: 13px;
+      margin-top: 4px;
+      line-height: 1.4;
+    }
+    .status-ok,
+    .status-off {
+      display: inline-flex;
+      align-items: center;
       padding: 6px 10px;
       border-radius: 999px;
-      background: rgba(34, 197, 94, 0.12);
-      border: 1px solid rgba(34, 197, 94, 0.22);
-      color: #bbf7d0;
       font-size: 12px;
-      font-weight: 700;
+      font-weight: 800;
     }
-    @media (max-width: 1100px) {
-      .shell {
-        grid-template-columns: 1fr;
-      }
-      .sidebar {
-        border-right: 0;
-        border-bottom: 1px solid var(--border);
-      }
-      .hero-strip, .stats, .grid {
+    .status-ok {
+      background: rgba(22, 128, 61, 0.12);
+      color: var(--success);
+    }
+    .status-off {
+      background: rgba(195, 52, 52, 0.08);
+      color: var(--danger);
+    }
+    .empty-row {
+      text-align: center;
+      color: var(--muted);
+      padding: 28px 12px;
+    }
+    code {
+      background: #f3f6fb;
+      border: 1px solid #e3eaf2;
+      border-radius: 8px;
+      padding: 2px 6px;
+      font-size: 0.95em;
+    }
+    .text-right { text-align: right; }
+    @media (max-width: 1180px) {
+      .layout { grid-template-columns: 1fr; }
+      .sidebar { border-right: 0; border-bottom: 1px solid var(--border); }
+      .hero-panel,
+      .stats-grid,
+      .cards-grid {
         grid-template-columns: 1fr;
       }
     }
   </style>
 </head>
 <body>
-  <main class="shell">
+  <main class="layout">
     <aside class="sidebar">
       <div class="brand">
         <div class="brand-name">Sales Agent CRM</div>
         <div class="brand-sub">Backend Symfony para configuración y gestión interna.</div>
       </div>
       <nav class="nav">
-        <a class="active" href="/backend/dashboard"><span>Dashboard</span><small>Resumen</small></a>
-        <a href="/backend/api/playbooks"><span>Playbooks</span><small>Flujos</small></a>
-        <a href="/backend/api/tenants"><span>Tenants</span><small>Proyectos</small></a>
-        <a href="/backend/api/products"><span>Usuarios / Productos</span><small>Catálogo</small></a>
-        <a href="/backend/api/health"><span>API Health</span><small>Status</small></a>
+        {{NAV}}
       </nav>
       <div class="sidebar-footer">
-        <div class="panel">
-          <div class="muted" style="font-size:12px; text-transform:uppercase; letter-spacing:0.14em;">Sesión</div>
-          <div style="margin-top:10px; font-size:14px; line-height:1.5;">
-            Sesión de navegador activa para gestión humana.
-          </div>
+        <div class="session-card">
+          <div class="session-title">Sesión</div>
+          <div class="session-user">{{USER_EMAIL}}</div>
+          <div class="subtle" style="margin-top: 8px;">{{USER_ROLE}}</div>
         </div>
         <a class="logout" href="/backend/logout">Cerrar sesión</a>
       </div>
     </aside>
 
-    <section class="content">
-      <div class="topbar">
+    <section class="content-shell">
+      <header class="topbar">
         <div>
-          <h1 class="title">Backend administrativo</h1>
-          <div class="muted">Sales Agent Symfony panel para gestión interna.</div>
+          <h1 class="page-title">{{PAGE_TITLE}}</h1>
+          <div class="page-subtitle">{{PAGE_SUBTITLE}}</div>
         </div>
-      </div>
-
-      <div class="hero-strip">
-        <div class="panel">
-          <div class="section-title">
-            <h2>Operación CRM</h2>
-            <span class="badge">Online</span>
-          </div>
-          <p>
-            Desde aquí se crean tenants, usuarios, playbooks y la configuración que consume el runtime del agente.
-            La API técnica queda separada y el tráfico de WhatsApp entra por `wa-gateway-api`.
-          </p>
-        </div>
-        <div class="panel">
-          <div class="section-title">
-            <h2>Acceso</h2>
-            <span class="badge">Admin</span>
-          </div>
-          <p>
-            Este panel usa sesión de navegador. Los sistemas entre servicios usan bearer token.
-          </p>
-        </div>
-      </div>
-
-      <div class="stats">
-        <article class="stat">
-          <div class="stat-label">Tenants</div>
-          <div class="stat-value">1</div>
-          <div class="stat-note">Arranque inicial listo</div>
-        </article>
-        <article class="stat">
-          <div class="stat-label">Usuarios</div>
-          <div class="stat-value">1</div>
-          <div class="stat-note">Admin bootstrap</div>
-        </article>
-        <article class="stat">
-          <div class="stat-label">Playbooks</div>
-          <div class="stat-value">1</div>
-          <div class="stat-note">Playbook de prueba</div>
-        </article>
-        <article class="stat">
-          <div class="stat-label">Integración</div>
-          <div class="stat-value">API</div>
-          <div class="stat-note">Bearer token de máquina</div>
-        </article>
-      </div>
-
-      <section class="grid">
-        <article class="card">
-          <h2>Usuarios</h2>
-          <p>Administración de cuentas, roles y acceso interno.</p>
-        </article>
-        <article class="card">
-          <h2>Playbooks</h2>
-          <p>Catálogo de playbooks para automatización y flujos del backend.</p>
-        </article>
-        <article class="card">
-          <h2>Tenants</h2>
-          <p>Separación de proyectos y contexto operativo por tenant.</p>
-        </article>
-        <article class="card">
-          <h2>API administrativa</h2>
-          <p>Los endpoints JSON siguen disponibles bajo <code>/backend/api</code> para integraciones internas.</p>
-          <div class="links">
-            <a class="btn" href="/backend/api/health">Health check</a>
-            <a class="btn" href="/backend/api/playbooks">Playbooks API</a>
-            <a class="btn" href="/backend/api/tenants">Tenants API</a>
-          </div>
-        </article>
-        <article class="card">
-          <h2>Flujo</h2>
-          <p>Panel humano con sesión de navegador separado de la API técnica y del servicio FastAPI.</p>
-        </article>
-        <article class="card">
-          <h2>Estado</h2>
-          <p>Backend Symfony activo y listo para administración.</p>
-        </article>
-      </section>
+        {{USER_MENU}}
+      </header>
+      <main class="main">
+        {{CONTENT}}
+      </main>
     </section>
   </main>
 </body>
 </html>
 HTML;
 
-        return new Response($html);
+        return new Response(strtr($html, [
+            '{{PAGE_TITLE}}' => htmlspecialchars($pageTitle, ENT_QUOTES, 'UTF-8'),
+            '{{PAGE_SUBTITLE}}' => htmlspecialchars($pageSubtitle, ENT_QUOTES, 'UTF-8'),
+            '{{NAV}}' => $navHtml,
+            '{{CONTENT}}' => $contentHtml,
+            '{{USER_EMAIL}}' => htmlspecialchars($this->currentUserLabel(), ENT_QUOTES, 'UTF-8'),
+            '{{USER_ROLE}}' => htmlspecialchars($this->currentUserRoleLabel(), ENT_QUOTES, 'UTF-8'),
+            '{{USER_INITIALS}}' => htmlspecialchars($this->currentUserInitials(), ENT_QUOTES, 'UTF-8'),
+            '{{USER_MENU}}' => $this->renderUserMenu(),
+        ]));
+    }
+
+    /**
+     * @param array<string, array{href: string, label: string, meta: string, roles: string[]}> $items
+     */
+    private function renderNav(string $activeNav): string
+    {
+        $items = [
+            'dashboard' => ['href' => '/backend/dashboard', 'label' => 'Dashboard', 'meta' => 'Resumen', 'roles' => ['ROLE_AGENT', 'ROLE_MANAGER', 'ROLE_ADMIN']],
+            'playbooks' => ['href' => '/backend/playbooks', 'label' => 'Playbooks', 'meta' => 'Flujos', 'roles' => ['ROLE_MANAGER', 'ROLE_ADMIN']],
+            'tenants' => ['href' => '/backend/tenants', 'label' => 'Tenants', 'meta' => 'Proyectos', 'roles' => ['ROLE_MANAGER', 'ROLE_ADMIN']],
+            'users' => ['href' => '/backend/users', 'label' => 'Usuarios', 'meta' => 'Acceso', 'roles' => ['ROLE_ADMIN']],
+            'products' => ['href' => '/backend/products', 'label' => 'Productos', 'meta' => 'Catálogo', 'roles' => ['ROLE_MANAGER', 'ROLE_ADMIN']],
+            'api-health' => ['href' => '/backend/api-health', 'label' => 'API Health', 'meta' => 'Status', 'roles' => ['ROLE_MANAGER', 'ROLE_ADMIN']],
+        ];
+
+        $html = '';
+        foreach ($items as $key => $item) {
+            if (!$this->canSeeNavItem($item['roles'])) {
+                continue;
+            }
+
+            $class = $key === $activeNav ? 'active' : '';
+            $html .= sprintf(
+                '<a class="%s" href="%s"><span>%s</span><small>%s</small></a>',
+                $class,
+                htmlspecialchars($item['href'], ENT_QUOTES, 'UTF-8'),
+                htmlspecialchars($item['label'], ENT_QUOTES, 'UTF-8'),
+                htmlspecialchars($item['meta'], ENT_QUOTES, 'UTF-8')
+            );
+        }
+
+        return $html;
+    }
+
+    private function renderUserMenu(): string
+    {
+        return sprintf(
+            '<div class="user-area"><div class="user-chip"><div class="avatar">%s</div><div class="user-meta"><strong>%s</strong><small>%s</small></div></div><div class="user-links"><a href="/backend/profile">Mi perfil</a><a href="/backend/logout">Logout</a></div></div>',
+            htmlspecialchars($this->currentUserInitials(), ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($this->currentUserLabel(), ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($this->currentUserRoleLabel(), ENT_QUOTES, 'UTF-8')
+        );
+    }
+
+    private function currentUserLabel(): string
+    {
+        $user = $this->security->getUser();
+
+        return $user instanceof UserInterface ? $user->getUserIdentifier() : 'Invitado';
+    }
+
+    private function currentUserInitials(): string
+    {
+        $label = $this->currentUserLabel();
+        $parts = preg_split('/[^a-z0-9]+/i', strtolower($label)) ?: [];
+        $parts = array_values(array_filter($parts, static fn (string $part): bool => $part !== ''));
+        $seed = implode('', array_slice($parts, 0, 2));
+
+        if ($seed === '') {
+            $seed = 'SA';
+        }
+
+        return strtoupper(substr($seed, 0, 2));
+    }
+
+    private function currentUserRoleLabel(): string
+    {
+        if ($this->security->isGranted('ROLE_ADMIN')) {
+            return 'Admin';
+        }
+
+        if ($this->security->isGranted('ROLE_MANAGER')) {
+            return 'Manager';
+        }
+
+        if ($this->security->isGranted('ROLE_AGENT')) {
+            return 'Agent';
+        }
+
+        return 'User';
+    }
+
+    /**
+     * @param string[] $roles
+     */
+    private function canSeeNavItem(array $roles): bool
+    {
+        foreach ($roles as $role) {
+            if ($this->security->isGranted($role)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function metricCard(string $label, string $value, string $note): string
+    {
+        return sprintf(
+            '<article class="metric"><div class="metric-label">%s</div><div class="metric-value">%s</div><div class="metric-note">%s</div></article>',
+            htmlspecialchars($label, ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($value, ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($note, ENT_QUOTES, 'UTF-8')
+        );
+    }
+
+    private function infoCard(string $title, string $body, string $href, string $actionLabel): string
+    {
+        return sprintf(
+            '<article class="info-card"><h3>%s</h3><p>%s</p><a class="card-action" href="%s">%s →</a></article>',
+            htmlspecialchars($title, ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($body, ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($href, ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($actionLabel, ENT_QUOTES, 'UTF-8')
+        );
     }
 }

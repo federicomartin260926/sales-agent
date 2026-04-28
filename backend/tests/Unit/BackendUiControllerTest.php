@@ -45,6 +45,20 @@ final class BackendUiControllerTest extends TestCase
         self::assertSame(['POST'], $route->getMethods());
     }
 
+    public function testLogoutRouteExistsForSessionExit(): void
+    {
+        $reflection = new \ReflectionMethod(BackendUiController::class, 'logout');
+        $attributes = $reflection->getAttributes(\Symfony\Component\Routing\Attribute\Route::class);
+
+        self::assertCount(1, $attributes);
+
+        /** @var \Symfony\Component\Routing\Attribute\Route $route */
+        $route = $attributes[0]->newInstance();
+
+        self::assertSame('/logout', $route->getPath());
+        self::assertSame(['GET'], $route->getMethods());
+    }
+
     public function testLoginPageRedirectsWhenUserIsAlreadyAuthenticated(): void
     {
         $security = $this->createStub(Security::class);
@@ -91,6 +105,7 @@ final class BackendUiControllerTest extends TestCase
             {
             }
         });
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => in_array($role, ['ROLE_MANAGER', 'ROLE_ADMIN'], true));
 
         $controller = new BackendUiController($security);
         $response = $controller->dashboard();
@@ -98,6 +113,38 @@ final class BackendUiControllerTest extends TestCase
         self::assertSame(Response::HTTP_OK, $response->getStatusCode());
         self::assertStringContainsString('Backend administrativo', $response->getContent());
         self::assertStringContainsString('/logout', $response->getContent());
+        self::assertStringContainsString('/backend/profile', $response->getContent());
+        self::assertStringContainsString('/backend/playbooks', $response->getContent());
+        self::assertStringContainsString('Sales Agent CRM', $response->getContent());
+    }
+
+    public function testProfileRendersCurrentSessionSummary(): void
+    {
+        $security = $this->createStub(Security::class);
+        $security->method('getUser')->willReturn(new class implements UserInterface {
+            public function getUserIdentifier(): string
+            {
+                return 'admin@example.com';
+            }
+
+            public function getRoles(): array
+            {
+                return ['ROLE_ADMIN'];
+            }
+
+            public function eraseCredentials(): void
+            {
+            }
+        });
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => in_array($role, ['ROLE_ADMIN', 'ROLE_MANAGER'], true));
+
+        $controller = new BackendUiController($security);
+        $response = $controller->profile();
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        self::assertStringContainsString('Mi perfil', $response->getContent());
+        self::assertStringContainsString('admin@example.com', $response->getContent());
+        self::assertStringContainsString('/backend/logout', $response->getContent());
     }
 
     public function testDashboardRedirectsWhenNoUserIsAuthenticated(): void
