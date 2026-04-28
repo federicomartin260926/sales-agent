@@ -68,7 +68,7 @@ final class BackendUiController
       --muted: #637287;
       --accent: #0f6ec7;
       --accent-strong: #134fbf;
-      --success: #16803d;
+      --success: #0f6ec7;
       --danger: #c33434;
       --shadow: 0 18px 42px rgba(15, 23, 42, 0.08);
       --radius: 18px;
@@ -224,7 +224,7 @@ final class BackendUiController
       border-radius: 14px;
       margin-top: 22px;
       padding: 14px 18px;
-      background: linear-gradient(135deg, var(--accent), #18a35d);
+      background: linear-gradient(135deg, var(--accent), #134fbf);
       color: white;
       font-weight: 800;
       cursor: pointer;
@@ -282,13 +282,6 @@ final class BackendUiController
         </div>
         <button class="button" type="submit">Entrar al backend</button>
       </form>
-      <div class="footer">
-        Credenciales iniciales:
-        <br>
-        <code>federicomartin2609@gmail.com</code>
-        <br>
-        <code>1234</code>
-      </div>
     </section>
   </main>
 </body>
@@ -782,7 +775,7 @@ HTML;
       --muted: #637287;
       --accent: #0f6ec7;
       --accent-strong: #134fbf;
-      --success: #16803d;
+      --success: #0f6ec7;
       --danger: #c33434;
       --shadow: 0 14px 36px rgba(15, 23, 42, 0.08);
       --radius: 18px;
@@ -965,7 +958,7 @@ HTML;
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      background: linear-gradient(135deg, #0f6ec7, #22c55e);
+      background: linear-gradient(135deg, #0f6ec7, #134fbf);
       font-size: 12px;
       font-weight: 900;
     }
@@ -1069,7 +1062,7 @@ HTML;
       transition: transform 120ms ease, box-shadow 120ms ease;
     }
     .primary-action {
-      background: linear-gradient(135deg, var(--accent), #18a35d);
+      background: linear-gradient(135deg, var(--accent), #134fbf);
       color: white;
       box-shadow: 0 12px 24px rgba(15, 110, 199, 0.18);
     }
@@ -1107,9 +1100,9 @@ HTML;
       display: inline-flex;
       padding: 6px 10px;
       border-radius: 999px;
-      background: rgba(22, 128, 61, 0.16);
-      border: 1px solid rgba(22, 128, 61, 0.3);
-      color: #bff7d0;
+      background: rgba(15, 110, 199, 0.14);
+      border: 1px solid rgba(15, 110, 199, 0.24);
+      color: #d9ecff;
       font-size: 12px;
       font-weight: 800;
     }
@@ -1234,7 +1227,7 @@ HTML;
       font-weight: 800;
     }
     .status-ok {
-      background: rgba(22, 128, 61, 0.12);
+      background: rgba(15, 110, 199, 0.12);
       color: var(--success);
     }
     .status-off {

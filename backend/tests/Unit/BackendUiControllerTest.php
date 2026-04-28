@@ -29,6 +29,7 @@ final class BackendUiControllerTest extends TestCase
         self::assertStringContainsString('name="password"', $response->getContent());
         self::assertStringContainsString('/backend/login-check', $response->getContent());
         self::assertStringContainsString('federicomartin2609@gmail.com', $response->getContent());
+        self::assertStringNotContainsString('Credenciales iniciales', $response->getContent());
     }
 
     public function testLoginCheckRouteExistsForPostSubmission(): void
