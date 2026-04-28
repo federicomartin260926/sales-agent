@@ -138,31 +138,6 @@ final class BackendUiController
       line-height: 1.7;
       max-width: 60ch;
     }
-    .pill-row, .stack {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 10px;
-      margin-top: 26px;
-    }
-    .stack {
-      flex-direction: column;
-      align-items: flex-start;
-      gap: 12px;
-    }
-    .pill {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      padding: 10px 14px;
-      border-radius: 999px;
-      background: rgba(148, 163, 184, 0.11);
-      border: 1px solid rgba(148, 163, 184, 0.18);
-      color: #dbeafe;
-      font-size: 13px;
-    }
-    .pill code {
-      color: #f8fbff;
-    }
     .card {
       background: var(--panel);
       padding: 30px;
@@ -256,15 +231,6 @@ final class BackendUiController
           Este panel es la entrada humana al backend Symfony. Se separa del API JSON y del servicio FastAPI
           para evitar confusión entre navegación de administrador e integración técnica.
         </p>
-        <div class="pill-row">
-          <span class="pill">Panel humano</span>
-          <span class="pill">Sesión de navegador</span>
-          <span class="pill">Backend Symfony</span>
-        </div>
-      </div>
-      <div class="stack">
-        <div class="pill">Ruta externa: <code>/backend/login</code></div>
-        <div class="pill">Ruta del dashboard: <code>/backend/dashboard</code></div>
       </div>
     </section>
     <section class="card">
