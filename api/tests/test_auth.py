@@ -7,6 +7,8 @@ from app.main import create_app
 
 
 os.environ["SALES_AGENT_BEARER_TOKEN"] = "test-internal-token"
+os.environ["BACKEND_BASE_URL"] = ""
+os.environ["CRM_BASE_URL"] = ""
 get_settings.cache_clear()
 
 client = TestClient(create_app())

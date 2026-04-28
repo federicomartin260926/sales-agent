@@ -22,8 +22,9 @@ Este directorio contiene el runtime del agente conversacional.
 
 1. recibe un mensaje de un tenant
 2. valida el bearer token de integración
-3. ejecuta el `DecisionEngine`
-4. devuelve una respuesta estructurada con intención, score y acción sugerida
+3. consulta el backend Symfony para cargar el contexto del negocio, producto y guía comercial
+4. ejecuta el `DecisionEngine`
+5. devuelve una respuesta estructurada con intención, score y acción sugerida
 
 ## Contrato de dominio
 
@@ -71,7 +72,43 @@ El runtime también acepta el formato simple `message: "..."` para pruebas o int
 - `needs_human`
 - `data_to_save`
 
-La respuesta debe ser estructurada para que `wa-gateway-api` decida cómo enviarla y el CRM decida qué persistir.
+La respuesta debe ser estructurada para que `wa-gateway-api` decida cómo enviarla y cualquier componente posterior decida qué guardar.
+
+## Integración con Symfony
+
+FastAPI lee contexto comercial desde el backend Symfony a través de:
+
+- `BACKEND_BASE_URL`
+
+En Docker local el valor por defecto apunta a:
+
+- `http://sales-agent-nginx/backend`
+
+El runtime consulta:
+
+- `GET /api/tenants/{tenant_id}`
+- `GET /api/products`
+- `GET /api/playbooks`
+
+Si el backend no está disponible o el tenant no existe, el runtime cae a un modo de fallback basado en heurísticas simples para no romper la conversación.
+
+## Integración con CRM
+
+El runtime también puede leer contexto del CRM a través de:
+
+- `CRM_BASE_URL`
+
+En esta fase se espera este contrato:
+
+- `GET /api/agent/contact-context?phone=<phone>`
+
+El CRM devuelve contexto de contacto, lead y oportunidad para:
+
+- evitar preguntas redundantes
+- detectar si el lead ya está avanzado
+- mejorar el handoff a humano
+
+El runtime no escribe en el CRM. Solo consume ese contexto para enriquecer la decisión conversacional.
 
 ## Formato de entrada
 
@@ -100,7 +137,6 @@ En local y en producción se configura con la variable `SALES_AGENT_BEARER_TOKEN
 
 ## Extensión futura
 
-- `llm_client.py`: OpenAI u Ollama
 - `crm_client.py`: contexto desde el CRM
 - `rag_client.py`: recuperación semántica
-- `backend_client.py`: lectura de configuración del backend Symfony
+- `llm_client.py`: OpenAI u Ollama

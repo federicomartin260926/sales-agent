@@ -75,6 +75,7 @@ make prod-up
 ```
 
 En producción, `sales-agent-nginx` se publica por la red Docker compartida `proxy` y el runtime de la API usa `Authorization: Bearer ...` para llamadas de otros servicios.
+Cuando `sales-agent` y `crm` conviven en el mismo VPS, la API lee el CRM por la red interna compartida `commercial_internal` usando `CRM_BASE_URL=http://crm-nginx`.
 
 ## Puertos y rutas
 
@@ -165,13 +166,14 @@ Se mantiene el contrato conceptual del CRM:
 ## Integraciones previstas
 
 - `wa-gateway-api`: entrada de mensajes y eventos de WhatsApp
-- CRM: sincronización de contexto comercial y datos de cuenta
+- CRM: lectura de contexto comercial y datos de cuenta
 - `ai-stack`: recuperación semántica y contexto documental
 - LLM: proveedor intercambiable entre OpenAI y Ollama
 
 ## Documentación adicional
 
 - [Modelo de dominio](docs/domain-model.md)
+- [Contrato de CRM](docs/crm-contract.md)
 - [Guía funcional del sistema](docs/operating-model.md)
 - [Glosario oficial](docs/glossary.md)
 - [TODO del proyecto](docs/todo.md)

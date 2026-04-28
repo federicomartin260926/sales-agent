@@ -8,7 +8,7 @@ Terminología visible:
 - `guía comercial` para `playbook`
 - `producto / servicio` para `product`
 
-Consulta el [glosario oficial](glossary.md) para el uso exacto de cada término y el [modelo de dominio](domain-model.md) para la forma estructurada de cada campo.
+Consulta el [glosario oficial](glossary.md) para el uso exacto de cada término, el [modelo de dominio](domain-model.md) para la forma estructurada de cada campo y el [contrato de CRM](crm-contract.md) para el enriquecimiento comercial del runtime.
 
 ## Objetivo
 
@@ -284,7 +284,7 @@ El sistema debe poder marcar `needs_human = true` cuando:
 Debe:
 
 - leer contexto del CRM cuando lo necesite
-- devolver datos estructurados para persistencia
+- devolver datos estructurados para que otros componentes puedan decidir qué hacer con ellos
 - evitar duplicar la fuente de verdad de leads y clientes
 
 El CRM sigue siendo el sistema maestro para:

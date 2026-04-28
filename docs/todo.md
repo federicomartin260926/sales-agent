@@ -23,7 +23,7 @@ Lista ordenada de trabajo para llevar `sales-agent` desde la base actual al runt
 - reemplazar reglas por keyword con lógica basada en contexto
 - incorporar scoring según playbook
 - distinguir intent, action y necesidad de humano
-- persistir `data_to_save` útil para CRM
+- estructurar `data_to_save` como salida para integraciones posteriores
 - hacer el flujo extensible por tenant y producto
 
 ## 4. Integrar CRM
@@ -56,7 +56,7 @@ Lista ordenada de trabajo para llevar `sales-agent` desde la base actual al runt
 
 ## 8. Persistencia operativa
 
-- decidir qué datos se escriben en CRM y cuáles en `sales-agent`
+- decidir qué datos se guardan fuera de `sales-agent` y en qué sistema viven
 - registrar trazas de decisión
 - guardar eventos conversacionales relevantes
 - preparar auditoría mínima de respuestas y acciones
@@ -87,4 +87,3 @@ Lista ordenada de trabajo para llevar `sales-agent` desde la base actual al runt
 - confirmar separación final entre dev y prod
 - documentar variables de entorno críticas
 - mantener `make` como entrada principal para operar el proyecto
-

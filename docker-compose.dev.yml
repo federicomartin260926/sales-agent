@@ -6,6 +6,8 @@ services:
       - sales_agent_backend_var:/var/www/html/backend/var
 
   sales-agent-api:
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
       - ./api:/app
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload

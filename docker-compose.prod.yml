@@ -18,12 +18,16 @@ services:
     environment:
       PYTHONPATH: /app
       APP_ENV: prod
+      BACKEND_BASE_URL: ${BACKEND_BASE_URL:-http://sales-agent-nginx/backend}
       LLM_PROVIDER: ${LLM_PROVIDER:-openai}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-}
-      CRM_BASE_URL: ${CRM_BASE_URL:-}
+      CRM_BASE_URL: ${CRM_BASE_URL:-http://crm-nginx}
       RAG_API_URL: ${RAG_API_URL:-}
       SALES_AGENT_BEARER_TOKEN: ${SALES_AGENT_BEARER_TOKEN:-change-me-sales-agent-bearer-token}
+    networks:
+      - sales-agent-net
+      - commercial_internal
     restart: unless-stopped
 
   sales-agent-nginx:
@@ -44,3 +48,7 @@ networks:
   proxy:
     external: true
     name: proxy
+
+  commercial_internal:
+    external: true
+    name: commercial_internal
