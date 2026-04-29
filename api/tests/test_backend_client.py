@@ -1,5 +1,5 @@
-import pytest
 import httpx
+import pytest
 
 from app.config import Settings
 from app.services.backend_client import BackendClient
@@ -15,11 +15,7 @@ def transport_handler(request: httpx.Request) -> httpx.Response:
                 "slug": "negocio-demo",
                 "businessContext": "Contexto comercial",
                 "tone": "consultivo",
-                "salesPolicy": {
-                    "positioning": "Responder con claridad y foco comercial.",
-                    "qualificationFocus": "Identificar volumen, canal y urgencia.",
-                    "handoffRules": "Derivar a humano si piden seguimiento manual.",
-                },
+                "salesPolicy": {},
                 "isActive": True,
                 "createdAt": "2026-04-28T12:00:00+00:00",
             },
@@ -33,50 +29,45 @@ def transport_handler(request: httpx.Request) -> httpx.Response:
                     "id": "product-1",
                     "tenantId": "tenant-1",
                     "name": "WhatsApp Automation",
+                    "slug": "whatsapp-automation",
+                    "externalSource": "crm",
+                    "externalReference": "pack-starter",
                     "description": "Automatización de conversaciones.",
                     "valueProposition": "Atiende leads 24/7 con reglas comerciales.",
-                    "salesPolicy": {
-                        "positioning": "Automatización comercial.",
-                    },
-                    "isActive": True,
-                },
-                {
-                    "id": "product-2",
-                    "tenantId": "tenant-1",
-                    "name": "Inactive",
-                    "description": "",
-                    "valueProposition": "",
+                    "basePriceCents": 150000,
+                    "currency": "EUR",
                     "salesPolicy": {},
-                    "isActive": False,
-                },
-            ],
-        )
-
-    if request.method == "GET" and request.url.path == "/backend/api/playbooks":
-        return httpx.Response(
-            200,
-            json=[
-                {
-                    "id": "playbook-1",
-                    "tenantId": "tenant-1",
-                    "productId": "product-1",
-                    "name": "Guía comercial WhatsApp",
-                    "config": {
-                        "objective": "Calificar leads entrantes.",
-                        "qualificationQuestions": ["¿Qué negocio tienes?"],
-                        "scoring": {
-                            "maxScore": 10,
-                            "handoffThreshold": 7,
-                            "positiveSignals": ["Tiene volumen"],
-                            "negativeSignals": ["No decide"],
-                        },
-                        "handoffRules": ["Derivar si piden humano."],
-                        "allowedActions": ["askQuestion", "handoffToHuman"],
-                    },
                     "isActive": True,
                 }
             ],
         )
+
+    if request.method == "GET" and request.url.path == "/backend/api/playbooks":
+        return httpx.Response(200, json=[])
+
+    if request.method == "GET" and request.url.path == "/backend/api/internal/routing/entrypoint-ref/abc123":
+        return httpx.Response(
+            200,
+            json={
+                "entry_point_utm_id": "utm-1",
+                "ref": "abc123",
+                "entry_point_id": "entrypoint-1",
+                "entry_point_code": "crm-demo",
+                "tenant_id": "tenant-1",
+                "tenant_slug": "negocio-demo",
+                "product_id": "product-1",
+                "product_name": "WhatsApp Automation",
+                "playbook_id": "playbook-1",
+                "crm_branch_ref": "branch-1",
+                "utm_source": "google",
+                "utm_medium": "cpc",
+                "utm_campaign": "crm_pymes",
+                "status": "matched",
+            },
+        )
+
+    if request.method == "GET" and request.url.path == "/backend/api/internal/routing/whatsapp-phone/phone-number-id-1":
+        return httpx.Response(200, json={"tenant_id": "tenant-1", "tenant_slug": "negocio-demo"})
 
     return httpx.Response(404, json={"detail": "not found"})
 
@@ -95,8 +86,36 @@ async def test_backend_client_loads_tenant_context():
     assert len(context.products) == 1
     assert context.selected_product is not None
     assert context.selected_product.name == "WhatsApp Automation"
-    assert context.selected_playbook is not None
-    assert context.selected_playbook.name == "Guía comercial WhatsApp"
+    assert context.selected_product.slug == "whatsapp-automation"
+    assert context.selected_product.external_reference == "pack-starter"
+
+
+@pytest.mark.asyncio
+async def test_backend_client_resolves_entrypoint_ref():
+    client = BackendClient(
+        Settings(BACKEND_BASE_URL="http://sales-agent-nginx/backend"),
+        transport=httpx.MockTransport(transport_handler),
+    )
+
+    context = await client.resolve_entrypoint_ref("abc123")
+
+    assert context is not None
+    assert context.entry_point_id == "entrypoint-1"
+    assert context.entry_point_utm_id == "utm-1"
+    assert context.product_id == "product-1"
+
+
+@pytest.mark.asyncio
+async def test_backend_client_resolves_whatsapp_phone():
+    client = BackendClient(
+        Settings(BACKEND_BASE_URL="http://sales-agent-nginx/backend"),
+        transport=httpx.MockTransport(transport_handler),
+    )
+
+    context = await client.resolve_whatsapp_phone("phone-number-id-1")
+
+    assert context is not None
+    assert context["tenant_id"] == "tenant-1"
 
 
 @pytest.mark.asyncio

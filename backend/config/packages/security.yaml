@@ -17,6 +17,10 @@ security:
       pattern: ^/(_(profiler|wdt)|css|images|js)/
       security: false
 
+    public_routing:
+      pattern: ^/api/r/wa
+      security: false
+
     api_login:
       pattern: ^/api/login
       stateless: true
@@ -54,8 +58,9 @@ security:
     - { path: ^/login, roles: PUBLIC_ACCESS }
     - { path: ^/(backend/)?logout$, roles: PUBLIC_ACCESS }
     - { path: ^/(dashboard|profile), roles: [ROLE_AGENT, ROLE_MANAGER, ROLE_ADMIN] }
-    - { path: ^/(playbooks|tenants|products|api-health), roles: [ROLE_MANAGER, ROLE_ADMIN] }
+    - { path: ^/(playbooks|tenants|products|api-health|channels|entry-points|tracking), roles: [ROLE_MANAGER, ROLE_ADMIN] }
     - { path: ^/users, roles: ROLE_ADMIN }
     - { path: ^/api/health, roles: PUBLIC_ACCESS }
     - { path: ^/api/login, roles: PUBLIC_ACCESS }
+    - { path: ^/api/r/wa, roles: PUBLIC_ACCESS }
     - { path: ^/api, roles: [ROLE_AGENT, ROLE_MANAGER, ROLE_ADMIN] }

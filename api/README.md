@@ -9,6 +9,8 @@ Este directorio contiene el runtime del agente conversacional.
 - decide respuestas simples sin invocar todavía un LLM real
 - deja listos los clientes para LLM, CRM, RAG y backend
 - protege el runtime con `Authorization: Bearer <token>` para tráfico service-to-service
+- resuelve routing explícito por `entrypoint_ref`, `phone_number_id` o `tenant_id`
+- persiste o actualiza una conversación mínima cuando el routing está resuelto
 
 ## Stack
 
@@ -22,9 +24,11 @@ Este directorio contiene el runtime del agente conversacional.
 
 1. recibe un mensaje de un tenant
 2. valida el bearer token de integración
-3. consulta el backend Symfony para cargar el contexto del negocio, producto y guía comercial
-4. ejecuta el `DecisionEngine`
-5. devuelve una respuesta estructurada con intención, score y acción sugerida
+3. resuelve routing por `entrypoint_ref`, `phone_number_id` o `tenant_id`
+4. consulta el backend Symfony para cargar el contexto del negocio, producto y guía comercial
+5. consulta el CRM por teléfono si está disponible
+6. ejecuta el `DecisionEngine`
+7. devuelve una respuesta estructurada con intención, score y acción sugerida
 
 ## Contrato de dominio
 
@@ -61,6 +65,21 @@ El runtime también acepta el formato simple `message: "..."` para pruebas o int
 
 `conversation.last_messages` es una lista de textos ya normalizados.
 
+### Routing
+
+`POST /agent/respond` también acepta, de forma opcional:
+
+- `external_channel_id`
+- `phone_number_id` como alias de `external_channel_id`
+- `entrypoint_ref`
+- `raw_event`
+
+El runtime extrae `entrypoint_ref` explícito o desde el texto del mensaje usando patrones como:
+
+- `Ref: abc123`
+- `ref abc123`
+- `#abc123`
+
 ### Salida
 
 `POST /agent/respond` devuelve siempre:
@@ -90,6 +109,14 @@ El runtime consulta:
 - `GET /api/products`
 - `GET /api/playbooks`
 
+El catálogo de productos devuelto por el backend incluye además:
+
+- `slug`
+- `externalSource`
+- `externalReference`
+- `basePriceCents`
+- `currency`
+
 Si el backend no está disponible o el tenant no existe, el runtime cae a un modo de fallback basado en heurísticas simples para no romper la conversación.
 
 ## Integración con CRM
@@ -107,6 +134,9 @@ El CRM devuelve contexto de contacto, lead y oportunidad para:
 - evitar preguntas redundantes
 - detectar si el lead ya está avanzado
 - mejorar el handoff a humano
+
+Si el routing aporta `crm_branch_ref`, el runtime lo conserva en `data_to_save` como texto opaco.
+Si el contexto comercial incluye un producto, `data_to_save` también conserva `product_slug`, `product_external_source`, `product_external_reference`, `product_base_price_cents` y `product_currency` cuando existen.
 
 El runtime no escribe en el CRM. Solo consume ese contexto para enriquecer la decisión conversacional.
 

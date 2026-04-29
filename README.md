@@ -13,6 +13,8 @@ El proyecto está preparado para integrarse más adelante con:
 - el CRM existente
 - `ai-stack` para RAG
 - OpenAI u Ollama para LLM
+- routing explícito de WhatsApp mediante entrypoints y atribución por click
+- importación de productos/servicios desde CRM usando `integration_key`
 
 ## Documentación común
 
@@ -102,19 +104,38 @@ Rutas públicas a través de Nginx:
 - Panel humano:
   - `GET /backend/login`
   - `GET /backend/dashboard`
+  - `GET /backend/entry-points`
   - `GET /backend/profile`
 - `GET /backend/api/health`
 - CRUD REST básico:
   - `/backend/api/tenants` para negocios
   - `/backend/api/products`
   - `/backend/api/playbooks` para guías comerciales
+- Routing y atribución:
+  - `/backend/api/r/wa/{entrypointCode}`
+  - `/backend/api/internal/routing/entrypoint-ref/{ref}`
+  - `/backend/api/internal/routing/whatsapp-phone/{phoneNumberId}`
+  - `/backend/api/internal/conversations/upsert`
+- Catálogo comercial:
+  - `/backend/products`
+  - `/backend/products/import`
 - `POST /backend/api/login` para el patrón de seguridad basado en JWT
 
 El backend humano sigue un layout tipo CRM con sidebar, métricas, navegación por módulos y perfil editable para nombre y clave.
+La UI heredada todavía conserva compatibilidad con piezas antiguas, pero el modelo canónico de routing ya es `EntryPoint -> EntryPointUtm -> Conversation`.
+El catálogo de productos puede importarse desde CRM con `externalSource = crm` y `externalReference = integration_key`.
 
 ## Bootstrap inicial del backend
 
-El backend Symfony incluye un bootstrap idempotente para crear el primer usuario administrador, un negocio de prueba, un producto de prueba y guías comerciales de prueba general y por producto.
+El backend Symfony incluye un bootstrap idempotente para crear el primer usuario administrador y datos semilla mínimos del dominio comercial.
+Hoy ese seed cubre el núcleo operativo de `tenant`, `product` y `playbook`.
+El routing canónico se configura aparte con:
+
+- `Tenant.whatsappPhoneNumberId`
+- `Tenant.whatsappPublicPhone`
+- `EntryPoint` asociado a `Product`
+- `EntryPointUtm` generado por click
+- `Conversation` como hilo operativo
 
 ```bash
 make schema-update
@@ -169,6 +190,19 @@ Se mantiene el contrato conceptual del CRM:
 - CRM: lectura de contexto comercial y datos de cuenta
 - `ai-stack`: recuperación semántica y contexto documental
 - LLM: proveedor intercambiable entre OpenAI y Ollama
+
+## Routing de WhatsApp
+
+El flujo esperado es:
+
+1. un enlace o QR apunta a `GET /backend/api/r/wa/{entrypointCode}`
+2. el backend crea un `EntryPointUtm` con `ref` corto y UTMs
+3. el redirect lleva al usuario a `wa.me` con `Ref: <ref>` dentro del mensaje
+4. `wa-gateway-api` recibe la respuesta entrante
+5. `sales-agent/api` resuelve `entrypoint_ref` o `phone_number_id`
+6. el runtime obtiene `Tenant` desde `EntryPoint -> Product` o desde `Tenant.whatsappPhoneNumberId`
+7. la conversación mínima queda persistida en `Conversation`
+8. los productos importados desde CRM usan `slug` como fallback local y `externalReference` como clave estable
 
 ## Documentación adicional
 

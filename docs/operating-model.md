@@ -19,6 +19,7 @@ Su función principal es:
 - recibir mensajes normalizados desde `wa-gateway-api`
 - identificar el tenant correcto
 - cargar contexto de negocio, producto y playbook
+- resolver routing explícito por entrypoint o número de WhatsApp cuando exista
 - consultar CRM, RAG y LLM cuando el caso lo requiera
 - devolver una respuesta estructurada y una acción recomendada
 
@@ -48,6 +49,8 @@ Debe:
 - administrar tenants
 - administrar productos
 - administrar playbooks
+- importar productos/servicios desde CRM usando `integration_key` como referencia externa
+- administrar entrypoints y la atribución por click
 - preparar datos iniciales y mantenimiento operativo
 
 ### `wa-gateway-api`
@@ -71,6 +74,20 @@ El CRM sigue siendo el sistema maestro de:
 - pipeline
 
 `sales-agent` puede leer contexto del CRM, pero no debe convertirse en la fuente principal de verdad para esos datos.
+
+## Routing y atribución
+
+La atribución comercial debe ser explícita.
+
+### Routing canónico
+
+- `Tenant.whatsappPhoneNumberId` identifica el negocio cuando llega un evento desde Meta
+- `Tenant.whatsappPublicPhone` se usa en el redirect público a `wa.me`
+- `EntryPoint` representa un enlace, botón, QR o anuncio y apunta a un `Product`
+- `EntryPointUtm` captura UTMs y el `ref` generado por click
+- `Conversation` conserva el hilo mínimo necesario para operación y atribución
+
+El tenant no debe inferirse por el teléfono del cliente.
 
 ## Modelo funcional
 
@@ -169,6 +186,69 @@ Campos esperados:
 - `config` JSON
 - `isActive`
 
+## Flujo esperado de atribución
+
+### 1. Link de campaña
+
+Un enlace, botón o QR apunta a:
+
+`GET /api/r/wa/{entrypointCode}?utm_source=...`
+
+Ese endpoint:
+
+- busca el `EntryPoint` activo
+- crea un `EntryPointUtm`
+- genera un `ref` corto y único
+- redirige a `wa.me` con el `ref` incluido en el texto prefijado
+
+### 2. Entrada a WhatsApp
+
+El mensaje llega a WhatsApp con el `ref` incrustado.
+
+### 3. Gateway
+
+`wa-gateway-api` normaliza el evento y llama a `sales-agent/api`.
+
+### 4. Resolución en runtime
+
+El runtime resuelve en este orden:
+
+1. `entrypoint_ref` explícito o extraído del texto
+2. `phone_number_id` o `external_channel_id` para resolver `Tenant.whatsappPhoneNumberId`
+3. `tenant_id` explícito como fallback controlado
+4. error estructurado con `needs_human = true` si no hay contexto suficiente
+
+### 5. Resolución de producto y playbook
+
+El orden de prioridad es:
+
+1. `EntryPoint.product` y `EntryPoint.playbook`
+2. `EntryPointUtm` vinculado al `EntryPoint`
+3. contexto del tenant sin producto seleccionado
+4. fallback explícito solo si existe exactamente un producto activo
+
+El runtime no debe escoger el primer producto activo por orden de lista.
+
+### Catálogo CRM
+
+Cuando CRM exporta el catálogo de servicios/productos, `sales-agent` debe importarlo como upsert por tenant.
+
+Reglas:
+
+- CRM expone `integration_key`
+- SA guarda ese valor como `externalReference`
+- SA marca `externalSource = crm`
+- `slug` permanece como identificador local/fallback
+- el catálogo importado puede alimentar playbooks y decisiones comerciales
+
+Flujo recomendado:
+
+1. CRM exporta CSV o JSON con `integration_key`
+2. SA importa el archivo en el tenant correcto
+3. `Product` queda alineado con `externalSource` y `externalReference`
+4. playbooks usan el producto importado
+5. el runtime expone `externalReference` cuando forma parte del contexto
+
 ## Flujo esperado de conversación
 
 ### 1. Entrada
@@ -203,9 +283,9 @@ Ese token no representa a una persona. Es un secreto de integración entre servi
 
 La primera decisión funcional es determinar el tenant:
 
-- por `tenant_id` explícito
-- por contexto de integración
-- por reglas de lookup futuras
+- por `entrypoint_ref` cuando exista
+- por `phone_number_id` o `external_channel_id` usando `Tenant.whatsappPhoneNumberId`
+- por `tenant_id` explícito como fallback controlado
 
 El runtime no debe responder de forma genérica sin saber para qué tenant está trabajando.
 

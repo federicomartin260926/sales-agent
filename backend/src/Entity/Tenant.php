@@ -35,6 +35,14 @@ class Tenant
     #[ORM\Column(length: 120, nullable: true)]
     private ?string $tone = null;
 
+    #[Assert\Length(max: 255)]
+    #[ORM\Column(name: 'whatsapp_phone_number_id', length: 255, nullable: true)]
+    private ?string $whatsappPhoneNumberId = null;
+
+    #[Assert\Length(max: 50)]
+    #[ORM\Column(name: 'whatsapp_public_phone', length: 50, nullable: true)]
+    private ?string $whatsappPublicPhone = null;
+
     #[Assert\Callback]
     public function validateSalesPolicy(ExecutionContextInterface $context): void
     {
@@ -106,6 +114,26 @@ class Tenant
         $this->tone = $tone;
     }
 
+    public function getWhatsappPhoneNumberId(): ?string
+    {
+        return $this->whatsappPhoneNumberId;
+    }
+
+    public function setWhatsappPhoneNumberId(?string $whatsappPhoneNumberId): void
+    {
+        $this->whatsappPhoneNumberId = $whatsappPhoneNumberId;
+    }
+
+    public function getWhatsappPublicPhone(): ?string
+    {
+        return $this->whatsappPublicPhone;
+    }
+
+    public function setWhatsappPublicPhone(?string $whatsappPublicPhone): void
+    {
+        $this->whatsappPublicPhone = $whatsappPublicPhone;
+    }
+
     public function getSalesPolicy(): array
     {
         return $this->salesPolicy;
@@ -144,6 +172,8 @@ class Tenant
             'slug' => $this->slug,
             'businessContext' => $this->businessContext,
             'tone' => $this->tone,
+            'whatsappPhoneNumberId' => $this->whatsappPhoneNumberId,
+            'whatsappPublicPhone' => $this->whatsappPublicPhone,
             'salesPolicy' => $this->salesPolicy,
             'isActive' => $this->isActive,
             'createdAt' => $this->createdAt->format(\DateTimeInterface::ATOM),

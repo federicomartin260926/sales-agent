@@ -56,10 +56,15 @@ Uso recomendado:
 - "Crear servicio"
 - "Producto o servicio"
 
+## Entry point
+
+Nombre visible para lo que técnicamente se modela como `EntryPoint`.
+
+Representa un enlace, botón, anuncio o QR que introduce contexto comercial y atribución.
+
 ## Reglas de redacción
 
 - Usar `negocio` cuando se hable de aislamiento comercial, contexto o configuración por cliente.
 - Usar `guía comercial` cuando se hable de cualificación, scoring, handoff y agenda.
 - Usar `producto / servicio` cuando se hable de la oferta comercial.
 - Reservar `tenant` y `playbook` para documentación técnica, código, API interna y persistencia.
-

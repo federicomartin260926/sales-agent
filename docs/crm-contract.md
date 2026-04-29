@@ -64,6 +64,29 @@ El CRM debería responder con un objeto que pueda incluir:
 - `askedForDemo` opcional
 - `needsHuman` opcional
 
+### `crmBranchRef`
+
+`crmBranchRef` es un identificador opaco y opcional que puede viajar desde el routing o desde un entrypoint.
+
+Reglas:
+
+- `sales-agent` lo conserva como texto opaco
+- no debe validarlo
+- no debe crear ni administrar ramas CRM internamente
+- no depende de que el CRM soporte branches como entidad explícita
+
+### Catálogo de productos / servicios
+
+Cuando CRM exporta catálogo para importar en `sales-agent`, la clave estable de integración es `integration_key`.
+
+Reglas:
+
+- `sales-agent` debe guardar `integration_key` en `externalReference`
+- `sales-agent` debe marcar `externalSource = crm`
+- el UUID interno de CRM no se usa como contrato de integración
+- `slug` queda como identificador local y fallback
+- el importador debe hacer upsert por tenant y referencia externa
+
 ## Salida interna
 
 `sales-agent` devuelve una respuesta estructurada para que otros componentes del stack decidan si guardan o no eventos, resúmenes o estados derivados.
@@ -84,3 +107,4 @@ La salida del runtime incluye:
 - El CRM sigue siendo la fuente maestra.
 - `sales-agent` usa el CRM para evitar redundancia y mejorar handoff.
 - Si el CRM no responde, el runtime sigue funcionando con el contexto del backend y fallback heurístico.
+- `crmBranchRef` es solo dato de atribución, no dependencia funcional.

@@ -64,7 +64,8 @@ def test_agent_endpoint_accepts_wa_gateway_payload_shape():
         headers={"Authorization": "Bearer test-internal-token"},
         json={
             "tenant_id": "default",
-            "channel": "whatsapp",
+            "channel_type": "whatsapp",
+            "phone_number_id": "1234567890",
             "contact": {
                 "wa_id": "34600000000",
                 "from": "34600000000",

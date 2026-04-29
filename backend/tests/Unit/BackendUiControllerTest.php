@@ -3,13 +3,16 @@
 namespace App\Tests\Unit;
 
 use App\Controller\Web\BackendUiController;
+use App\Entity\EntryPoint;
 use App\Entity\Playbook;
 use App\Entity\Product;
 use App\Entity\Tenant;
 use App\Entity\User;
+use App\Repository\EntryPointRepository;
 use App\Repository\PlaybookRepository;
 use App\Repository\ProductRepository;
 use App\Repository\TenantRepository;
+use App\Service\ProductCatalogImportService;
 use PHPUnit\Framework\TestCase;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\HttpFoundation\Request;
@@ -28,12 +31,13 @@ final class BackendUiControllerTest extends TestCase
         ?EntityManagerInterface $entityManager = null,
         ?UserPasswordHasherInterface $passwordHasher = null,
         ?CsrfTokenManagerInterface $csrfTokenManager = null,
+        ?ProductCatalogImportService $productCatalogImportService = null,
     ): BackendUiController {
         $entityManager ??= $this->createStub(EntityManagerInterface::class);
         $passwordHasher ??= $this->createStub(UserPasswordHasherInterface::class);
         $csrfTokenManager ??= $this->createStub(CsrfTokenManagerInterface::class);
 
-        return new BackendUiController($security, $entityManager, $passwordHasher, $csrfTokenManager);
+        return new BackendUiController($security, $entityManager, $passwordHasher, $productCatalogImportService, $csrfTokenManager);
     }
 
     private function createAuthenticatedUser(string $email = 'admin@example.com', array $roles = ['admin'], ?string $name = null): User
@@ -103,6 +107,31 @@ final class BackendUiControllerTest extends TestCase
             {
                 return $this->foundProduct;
             }
+
+            public function findOneByTenantAndSlug(Tenant $tenant, string $slug): ?Product
+            {
+                foreach ($this->orderedProducts as $product) {
+                    if ($product->getTenant()->getId()->toRfc4122() === $tenant->getId()->toRfc4122() && $product->getSlug() === $slug) {
+                        return $product;
+                    }
+                }
+
+                return null;
+            }
+
+            public function findOneByExternalIdentity(Tenant $tenant, string $source, string $reference): ?Product
+            {
+                foreach ($this->orderedProducts as $product) {
+                    if ($product->getTenant()->getId()->toRfc4122() === $tenant->getId()->toRfc4122()
+                        && $product->getExternalSource() === $source
+                        && $product->getExternalReference() === $reference
+                    ) {
+                        return $product;
+                    }
+                }
+
+                return null;
+            }
         };
     }
 
@@ -132,6 +161,42 @@ final class BackendUiControllerTest extends TestCase
             public function find($id, $lockMode = null, $lockVersion = null): ?object
             {
                 return $this->foundPlaybook;
+            }
+        };
+    }
+
+    /**
+     * @param EntryPoint[] $orderedEntryPoints
+     */
+    private function createEntryPointRepositoryFake(array $orderedEntryPoints = [], ?EntryPoint $foundEntryPoint = null, ?EntryPoint $existingEntryPoint = null): EntryPointRepository
+    {
+        return new class($orderedEntryPoints, $foundEntryPoint, $existingEntryPoint) extends EntryPointRepository {
+            /**
+             * @param EntryPoint[] $orderedEntryPoints
+             */
+            public function __construct(
+                private array $orderedEntryPoints,
+                private ?EntryPoint $foundEntryPoint,
+                private ?EntryPoint $existingEntryPoint,
+            ) {
+            }
+
+            /**
+             * @return EntryPoint[]
+             */
+            public function findAllOrdered(): array
+            {
+                return $this->orderedEntryPoints;
+            }
+
+            public function findOneBy(array $criteria, ?array $orderBy = null): ?object
+            {
+                return $this->existingEntryPoint;
+            }
+
+            public function find($id, $lockMode = null, $lockVersion = null): ?object
+            {
+                return $this->foundEntryPoint;
             }
         };
     }
@@ -269,10 +334,32 @@ final class BackendUiControllerTest extends TestCase
         self::assertStringContainsString('/logout', $response->getContent());
         self::assertStringContainsString('/backend/profile', $response->getContent());
         self::assertStringContainsString('/backend/playbooks', $response->getContent());
+        self::assertStringContainsString('/backend/entry-points', $response->getContent());
         self::assertStringContainsString('Admin', $response->getContent());
         self::assertStringContainsString('Usuarios', $response->getContent());
         self::assertStringContainsString('Salir', $response->getContent());
         self::assertStringContainsString('Negocios', $response->getContent());
+    }
+
+    public function testEntryPointRoutesExistForListingDetailAndEditing(): void
+    {
+        foreach ([
+            ['entryPoints', '/entry-points', ['GET']],
+            ['entryPointCreate', '/entry-points/new', ['GET', 'POST']],
+            ['entryPointEdit', '/entry-points/{id}/edit', ['GET', 'POST']],
+            ['entryPointDetail', '/entry-points/{id}', ['GET']],
+        ] as [$method, $path, $methods]) {
+            $reflection = new \ReflectionMethod(BackendUiController::class, $method);
+            $attributes = $reflection->getAttributes(\Symfony\Component\Routing\Attribute\Route::class);
+
+            self::assertCount(1, $attributes);
+
+            /** @var \Symfony\Component\Routing\Attribute\Route $route */
+            $route = $attributes[0]->newInstance();
+
+            self::assertSame($path, $route->getPath());
+            self::assertSame($methods, $route->getMethods());
+        }
     }
 
     public function testTenantsPageRendersCreateAndEditActions(): void
@@ -651,10 +738,12 @@ final class BackendUiControllerTest extends TestCase
         $response = $controller->products($products);
 
         self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        self::assertStringContainsString('Importar desde CRM', $response->getContent());
         self::assertStringContainsString('Crear producto / servicio', $response->getContent());
         self::assertStringContainsString('icon-action', $response->getContent());
         self::assertStringContainsString('Editar producto / servicio', $response->getContent());
         self::assertStringContainsString('WhatsApp Automation', $response->getContent());
+        self::assertStringContainsString('Slug:', $response->getContent());
     }
 
     public function testProductCreateFormRendersTheExpectedFields(): void
@@ -678,6 +767,11 @@ final class BackendUiControllerTest extends TestCase
         self::assertSame(Response::HTTP_OK, $response->getStatusCode());
         self::assertStringContainsString('Crear producto / servicio', $response->getContent());
         self::assertStringContainsString('name="tenantId"', $response->getContent());
+        self::assertStringContainsString('name="slug"', $response->getContent());
+        self::assertStringContainsString('name="externalSource"', $response->getContent());
+        self::assertStringContainsString('name="externalReference"', $response->getContent());
+        self::assertStringContainsString('name="basePriceCents"', $response->getContent());
+        self::assertStringContainsString('name="currency"', $response->getContent());
         self::assertStringContainsString('name="name"', $response->getContent());
         self::assertStringContainsString('name="description"', $response->getContent());
         self::assertStringContainsString('name="valueProposition"', $response->getContent());
@@ -686,6 +780,29 @@ final class BackendUiControllerTest extends TestCase
         self::assertStringContainsString('name="objections"', $response->getContent());
         self::assertStringContainsString('name="handoffRules"', $response->getContent());
         self::assertStringContainsString('name="notes"', $response->getContent());
+    }
+
+    public function testProductImportPageRendersHelpAndPayloadFields(): void
+    {
+        $tenant = new Tenant('Federico Martin Demo', 'federico-martin-demo');
+
+        $security = $this->createStub(Security::class);
+        $security->method('getUser')->willReturn($this->createAuthenticatedUser('manager@example.com', ['manager'], 'María Manager'));
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => in_array($role, ['ROLE_MANAGER', 'ROLE_ADMIN'], true));
+
+        $tenants = $this->createTenantRepositoryFake([$tenant]);
+
+        $controller = $this->createController($security);
+        $response = $controller->productImport(Request::create('/backend/products/import', 'GET'), $tenants);
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        self::assertStringContainsString('Importar catálogo de productos / servicios', $response->getContent());
+        self::assertStringContainsString('Cómo alinear productos/servicios con CRM', $response->getContent());
+        self::assertStringContainsString('name="tenantId"', $response->getContent());
+        self::assertStringContainsString('name="format"', $response->getContent());
+        self::assertStringContainsString('name="file"', $response->getContent());
+        self::assertStringContainsString('name="payload"', $response->getContent());
+        self::assertStringContainsString('integration_key', $response->getContent());
     }
 
     public function testProductCreateSubmissionPersistsNewProduct(): void
@@ -700,8 +817,13 @@ final class BackendUiControllerTest extends TestCase
         $entityManager->expects(self::once())->method('persist')->with(self::callback(static function (Product $product) use ($tenant): bool {
             return $product->getTenant()->getId()->toRfc4122() === $tenant->getId()->toRfc4122()
                 && $product->getName() === 'WhatsApp Automation'
+                && $product->getSlug() === 'whatsapp-automation'
                 && $product->getDescription() === 'Automatización'
                 && $product->getValueProposition() === 'Reduce tiempo'
+                && $product->getExternalSource() === 'crm'
+                && $product->getExternalReference() === 'pack-starter'
+                && $product->getBasePriceCents() === 150000
+                && $product->getCurrency() === 'EUR'
                 && $product->getSalesPolicy()['positioning'] === 'Demo comercial'
                 && $product->isActive();
         }));
@@ -717,9 +839,14 @@ final class BackendUiControllerTest extends TestCase
         $response = $controller->productCreate(Request::create('/backend/products/new', 'POST', [
             '_csrf_token' => 'token',
             'tenantId' => $tenant->getId()->toRfc4122(),
+            'slug' => 'whatsapp-automation',
+            'externalSource' => 'crm',
+            'externalReference' => 'pack-starter',
             'name' => 'WhatsApp Automation',
             'description' => 'Automatización',
             'valueProposition' => 'Reduce tiempo',
+            'basePriceCents' => '150000',
+            'currency' => 'EUR',
             'positioning' => 'Demo comercial',
             'pricingNotes' => 'Desde 99€',
             'objections' => "Es caro\nNo lo necesito",
@@ -730,6 +857,111 @@ final class BackendUiControllerTest extends TestCase
 
         self::assertSame(Response::HTTP_FOUND, $response->getStatusCode());
         self::assertSame('/backend/products', $response->headers->get('Location'));
+    }
+
+    public function testEntryPointsPageRendersCreateEditAndDetailActions(): void
+    {
+        $tenant = new Tenant('Federico Martin Demo', 'federico-martin-demo');
+        $product = new Product($tenant, 'WhatsApp Automation');
+        $playbook = new Playbook($tenant, 'Guía comercial demo', $product);
+        $entryPoint = new EntryPoint($product, 'crm-demo', 'CRM Demo');
+        $entryPoint->setPlaybook($playbook);
+        $entryPoint->setDefaultMessage('Hola, quiero información.');
+
+        $security = $this->createStub(Security::class);
+        $security->method('getUser')->willReturn($this->createAuthenticatedUser('manager@example.com', ['manager'], 'María Manager'));
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => in_array($role, ['ROLE_MANAGER', 'ROLE_ADMIN'], true));
+
+        $entryPoints = $this->createEntryPointRepositoryFake([$entryPoint]);
+
+        $controller = $this->createController($security);
+        $response = $controller->entryPoints($entryPoints);
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        self::assertStringContainsString('Crear punto de entrada', $response->getContent());
+        self::assertStringContainsString('Ver punto de entrada', $response->getContent());
+        self::assertStringContainsString('Editar punto de entrada', $response->getContent());
+        self::assertStringContainsString('crm-demo', $response->getContent());
+        self::assertStringNotContainsString('Canal', $response->getContent());
+    }
+
+    public function testEntryPointDetailRendersPublicRedirectUrls(): void
+    {
+        $tenant = new Tenant('Federico Martin Demo', 'federico-martin-demo');
+        $product = new Product($tenant, 'WhatsApp Automation');
+        $playbook = new Playbook($tenant, 'Guía comercial demo', $product);
+        $entryPoint = new EntryPoint($product, 'crm-demo', 'CRM Demo');
+        $entryPoint->setPlaybook($playbook);
+        $entryPoint->setCrmBranchRef('branch-123');
+        $entryPoint->setDefaultMessage('Hola, quiero información.');
+
+        $security = $this->createStub(Security::class);
+        $security->method('getUser')->willReturn($this->createAuthenticatedUser('manager@example.com', ['manager'], 'María Manager'));
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => in_array($role, ['ROLE_MANAGER', 'ROLE_ADMIN'], true));
+
+        $entryPoints = $this->createEntryPointRepositoryFake([], $entryPoint);
+
+        $controller = $this->createController($security);
+        $response = $controller->entryPointDetail($entryPoint->getId()->toRfc4122(), $entryPoints);
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        self::assertStringContainsString('/api/r/wa/crm-demo', $response->getContent());
+        self::assertStringContainsString('utm_source=google&amp;utm_medium=cpc&amp;utm_campaign=example', $response->getContent());
+        self::assertStringContainsString('branch-123', $response->getContent());
+        self::assertStringNotContainsString('Canal', $response->getContent());
+    }
+
+    public function testEntryPointCreateSubmissionPersistsNewEntryPoint(): void
+    {
+        $tenant = new Tenant('Federico Martin Demo', 'federico-martin-demo');
+        $product = new Product($tenant, 'WhatsApp Automation');
+        $playbook = new Playbook($tenant, 'Guía comercial demo', $product);
+
+        $security = $this->createStub(Security::class);
+        $security->method('getUser')->willReturn($this->createAuthenticatedUser('manager@example.com', ['manager'], 'María Manager'));
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => in_array($role, ['ROLE_MANAGER', 'ROLE_ADMIN'], true));
+
+        $entityManager = $this->createMock(EntityManagerInterface::class);
+        $entityManager->expects(self::once())->method('persist')->with(self::callback(static function (EntryPoint $entryPoint) use ($product, $playbook): bool {
+            return $entryPoint->getProduct()->getId()->toRfc4122() === $product->getId()->toRfc4122()
+                && $entryPoint->getPlaybook()?->getId()->toRfc4122() === $playbook->getId()->toRfc4122()
+                && $entryPoint->getCode() === 'crm-demo'
+                && $entryPoint->getName() === 'CRM Demo'
+                && $entryPoint->getSource() === 'google'
+                && $entryPoint->getMedium() === 'cpc'
+                && $entryPoint->getCampaign() === 'crm_pymes'
+                && $entryPoint->getCrmBranchRef() === 'branch-123'
+                && $entryPoint->getDefaultMessage() === 'Hola, quiero información.'
+                && $entryPoint->isActive();
+        }));
+        $entityManager->expects(self::once())->method('flush');
+
+        $products = $this->createProductRepositoryFake([$product], $product);
+        $playbooks = $this->createPlaybookRepositoryFake([$playbook], $playbook);
+        $entryPoints = $this->createEntryPointRepositoryFake();
+
+        $csrfTokenManager = $this->createStub(CsrfTokenManagerInterface::class);
+        $csrfTokenManager->method('isTokenValid')->willReturn(true);
+
+        $controller = $this->createController($security, $entityManager, null, $csrfTokenManager);
+        $response = $controller->entryPointCreate(Request::create('/backend/entry-points/new', 'POST', [
+            '_csrf_token' => 'token',
+            'productId' => $product->getId()->toRfc4122(),
+            'playbookId' => $playbook->getId()->toRfc4122(),
+            'code' => 'crm-demo',
+            'name' => 'CRM Demo',
+            'source' => 'google',
+            'medium' => 'cpc',
+            'campaign' => 'crm_pymes',
+            'content' => 'ad_01',
+            'term' => 'crm',
+            'crmBranchRef' => 'branch-123',
+            'defaultMessage' => 'Hola, quiero información.',
+            'isActive' => '1',
+        ]), $products, $playbooks, $entryPoints);
+
+        self::assertSame(Response::HTTP_FOUND, $response->getStatusCode());
+        self::assertSame('/backend/entry-points', $response->headers->get('Location'));
     }
 
     public function testProfileRendersCurrentSessionSummary(): void

@@ -3,14 +3,18 @@
 namespace App\Controller\Web;
 
 use App\Domain\CommercialDomainSchema;
+use App\Entity\EntryPoint;
 use App\Entity\Playbook;
 use App\Entity\Product;
 use App\Entity\Tenant;
 use App\Entity\User;
 use App\Repository\PlaybookRepository;
 use App\Repository\ProductRepository;
+use App\Repository\EntryPointRepository;
 use App\Repository\TenantRepository;
 use App\Repository\UserRepository;
+use App\Service\ProductCatalogImportResult;
+use App\Service\ProductCatalogImportService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\SecurityBundle\Security;
 use Symfony\Component\HttpFoundation\RedirectResponse;
@@ -29,6 +33,7 @@ final class BackendUiController
         private readonly Security $security,
         private readonly EntityManagerInterface $entityManager,
         private readonly UserPasswordHasherInterface $passwordHasher,
+        private readonly ?ProductCatalogImportService $productCatalogImportService = null,
         private readonly ?CsrfTokenManagerInterface $csrfTokenManager = null,
     ) {
     }
@@ -774,6 +779,13 @@ HTML;
         $rows = array_map(static function (Product $product): string {
             $status = $product->isActive() ? '<span class="status-ok">Activo</span>' : '<span class="status-off">Inactivo</span>';
             $editUrl = sprintf('/backend/products/%s/edit', rawurlencode($product->getId()->toRfc4122()));
+            $identity = sprintf(
+                '<div class="subtle">Slug: %s</div><div class="subtle">External: %s%s</div><div class="subtle">Precio: %s</div>',
+                htmlspecialchars($product->getSlug(), ENT_QUOTES, 'UTF-8'),
+                htmlspecialchars($product->getExternalSource() ?? 'local', ENT_QUOTES, 'UTF-8'),
+                $product->getExternalReference() !== null ? ' / '.htmlspecialchars($product->getExternalReference(), ENT_QUOTES, 'UTF-8') : '',
+                htmlspecialchars($product->getBasePriceCents() !== null ? (string) $product->getBasePriceCents().' '.($product->getCurrency() ?? '') : 'Sin precio', ENT_QUOTES, 'UTF-8')
+            );
 
             return sprintf(
                 '<tr>
@@ -786,7 +798,7 @@ HTML;
                 htmlspecialchars($product->getName(), ENT_QUOTES, 'UTF-8'),
                 htmlspecialchars($product->getDescription(), ENT_QUOTES, 'UTF-8'),
                 htmlspecialchars($product->getTenant()->getName(), ENT_QUOTES, 'UTF-8'),
-                htmlspecialchars($product->getValueProposition(), ENT_QUOTES, 'UTF-8'),
+                $identity,
                 $status,
                 htmlspecialchars($editUrl, ENT_QUOTES, 'UTF-8'),
                 self::iconEditSvg()
@@ -811,14 +823,17 @@ HTML;
               <div class="table-header">
                 <div>
                   <h3>Productos / servicios registrados</h3>
-                  <p>Negocio, propuesta de valor y estado.</p>
+                  <p>Negocio, slug, referencia externa y estado.</p>
                 </div>
-                <a class="primary-action" href="/backend/products/new">Crear producto / servicio</a>
+                <div style="display:flex;gap:12px;flex-wrap:wrap;justify-content:flex-end">
+                  <a class="secondary-action" href="/backend/products/import">Importar desde CRM</a>
+                  <a class="primary-action" href="/backend/products/new">Crear producto / servicio</a>
+                </div>
               </div>
               <div class="table-responsive">
                 <table>
                   <thead>
-                    <tr><th>Producto / servicio</th><th>Negocio</th><th>Propuesta de valor</th><th>Estado</th><th class="text-right">Acciones</th></tr>
+                    <tr><th>Producto / servicio</th><th>Negocio</th><th>Identidad</th><th>Estado</th><th class="text-right">Acciones</th></tr>
                   </thead>
                   <tbody>%s</tbody>
                 </table>
@@ -829,6 +844,54 @@ HTML;
         );
 
         return $this->renderBackendShell('Productos / servicios', 'Catálogo comercial por negocio.', 'products', $content);
+    }
+
+    #[Route('/products/import', methods: ['GET', 'POST'])]
+    public function productImport(Request $request, ?TenantRepository $tenants = null): Response
+    {
+        if (!$this->security->isGranted('ROLE_MANAGER')) {
+            return new RedirectResponse('/backend/login');
+        }
+
+        $values = $this->productImportFormDefaults();
+        $error = null;
+        $result = null;
+
+        if ($request->isMethod('POST')) {
+            if (!$this->isValidProductToken('/backend/products/import', (string) $request->request->get('_csrf_token'))) {
+                $error = 'La sesión del formulario ha expirado. Vuelve a intentarlo.';
+            } else {
+                $values = $this->productImportFormValuesFromRequest($request);
+                $error = $this->validateProductImportForm($values, $tenants);
+
+                if ($error === null) {
+                    $tenant = $tenants instanceof TenantRepository ? $tenants->find($values['tenantId']) : null;
+                    $payload = $this->productImportPayloadFromRequest($request);
+
+                    if (!$tenant instanceof Tenant) {
+                        $error = 'El negocio seleccionado no existe.';
+                    } elseif ($payload === null || trim($payload) === '') {
+                        $error = 'Debes pegar un CSV/JSON o subir un archivo con el catálogo.';
+                    } elseif (!$this->productCatalogImportService instanceof ProductCatalogImportService) {
+                        $error = 'El servicio de importación no está disponible.';
+                    } else {
+                        $result = $this->productCatalogImportService->import($tenant, $payload, $values['format']);
+                    }
+                }
+            }
+        }
+
+        return $this->renderProductImportForm(
+            'Importar catálogo de productos / servicios',
+            'Importa el catálogo exportado por CRM usando `integration_key` como referencia externa.',
+            'Importación CRM',
+            'Importar catálogo',
+            '/backend/products/import',
+            $values,
+            $tenants,
+            $result,
+            $error
+        );
     }
 
     #[Route('/products/new', methods: ['GET', 'POST'])]
@@ -919,6 +982,256 @@ HTML;
             $tenants,
             $error
         );
+    }
+
+    #[Route('/entry-points', methods: ['GET'])]
+    public function entryPoints(?EntryPointRepository $entryPoints = null): Response
+    {
+        if (!$this->security->isGranted('ROLE_MANAGER')) {
+            return new RedirectResponse('/backend/login');
+        }
+
+        $rows = array_map(static function (EntryPoint $entryPoint): string {
+            $status = $entryPoint->isActive() ? '<span class="status-ok">Activo</span>' : '<span class="status-off">Inactivo</span>';
+            $detailUrl = sprintf('/backend/entry-points/%s', rawurlencode($entryPoint->getId()->toRfc4122()));
+            $editUrl = sprintf('/backend/entry-points/%s/edit', rawurlencode($entryPoint->getId()->toRfc4122()));
+
+            return sprintf(
+                '<tr>
+                    <td><strong>%s</strong><div class="subtle">%s</div></td>
+                    <td><code>%s</code></td>
+                    <td>%s</td>
+                    <td>%s</td>
+                    <td>%s</td>
+                    <td class="text-right"><a class="icon-action" href="%s" title="Ver punto de entrada" aria-label="Ver punto de entrada">↗</a> <a class="icon-action" href="%s" title="Editar punto de entrada" aria-label="Editar punto de entrada">%s</a></td>
+                  </tr>',
+                htmlspecialchars($entryPoint->getName(), ENT_QUOTES, 'UTF-8'),
+                htmlspecialchars($entryPoint->getCode(), ENT_QUOTES, 'UTF-8'),
+                htmlspecialchars($entryPoint->getCode(), ENT_QUOTES, 'UTF-8'),
+                htmlspecialchars($entryPoint->getTenant()->getName(), ENT_QUOTES, 'UTF-8'),
+                $entryPoint->getProduct() ? htmlspecialchars($entryPoint->getProduct()->getName(), ENT_QUOTES, 'UTF-8') : 'Sin producto',
+                $status,
+                htmlspecialchars($detailUrl, ENT_QUOTES, 'UTF-8'),
+                htmlspecialchars($editUrl, ENT_QUOTES, 'UTF-8'),
+                self::iconEditSvg()
+            );
+        }, $entryPoints ? $entryPoints->findAllOrdered() : []);
+
+        $content = sprintf(
+            '
+            <section class="hero-panel">
+              <div class="hero-copy">
+                <div class="eyebrow-dark">Routing comercial</div>
+                <h2>Puntos de entrada</h2>
+                <p>Define campañas, botones y QR que crean contexto comercial antes de abrir WhatsApp.</p>
+              </div>
+              <div class="hero-aside">
+                <div class="badge-live">Campaigns</div>
+                <div class="hero-aside-title">Contexto</div>
+                <p>Un punto de entrada enlaza producto, playbook y atribución técnica con una URL pública estable.</p>
+              </div>
+            </section>
+            <section class="table-card">
+              <div class="table-header">
+                <div>
+                  <h3>Puntos de entrada registrados</h3>
+                  <p>Usa estos códigos para campañas, landings y botones de contacto.</p>
+                </div>
+                <a class="primary-action" href="/backend/entry-points/new">Crear punto de entrada</a>
+              </div>
+              <div class="table-responsive">
+                <table>
+                  <thead>
+                    <tr><th>Punto de entrada</th><th>Código</th><th>Negocio</th><th>Producto</th><th>Estado</th><th class="text-right">Acciones</th></tr>
+                  </thead>
+                  <tbody>%s</tbody>
+                </table>
+              </div>
+            </section>
+            ',
+            $rows !== [] ? implode('', $rows) : '<tr><td colspan="6" class="empty-row">No hay puntos de entrada todavía.</td></tr>'
+        );
+
+        return $this->renderBackendShell('Puntos de entrada', 'Códigos de campaña y enlaces públicos hacia WhatsApp.', 'entry-points', $content);
+    }
+
+    #[Route('/entry-points/new', methods: ['GET', 'POST'])]
+    public function entryPointCreate(Request $request, ?ProductRepository $products = null, ?PlaybookRepository $playbooks = null, ?EntryPointRepository $entryPoints = null): Response
+    {
+        if (!$this->security->isGranted('ROLE_MANAGER')) {
+            return new RedirectResponse('/backend/login');
+        }
+
+        $values = $this->entryPointFormDefaults();
+        $error = null;
+
+        if ($request->isMethod('POST')) {
+            if (!$this->isValidEntryPointToken('/backend/entry-points/new', (string) $request->request->get('_csrf_token'))) {
+                $error = 'La sesión del formulario ha expirado. Vuelve a intentarlo.';
+            } else {
+                $values = $this->entryPointFormValuesFromRequest($request);
+                $error = $this->validateEntryPointForm($values, null, $products, $playbooks, $entryPoints);
+
+                if ($error === null) {
+                    $product = $products instanceof ProductRepository ? $products->find($values['productId']) : null;
+                    $entryPoint = new EntryPoint($product, $values['code'], $values['name']);
+                    $this->hydrateEntryPointFromForm($entryPoint, $values, $product, $playbooks);
+                    $this->entityManager->persist($entryPoint);
+                    $this->entityManager->flush();
+
+                    return new RedirectResponse('/backend/entry-points');
+                }
+            }
+        }
+
+        return $this->renderEntryPointForm(
+            'Crear punto de entrada',
+            'Define el código público y su contexto comercial antes de crear tráfico.',
+            'Crear punto de entrada',
+            'Crear punto de entrada',
+            '/backend/entry-points/new',
+            $values,
+            $products,
+            $playbooks,
+            $error
+        );
+    }
+
+    #[Route('/entry-points/{id}/edit', methods: ['GET', 'POST'])]
+    public function entryPointEdit(string $id, Request $request, ?ProductRepository $products = null, ?PlaybookRepository $playbooks = null, ?EntryPointRepository $entryPoints = null): Response
+    {
+        if (!$this->security->isGranted('ROLE_MANAGER')) {
+            return new RedirectResponse('/backend/login');
+        }
+
+        if (!$entryPoints instanceof EntryPointRepository) {
+            return new RedirectResponse('/backend/entry-points');
+        }
+
+        $entryPoint = $entryPoints->find($id);
+        if (!$entryPoint instanceof EntryPoint) {
+            return new RedirectResponse('/backend/entry-points');
+        }
+
+        $values = $this->entryPointFormDefaults($entryPoint);
+        $error = null;
+
+        if ($request->isMethod('POST')) {
+            if (!$this->isValidEntryPointToken('/backend/entry-points/'.$entryPoint->getId()->toRfc4122().'/edit', (string) $request->request->get('_csrf_token'))) {
+                $error = 'La sesión del formulario ha expirado. Vuelve a intentarlo.';
+            } else {
+                $values = $this->entryPointFormValuesFromRequest($request);
+                $error = $this->validateEntryPointForm($values, $entryPoint, $products, $playbooks, $entryPoints);
+
+                if ($error === null) {
+                    $product = $products instanceof ProductRepository ? $products->find($values['productId']) : $entryPoint->getProduct();
+                    $this->hydrateEntryPointFromForm($entryPoint, $values, $product, $playbooks);
+                    $this->entityManager->persist($entryPoint);
+                    $this->entityManager->flush();
+
+                    return new RedirectResponse('/backend/entry-points/'.$entryPoint->getId()->toRfc4122());
+                }
+            }
+        }
+
+        return $this->renderEntryPointForm(
+            'Editar punto de entrada',
+            'Ajusta el código, las UTM por defecto y la relación con canal, producto o playbook.',
+            'Editar punto de entrada',
+            'Guardar cambios',
+            '/backend/entry-points/'.$entryPoint->getId()->toRfc4122().'/edit',
+            $values,
+            $products,
+            $playbooks,
+            $error
+        );
+    }
+
+    #[Route('/entry-points/{id}', methods: ['GET'])]
+    public function entryPointDetail(string $id, ?EntryPointRepository $entryPoints = null): Response
+    {
+        if (!$this->security->isGranted('ROLE_MANAGER')) {
+            return new RedirectResponse('/backend/login');
+        }
+
+        if (!$entryPoints instanceof EntryPointRepository) {
+            return new RedirectResponse('/backend/entry-points');
+        }
+
+        $entryPoint = $entryPoints->find($id);
+        if (!$entryPoint instanceof EntryPoint) {
+            return new RedirectResponse('/backend/entry-points');
+        }
+
+        $redirectUrl = '/api/r/wa/'.$entryPoint->getCode();
+        $exampleUrl = $redirectUrl.'?utm_source=google&utm_medium=cpc&utm_campaign=example';
+
+        $content = sprintf(
+            '
+            <section class="hero-panel">
+              <div class="hero-copy">
+                <div class="eyebrow-dark">Routing comercial</div>
+                <h2>%s</h2>
+                <p>%s</p>
+              </div>
+              <div class="hero-aside">
+                <div class="badge-live">%s</div>
+                <div class="hero-aside-title">Detalle</div>
+                <p>Usa este punto de entrada para campañas, botones o QR con contexto comercial explícito.</p>
+              </div>
+            </section>
+            <section class="table-card">
+              <div class="table-header">
+                <div>
+                  <h3>URLs públicas</h3>
+                  <p>La URL de redirección se expone sin JWT y preserva el ref para atribución.</p>
+                </div>
+              </div>
+              <div class="form-grid">
+                <div class="field field-full">
+                  <label for="entrypoint-url">URL de redirección</label>
+                  <input id="entrypoint-url" type="text" value="%s" readonly>
+                </div>
+                <div class="field field-full">
+                  <label for="entrypoint-example">Ejemplo con UTM</label>
+                  <input id="entrypoint-example" type="text" value="%s" readonly>
+                </div>
+                <div class="field">
+                  <label>Código</label>
+                  <input type="text" value="%s" readonly>
+                </div>
+                <div class="field">
+                  <label>Negocio</label>
+                  <input type="text" value="%s" readonly>
+                </div>
+                <div class="field">
+                  <label>Producto</label>
+                  <input type="text" value="%s" readonly>
+                </div>
+                <div class="field">
+                  <label>Playbook</label>
+                  <input type="text" value="%s" readonly>
+                </div>
+                <div class="field">
+                  <label>CRM branch ref</label>
+                  <input type="text" value="%s" readonly>
+                </div>
+              </div>
+            </section>
+            ',
+            htmlspecialchars($entryPoint->getName(), ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($entryPoint->getDefaultMessage() ?? 'Sin mensaje por defecto.', ENT_QUOTES, 'UTF-8'),
+            $entryPoint->isActive() ? 'Activo' : 'Inactivo',
+            htmlspecialchars($redirectUrl, ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($exampleUrl, ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($entryPoint->getCode(), ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($entryPoint->getTenant()->getName(), ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($entryPoint->getProduct()?->getName() ?? 'Sin producto', ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($entryPoint->getPlaybook()?->getName() ?? 'Sin playbook', ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($entryPoint->getCrmBranchRef() ?? '—', ENT_QUOTES, 'UTF-8')
+        );
+
+        return $this->renderBackendShell('Punto de entrada', 'Detalle público y contexto comercial asociado al código.', 'entry-points', $content);
     }
 
     #[Route('/profile', methods: ['GET'])]
@@ -1990,12 +2303,13 @@ HTML;
             'tenants' => ['href' => '/backend/tenants', 'label' => 'Negocios', 'roles' => ['ROLE_MANAGER', 'ROLE_ADMIN']],
             'playbooks' => ['href' => '/backend/playbooks', 'label' => 'Guías comerciales', 'roles' => ['ROLE_MANAGER', 'ROLE_ADMIN']],
             'admin-products' => ['href' => '/backend/products', 'label' => 'Productos / servicios', 'roles' => ['ROLE_MANAGER', 'ROLE_ADMIN']],
+            'entry-points' => ['href' => '/backend/entry-points', 'label' => 'Puntos de entrada', 'roles' => ['ROLE_MANAGER', 'ROLE_ADMIN']],
             'admin-users' => ['href' => '/backend/users', 'label' => 'Usuarios', 'roles' => ['ROLE_ADMIN']],
             'admin-api-health' => ['href' => '/backend/api-health', 'label' => 'Integración técnica', 'roles' => ['ROLE_MANAGER', 'ROLE_ADMIN']],
         ];
 
         $html = '';
-        foreach (['dashboard', 'tenants', 'playbooks', 'admin-products'] as $key) {
+        foreach (['dashboard', 'tenants', 'playbooks', 'admin-products', 'entry-points'] as $key) {
             $item = $items[$key];
             if (!$this->canSeeNavItem($item['roles'])) {
                 continue;
@@ -2783,7 +3097,7 @@ HTML;
     }
 
     /**
-     * @return array{tenantId: string, name: string, description: string, valueProposition: string, positioning: string, pricingNotes: string, objections: string, handoffRules: string, notes: string, isActive: bool}
+     * @return array{tenantId: string, slug: string, externalSource: string, externalReference: string, name: string, description: string, valueProposition: string, basePriceCents: string, currency: string, positioning: string, pricingNotes: string, objections: string, handoffRules: string, notes: string, isActive: bool}
      */
     private function productFormDefaults(?Product $product = null): array
     {
@@ -2791,9 +3105,14 @@ HTML;
 
         return [
             'tenantId' => $product?->getTenant()->getId()->toRfc4122() ?? '',
+            'slug' => $product?->getSlug() ?? '',
+            'externalSource' => $product?->getExternalSource() ?? '',
+            'externalReference' => $product?->getExternalReference() ?? '',
             'name' => $product?->getName() ?? '',
             'description' => $product?->getDescription() ?? '',
             'valueProposition' => $product?->getValueProposition() ?? '',
+            'basePriceCents' => $product?->getBasePriceCents() !== null ? (string) $product->getBasePriceCents() : '',
+            'currency' => $product?->getCurrency() ?? '',
             'positioning' => $this->productPolicyValue($salesPolicy, 'positioning'),
             'pricingNotes' => $this->productPolicyValue($salesPolicy, 'pricingNotes'),
             'objections' => $this->productPolicyLines($salesPolicy, 'objections'),
@@ -2804,15 +3123,20 @@ HTML;
     }
 
     /**
-     * @return array{tenantId: string, name: string, description: string, valueProposition: string, positioning: string, pricingNotes: string, objections: string, handoffRules: string, notes: string, isActive: bool}
+     * @return array{tenantId: string, slug: string, externalSource: string, externalReference: string, name: string, description: string, valueProposition: string, basePriceCents: string, currency: string, positioning: string, pricingNotes: string, objections: string, handoffRules: string, notes: string, isActive: bool}
      */
     private function productFormValuesFromRequest(Request $request): array
     {
         return [
             'tenantId' => trim((string) $request->request->get('tenantId', '')),
+            'slug' => trim((string) $request->request->get('slug', '')),
+            'externalSource' => trim((string) $request->request->get('externalSource', '')),
+            'externalReference' => trim((string) $request->request->get('externalReference', '')),
             'name' => trim((string) $request->request->get('name', '')),
             'description' => trim((string) $request->request->get('description', '')),
             'valueProposition' => trim((string) $request->request->get('valueProposition', '')),
+            'basePriceCents' => trim((string) $request->request->get('basePriceCents', '')),
+            'currency' => trim((string) $request->request->get('currency', '')),
             'positioning' => trim((string) $request->request->get('positioning', '')),
             'pricingNotes' => trim((string) $request->request->get('pricingNotes', '')),
             'objections' => trim((string) $request->request->get('objections', '')),
@@ -2872,6 +3196,31 @@ HTML;
                     <label for="product-name">Nombre del producto / servicio</label>
                     <input id="product-name" name="name" type="text" value="%s" maxlength="255" required>
                     <div class="field-note">Nombre visible para el catálogo comercial.</div>
+                  </div>
+                  <div class="field">
+                    <label for="product-slug">Slug local</label>
+                    <input id="product-slug" name="slug" type="text" value="%s" maxlength="180" placeholder="producto-local">
+                    <div class="field-note">Identificador local/fallback. Si lo dejas vacío, se conserva o se genera desde el nombre.</div>
+                  </div>
+                  <div class="field">
+                    <label for="product-external-source">Origen externo</label>
+                    <input id="product-external-source" name="externalSource" type="text" value="%s" maxlength="100" placeholder="crm">
+                    <div class="field-note">Para catálogos importados desde CRM debe ser <code>crm</code>.</div>
+                  </div>
+                  <div class="field">
+                    <label for="product-external-reference">Referencia externa</label>
+                    <input id="product-external-reference" name="externalReference" type="text" value="%s" maxlength="255" placeholder="integration_key">
+                    <div class="field-note">Clave estable del sistema externo. En CRM debe coincidir con <code>integration_key</code>.</div>
+                  </div>
+                  <div class="field">
+                    <label for="product-base-price">Precio base en céntimos</label>
+                    <input id="product-base-price" name="basePriceCents" type="number" value="%s" min="0" step="1" placeholder="150000">
+                    <div class="field-note">Opcional. Si existe, se usa el valor en céntimos.</div>
+                  </div>
+                  <div class="field">
+                    <label for="product-currency">Moneda</label>
+                    <input id="product-currency" name="currency" type="text" value="%s" maxlength="10" placeholder="EUR">
+                    <div class="field-note">Código ISO de moneda, por ejemplo EUR o USD.</div>
                   </div>
                   <div class="field field-check">
                     <label for="product-active">Estado</label>
@@ -2977,6 +3326,11 @@ HTML;
             htmlspecialchars($this->productTokenValue($actionUrl), ENT_QUOTES, 'UTF-8'),
             $tenantOptions,
             htmlspecialchars($values['name'], ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($values['slug'], ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($values['externalSource'], ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($values['externalReference'], ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($values['basePriceCents'], ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($values['currency'], ENT_QUOTES, 'UTF-8'),
             $values['isActive'] ? ' checked' : '',
             htmlspecialchars($values['description'], ENT_QUOTES, 'UTF-8'),
             htmlspecialchars($values['valueProposition'], ENT_QUOTES, 'UTF-8'),
@@ -3005,6 +3359,49 @@ HTML;
             return 'El nombre del producto o servicio es obligatorio.';
         }
 
+        if ($values['slug'] !== '' && mb_strlen($values['slug']) > 180) {
+            return 'El slug no puede superar 180 caracteres.';
+        }
+
+        if ($values['externalSource'] !== '' && mb_strlen($values['externalSource']) > 100) {
+            return 'El origen externo no puede superar 100 caracteres.';
+        }
+
+        if ($values['externalReference'] !== '' && mb_strlen($values['externalReference']) > 255) {
+            return 'La referencia externa no puede superar 255 caracteres.';
+        }
+
+        if ($values['basePriceCents'] !== '' && (!ctype_digit($values['basePriceCents']) || (int) $values['basePriceCents'] < 0)) {
+            return 'El precio base debe ser un número entero positivo en céntimos.';
+        }
+
+        if ($values['currency'] !== '' && mb_strlen($values['currency']) > 10) {
+            return 'La moneda no puede superar 10 caracteres.';
+        }
+
+        $tenant = $tenants->find($values['tenantId']);
+        $slugToValidate = $values['slug'];
+        if ($slugToValidate === '' && $product === null && $tenant instanceof Tenant) {
+            $slugToValidate = (new Product($tenant, $values['name']))->getSlug();
+        }
+
+        if ($slugToValidate !== '' && $products instanceof ProductRepository && $tenant instanceof Tenant) {
+            $slugProduct = $products->findOneByTenantAndSlug($tenant, $slugToValidate);
+            if ($slugProduct instanceof Product && ($product === null || $slugProduct->getId()->toRfc4122() !== $product->getId()->toRfc4122())) {
+                return 'Ya existe otro producto o servicio con ese slug en el negocio seleccionado.';
+            }
+        }
+
+        if ($values['externalSource'] !== '' && $values['externalReference'] !== '' && $products instanceof ProductRepository) {
+            $tenant = $tenants->find($values['tenantId']);
+            if ($tenant instanceof Tenant) {
+                $externalProduct = $products->findOneByExternalIdentity($tenant, $values['externalSource'], $values['externalReference']);
+                if ($externalProduct instanceof Product && ($product === null || $externalProduct->getId()->toRfc4122() !== $product->getId()->toRfc4122())) {
+                    return 'Ya existe otro producto o servicio con esa referencia externa en el negocio seleccionado.';
+                }
+            }
+        }
+
         $salesPolicy = $this->productPolicyFromForm($values);
         $error = CommercialDomainSchema::validateProductSalesPolicy($salesPolicy);
         if ($error !== null) {
@@ -3021,14 +3418,21 @@ HTML;
         }
 
         $product->setName($values['name']);
+        if ($values['slug'] !== '') {
+            $product->setSlug($values['slug']);
+        }
+        $product->setExternalSource($values['externalSource'] !== '' ? $values['externalSource'] : null);
+        $product->setExternalReference($values['externalReference'] !== '' ? $values['externalReference'] : null);
         $product->setDescription($values['description']);
         $product->setValueProposition($values['valueProposition']);
+        $product->setBasePriceCents($values['basePriceCents'] !== '' ? (int) $values['basePriceCents'] : null);
+        $product->setCurrency($values['currency'] !== '' ? $values['currency'] : null);
         $product->setSalesPolicy($this->productPolicyFromForm($values));
         $product->setActive($values['isActive']);
     }
 
     /**
-     * @param array{tenantId: string, name: string, description: string, valueProposition: string, positioning: string, pricingNotes: string, objections: string, handoffRules: string, notes: string, isActive: bool} $values
+     * @param array{tenantId: string, slug: string, externalSource: string, externalReference: string, name: string, description: string, valueProposition: string, basePriceCents: string, currency: string, positioning: string, pricingNotes: string, objections: string, handoffRules: string, notes: string, isActive: bool} $values
      * @return array<string, mixed>
      */
     private function productPolicyFromForm(array $values): array
@@ -3061,6 +3465,185 @@ HTML;
         return implode("\n", $lines);
     }
 
+    /**
+     * @return array{tenantId: string, format: string, payload: string}
+     */
+    private function productImportFormDefaults(): array
+    {
+        return [
+            'tenantId' => '',
+            'format' => 'auto',
+            'payload' => '',
+        ];
+    }
+
+    /**
+     * @return array{tenantId: string, format: string, payload: string}
+     */
+    private function productImportFormValuesFromRequest(Request $request): array
+    {
+        return [
+            'tenantId' => trim((string) $request->request->get('tenantId', '')),
+            'format' => trim((string) $request->request->get('format', 'auto')) ?: 'auto',
+            'payload' => trim((string) $request->request->get('payload', '')),
+        ];
+    }
+
+    /**
+     * @param array{tenantId: string, format: string, payload: string} $values
+     */
+    private function validateProductImportForm(array $values, ?TenantRepository $tenants): ?string
+    {
+        if ($values['tenantId'] === '') {
+            return 'Debes seleccionar un negocio.';
+        }
+
+        if (!$tenants instanceof TenantRepository || !$tenants->find($values['tenantId']) instanceof Tenant) {
+            return 'El negocio seleccionado no existe.';
+        }
+
+        if (!in_array($values['format'], ['auto', 'json', 'csv'], true)) {
+            return 'El formato de importación no es válido.';
+        }
+
+        return null;
+    }
+
+    private function productImportPayloadFromRequest(Request $request): ?string
+    {
+        $payload = trim((string) $request->request->get('payload', ''));
+        if ($payload !== '') {
+            return $payload;
+        }
+
+        $file = $request->files->get('file');
+        if ($file instanceof \Symfony\Component\HttpFoundation\File\UploadedFile && $file->isValid()) {
+            $content = file_get_contents($file->getPathname());
+            return is_string($content) ? trim($content) : null;
+        }
+
+        return null;
+    }
+
+    private function renderProductImportForm(
+        string $pageTitle,
+        string $pageSubtitle,
+        string $heroTitle,
+        string $submitLabel,
+        string $actionUrl,
+        array $values,
+        ?TenantRepository $tenants,
+        ?ProductCatalogImportResult $result = null,
+        ?string $error = null,
+    ): Response {
+        $tenantOptions = $this->renderTenantOptions($tenants, $values['tenantId'] ?? '');
+        $errorHtml = $error !== null ? sprintf(
+            '<div class="form-alert form-alert-error">%s</div>',
+            htmlspecialchars($error, ENT_QUOTES, 'UTF-8')
+        ) : '';
+
+        $resultHtml = '';
+        if ($result instanceof ProductCatalogImportResult) {
+            $errorRows = [];
+            foreach ($result->errors as $importError) {
+                $errorRows[] = sprintf(
+                    '<li>Fila %s: %s</li>',
+                    htmlspecialchars((string) $importError['row'], ENT_QUOTES, 'UTF-8'),
+                    htmlspecialchars((string) $importError['message'], ENT_QUOTES, 'UTF-8')
+                );
+            }
+
+            $resultHtml = sprintf(
+                '
+                <section class="table-card">
+                  <div class="table-header"><div><h3>Resultado de la importación</h3><p>%s filas procesadas.</p></div></div>
+                  <section class="cards-grid">
+                    %s
+                    %s
+                    %s
+                    %s
+                  </section>
+                  %s
+                </section>
+                ',
+                htmlspecialchars((string) $result->totalProcessed(), ENT_QUOTES, 'UTF-8'),
+                $this->metricCard('Creados', (string) $result->created, 'Nuevos productos / servicios'),
+                $this->metricCard('Actualizados', (string) $result->updated, 'Registros alineados con el archivo'),
+                $this->metricCard('Omitidos', (string) $result->omitted, 'Sin cambios efectivos'),
+                $this->metricCard('Errores', (string) count($result->errors), 'Filas inválidas o no procesables'),
+                $errorRows !== [] ? sprintf('<div class="table-responsive"><table><thead><tr><th>Errores</th></tr></thead><tbody>%s</tbody></table></div>', implode('', array_map(static fn (string $row): string => sprintf('<tr><td>%s</td></tr>', $row), $errorRows))) : '<div class="empty-row">No hay errores.</div>'
+            );
+        }
+
+        $content = sprintf(
+            '
+            <section class="hero-panel">
+              <div class="hero-copy">
+                <div class="eyebrow-dark">Importación CRM</div>
+                <h2>%s</h2>
+                <p>%s</p>
+              </div>
+              <div class="hero-aside">
+                <div class="badge-live">CRM</div>
+                <div class="hero-aside-title">Alineación de catálogo</div>
+                <p>Importa CSV o JSON sin depender de UUIDs del CRM. La clave estable se guarda como referencia externa.</p>
+              </div>
+            </section>
+            <section class="table-card">
+              <div class="table-header"><div><h3>Importar catálogo</h3><p>Selecciona el negocio y pega o sube el export del CRM.</p></div></div>
+              %s
+              <form method="post" action="%s" class="tenant-form" enctype="multipart/form-data">
+                <input type="hidden" name="_csrf_token" value="%s">
+                <div class="form-grid">
+                  <div class="field"><label for="product-import-tenant">Negocio</label><select id="product-import-tenant" name="tenantId" required>%s</select><div class="field-note">La importación queda asociada al tenant seleccionado.</div></div>
+                  <div class="field"><label for="product-import-format">Formato</label><select id="product-import-format" name="format"><option value="auto"%s>Auto</option><option value="json"%s>JSON</option><option value="csv"%s>CSV</option></select><div class="field-note">Si no lo indicas, se detecta automáticamente.</div></div>
+                  <div class="field field-full"><label for="product-import-file">Archivo</label><input id="product-import-file" name="file" type="file" accept=".csv,.json,application/json,text/csv"><div class="field-note">Opcional. Si subes un archivo, se prioriza sobre el texto pegado.</div></div>
+                  <div class="field field-full"><label for="product-import-payload">Contenido</label><textarea id="product-import-payload" name="payload" rows="12" placeholder="Pega aquí el CSV o JSON exportado por CRM">%s</textarea></div>
+                </div>
+                <div class="form-actions"><button class="primary-action" type="submit">%s</button></div>
+              </form>
+            </section>
+            <section class="table-card" style="margin-top: 20px;">
+              <div class="table-header"><div><h3>Cómo alinear productos/servicios con CRM</h3><p>Referencia operativa rápida para el equipo.</p></div></div>
+              <section class="cards-grid">
+                <article class="info-card"><h3>integration_key</h3><p>En CRM es la clave oficial de integración.</p></article>
+                <article class="info-card"><h3>external_source</h3><p>En Sales Agent debe ser <code>crm</code> para catálogos importados.</p></article>
+                <article class="info-card"><h3>external_reference</h3><p>SA guarda aquí el <code>integration_key</code>.</p></article>
+                <article class="info-card"><h3>slug</h3><p>Se mantiene como identificador local y fallback.</p></article>
+                <article class="info-card"><h3>Sin borrados</h3><p>Los productos ausentes en el archivo no se eliminan.</p></article>
+                <article class="info-card"><h3>Upsert</h3><p>Primero se busca por referencia externa, luego por slug.</p></article>
+              </section>
+              <div class="table-responsive">
+                <table>
+                  <thead><tr><th>Guía de importación</th></tr></thead>
+                  <tbody>
+                    <tr><td><strong>Campos mínimos:</strong> integration_key, name y slug.</td></tr>
+                    <tr><td><strong>Recomendados:</strong> description, base_price_cents, currency y active.</td></tr>
+                    <tr><td><strong>CSV:</strong> admite <code>,</code> o <code>;</code> como separador y valores activos/inactivos comunes.</td></tr>
+                    <tr><td><strong>JSON:</strong> acepta un array o un objeto con <code>items</code>.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </section>
+            %s
+            ',
+            htmlspecialchars($heroTitle, ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($pageSubtitle, ENT_QUOTES, 'UTF-8'),
+            $errorHtml,
+            htmlspecialchars($actionUrl, ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($this->productTokenValue($actionUrl), ENT_QUOTES, 'UTF-8'),
+            $tenantOptions,
+            $values['format'] === 'auto' ? ' selected' : '',
+            $values['format'] === 'json' ? ' selected' : '',
+            $values['format'] === 'csv' ? ' selected' : '',
+            htmlspecialchars($values['payload'], ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($submitLabel, ENT_QUOTES, 'UTF-8'),
+            $resultHtml
+        );
+
+        return $this->renderBackendShell($pageTitle, $pageSubtitle, 'products', $content);
+    }
+
     private function productTokenValue(string $actionUrl): string
     {
         if ($this->csrfTokenManager === null) {
@@ -3082,6 +3665,29 @@ HTML;
     private function productTokenId(string $actionUrl): string
     {
         return 'product_'.md5($actionUrl);
+    }
+
+    private function entryPointTokenValue(string $actionUrl): string
+    {
+        if ($this->csrfTokenManager === null) {
+            return '';
+        }
+
+        return $this->csrfTokenManager->getToken($this->entryPointTokenId($actionUrl))->getValue();
+    }
+
+    private function isValidEntryPointToken(string $actionUrl, string $value): bool
+    {
+        if ($this->csrfTokenManager === null) {
+            return true;
+        }
+
+        return $this->csrfTokenManager->isTokenValid(new CsrfToken($this->entryPointTokenId($actionUrl), $value));
+    }
+
+    private function entryPointTokenId(string $actionUrl): string
+    {
+        return 'entry_point_'.md5($actionUrl);
     }
 
     /**
@@ -3112,17 +3718,239 @@ HTML;
         $options = ['<option value="">Sin producto</option>'];
         if ($products instanceof ProductRepository) {
             foreach ($products->findAllOrdered() as $product) {
+                $label = sprintf('%s · %s', $product->getTenant()->getName(), $product->getName());
+                if ($product->getSlug() !== '') {
+                    $label .= sprintf(' (%s)', $product->getSlug());
+                }
+                if ($product->getExternalReference() !== null) {
+                    $label .= sprintf(' [crm:%s]', $product->getExternalReference());
+                }
+
                 $options[] = sprintf(
-                    '<option value="%s"%s>%s · %s</option>',
+                    '<option value="%s"%s>%s</option>',
                     htmlspecialchars($product->getId()->toRfc4122(), ENT_QUOTES, 'UTF-8'),
                     $product->getId()->toRfc4122() === $selectedId ? ' selected' : '',
-                    htmlspecialchars($product->getTenant()->getName(), ENT_QUOTES, 'UTF-8'),
-                    htmlspecialchars($product->getName(), ENT_QUOTES, 'UTF-8')
+                    htmlspecialchars($label, ENT_QUOTES, 'UTF-8')
                 );
             }
         }
 
         return implode('', $options);
+    }
+
+    /**
+     * @return string
+     */
+    private function renderPlaybookOptions(?PlaybookRepository $playbooks, string $selectedId): string
+    {
+        $options = ['<option value="">Sin playbook</option>'];
+        if ($playbooks instanceof PlaybookRepository) {
+            foreach ($playbooks->findAllOrdered() as $playbook) {
+                $options[] = sprintf(
+                    '<option value="%s"%s>%s · %s</option>',
+                    htmlspecialchars($playbook->getId()->toRfc4122(), ENT_QUOTES, 'UTF-8'),
+                    $playbook->getId()->toRfc4122() === $selectedId ? ' selected' : '',
+                    htmlspecialchars($playbook->getTenant()->getName(), ENT_QUOTES, 'UTF-8'),
+                    htmlspecialchars($playbook->getName(), ENT_QUOTES, 'UTF-8')
+                );
+            }
+        }
+
+        return implode('', $options);
+    }
+
+    /**
+     * @return array{productId: string, playbookId: string, code: string, name: string, source: string, medium: string, campaign: string, content: string, term: string, crmBranchRef: string, defaultMessage: string, isActive: bool}
+     */
+    private function entryPointFormDefaults(?EntryPoint $entryPoint = null): array
+    {
+        return [
+            'productId' => $entryPoint?->getProduct()?->getId()->toRfc4122() ?? '',
+            'playbookId' => $entryPoint?->getPlaybook()?->getId()->toRfc4122() ?? '',
+            'code' => $entryPoint?->getCode() ?? '',
+            'name' => $entryPoint?->getName() ?? '',
+            'source' => $entryPoint?->getSource() ?? '',
+            'medium' => $entryPoint?->getMedium() ?? '',
+            'campaign' => $entryPoint?->getCampaign() ?? '',
+            'content' => $entryPoint?->getContent() ?? '',
+            'term' => $entryPoint?->getTerm() ?? '',
+            'crmBranchRef' => $entryPoint?->getCrmBranchRef() ?? '',
+            'defaultMessage' => $entryPoint?->getDefaultMessage() ?? '',
+            'isActive' => $entryPoint?->isActive() ?? true,
+        ];
+    }
+
+    /**
+     * @return array{productId: string, playbookId: string, code: string, name: string, source: string, medium: string, campaign: string, content: string, term: string, crmBranchRef: string, defaultMessage: string, isActive: bool}
+     */
+    private function entryPointFormValuesFromRequest(Request $request): array
+    {
+        return [
+            'productId' => trim((string) $request->request->get('productId', '')),
+            'playbookId' => trim((string) $request->request->get('playbookId', '')),
+            'code' => trim((string) $request->request->get('code', '')),
+            'name' => trim((string) $request->request->get('name', '')),
+            'source' => trim((string) $request->request->get('source', '')),
+            'medium' => trim((string) $request->request->get('medium', '')),
+            'campaign' => trim((string) $request->request->get('campaign', '')),
+            'content' => trim((string) $request->request->get('content', '')),
+            'term' => trim((string) $request->request->get('term', '')),
+            'crmBranchRef' => trim((string) $request->request->get('crmBranchRef', '')),
+            'defaultMessage' => trim((string) $request->request->get('defaultMessage', '')),
+            'isActive' => $request->request->has('isActive'),
+        ];
+    }
+
+    /**
+     * @param array{productId: string, playbookId: string, code: string, name: string, source: string, medium: string, campaign: string, content: string, term: string, crmBranchRef: string, defaultMessage: string, isActive: bool} $values
+     */
+    private function validateEntryPointForm(array $values, ?EntryPoint $entryPoint, ?ProductRepository $products, ?PlaybookRepository $playbooks, ?EntryPointRepository $entryPoints): ?string
+    {
+        if ($values['code'] === '') {
+            return 'El código del punto de entrada es obligatorio.';
+        }
+
+        if ($values['productId'] === '' || !$products instanceof ProductRepository || !$products->find($values['productId']) instanceof Product) {
+            return 'Debes seleccionar un producto válido.';
+        }
+
+        if ($values['name'] === '') {
+            return 'El nombre del punto de entrada es obligatorio.';
+        }
+
+        if (mb_strlen($values['code']) > 120) {
+            return 'El código no puede superar 120 caracteres.';
+        }
+
+        if (mb_strlen($values['name']) > 255) {
+            return 'El nombre no puede superar 255 caracteres.';
+        }
+
+        foreach (['source', 'medium', 'campaign', 'content', 'term'] as $key) {
+            if ($values[$key] !== '' && mb_strlen($values[$key]) > 120) {
+                return sprintf('El campo %s no puede superar 120 caracteres.', $key);
+            }
+        }
+
+        if ($values['crmBranchRef'] !== '' && mb_strlen($values['crmBranchRef']) > 255) {
+            return 'La referencia CRM no puede superar 255 caracteres.';
+        }
+
+        if ($values['defaultMessage'] !== '' && mb_strlen($values['defaultMessage']) > 5000) {
+            return 'El mensaje por defecto no puede superar 5000 caracteres.';
+        }
+
+        if ($values['playbookId'] !== '') {
+            if (!$playbooks instanceof PlaybookRepository) {
+                return 'La guía comercial seleccionada no existe.';
+            }
+
+            $playbook = $playbooks->find($values['playbookId']);
+            $product = $products->find($values['productId']);
+            if (!$playbook instanceof Playbook || !$product instanceof Product || $playbook->getTenant()->getId()->toRfc4122() !== $product->getTenant()->getId()->toRfc4122()) {
+                return 'La guía comercial seleccionada no pertenece al negocio.';
+            }
+        }
+
+        if ($entryPoints instanceof EntryPointRepository) {
+            $existing = $entryPoints->findOneBy(['code' => $values['code']]);
+            if ($existing instanceof EntryPoint) {
+                if ($entryPoint === null || $existing->getId()->toRfc4122() !== $entryPoint->getId()->toRfc4122()) {
+                    return 'Ya existe otro punto de entrada con ese código.';
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param array{productId: string, playbookId: string, code: string, name: string, source: string, medium: string, campaign: string, content: string, term: string, crmBranchRef: string, defaultMessage: string, isActive: bool} $values
+     */
+    private function hydrateEntryPointFromForm(EntryPoint $entryPoint, array $values, ?Product $product, ?PlaybookRepository $playbooks): void
+    {
+        if ($product instanceof Product) {
+            $entryPoint->setProduct($product);
+        }
+
+        $entryPoint->setCode($values['code']);
+        $entryPoint->setName($values['name']);
+        $entryPoint->setPlaybook($values['playbookId'] !== '' && $playbooks instanceof PlaybookRepository ? $playbooks->find($values['playbookId']) : null);
+        $entryPoint->setSource($values['source'] !== '' ? $values['source'] : null);
+        $entryPoint->setMedium($values['medium'] !== '' ? $values['medium'] : null);
+        $entryPoint->setCampaign($values['campaign'] !== '' ? $values['campaign'] : null);
+        $entryPoint->setContent($values['content'] !== '' ? $values['content'] : null);
+        $entryPoint->setTerm($values['term'] !== '' ? $values['term'] : null);
+        $entryPoint->setCrmBranchRef($values['crmBranchRef'] !== '' ? $values['crmBranchRef'] : null);
+        $entryPoint->setDefaultMessage($values['defaultMessage'] !== '' ? $values['defaultMessage'] : null);
+        $entryPoint->setActive($values['isActive']);
+    }
+
+    /**
+     * @param array{productId: string, playbookId: string, code: string, name: string, source: string, medium: string, campaign: string, content: string, term: string, crmBranchRef: string, defaultMessage: string, isActive: bool} $values
+     */
+    private function renderEntryPointForm(string $pageTitle, string $pageSubtitle, string $heroTitle, string $submitLabel, string $actionUrl, array $values, ?ProductRepository $products, ?PlaybookRepository $playbooks, ?string $error = null): Response
+    {
+        $errorHtml = $error !== null ? sprintf('<div class="form-alert form-alert-error">%s</div>', htmlspecialchars($error, ENT_QUOTES, 'UTF-8')) : '';
+
+        $content = sprintf(
+            '
+            <section class="hero-panel">
+              <div class="hero-copy">
+                <div class="eyebrow-dark">Puntos de entrada</div>
+                <h2>%s</h2>
+                <p>%s</p>
+              </div>
+              <div class="hero-aside">
+                <div class="badge-live">Campaigns</div>
+                <div class="hero-aside-title">Attribution</div>
+                <p>Define código, canal, producto, playbook y referencia CRM antes de emitir la URL pública.</p>
+              </div>
+            </section>
+            <section class="table-card">
+              <div class="table-header"><div><h3>Ficha del punto de entrada</h3><p>Todo el contexto comercial se expresa aquí de forma explícita.</p></div></div>
+              %s
+              <form method="post" action="%s" class="tenant-form">
+                <input type="hidden" name="_csrf_token" value="%s">
+                <div class="form-grid">
+                  <div class="field"><label for="entrypoint-product">Producto</label><select id="entrypoint-product" name="productId" required>%s</select><div class="field-note">El negocio se infiere desde el producto.</div></div>
+                  <div class="field"><label for="entrypoint-playbook">Playbook</label><select id="entrypoint-playbook" name="playbookId">%s</select></div>
+                  <div class="field"><label for="entrypoint-code">Código</label><input id="entrypoint-code" name="code" type="text" value="%s" maxlength="120" required></div>
+                  <div class="field field-check"><label for="entrypoint-active">Estado</label><label class="checkbox-inline" for="entrypoint-active"><input id="entrypoint-active" name="isActive" type="checkbox" value="1"%s><span>Punto de entrada activo</span></label></div>
+                  <div class="field"><label for="entrypoint-name">Nombre</label><input id="entrypoint-name" name="name" type="text" value="%s" maxlength="255" required></div>
+                  <div class="field"><label for="entrypoint-crm-branch">CRM branch ref</label><input id="entrypoint-crm-branch" name="crmBranchRef" type="text" value="%s" maxlength="255"></div>
+                  <div class="field"><label for="entrypoint-source">source</label><input id="entrypoint-source" name="source" type="text" value="%s" maxlength="120"></div>
+                  <div class="field"><label for="entrypoint-medium">medium</label><input id="entrypoint-medium" name="medium" type="text" value="%s" maxlength="120"></div>
+                  <div class="field"><label for="entrypoint-campaign">campaign</label><input id="entrypoint-campaign" name="campaign" type="text" value="%s" maxlength="120"></div>
+                  <div class="field"><label for="entrypoint-content">content</label><input id="entrypoint-content" name="content" type="text" value="%s" maxlength="120"></div>
+                  <div class="field"><label for="entrypoint-term">term</label><input id="entrypoint-term" name="term" type="text" value="%s" maxlength="120"></div>
+                  <div class="field field-full"><label for="entrypoint-message">Mensaje por defecto</label><textarea id="entrypoint-message" name="defaultMessage" rows="4" maxlength="5000">%s</textarea></div>
+                </div>
+                <div class="form-actions"><button class="primary-action" type="submit">%s</button></div>
+              </form>
+            </section>
+            ',
+            htmlspecialchars($heroTitle, ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($pageSubtitle, ENT_QUOTES, 'UTF-8'),
+            $errorHtml,
+            htmlspecialchars($actionUrl, ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($this->entryPointTokenValue($actionUrl), ENT_QUOTES, 'UTF-8'),
+            $this->renderProductOptions($products, $values['productId'] ?? ''),
+            $this->renderPlaybookOptions($playbooks, $values['playbookId'] ?? ''),
+            htmlspecialchars($values['code'], ENT_QUOTES, 'UTF-8'),
+            $values['isActive'] ? ' checked' : '',
+            htmlspecialchars($values['name'], ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($values['crmBranchRef'], ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($values['source'], ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($values['medium'], ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($values['campaign'], ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($values['content'], ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($values['term'], ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($values['defaultMessage'], ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($submitLabel, ENT_QUOTES, 'UTF-8')
+        );
+
+        return $this->renderBackendShell($pageTitle, $pageSubtitle, 'entry-points', $content);
     }
 
     /**

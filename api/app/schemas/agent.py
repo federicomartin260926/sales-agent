@@ -86,10 +86,14 @@ class Conversation(BaseModel):
 class AgentRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    tenant_id: str = Field(min_length=1)
+    tenant_id: str | None = Field(default=None, validation_alias=AliasChoices("tenant_id", "tenantId"))
+    channel_type: str | None = Field(default=None, validation_alias=AliasChoices("channel_type", "channel"))
+    external_channel_id: str | None = Field(default=None, validation_alias=AliasChoices("external_channel_id", "phone_number_id"))
+    entrypoint_ref: str | None = Field(default=None, validation_alias=AliasChoices("entrypoint_ref", "entrypointRef", "ref"))
     message: Message
     contact: Contact
     conversation: Conversation = Field(default_factory=Conversation)
+    raw_event: Any | None = Field(default=None, alias="raw_event")
 
     @model_validator(mode="before")
     @classmethod
@@ -101,6 +105,26 @@ class AgentRequest(BaseModel):
         tenant_id = normalized.get("tenant_id")
         if isinstance(tenant_id, str):
             normalized["tenant_id"] = tenant_id.strip()
+        elif normalized.get("tenantId") is not None and isinstance(normalized.get("tenantId"), str):
+            normalized["tenantId"] = normalized["tenantId"].strip()
+
+        channel_type = normalized.get("channel_type")
+        if isinstance(channel_type, str):
+            normalized["channel_type"] = channel_type.strip()
+        elif isinstance(normalized.get("channel"), str):
+            normalized["channel"] = normalized["channel"].strip()
+
+        external_channel_id = normalized.get("external_channel_id")
+        if isinstance(external_channel_id, str):
+            normalized["external_channel_id"] = external_channel_id.strip()
+        elif isinstance(normalized.get("phone_number_id"), str):
+            normalized["phone_number_id"] = normalized["phone_number_id"].strip()
+
+        entrypoint_ref = normalized.get("entrypoint_ref")
+        if isinstance(entrypoint_ref, str):
+            normalized["entrypoint_ref"] = entrypoint_ref.strip()
+        elif isinstance(normalized.get("entrypointRef"), str):
+            normalized["entrypointRef"] = normalized["entrypointRef"].strip()
 
         message = normalized.get("message")
         if isinstance(message, (dict, str)):

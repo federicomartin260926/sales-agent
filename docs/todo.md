@@ -13,10 +13,12 @@ Lista ordenada de trabajo para llevar `sales-agent` desde la base actual al runt
 ## 2. Resolver contexto del tenant en el runtime
 
 - buscar `Tenant` por `tenant_id`
+- buscar `Tenant` por `whatsappPhoneNumberId` cuando llegue tráfico desde Meta
 - cargar productos activos del tenant
 - cargar playbooks activos del tenant
 - elegir playbook aplicable por tenant y, si existe, por producto
 - devolver error estructurado si el tenant no existe o está inactivo
+- eliminar cualquier selección implícita de producto por orden de lista
 
 ## 3. Convertir el decision engine en orquestador real
 
@@ -60,6 +62,9 @@ Lista ordenada de trabajo para llevar `sales-agent` desde la base actual al runt
 - registrar trazas de decisión
 - guardar eventos conversacionales relevantes
 - preparar auditoría mínima de respuestas y acciones
+- completar CRUD administrativo para `EntryPoint`, `EntryPointUtm` y `Conversation`
+- mantener el importador de catálogo CRM alineado con `integration_key` y `externalReference`
+- definir sincronización opcional con CRM para `crmBranchRef` y atribución externa
 
 ## 9. Endpoints y contratos
 
@@ -71,6 +76,7 @@ Lista ordenada de trabajo para llevar `sales-agent` desde la base actual al runt
 ## 10. Administración y UX interna
 
 - mejorar la gestión de tenants, products y playbooks
+- afinar la UX del importador de catálogo CRM para revisión masiva y errores por fila
 - completar la edición de perfiles y roles internos
 - asegurar que el panel humano refleje el estado real del modelo
 

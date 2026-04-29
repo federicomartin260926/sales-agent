@@ -45,9 +45,39 @@ final class ProductController extends AbstractApiController
             return $this->badRequest('tenant not found');
         }
 
+        $slug = isset($data['slug']) && is_string($data['slug']) ? trim($data['slug']) : '';
+        if ($slug === '') {
+            $slug = (new Product($tenant, (string) $data['name']))->getSlug();
+        }
+
+        if (($error = $this->guardProductIdentity(
+            $tenant,
+            null,
+            $slug,
+            isset($data['externalSource']) ? (is_string($data['externalSource']) ? trim($data['externalSource']) : null) : null,
+            isset($data['externalReference']) ? (is_string($data['externalReference']) ? trim($data['externalReference']) : null) : null,
+        )) !== null) {
+            return $error;
+        }
+
         $product = new Product($tenant, (string) $data['name']);
+        if (isset($data['slug']) && trim((string) $data['slug']) !== '') {
+            $product->setSlug((string) $data['slug']);
+        }
+        if (array_key_exists('externalSource', $data)) {
+            $product->setExternalSource(is_string($data['externalSource']) && trim($data['externalSource']) !== '' ? $data['externalSource'] : null);
+        }
+        if (array_key_exists('externalReference', $data)) {
+            $product->setExternalReference(is_string($data['externalReference']) && trim($data['externalReference']) !== '' ? $data['externalReference'] : null);
+        }
         $product->setDescription((string) ($data['description'] ?? ''));
         $product->setValueProposition((string) ($data['valueProposition'] ?? ''));
+        if (array_key_exists('basePriceCents', $data)) {
+            $product->setBasePriceCents($this->intOrNull($data['basePriceCents']));
+        }
+        if (array_key_exists('currency', $data)) {
+            $product->setCurrency(is_string($data['currency']) && trim($data['currency']) !== '' ? $data['currency'] : null);
+        }
         $salesPolicy = CommercialDomainSchema::normalizeProductSalesPolicy($data['salesPolicy'] ?? []);
         if (($error = CommercialDomainSchema::validateProductSalesPolicy($salesPolicy)) !== null) {
             return $this->badRequest($error);
@@ -91,8 +121,30 @@ final class ProductController extends AbstractApiController
             $product->setTenant($tenant);
         }
 
+        if (($error = $this->guardProductIdentity(
+            $product->getTenant(),
+            $product,
+            array_key_exists('slug', $data) && is_string($data['slug']) && trim($data['slug']) !== '' ? trim($data['slug']) : null,
+            array_key_exists('externalSource', $data) && is_string($data['externalSource']) ? trim($data['externalSource']) : null,
+            array_key_exists('externalReference', $data) && is_string($data['externalReference']) ? trim($data['externalReference']) : null,
+        )) !== null) {
+            return $error;
+        }
+
         if (array_key_exists('name', $data)) {
             $product->setName((string) $data['name']);
+        }
+
+        if (array_key_exists('slug', $data) && is_string($data['slug']) && trim($data['slug']) !== '') {
+            $product->setSlug((string) $data['slug']);
+        }
+
+        if (array_key_exists('externalSource', $data)) {
+            $product->setExternalSource(is_string($data['externalSource']) && trim($data['externalSource']) !== '' ? $data['externalSource'] : null);
+        }
+
+        if (array_key_exists('externalReference', $data)) {
+            $product->setExternalReference(is_string($data['externalReference']) && trim($data['externalReference']) !== '' ? $data['externalReference'] : null);
         }
 
         if (array_key_exists('description', $data)) {
@@ -101,6 +153,14 @@ final class ProductController extends AbstractApiController
 
         if (array_key_exists('valueProposition', $data)) {
             $product->setValueProposition((string) $data['valueProposition']);
+        }
+
+        if (array_key_exists('basePriceCents', $data)) {
+            $product->setBasePriceCents($this->intOrNull($data['basePriceCents']));
+        }
+
+        if (array_key_exists('currency', $data)) {
+            $product->setCurrency(is_string($data['currency']) && trim($data['currency']) !== '' ? $data['currency'] : null);
         }
 
         if (array_key_exists('salesPolicy', $data)) {
@@ -132,5 +192,42 @@ final class ProductController extends AbstractApiController
         $this->products->remove($product);
 
         return $this->json(null, JsonResponse::HTTP_NO_CONTENT);
+    }
+
+    private function intOrNull(mixed $value): ?int
+    {
+        if (is_int($value)) {
+            return $value;
+        }
+
+        if (is_string($value) && trim($value) !== '' && is_numeric(trim($value))) {
+            return (int) trim($value);
+        }
+
+        return null;
+    }
+
+    private function guardProductIdentity(
+        Tenant $tenant,
+        ?Product $currentProduct,
+        ?string $slug,
+        ?string $externalSource,
+        ?string $externalReference,
+    ): ?JsonResponse {
+        if ($slug !== null && $slug !== '') {
+            $existing = $this->products->findOneByTenantAndSlug($tenant, $slug);
+            if ($existing instanceof Product && ($currentProduct === null || $existing->getId()->toRfc4122() !== $currentProduct->getId()->toRfc4122())) {
+                return $this->badRequest('slug already exists for tenant');
+            }
+        }
+
+        if ($externalSource !== null && $externalSource !== '' && $externalReference !== null && $externalReference !== '') {
+            $existing = $this->products->findOneByExternalIdentity($tenant, $externalSource, $externalReference);
+            if ($existing instanceof Product && ($currentProduct === null || $existing->getId()->toRfc4122() !== $currentProduct->getId()->toRfc4122())) {
+                return $this->badRequest('external identity already exists for tenant');
+            }
+        }
+
+        return null;
     }
 }

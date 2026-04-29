@@ -7,11 +7,14 @@
   <php>
     <env name="APP_ENV" value="test"/>
     <env name="APP_DEBUG" value="1"/>
-    <env name="KERNEL_CLASS" value="App\\Kernel"/>
+    <server name="KERNEL_CLASS" value="App\\Kernel"/>
   </php>
   <testsuites>
     <testsuite name="Unit">
       <directory>tests/Unit</directory>
+    </testsuite>
+    <testsuite name="Functional">
+      <directory>tests/Functional</directory>
     </testsuite>
   </testsuites>
 </phpunit>
