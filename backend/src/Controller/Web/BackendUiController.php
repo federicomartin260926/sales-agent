@@ -27,6 +27,7 @@ use Symfony\Component\Security\Core\User\UserInterface;
 use Symfony\Component\Security\Csrf\CsrfToken;
 use Symfony\Component\Security\Csrf\CsrfTokenManagerInterface;
 use Symfony\Component\Security\Http\Authentication\AuthenticationUtils;
+use Twig\Environment;
 
 final class BackendUiController
 {
@@ -35,6 +36,7 @@ final class BackendUiController
         private readonly EntityManagerInterface $entityManager,
         private readonly UserPasswordHasherInterface $passwordHasher,
         private readonly RuntimeConfigurationService $runtimeConfigurationService,
+        private readonly Environment $twig,
         private readonly ?ProductCatalogImportService $productCatalogImportService = null,
         private readonly ?CsrfTokenManagerInterface $csrfTokenManager = null,
     ) {
@@ -320,9 +322,8 @@ HTML;
                         htmlspecialchars($validationError, ENT_QUOTES, 'UTF-8')
                     );
                 }
-                $content = $this->renderRuntimeConfigurationContent($pageData, $feedbackHtml, $this->runtimeConfigurationTokenValue('runtime_configuration'));
 
-                return $this->renderBackendShell('Configuración', 'Ajustes operativos de LLM, audio y conectividad externa.', 'admin-configuration', $content);
+                return $this->renderRuntimeConfigurationPage($pageData, $feedbackHtml, $this->runtimeConfigurationTokenValue('runtime_configuration'));
             }
 
             $result = $this->runtimeConfigurationService->save($submitted);
@@ -352,9 +353,7 @@ HTML;
             $feedbackHtml .= $this->runtimeTestFeedback($testResult);
         }
 
-        $content = $this->renderRuntimeConfigurationContent($pageData, $feedbackHtml, $this->runtimeConfigurationTokenValue('runtime_configuration'));
-
-        return $this->renderBackendShell('Configuración', 'Ajustes operativos de LLM, audio y conectividad externa.', 'admin-configuration', $content);
+        return $this->renderRuntimeConfigurationPage($pageData, $feedbackHtml, $this->runtimeConfigurationTokenValue('runtime_configuration'));
     }
 
     #[Route('/dashboard', methods: ['GET'])]
@@ -4438,6 +4437,120 @@ service,pack-starter,Pack Starter,pack-starter,"Solución inicial para pymes..."
         }
 
         return $this->csrfTokenManager->getToken($id)->getValue();
+    }
+
+    /**
+     * @param array<string, mixed> $pageData
+     */
+    private function renderRuntimeConfigurationPage(array $pageData, string $feedbackHtml, string $csrfToken): Response
+    {
+        return new Response($this->twig->render('backend/configuration/index.html.twig', $this->runtimeConfigurationTemplateData($pageData, $feedbackHtml, $csrfToken)));
+    }
+
+    /**
+     * @param array<string, mixed> $pageData
+     *
+     * @return array<string, mixed>
+     */
+    private function runtimeConfigurationTemplateData(array $pageData, string $feedbackHtml, string $csrfToken): array
+    {
+        $formState = $pageData['formState'] ?? [];
+        $status = $pageData['status'] ?? [];
+
+        $overallStatus = $status['overall'] ?? [];
+        $llmStatus = $status['llm'] ?? [];
+        $openaiStatus = $status['openai'] ?? [];
+        $ollamaStatus = $status['ollama'] ?? [];
+        $audioStatus = $status['audio'] ?? [];
+
+        $metrics = [
+            [
+                'label' => 'Estado general',
+                'value' => $this->runtimeStatusLabel((string) ($overallStatus['status'] ?? 'blocked')),
+                'note' => (string) ($overallStatus['message'] ?? 'Sin estado operativo.'),
+            ],
+            [
+                'label' => 'OpenAI',
+                'value' => $this->runtimeStatusLabel((string) ($openaiStatus['status'] ?? 'blocked')),
+                'note' => (string) ($openaiStatus['message'] ?? 'Sin validación'),
+            ],
+            [
+                'label' => 'Ollama',
+                'value' => $this->runtimeStatusLabel((string) ($ollamaStatus['status'] ?? 'blocked')),
+                'note' => (string) ($ollamaStatus['message'] ?? 'Sin validación'),
+            ],
+            [
+                'label' => 'Audio',
+                'value' => $this->runtimeStatusLabel((string) ($audioStatus['status'] ?? 'blocked')),
+                'note' => (string) ($audioStatus['message'] ?? 'Sin validación'),
+            ],
+        ];
+
+        return [
+            'page_title' => 'Configuración',
+            'page_subtitle' => 'Ajustes operativos de LLM, audio y conectividad externa.',
+            'active_nav' => 'admin-configuration',
+            'current_user_display_name' => $this->currentUserDisplayName(),
+            'current_user_initials' => $this->currentUserInitials(),
+            'feedback_html' => $feedbackHtml,
+            'csrf_token' => $csrfToken,
+            'overall_status_message' => (string) (($overallStatus['message'] ?? 'Sin estado operativo.') ?: 'Sin estado operativo.'),
+            'metrics' => $metrics,
+            'llm' => [
+                'title' => 'LLM',
+                'subtitle' => 'OpenAI, Ollama y el perfil por defecto que usará el runtime.',
+                'note' => 'Los botones de prueba consumen una request real contra el proveedor seleccionado.',
+                'badge_label' => $this->runtimeStatusLabel((string) ($llmStatus['status'] ?? 'blocked')),
+                'badge_class' => $this->runtimeStatusClass((string) ($llmStatus['status'] ?? 'blocked')),
+                'fields' => $this->runtimeConfigurationFieldsForKeys($formState, [
+                    'llm_default_profile',
+                    'openai_base_url',
+                    'openai_model',
+                    'openai_api_key',
+                    'ollama_base_url',
+                    'ollama_model',
+                ]),
+                'actions' => [
+                    ['class' => 'secondary-action', 'name' => 'action', 'value' => 'test_openai', 'label' => 'Probar OpenAI'],
+                    ['class' => 'secondary-action', 'name' => 'action', 'value' => 'test_ollama', 'label' => 'Probar Ollama'],
+                ],
+            ],
+            'audio' => [
+                'title' => 'Audio',
+                'subtitle' => 'Modo audio local o gateway y conectividad simple contra el endpoint de salud.',
+                'note' => 'Si el modo es `gateway`, la prueba valida el endpoint remoto configurado.',
+                'badge_label' => $this->runtimeStatusLabel((string) ($audioStatus['status'] ?? 'blocked')),
+                'badge_class' => $this->runtimeStatusClass((string) ($audioStatus['status'] ?? 'blocked')),
+                'fields' => $this->runtimeConfigurationFieldsForKeys($formState, [
+                    'audio_mode',
+                    'audio_gateway_base_url',
+                    'audio_gateway_token',
+                ]),
+                'actions' => [
+                    ['class' => 'secondary-action', 'name' => 'action', 'value' => 'test_audio', 'label' => 'Probar audio'],
+                ],
+            ],
+        ];
+    }
+
+    /**
+     * @param array<string, array<string, mixed>> $formState
+     * @param string[] $keys
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    private function runtimeConfigurationFieldsForKeys(array $formState, array $keys): array
+    {
+        $fields = [];
+        foreach ($keys as $key) {
+            if (!isset($formState[$key]) || !is_array($formState[$key])) {
+                continue;
+            }
+
+            $fields[] = $formState[$key];
+        }
+
+        return $fields;
     }
 
     private function runtimeTestFeedback(\App\Service\RuntimeConnectivityTestResult $result): string

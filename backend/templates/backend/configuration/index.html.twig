@@ -1,0 +1,38 @@
+{% extends 'backend/layout.html.twig' %}
+
+{% block content %}
+  <section class="hero-panel">
+    <div class="hero-copy">
+      <div class="eyebrow-dark">Configuración operativa</div>
+      <h2>LLM, audio y conectividad externa</h2>
+      <p>
+        La configuración editable vive en base de datos. Los valores sensibles se cifran y el runtime consume esta
+        información como fuente de verdad, con `.env` reservado para bootstrap e infraestructura.
+      </p>
+    </div>
+    <div class="hero-aside">
+      <div class="badge-live">Operativo</div>
+      <div class="hero-aside-title">Estado actual</div>
+      <p>{{ overall_status_message }}</p>
+    </div>
+  </section>
+
+  <section class="stats-grid">
+    {% for metric in metrics %}
+      {% include 'backend/configuration/_metric_card.html.twig' with { metric: metric } %}
+    {% endfor %}
+  </section>
+
+  {{ feedback_html|raw }}
+
+  <form method="post" action="/backend/configuration" class="tenant-form runtime-settings-form">
+    <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
+
+    {% include 'backend/configuration/_runtime_section.html.twig' with { section: llm } %}
+    {% include 'backend/configuration/_runtime_section.html.twig' with { section: audio } %}
+
+    <div class="form-actions runtime-settings-actions">
+      <button class="primary-action" type="submit" name="action" value="save">Guardar cambios</button>
+    </div>
+  </form>
+{% endblock %}

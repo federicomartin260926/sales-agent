@@ -1,0 +1,22 @@
+<section class="table-card">
+  <div class="table-header">
+    <div>
+      <h3>{{ section.title }}</h3>
+      <p>{{ section.subtitle }}</p>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">
+      <span class="{{ section.badge_class }}">{{ section.badge_label }}</span>
+    </div>
+  </div>
+  <div class="section-note">{{ section.note }}</div>
+  <div class="form-grid">
+    {% for field in section.fields %}
+      {% include 'backend/configuration/_runtime_field.html.twig' with { field: field } %}
+    {% endfor %}
+  </div>
+  <div class="form-actions{% if section.actions_class is defined %} {{ section.actions_class }}{% endif %}">
+    {% for action in section.actions %}
+      <button class="{{ action.class }}" type="submit" name="action" value="{{ action.value }}">{{ action.label }}</button>
+    {% endfor %}
+  </div>
+</section>

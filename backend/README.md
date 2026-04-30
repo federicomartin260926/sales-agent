@@ -9,6 +9,7 @@ Este directorio contiene el backend administrativo de `sales-agent`.
 - incluye `Mi perfil` para actualizar nombre visible y clave de acceso
 - permite crear y editar `negocios`, `guías comerciales`, `productos / servicios` y `puntos de entrada` desde la vista humana con formularios guiados
 - permite editar la configuración operativa de LLM y audio desde `/backend/configuration`
+- usa Twig como base de render para el layout común y la primera pantalla migrada de configuración
 - permite importar catálogos de productos/servicios desde CRM con `integration_key` como referencia externa
 - la UI heredada ya no expone `canales` ni `tracking`; el flujo canónico se configura con `EntryPoint`, `EntryPointUtm` y `Conversation`
 - presenta un layout tipo CRM para navegación operativa por módulos
@@ -29,6 +30,7 @@ Este directorio contiene el backend administrativo de `sales-agent`.
 - `src/Entity/`: entidades Doctrine
 - `src/Repository/`: repositorios Doctrine
 - `src/Controller/Web/`: páginas HTML para login y dashboard del backend
+- `templates/`: base Twig, layout backend y plantillas de la pantalla de configuración
 - `src/Controller/Api/`: controladores REST
 - `src/Security/`: handlers de seguridad
 - `src/Service/`: catálogo, cifrado y presentadores de configuración operativa
@@ -144,6 +146,7 @@ El backend humano está pensado como un CRM clásico:
 - secciones específicas para `Puntos de entrada` y atribución técnica
 - perfil de usuario con cambio de nombre y contraseña
 - shell visual separado de la API técnica
+- Twig como base de render para layouts y formularios nuevos
 
 ## Notas de seguridad
 

@@ -3,6 +3,7 @@
 `sales-agent` es una base híbrida para construir un sistema de agentes comerciales multi-tenant con:
 
 - backend administrativo en Symfony 7 + PHP 8.3
+- backend administrativo con layouts Twig y migración progresiva desde controladores inline
 - API de runtime de agente en FastAPI + Python 3.12
 - PostgreSQL
 - Docker y Docker Compose
@@ -26,6 +27,7 @@ El proyecto está preparado para integrarse más adelante con:
 ## Arquitectura
 
 - `backend/`: Symfony clásico con Controllers, Entities, Repositories y Services
+  - `backend/templates/`: base Twig y vistas HTML del panel administrativo
 - `api/`: FastAPI para runtime del agente y decisiones conversacionales
 - `docker/`: configuración compartida de Nginx y runtime
 - `docker-compose.yml`: base común

@@ -1,0 +1,22 @@
+{% set note = field.description %}
+{% if field.secret %}
+  {% set note = note ~ (field.configured ? ' Valor cifrado ya configurado; deja vacío para conservarlo.' : ' Se guardará cifrado en base de datos.') %}
+{% elseif field.value == '' and field.defaultValue != '' %}
+  {% set note = note ~ ' Valor por defecto: ' ~ field.defaultValue ~ '.' %}
+{% endif %}
+
+<div class="field{% if field.fullWidth|default(false) %} field-full{% endif %}">
+  <label for="{{ field.key }}">{{ field.label }}</label>
+  {% if field.inputType == 'select' %}
+    <select id="{{ field.key }}" name="{{ field.key }}">
+      {% for option in field.options %}
+        <option value="{{ option.value }}"{% if option.value == field.value %} selected{% endif %}>{{ option.label }}{% if option.value == field.value %} (actual){% endif %}</option>
+      {% endfor %}
+    </select>
+  {% elseif field.inputType == 'password' %}
+    <input id="{{ field.key }}" name="{{ field.key }}" type="password" value="" autocomplete="new-password" autocapitalize="off" spellcheck="false" placeholder="{{ field.secret and field.configured ? 'Dejar vacío para conservar el valor actual' : 'Escribe el nuevo secreto' }}">
+  {% else %}
+    <input id="{{ field.key }}" name="{{ field.key }}" type="{{ field.key ends with '_base_url' ? 'url' : 'text' }}" value="{{ field.value }}" autocapitalize="off" spellcheck="false">
+  {% endif %}
+  <div class="field-note">{{ note }}</div>
+</div>

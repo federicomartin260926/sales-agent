@@ -25,6 +25,8 @@ use Symfony\Component\Security\Csrf\CsrfTokenManagerInterface;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Security\Core\User\UserInterface;
 use Symfony\Component\Security\Http\Authentication\AuthenticationUtils;
+use Twig\Environment;
+use Twig\Loader\FilesystemLoader;
 
 final class BackendUiControllerTest extends TestCase
 {
@@ -35,13 +37,25 @@ final class BackendUiControllerTest extends TestCase
         ?CsrfTokenManagerInterface $csrfTokenManager = null,
         ?ProductCatalogImportService $productCatalogImportService = null,
         ?RuntimeConfigurationService $runtimeConfigurationService = null,
+        ?Environment $twig = null,
     ): BackendUiController {
         $entityManager ??= $this->createStub(EntityManagerInterface::class);
         $passwordHasher ??= $this->createStub(UserPasswordHasherInterface::class);
         $csrfTokenManager ??= $this->createStub(CsrfTokenManagerInterface::class);
         $runtimeConfigurationService ??= $this->createStub(RuntimeConfigurationService::class);
+        $twig ??= $this->createTwigEnvironment();
 
-        return new BackendUiController($security, $entityManager, $passwordHasher, $runtimeConfigurationService, $productCatalogImportService, $csrfTokenManager);
+        return new BackendUiController($security, $entityManager, $passwordHasher, $runtimeConfigurationService, $twig, $productCatalogImportService, $csrfTokenManager);
+    }
+
+    private function createTwigEnvironment(): Environment
+    {
+        $loader = new FilesystemLoader(__DIR__.'/../../templates');
+
+        return new Environment($loader, [
+            'cache' => false,
+            'autoescape' => 'html',
+        ]);
     }
 
     private function createAuthenticatedUser(string $email = 'admin@example.com', array $roles = ['admin'], ?string $name = null): User
