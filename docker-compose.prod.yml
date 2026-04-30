@@ -6,6 +6,7 @@ services:
     environment:
       APP_ENV: prod
       APP_DEBUG: "0"
+      SALES_AGENT_BEARER_TOKEN: ${SALES_AGENT_BEARER_TOKEN:-change-me-sales-agent-bearer-token}
     volumes:
       - sales_agent_backend_var:/var/www/html/backend/var
     restart: unless-stopped

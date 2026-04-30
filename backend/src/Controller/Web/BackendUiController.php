@@ -13,6 +13,7 @@ use App\Repository\ProductRepository;
 use App\Repository\EntryPointRepository;
 use App\Repository\TenantRepository;
 use App\Repository\UserRepository;
+use App\Service\RuntimeConfigurationService;
 use App\Service\ProductCatalogImportResult;
 use App\Service\ProductCatalogImportService;
 use Doctrine\ORM\EntityManagerInterface;
@@ -33,6 +34,7 @@ final class BackendUiController
         private readonly Security $security,
         private readonly EntityManagerInterface $entityManager,
         private readonly UserPasswordHasherInterface $passwordHasher,
+        private readonly RuntimeConfigurationService $runtimeConfigurationService,
         private readonly ?ProductCatalogImportService $productCatalogImportService = null,
         private readonly ?CsrfTokenManagerInterface $csrfTokenManager = null,
     ) {
@@ -293,6 +295,68 @@ HTML;
         return new RedirectResponse('/backend/login');
     }
 
+    #[Route('/configuration', methods: ['GET', 'POST'])]
+    public function configuration(Request $request): Response
+    {
+        if (!$this->security->isGranted('ROLE_ADMIN')) {
+            return new RedirectResponse('/backend/login');
+        }
+
+        $submitted = $this->runtimeConfigurationValuesFromRequest($request);
+        $action = trim((string) $request->request->get('action', ''));
+
+        if ($request->isMethod('POST') && $action === 'save') {
+            if (!$this->isValidRuntimeConfigurationToken('runtime_configuration', (string) $request->request->get('_csrf_token'))) {
+                return new RedirectResponse('/backend/configuration');
+            }
+
+            $validationErrors = $this->runtimeConfigurationService->validate($submitted);
+            if ($validationErrors !== []) {
+                $pageData = $this->runtimeConfigurationService->pageData($submitted, []);
+                $feedbackHtml = $this->renderProfileFeedback($request);
+                foreach ($validationErrors as $validationError) {
+                    $feedbackHtml .= sprintf(
+                        '<div class="alert alert-error">%s</div>',
+                        htmlspecialchars($validationError, ENT_QUOTES, 'UTF-8')
+                    );
+                }
+                $content = $this->renderRuntimeConfigurationContent($pageData, $feedbackHtml, $this->runtimeConfigurationTokenValue('runtime_configuration'));
+
+                return $this->renderBackendShell('Configuración', 'Ajustes operativos de LLM, audio y conectividad externa.', 'admin-configuration', $content);
+            }
+
+            $result = $this->runtimeConfigurationService->save($submitted);
+            $savedCount = count($result['saved']);
+            $this->addProfileFlash($request, 'success', $savedCount > 0 ? sprintf('Configuración guardada (%d claves).', $savedCount) : 'No hubo cambios para guardar.');
+
+            return new RedirectResponse('/backend/configuration');
+        }
+
+        $testResult = null;
+        $testResults = [];
+        $target = $this->runtimeConfigurationTargetFromAction($action);
+        if ($request->isMethod('POST')) {
+            if (!$this->isValidRuntimeConfigurationToken('runtime_configuration', (string) $request->request->get('_csrf_token'))) {
+                return new RedirectResponse('/backend/configuration');
+            }
+
+            if ($target !== null) {
+                $testResult = $this->runtimeConfigurationService->test($target, $submitted);
+                $testResults[$target] = $testResult;
+            }
+        }
+
+        $pageData = $this->runtimeConfigurationService->pageData($submitted, $testResults);
+        $feedbackHtml = $this->renderProfileFeedback($request);
+        if ($testResult instanceof \App\Service\RuntimeConnectivityTestResult) {
+            $feedbackHtml .= $this->runtimeTestFeedback($testResult);
+        }
+
+        $content = $this->renderRuntimeConfigurationContent($pageData, $feedbackHtml, $this->runtimeConfigurationTokenValue('runtime_configuration'));
+
+        return $this->renderBackendShell('Configuración', 'Ajustes operativos de LLM, audio y conectividad externa.', 'admin-configuration', $content);
+    }
+
     #[Route('/dashboard', methods: ['GET'])]
     public function dashboard(
         ?TenantRepository $tenants = null,
@@ -390,33 +454,47 @@ HTML;
     }
 
     #[Route('/playbooks', methods: ['GET'])]
-    public function playbooks(?PlaybookRepository $playbooks = null): Response
+    public function playbooks(Request $request, ?PlaybookRepository $playbooks = null): Response
     {
         if (!$this->security->isGranted('ROLE_MANAGER')) {
             return new RedirectResponse('/backend/login');
         }
 
-        $rows = array_map(static function (Playbook $playbook): string {
+        $feedbackHtml = $this->renderProfileFeedback($request);
+        $rows = array_map(function (Playbook $playbook): string {
             $tenant = $playbook->getTenant();
             $product = $playbook->getProduct();
+            $summary = $this->shortenListText($playbook->getConfigSummary(), 120, 'Sin resumen');
             $status = $playbook->isActive() ? '<span class="status-ok">Activo</span>' : '<span class="status-off">Inactivo</span>';
             $editUrl = sprintf('/backend/playbooks/%s/edit', rawurlencode($playbook->getId()->toRfc4122()));
+            $deleteUrl = sprintf('/backend/playbooks/%s/delete', rawurlencode($playbook->getId()->toRfc4122()));
 
             return sprintf(
                 '<tr>
-                    <td><strong>%s</strong><div class="subtle">%s</div></td>
+                    <td><strong>%s</strong><div class="subtle">Resumen: %s</div></td>
                     <td>%s</td>
                     <td>%s</td>
                     <td>%s</td>
-                    <td class="text-right"><a class="icon-action" href="%s" title="Editar guía comercial" aria-label="Editar guía comercial">%s</a></td>
+                    <td class="text-right">
+                      <div style="display:inline-flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end">
+                        <a class="icon-action" href="%s" title="Editar guía comercial" aria-label="Editar guía comercial">%s</a>
+                        <form method="post" action="%s" onsubmit="return confirm(\'¿Eliminar esta guía comercial?\');" style="display:inline-flex;">
+                          <input type="hidden" name="_csrf_token" value="%s">
+                          <button class="icon-action icon-action-danger icon-action-button" type="submit" title="Eliminar guía comercial" aria-label="Eliminar guía comercial">%s</button>
+                        </form>
+                      </div>
+                    </td>
                   </tr>',
                 htmlspecialchars($playbook->getName(), ENT_QUOTES, 'UTF-8'),
-                htmlspecialchars($playbook->getConfigSummary(), ENT_QUOTES, 'UTF-8'),
+                htmlspecialchars($summary, ENT_QUOTES, 'UTF-8'),
                 htmlspecialchars($tenant->getName(), ENT_QUOTES, 'UTF-8'),
                 $product ? htmlspecialchars($product->getName(), ENT_QUOTES, 'UTF-8') : 'Sin producto',
                 $status,
                 htmlspecialchars($editUrl, ENT_QUOTES, 'UTF-8'),
-                self::iconEditSvg()
+                self::iconEditSvg(),
+                htmlspecialchars($deleteUrl, ENT_QUOTES, 'UTF-8'),
+                htmlspecialchars($this->playbookTokenValue($deleteUrl), ENT_QUOTES, 'UTF-8'),
+                self::iconDeleteSvg()
             );
         }, $playbooks ? $playbooks->findAllOrdered() : []);
 
@@ -434,6 +512,7 @@ HTML;
                 <p>Los ajustes se activan y mantienen desde este panel, por negocio y sin mezclar la API técnica.</p>
               </div>
             </section>
+            %s
             <section class="table-card">
               <div class="table-header">
                 <div>
@@ -452,6 +531,7 @@ HTML;
               </div>
             </section>
             ',
+            $feedbackHtml,
             $rows !== [] ? implode('', $rows) : '<tr><td colspan="5" class="empty-row">No hay guías comerciales todavía.</td></tr>'
         );
 
@@ -550,33 +630,77 @@ HTML;
         );
     }
 
-    #[Route('/tenants', methods: ['GET'])]
-    public function tenants(?TenantRepository $tenants = null): Response
+    #[Route('/playbooks/{id}/delete', methods: ['POST'])]
+    public function playbookDelete(string $id, Request $request, ?PlaybookRepository $playbooks = null): Response
     {
         if (!$this->security->isGranted('ROLE_MANAGER')) {
             return new RedirectResponse('/backend/login');
         }
 
-        $rows = array_map(static function (Tenant $tenant): string {
-            $policySummary = $tenant->getSalesPolicySummary();
+        if (!$playbooks instanceof PlaybookRepository) {
+            return new RedirectResponse('/backend/playbooks');
+        }
+
+        $playbook = $playbooks->find($id);
+        if (!$playbook instanceof Playbook) {
+            return new RedirectResponse('/backend/playbooks');
+        }
+
+        $deleteUrl = '/backend/playbooks/'.$playbook->getId()->toRfc4122().'/delete';
+        if (!$this->isValidPlaybookToken($deleteUrl, (string) $request->request->get('_csrf_token'))) {
+            return new RedirectResponse('/backend/playbooks');
+        }
+
+        $this->entityManager->remove($playbook);
+        $this->entityManager->flush();
+        $this->addFlashMessage($request, 'success', 'Guía comercial eliminada.');
+
+        return new RedirectResponse('/backend/playbooks');
+    }
+
+    #[Route('/tenants', methods: ['GET'])]
+    public function tenants(Request $request, ?TenantRepository $tenants = null): Response
+    {
+        if (!$this->security->isGranted('ROLE_MANAGER')) {
+            return new RedirectResponse('/backend/login');
+        }
+
+        $feedbackHtml = $this->renderProfileFeedback($request);
+        $rows = array_map(function (Tenant $tenant): string {
+            $contextSummary = $this->shortenListText($tenant->getBusinessContext(), 110, 'Sin contexto');
+            $toneSummary = $this->shortenListText($tenant->getTone() ?? '', 36, 'Sin tono');
+            $policySummary = $this->shortenListText($tenant->getSalesPolicySummary(), 130, 'Sin política comercial');
             $status = $tenant->isActive() ? '<span class="status-ok">Activo</span>' : '<span class="status-off">Inactivo</span>';
             $editUrl = sprintf('/backend/tenants/%s/edit', rawurlencode($tenant->getId()->toRfc4122()));
+            $deleteUrl = sprintf('/backend/tenants/%s/delete', rawurlencode($tenant->getId()->toRfc4122()));
 
             return sprintf(
                 '<tr>
-                    <td><strong>%s</strong><div class="subtle">%s</div></td>
+                    <td><strong>%s</strong><div class="subtle">Contexto: %s</div><div class="subtle">Tono: %s</div></td>
                     <td><code>%s</code></td>
+                    <td>Política: %s</td>
                     <td>%s</td>
-                    <td>%s</td>
-                    <td class="text-right"><a class="icon-action" href="%s" title="Editar negocio" aria-label="Editar negocio">%s</a></td>
+                    <td class="text-right">
+                      <div style="display:inline-flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end">
+                        <a class="icon-action" href="%s" title="Editar negocio" aria-label="Editar negocio">%s</a>
+                        <form method="post" action="%s" onsubmit="return confirm(\'¿Eliminar este negocio?\');" style="display:inline-flex;">
+                          <input type="hidden" name="_csrf_token" value="%s">
+                          <button class="icon-action icon-action-danger icon-action-button" type="submit" title="Eliminar negocio" aria-label="Eliminar negocio">%s</button>
+                        </form>
+                      </div>
+                    </td>
                   </tr>',
                 htmlspecialchars($tenant->getName(), ENT_QUOTES, 'UTF-8'),
-                htmlspecialchars($tenant->getBusinessContext(), ENT_QUOTES, 'UTF-8'),
+                htmlspecialchars($contextSummary, ENT_QUOTES, 'UTF-8'),
+                htmlspecialchars($toneSummary, ENT_QUOTES, 'UTF-8'),
                 htmlspecialchars($tenant->getSlug(), ENT_QUOTES, 'UTF-8'),
                 htmlspecialchars($policySummary, ENT_QUOTES, 'UTF-8'),
                 $status,
                 htmlspecialchars($editUrl, ENT_QUOTES, 'UTF-8'),
-                self::iconEditSvg()
+                self::iconEditSvg(),
+                htmlspecialchars($deleteUrl, ENT_QUOTES, 'UTF-8'),
+                htmlspecialchars($this->tenantTokenValue($deleteUrl), ENT_QUOTES, 'UTF-8'),
+                self::iconDeleteSvg()
             );
         }, $tenants ? $tenants->findAllOrdered() : []);
 
@@ -594,6 +718,7 @@ HTML;
                 <p>Cada negocio agrupa contexto, usuarios y reglas comerciales de forma aislada.</p>
               </div>
             </section>
+            %s
             <section class="table-card">
               <div class="table-header">
                 <div>
@@ -612,10 +737,39 @@ HTML;
               </div>
             </section>
             ',
+            $feedbackHtml,
             $rows !== [] ? implode('', $rows) : '<tr><td colspan="5" class="empty-row">No hay negocios todavía.</td></tr>'
         );
 
         return $this->renderBackendShell('Negocios', 'Negocios y contextos operativos.', 'tenants', $content);
+    }
+
+    #[Route('/tenants/{id}/delete', methods: ['POST'])]
+    public function tenantDelete(string $id, Request $request, ?TenantRepository $tenants = null): Response
+    {
+        if (!$this->security->isGranted('ROLE_MANAGER')) {
+            return new RedirectResponse('/backend/login');
+        }
+
+        if (!$tenants instanceof TenantRepository) {
+            return new RedirectResponse('/backend/tenants');
+        }
+
+        $tenant = $tenants->find($id);
+        if (!$tenant instanceof Tenant) {
+            return new RedirectResponse('/backend/tenants');
+        }
+
+        $deleteUrl = '/backend/tenants/'.$tenant->getId()->toRfc4122().'/delete';
+        if (!$this->isValidTenantToken($deleteUrl, (string) $request->request->get('_csrf_token'))) {
+            return new RedirectResponse('/backend/tenants');
+        }
+
+        $this->entityManager->remove($tenant);
+        $this->entityManager->flush();
+        $this->addFlashMessage($request, 'success', 'Negocio eliminado.');
+
+        return new RedirectResponse('/backend/tenants');
     }
 
     #[Route('/tenants/new', methods: ['GET', 'POST'])]
@@ -770,15 +924,19 @@ HTML;
     }
 
     #[Route('/products', methods: ['GET'])]
-    public function products(?ProductRepository $products = null): Response
+    public function products(Request $request, ?ProductRepository $products = null, ?TenantRepository $tenants = null): Response
     {
         if (!$this->security->isGranted('ROLE_MANAGER')) {
             return new RedirectResponse('/backend/login');
         }
 
-        $rows = array_map(static function (Product $product): string {
+        $feedbackHtml = $this->renderProfileFeedback($request);
+        $tenantFilter = trim((string) $request->query->get('tenantId', ''));
+        $productFilter = trim((string) $request->query->get('product', ''));
+        $rows = array_map(function (Product $product): string {
             $status = $product->isActive() ? '<span class="status-ok">Activo</span>' : '<span class="status-off">Inactivo</span>';
             $editUrl = sprintf('/backend/products/%s/edit', rawurlencode($product->getId()->toRfc4122()));
+            $deleteUrl = sprintf('/backend/products/%s/delete', rawurlencode($product->getId()->toRfc4122()));
             $identity = sprintf(
                 '<div class="subtle">Slug: %s</div><div class="subtle">External: %s%s</div><div class="subtle">Precio: %s</div>',
                 htmlspecialchars($product->getSlug(), ENT_QUOTES, 'UTF-8'),
@@ -793,7 +951,15 @@ HTML;
                     <td>%s</td>
                     <td>%s</td>
                     <td>%s</td>
-                    <td class="text-right"><a class="icon-action" href="%s" title="Editar producto / servicio" aria-label="Editar producto / servicio">%s</a></td>
+                    <td class="text-right">
+                      <div style="display:inline-flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end">
+                        <a class="icon-action" href="%s" title="Editar producto / servicio" aria-label="Editar producto / servicio">%s</a>
+                        <form method="post" action="%s" onsubmit="return confirm(\'¿Eliminar este producto / servicio?\');" style="display:inline-flex;">
+                          <input type="hidden" name="_csrf_token" value="%s">
+                          <button class="icon-action icon-action-danger icon-action-button" type="submit" title="Eliminar producto / servicio" aria-label="Eliminar producto / servicio">%s</button>
+                        </form>
+                      </div>
+                    </td>
                   </tr>',
                 htmlspecialchars($product->getName(), ENT_QUOTES, 'UTF-8'),
                 htmlspecialchars($product->getDescription(), ENT_QUOTES, 'UTF-8'),
@@ -801,9 +967,32 @@ HTML;
                 $identity,
                 $status,
                 htmlspecialchars($editUrl, ENT_QUOTES, 'UTF-8'),
-                self::iconEditSvg()
+                self::iconEditSvg(),
+                htmlspecialchars($deleteUrl, ENT_QUOTES, 'UTF-8'),
+                htmlspecialchars($this->productTokenValue($deleteUrl), ENT_QUOTES, 'UTF-8'),
+                self::iconDeleteSvg()
             );
-        }, $products ? $products->findAllOrdered() : []);
+        }, array_values(array_filter($products ? $products->findAllOrdered() : [], function (Product $product) use ($tenantFilter, $productFilter): bool {
+            if ($tenantFilter !== '' && $product->getTenant()->getId()->toRfc4122() !== $tenantFilter) {
+                return false;
+            }
+
+            if ($productFilter === '') {
+                return true;
+            }
+
+            $haystack = mb_strtolower(trim(implode(' ', array_filter([
+                $product->getName(),
+                $product->getSlug(),
+                $product->getExternalSource() ?? '',
+                $product->getExternalReference() ?? '',
+                $product->getDescription(),
+            ]))));
+
+            return mb_stripos($haystack, mb_strtolower($productFilter)) !== false;
+        })));
+
+        $tenantOptions = $this->renderTenantOptions($tenants, $tenantFilter);
 
         $content = sprintf(
             '
@@ -819,6 +1008,33 @@ HTML;
                 <p>Los productos y servicios agrupan descripción, propuesta de valor y política de venta para el runtime.</p>
               </div>
             </section>
+            %s
+            <section class="table-card filters-card">
+              <div class="table-header">
+                <div>
+                  <h3>Filtros</h3>
+                  <p>Filtra el catálogo por negocio o por producto / servicio.</p>
+                </div>
+              </div>
+              <form method="get" action="/backend/products" class="tenant-form">
+                <div class="form-grid">
+                  <div class="field">
+                    <label for="product-filter-tenant">Negocio</label>
+                    <select id="product-filter-tenant" name="tenantId">%s</select>
+                    <div class="field-note">Filtra el catálogo por negocio asociado.</div>
+                  </div>
+                  <div class="field">
+                    <label for="product-filter-product">Producto / servicio</label>
+                    <input id="product-filter-product" name="product" type="text" value="%s" placeholder="Nombre, slug o referencia externa">
+                    <div class="field-note">Busca por nombre, slug, origen o referencia externa.</div>
+                  </div>
+                </div>
+                <div class="form-actions" style="justify-content:flex-start;gap:12px;flex-wrap:wrap;">
+                  <button class="primary-action" type="submit">Filtrar</button>
+                  <a class="secondary-action" href="/backend/products">Limpiar</a>
+                </div>
+              </form>
+            </section>
             <section class="table-card">
               <div class="table-header">
                 <div>
@@ -826,7 +1042,7 @@ HTML;
                   <p>Negocio, slug, referencia externa y estado.</p>
                 </div>
                 <div style="display:flex;gap:12px;flex-wrap:wrap;justify-content:flex-end">
-                  <a class="secondary-action" href="/backend/products/import">Importar desde CRM</a>
+                  <a class="secondary-action" href="/backend/products/import">Importar catálogo</a>
                   <a class="primary-action" href="/backend/products/new">Crear producto / servicio</a>
                 </div>
               </div>
@@ -840,6 +1056,9 @@ HTML;
               </div>
             </section>
             ',
+            $feedbackHtml,
+            $tenantOptions,
+            htmlspecialchars($productFilter, ENT_QUOTES, 'UTF-8'),
             $rows !== [] ? implode('', $rows) : '<tr><td colspan="5" class="empty-row">No hay productos o servicios todavía.</td></tr>'
         );
 
@@ -883,9 +1102,9 @@ HTML;
 
         return $this->renderProductImportForm(
             'Importar catálogo de productos / servicios',
-            'Importa el catálogo exportado por CRM usando `integration_key` como referencia externa.',
-            'Importación CRM',
-            'Importar catálogo',
+            'Carga un archivo o pega su contenido para incorporar productos / servicios al catálogo del negocio.',
+            'Importar productos / servicios',
+            'Importar productos / servicios',
             '/backend/products/import',
             $values,
             $tenants,
@@ -931,6 +1150,7 @@ HTML;
             '/backend/products/new',
             $values,
             $tenants,
+            null,
             $error
         );
     }
@@ -982,6 +1202,33 @@ HTML;
             $tenants,
             $error
         );
+    }
+
+    #[Route('/products/{id}/delete', methods: ['POST'])]
+    public function productDelete(string $id, Request $request, ?ProductRepository $products = null): Response
+    {
+        if (!$this->security->isGranted('ROLE_MANAGER')) {
+            return new RedirectResponse('/backend/login');
+        }
+
+        if (!$products instanceof ProductRepository) {
+            return new RedirectResponse('/backend/products');
+        }
+
+        $product = $products->find($id);
+        if (!$product instanceof Product) {
+            return new RedirectResponse('/backend/products');
+        }
+
+        if (!$this->isValidProductToken('/backend/products/'.$product->getId()->toRfc4122().'/delete', (string) $request->request->get('_csrf_token'))) {
+            return new RedirectResponse('/backend/products/'.$product->getId()->toRfc4122().'/edit');
+        }
+
+        $this->entityManager->remove($product);
+        $this->entityManager->flush();
+        $this->addFlashMessage($request, 'success', 'Producto / servicio eliminado.');
+
+        return new RedirectResponse('/backend/products');
     }
 
     #[Route('/entry-points', methods: ['GET'])]
@@ -1441,7 +1688,7 @@ HTML;
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>{{PAGE_TITLE}} - Sales Agent CRM</title>
+  <title>{{PAGE_TITLE}} - Sales Agent</title>
   <style>
     :root {
       --page-bg: #f5f7fb;
@@ -1688,6 +1935,10 @@ HTML;
       border-radius: 18px;
       box-shadow: var(--shadow);
     }
+    .filters-card {
+      background: var(--panel);
+      margin-bottom: 18px;
+    }
     .hero-panel {
       display: grid;
       grid-template-columns: minmax(0, 1.45fr) minmax(260px, 0.75fr);
@@ -1753,6 +2004,12 @@ HTML;
       color: #fff;
       box-shadow: 0 12px 24px rgba(15, 110, 199, 0.14);
     }
+    .danger-action {
+      background: linear-gradient(135deg, #dc3545, #b42332);
+      border: 1px solid transparent;
+      color: #fff;
+      box-shadow: 0 12px 24px rgba(220, 53, 69, 0.14);
+    }
     .card-action {
       background: var(--accent);
       border: 1px solid transparent;
@@ -1763,7 +2020,8 @@ HTML;
     }
     .primary-action:hover,
     .secondary-action:hover,
-    .card-action:hover {
+    .card-action:hover,
+    .danger-action:hover {
       transform: translateY(-1px);
     }
     .hero-aside {
@@ -1814,6 +2072,11 @@ HTML;
       border-color: rgba(195, 52, 52, 0.18);
       color: #a42222;
     }
+    .alert-warning {
+      background: rgba(206, 149, 14, 0.08);
+      border-color: rgba(206, 149, 14, 0.2);
+      color: #8a6100;
+    }
     .stats-grid {
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -1833,7 +2096,8 @@ HTML;
       margin-bottom: 10px;
     }
     .metric-value {
-      font-size: 32px;
+      font-size: 28px;
+      line-height: 1.05;
       font-weight: 800;
       letter-spacing: -0.06em;
       color: #0f172a;
@@ -2079,6 +2343,13 @@ HTML;
     .policy-panel .form-grid {
       gap: 14px;
     }
+    .runtime-settings-form {
+      display: grid;
+      gap: 18px;
+    }
+    .runtime-settings-form > .table-card {
+      margin-bottom: 0;
+    }
     .field-note {
       margin-top: 8px;
       font-size: 13px;
@@ -2126,6 +2397,20 @@ HTML;
       color: #475569;
       line-height: 1.65;
     }
+    .sample-block {
+      margin: 0;
+      padding: 12px 14px;
+      border-radius: 12px;
+      border: 1px solid #dbe4ef;
+      background: #f8fbff;
+      color: #0f172a;
+      font-size: 13px;
+      line-height: 1.55;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+      overflow-x: hidden;
+    }
     .table-card {
       padding: 18px;
     }
@@ -2160,6 +2445,19 @@ HTML;
     .icon-action:hover {
       transform: translateY(-1px);
       background: #eaf1fb;
+    }
+    .icon-action-button {
+      appearance: none;
+      padding: 0;
+      cursor: pointer;
+    }
+    .icon-action-danger {
+      background: #fff1f2;
+      border-color: #f3c0c6;
+      color: #b42332;
+    }
+    .icon-action-danger:hover {
+      background: #ffe4e8;
     }
     .icon-action svg {
       display: block;
@@ -2214,6 +2512,10 @@ HTML;
       background: rgba(15, 110, 199, 0.12);
       color: var(--success);
     }
+    .status-warn {
+      background: rgba(206, 149, 14, 0.12);
+      color: #9c6a00;
+    }
     .status-off {
       background: rgba(195, 52, 52, 0.08);
       color: var(--danger);
@@ -2259,7 +2561,7 @@ HTML;
   <main class="layout">
     <aside class="sidebar">
       <div class="brand">
-        <div class="brand-name">Sales Agent CRM</div>
+        <div class="brand-name">Sales Agent</div>
         <div class="brand-sub">Panel para definir negocios, productos/servicios y comportamiento del agente IA.</div>
       </div>
       <nav class="nav">
@@ -2305,6 +2607,7 @@ HTML;
             'admin-products' => ['href' => '/backend/products', 'label' => 'Productos / servicios', 'roles' => ['ROLE_MANAGER', 'ROLE_ADMIN']],
             'entry-points' => ['href' => '/backend/entry-points', 'label' => 'Puntos de entrada', 'roles' => ['ROLE_MANAGER', 'ROLE_ADMIN']],
             'admin-users' => ['href' => '/backend/users', 'label' => 'Usuarios', 'roles' => ['ROLE_ADMIN']],
+            'admin-configuration' => ['href' => '/backend/configuration', 'label' => 'Configuración', 'roles' => ['ROLE_ADMIN']],
             'admin-api-health' => ['href' => '/backend/api-health', 'label' => 'Integración técnica', 'roles' => ['ROLE_MANAGER', 'ROLE_ADMIN']],
         ];
 
@@ -2325,7 +2628,7 @@ HTML;
         }
 
         $adminItems = [];
-        foreach (['admin-users'] as $key) {
+        foreach (['admin-users', 'admin-configuration'] as $key) {
             $item = $items[$key];
             if (!$this->canSeeNavItem($item['roles'])) {
                 continue;
@@ -2342,7 +2645,7 @@ HTML;
         if ($adminItems !== []) {
             $html .= sprintf(
                 '<details class="nav-group"%s><summary>Administración <span class="nav-caret">▾</span></summary><div class="nav-subitems">%s</div></details>',
-                in_array($activeNav, ['admin-users'], true) ? ' open' : '',
+                in_array($activeNav, ['admin-users', 'admin-configuration'], true) ? ' open' : '',
                 implode('', $adminItems)
             );
         }
@@ -2406,6 +2709,20 @@ HTML;
         $user = $this->security->getUser();
 
         return $user instanceof User ? $user : null;
+    }
+
+    private function shortenListText(string $value, int $limit, string $fallback): string
+    {
+        $value = trim(preg_replace('/\s+/', ' ', $value) ?? $value);
+        if ($value === '') {
+            return $fallback;
+        }
+
+        if (mb_strlen($value) <= $limit) {
+            return $value;
+        }
+
+        return rtrim(mb_substr($value, 0, max(1, $limit - 1))).'…';
     }
 
     /**
@@ -2711,6 +3028,11 @@ HTML;
     private static function iconEditSvg(): string
     {
         return '<svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>';
+    }
+
+    private static function iconDeleteSvg(): string
+    {
+        return '<svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="M6 6l1 14h10l1-14"/><path d="M10 11v5"/><path d="M14 11v5"/></svg>';
     }
 
     private function tenantTokenValue(string $actionUrl): string
@@ -3104,6 +3426,7 @@ HTML;
         $salesPolicy = $product?->getSalesPolicy() ?? [];
 
         return [
+            'id' => $product?->getId()->toRfc4122() ?? '',
             'tenantId' => $product?->getTenant()->getId()->toRfc4122() ?? '',
             'slug' => $product?->getSlug() ?? '',
             'externalSource' => $product?->getExternalSource() ?? '',
@@ -3123,7 +3446,7 @@ HTML;
     }
 
     /**
-     * @return array{tenantId: string, slug: string, externalSource: string, externalReference: string, name: string, description: string, valueProposition: string, basePriceCents: string, currency: string, positioning: string, pricingNotes: string, objections: string, handoffRules: string, notes: string, isActive: bool}
+     * @return array{id: string, tenantId: string, slug: string, externalSource: string, externalReference: string, name: string, description: string, valueProposition: string, basePriceCents: string, currency: string, positioning: string, pricingNotes: string, objections: string, handoffRules: string, notes: string, isActive: bool}
      */
     private function productFormValuesFromRequest(Request $request): array
     {
@@ -3161,7 +3484,6 @@ HTML;
             '<div class="form-alert form-alert-error">%s</div>',
             htmlspecialchars($error, ENT_QUOTES, 'UTF-8')
         ) : '';
-
         $content = sprintf(
             '
             <section class="hero-panel">
@@ -3584,45 +3906,80 @@ HTML;
                 <p>%s</p>
               </div>
               <div class="hero-aside">
-                <div class="badge-live">CRM</div>
-                <div class="hero-aside-title">Alineación de catálogo</div>
-                <p>Importa CSV o JSON sin depender de UUIDs del CRM. La clave estable se guarda como referencia externa.</p>
+                <div class="badge-live">SA</div>
+                <div class="hero-aside-title">Catálogo independiente</div>
+                <p>Importa CSV o JSON sin depender de UUIDs internos. La clave estable se guarda como referencia externa y el negocio seleccionado define el alcance de la importación.</p>
               </div>
             </section>
-            <section class="table-card">
-              <div class="table-header"><div><h3>Importar catálogo</h3><p>Selecciona el negocio y pega o sube el export del CRM.</p></div></div>
-              %s
-              <form method="post" action="%s" class="tenant-form" enctype="multipart/form-data">
-                <input type="hidden" name="_csrf_token" value="%s">
-                <div class="form-grid">
-                  <div class="field"><label for="product-import-tenant">Negocio</label><select id="product-import-tenant" name="tenantId" required>%s</select><div class="field-note">La importación queda asociada al tenant seleccionado.</div></div>
-                  <div class="field"><label for="product-import-format">Formato</label><select id="product-import-format" name="format"><option value="auto"%s>Auto</option><option value="json"%s>JSON</option><option value="csv"%s>CSV</option></select><div class="field-note">Si no lo indicas, se detecta automáticamente.</div></div>
-                  <div class="field field-full"><label for="product-import-file">Archivo</label><input id="product-import-file" name="file" type="file" accept=".csv,.json,application/json,text/csv"><div class="field-note">Opcional. Si subes un archivo, se prioriza sobre el texto pegado.</div></div>
-                  <div class="field field-full"><label for="product-import-payload">Contenido</label><textarea id="product-import-payload" name="payload" rows="12" placeholder="Pega aquí el CSV o JSON exportado por CRM">%s</textarea></div>
-                </div>
-                <div class="form-actions"><button class="primary-action" type="submit">%s</button></div>
-              </form>
-            </section>
-            <section class="table-card" style="margin-top: 20px;">
-              <div class="table-header"><div><h3>Cómo alinear productos/servicios con CRM</h3><p>Referencia operativa rápida para el equipo.</p></div></div>
-              <section class="cards-grid">
-                <article class="info-card"><h3>integration_key</h3><p>En CRM es la clave oficial de integración.</p></article>
-                <article class="info-card"><h3>external_source</h3><p>En Sales Agent debe ser <code>crm</code> para catálogos importados.</p></article>
-                <article class="info-card"><h3>external_reference</h3><p>SA guarda aquí el <code>integration_key</code>.</p></article>
-                <article class="info-card"><h3>slug</h3><p>Se mantiene como identificador local y fallback.</p></article>
-                <article class="info-card"><h3>Sin borrados</h3><p>Los productos ausentes en el archivo no se eliminan.</p></article>
-                <article class="info-card"><h3>Upsert</h3><p>Primero se busca por referencia externa, luego por slug.</p></article>
+            <section style="display:grid;grid-template-columns:minmax(0,1.02fr) minmax(320px,0.98fr);gap:18px;align-items:start;">
+              <section class="table-card" style="margin-bottom:0;">
+                <div class="table-header"><div><h3>Archivo CSV o JSON</h3><p>Puedes subir un export de otra aplicación o pegar su contenido en el campo inferior.</p></div></div>
+                %s
+                <form method="post" action="%s" class="tenant-form" enctype="multipart/form-data">
+                  <input type="hidden" name="_csrf_token" value="%s">
+                  <div class="form-grid">
+                    <div class="field">
+                      <label for="product-import-tenant">Negocio</label>
+                      <select id="product-import-tenant" name="tenantId" required>%s</select>
+                      <div class="field-note">La importación queda asociada al negocio seleccionado.</div>
+                    </div>
+                    <div class="field">
+                      <label for="product-import-format">Formato</label>
+                      <select id="product-import-format" name="format">
+                        <option value="auto"%s>Auto</option>
+                        <option value="json"%s>JSON</option>
+                        <option value="csv"%s>CSV</option>
+                      </select>
+                      <div class="field-note">Si no lo indicas, se detecta automáticamente.</div>
+                    </div>
+                    <div class="field field-full">
+                      <label for="product-import-file">Archivo</label>
+                      <input id="product-import-file" name="file" type="file" accept=".csv,.json,application/json,text/csv">
+                      <div class="field-note">Opcional. Si subes un archivo, se prioriza sobre el texto pegado.</div>
+                    </div>
+                    <div class="field field-full">
+                      <label for="product-import-payload">Contenido</label>
+                      <textarea id="product-import-payload" name="payload" rows="12" placeholder="Pega aquí el CSV o JSON exportado por otra aplicación">%s</textarea>
+                    </div>
+                  </div>
+                  <div class="form-actions"><button class="primary-action" type="submit">%s</button></div>
+                </form>
               </section>
-              <div class="table-responsive">
-                <table>
-                  <thead><tr><th>Guía de importación</th></tr></thead>
-                  <tbody>
-                    <tr><td><strong>Campos mínimos:</strong> integration_key, name y slug.</td></tr>
-                    <tr><td><strong>Recomendados:</strong> description, base_price_cents, currency y active.</td></tr>
-                    <tr><td><strong>CSV:</strong> admite <code>,</code> o <code>;</code> como separador y valores activos/inactivos comunes.</td></tr>
-                    <tr><td><strong>JSON:</strong> acepta un array o un objeto con <code>items</code>.</td></tr>
-                  </tbody>
-                </table>
+              <div style="display:grid;gap:16px;">
+                <article class="info-card">
+                  <h3>Qué debe contener el archivo</h3>
+                  <p>Sales Agent importa un catálogo local de productos / servicios. Si el archivo incluye una referencia externa, se guarda en <code>external_reference</code>.</p>
+                  <p><code>external_reference</code> es el campo canónico en SA para enlazar el producto / servicio con sistemas externos o con exports de otras aplicaciones.</p>
+                  <p><code>integration_key</code> es un alias habitual en algunos exports para esa misma referencia; al importar, SA lo traduce a <code>external_reference</code>.</p>
+                  <p><code>slug</code> se conserva como identificador local y legible; no es la clave contractual de integración.</p>
+                  <p><strong>Campos obligatorios:</strong> <code>name</code> y <code>slug</code>.</p>
+                  <p><strong>Campos recomendados:</strong> <code>external_reference</code> o <code>integration_key</code>, <code>description</code>, <code>base_price_cents</code>, <code>currency</code> y <code>active</code>.</p>
+                  <p class="mb-0">Si el archivo viene de una app externa, puede incluir más columnas; SA ignorará las que no use y mantendrá el catálogo independiente.</p>
+                </article>
+                <article class="info-card">
+                  <h3>Ejemplo CSV</h3>
+                  <pre class="sample-block">type,external_reference,name,slug,description,base_price_cents,currency,active,created_at,updated_at
+service,pack-starter,Pack Starter,pack-starter,"Solución inicial para pymes...",150000,EUR,1,2026-04-25 08:33,2026-04-25 08:33</pre>
+                </article>
+                <article class="info-card">
+                  <h3>Ejemplo JSON</h3>
+                  <pre class="sample-block">{
+  "source": "external-app",
+  "resource": "services",
+  "items": [
+    {
+      "type": "service",
+      "external_reference": "pack-starter",
+      "name": "Pack Starter",
+      "slug": "pack-starter",
+      "description": "Solución inicial para pymes...",
+      "base_price_cents": 150000,
+      "currency": "EUR",
+      "active": true
+    }
+  ]
+}</pre>
+                </article>
               </div>
             </section>
             %s
@@ -4001,6 +4358,15 @@ HTML;
         $request->getSession()->getFlashBag()->add($type, $message);
     }
 
+    private function addFlashMessage(Request $request, string $type, string $message): void
+    {
+        if (!$request->hasSession()) {
+            return;
+        }
+
+        $request->getSession()->getFlashBag()->add($type, $message);
+    }
+
     private function renderProfileFeedback(Request $request): string
     {
         if (!$request->hasSession()) {
@@ -4029,6 +4395,299 @@ HTML;
     }
 
     /**
+     * @return array<string, string>
+     */
+    private function runtimeConfigurationValuesFromRequest(Request $request): array
+    {
+        return [
+            'llm_default_profile' => trim((string) $request->request->get('llm_default_profile', '')),
+            'openai_base_url' => trim((string) $request->request->get('openai_base_url', '')),
+            'openai_model' => trim((string) $request->request->get('openai_model', '')),
+            'openai_api_key' => trim((string) $request->request->get('openai_api_key', '')),
+            'ollama_base_url' => trim((string) $request->request->get('ollama_base_url', '')),
+            'ollama_model' => trim((string) $request->request->get('ollama_model', '')),
+            'audio_mode' => trim((string) $request->request->get('audio_mode', '')),
+            'audio_gateway_base_url' => trim((string) $request->request->get('audio_gateway_base_url', '')),
+            'audio_gateway_token' => trim((string) $request->request->get('audio_gateway_token', '')),
+        ];
+    }
+
+    private function runtimeConfigurationTargetFromAction(string $action): ?string
+    {
+        return match ($action) {
+            'test_openai' => 'openai',
+            'test_ollama' => 'ollama',
+            'test_audio' => 'audio',
+            default => null,
+        };
+    }
+
+    private function isValidRuntimeConfigurationToken(string $id, string $value): bool
+    {
+        if ($this->csrfTokenManager === null) {
+            return true;
+        }
+
+        return $this->csrfTokenManager->isTokenValid(new CsrfToken($id, $value));
+    }
+
+    private function runtimeConfigurationTokenValue(string $id): string
+    {
+        if ($this->csrfTokenManager === null) {
+            return '';
+        }
+
+        return $this->csrfTokenManager->getToken($id)->getValue();
+    }
+
+    private function runtimeTestFeedback(\App\Service\RuntimeConnectivityTestResult $result): string
+    {
+        $class = match ($result->status) {
+            'ready' => 'alert-success',
+            'partial' => 'alert-warning',
+            default => 'alert-error',
+        };
+        $parts = [
+            htmlspecialchars($result->message, ENT_QUOTES, 'UTF-8'),
+        ];
+        if ($result->endpoint !== null && $result->endpoint !== '') {
+            $parts[] = sprintf('<div class="subtle">Endpoint: %s</div>', htmlspecialchars($result->endpoint, ENT_QUOTES, 'UTF-8'));
+        }
+        if ($result->httpCode !== null) {
+            $parts[] = sprintf('<div class="subtle">HTTP %d</div>', $result->httpCode);
+        }
+
+        return sprintf('<div class="alert %s">%s</div>', $class, implode('', $parts));
+    }
+
+    /**
+     * @param array<string, mixed> $pageData
+     */
+    private function renderRuntimeConfigurationContent(array $pageData, string $feedbackHtml, string $csrfToken): string
+    {
+        $formState = $pageData['formState'] ?? [];
+        $status = $pageData['status'] ?? [];
+        $values = $pageData['values'] ?? [];
+
+        $llmFields = $this->renderRuntimeFields($formState, [
+            'llm_default_profile',
+            'openai_base_url',
+            'openai_model',
+            'openai_api_key',
+            'ollama_base_url',
+            'ollama_model',
+        ]);
+
+        $audioFields = $this->renderRuntimeFields($formState, [
+            'audio_mode',
+            'audio_gateway_base_url',
+            'audio_gateway_token',
+        ]);
+
+        $overallStatus = $status['overall'] ?? [];
+        $llmStatus = $status['llm'] ?? [];
+        $openaiStatus = $status['openai'] ?? [];
+        $ollamaStatus = $status['ollama'] ?? [];
+        $audioStatus = $status['audio'] ?? [];
+
+        $content = sprintf(
+            '
+            <section class="hero-panel">
+              <div class="hero-copy">
+                <div class="eyebrow-dark">Configuración operativa</div>
+                <h2>LLM, audio y conectividad externa</h2>
+                <p>
+                  La configuración editable vive en base de datos. Los valores sensibles se cifran y el runtime consume esta
+                  información como fuente de verdad, con `.env` reservado para bootstrap e infraestructura.
+                </p>
+              </div>
+              <div class="hero-aside">
+                <div class="badge-live">Operativo</div>
+                <div class="hero-aside-title">Estado actual</div>
+                <p>%s</p>
+              </div>
+            </section>
+            <section class="stats-grid">
+              %s
+              %s
+              %s
+              %s
+            </section>
+            %s
+            <form method="post" action="/backend/configuration" class="tenant-form runtime-settings-form">
+              <input type="hidden" name="_csrf_token" value="%s">
+              <section class="table-card">
+                <div class="table-header">
+                  <div>
+                    <h3>LLM</h3>
+                    <p>OpenAI, Ollama y el perfil por defecto que usará el runtime.</p>
+                  </div>
+                  <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">
+                    %s
+                  </div>
+                </div>
+                <div class="section-note">Los botones de prueba consumen una request real contra el proveedor seleccionado.</div>
+                <div class="form-grid">%s</div>
+                <div class="form-actions" style="justify-content:flex-start;gap:12px;flex-wrap:wrap;">
+                  <button class="secondary-action" type="submit" name="action" value="test_openai">Probar OpenAI</button>
+                  <button class="secondary-action" type="submit" name="action" value="test_ollama">Probar Ollama</button>
+                </div>
+              </section>
+              <section class="table-card">
+                <div class="table-header">
+                  <div>
+                    <h3>Audio</h3>
+                    <p>Modo audio local o gateway y conectividad simple contra el endpoint de salud.</p>
+                  </div>
+                  <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">
+                    %s
+                  </div>
+                </div>
+                <div class="section-note">Si el modo es `gateway`, la prueba valida el endpoint remoto configurado.</div>
+                <div class="form-grid">%s</div>
+                <div class="form-actions" style="justify-content:flex-start;gap:12px;flex-wrap:wrap;">
+                  <button class="secondary-action" type="submit" name="action" value="test_audio">Probar audio</button>
+                </div>
+              </section>
+              <div class="form-actions runtime-settings-actions" style="justify-content:flex-start;gap:12px;flex-wrap:wrap;">
+                <button class="primary-action" type="submit" name="action" value="save">Guardar cambios</button>
+              </div>
+            </form>
+            ',
+            htmlspecialchars((string) (($overallStatus['message'] ?? 'Sin estado operativo.') ?: 'Sin estado operativo.'), ENT_QUOTES, 'UTF-8'),
+            $this->metricCard('Estado general', $this->runtimeStatusLabel((string) ($overallStatus['status'] ?? 'blocked')), (string) ($overallStatus['message'] ?? 'Sin estado operativo.')),
+            $this->metricCard('OpenAI', $this->runtimeStatusLabel((string) ($openaiStatus['status'] ?? 'blocked')), (string) ($openaiStatus['message'] ?? 'Sin validación')),
+            $this->metricCard('Ollama', $this->runtimeStatusLabel((string) ($ollamaStatus['status'] ?? 'blocked')), (string) ($ollamaStatus['message'] ?? 'Sin validación')),
+            $this->metricCard('Audio', $this->runtimeStatusLabel((string) ($audioStatus['status'] ?? 'blocked')), (string) ($audioStatus['message'] ?? 'Sin validación')),
+            $feedbackHtml,
+            htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8'),
+            $this->runtimeStatusBadge((string) ($llmStatus['status'] ?? 'blocked')),
+            $llmFields,
+            $this->runtimeStatusBadge((string) ($audioStatus['status'] ?? 'blocked')),
+            $audioFields
+        );
+
+        return $content;
+    }
+
+    /**
+     * @param array<string, array<string, mixed>> $formState
+     * @param string[] $keys
+     */
+    private function renderRuntimeFields(array $formState, array $keys): string
+    {
+        $html = '';
+        foreach ($keys as $key) {
+            if (!isset($formState[$key]) || !is_array($formState[$key])) {
+                continue;
+            }
+
+            $html .= $this->renderRuntimeField($formState[$key]);
+        }
+
+        return $html;
+    }
+
+    /**
+     * @param array<string, mixed> $field
+     */
+    private function renderRuntimeField(array $field): string
+    {
+        $key = (string) ($field['key'] ?? '');
+        $label = (string) ($field['label'] ?? $key);
+        $description = (string) ($field['description'] ?? '');
+        $inputType = (string) ($field['inputType'] ?? 'text');
+        $value = (string) ($field['value'] ?? '');
+        $defaultValue = (string) ($field['defaultValue'] ?? '');
+        $secret = (bool) ($field['secret'] ?? false);
+        $configured = (bool) ($field['configured'] ?? false);
+        $note = $description;
+
+        if ($secret) {
+            $note .= $configured ? ' Valor cifrado ya configurado; deja vacío para conservarlo.' : ' Se guardará cifrado en base de datos.';
+        } elseif ($value === '' && $defaultValue !== '') {
+            $note .= ' Valor por defecto: '.$defaultValue.'.';
+        }
+
+        $control = match ($inputType) {
+            'select' => $this->renderRuntimeSelect($key, $value, is_array($field['options'] ?? null) ? $field['options'] : []),
+            'password' => sprintf(
+                '<input id="%s" name="%s" type="password" value="" autocomplete="new-password" autocapitalize="off" spellcheck="false" placeholder="%s">',
+                htmlspecialchars($key, ENT_QUOTES, 'UTF-8'),
+                htmlspecialchars($key, ENT_QUOTES, 'UTF-8'),
+                htmlspecialchars($secret && $configured ? 'Dejar vacío para conservar el valor actual' : 'Escribe el nuevo secreto', ENT_QUOTES, 'UTF-8')
+            ),
+            default => sprintf(
+                '<input id="%s" name="%s" type="%s" value="%s" autocapitalize="off" spellcheck="false">',
+                htmlspecialchars($key, ENT_QUOTES, 'UTF-8'),
+                htmlspecialchars($key, ENT_QUOTES, 'UTF-8'),
+                htmlspecialchars(str_ends_with($key, '_base_url') ? 'url' : 'text', ENT_QUOTES, 'UTF-8'),
+                htmlspecialchars($value, ENT_QUOTES, 'UTF-8')
+            ),
+        };
+
+        return sprintf(
+            '<div class="field"><label for="%s">%s</label>%s<div class="field-note">%s</div></div>',
+            htmlspecialchars($key, ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($label, ENT_QUOTES, 'UTF-8'),
+            $control,
+            htmlspecialchars($note, ENT_QUOTES, 'UTF-8')
+        );
+    }
+
+    /**
+     * @param array<int, array{value: string, label: string}> $options
+     */
+    private function renderRuntimeSelect(string $key, string $value, array $options): string
+    {
+        $selectedValues = array_map(static fn (array $option): string => (string) $option['value'], $options);
+        if ($value !== '' && !in_array($value, $selectedValues, true)) {
+            array_unshift($options, ['value' => $value, 'label' => $value.' (actual)']);
+        }
+
+        $html = sprintf('<select id="%s" name="%s">', htmlspecialchars($key, ENT_QUOTES, 'UTF-8'), htmlspecialchars($key, ENT_QUOTES, 'UTF-8'));
+        foreach ($options as $option) {
+            $selected = ($option['value'] ?? '') === $value ? ' selected' : '';
+            $html .= sprintf(
+                '<option value="%s"%s>%s</option>',
+                htmlspecialchars((string) ($option['value'] ?? ''), ENT_QUOTES, 'UTF-8'),
+                $selected,
+                htmlspecialchars((string) ($option['label'] ?? ''), ENT_QUOTES, 'UTF-8')
+            );
+        }
+        $html .= '</select>';
+
+        return $html;
+    }
+
+    private function runtimeStatusBadge(string $status): string
+    {
+        return sprintf(
+            '<span class="%s">%s</span>',
+            htmlspecialchars($this->runtimeStatusClass($status), ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($this->runtimeStatusLabel($status), ENT_QUOTES, 'UTF-8')
+        );
+    }
+
+    private function runtimeStatusClass(string $status): string
+    {
+        return match ($status) {
+            'ready' => 'status-ok',
+            'partial' => 'status-warn',
+            default => 'status-off',
+        };
+    }
+
+    private function runtimeStatusLabel(string $status): string
+    {
+        return match ($status) {
+            'ready' => 'Listo',
+            'partial' => 'Parcial',
+            default => 'Bloqueado',
+        };
+    }
+
+    /**
      * @param string[] $roles
      */
     private function canSeeNavItem(array $roles): bool
@@ -4044,9 +4703,13 @@ HTML;
 
     private function metricCard(string $label, string $value, string $note): string
     {
+        $labelHtml = $label !== ''
+            ? sprintf('<div class="metric-label">%s</div>', htmlspecialchars($label, ENT_QUOTES, 'UTF-8'))
+            : '';
+
         return sprintf(
-            '<article class="metric"><div class="metric-label">%s</div><div class="metric-value">%s</div><div class="metric-note">%s</div></article>',
-            htmlspecialchars($label, ENT_QUOTES, 'UTF-8'),
+            '<article class="metric">%s<div class="metric-value">%s</div><div class="metric-note">%s</div></article>',
+            $labelHtml,
             htmlspecialchars($value, ENT_QUOTES, 'UTF-8'),
             htmlspecialchars($note, ENT_QUOTES, 'UTF-8')
         );

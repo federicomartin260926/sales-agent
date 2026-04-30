@@ -8,6 +8,7 @@ Este directorio contiene el runtime del agente conversacional.
 - expone `POST /agent/respond`
 - decide respuestas simples sin invocar todavía un LLM real
 - deja listos los clientes para LLM, CRM, RAG y backend
+- consulta la snapshot operativa de `runtime_settings` en el backend cuando necesita resolver la configuración LLM
 - protege el runtime con `Authorization: Bearer <token>` para tráfico service-to-service
 - resuelve routing explícito por `entrypoint_ref`, `phone_number_id` o `tenant_id`
 - persiste o actualiza una conversación mínima cuando el routing está resuelto
@@ -119,6 +120,13 @@ El catálogo de productos devuelto por el backend incluye además:
 
 Si el backend no está disponible o el tenant no existe, el runtime cae a un modo de fallback basado en heurísticas simples para no romper la conversación.
 
+Además, para resolver la configuración LLM y audio usa:
+
+- `GET /api/internal/runtime-settings`
+
+Ese endpoint devuelve la snapshot operativa que sale de base de datos y se protege con `Authorization: Bearer <SALES_AGENT_BEARER_TOKEN>`.
+Si el backend no responde, el runtime usa los valores bootstrap del entorno como fallback.
+
 ## Integración con CRM
 
 El runtime también puede leer contexto del CRM a través de:
@@ -170,3 +178,4 @@ En local y en producción se configura con la variable `SALES_AGENT_BEARER_TOKEN
 - `crm_client.py`: contexto desde el CRM
 - `rag_client.py`: recuperación semántica
 - `llm_client.py`: OpenAI u Ollama
+- `runtime_settings_client.py`: snapshot operativa del backend con fallback a env

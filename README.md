@@ -124,6 +124,8 @@ Rutas públicas a través de Nginx:
 El backend humano sigue un layout tipo CRM con sidebar, métricas, navegación por módulos y perfil editable para nombre y clave.
 La UI heredada todavía conserva compatibilidad con piezas antiguas, pero el modelo canónico de routing ya es `EntryPoint -> EntryPointUtm -> Conversation`.
 El catálogo de productos puede importarse desde CRM con `externalSource = crm` y `externalReference = integration_key`.
+La configuración operativa de LLM y audio ahora vive en `runtime_settings` y se edita desde `GET /backend/configuration`.
+Los secretos de esa pantalla se cifran en base de datos y el runtime consulta la snapshot interna en `GET /api/internal/runtime-settings` con `Authorization: Bearer ...`.
 
 ## Bootstrap inicial del backend
 
@@ -166,6 +168,8 @@ El login JSON para integraciones queda en:
 
 La comunicación entre `wa-gateway-api` y `sales-agent/api` debe usar `Authorization: Bearer ...` con un token de integración de máquina.
 Ese token se configura con `SALES_AGENT_BEARER_TOKEN`.
+
+La misma variable `SALES_AGENT_BEARER_TOKEN` también se publica en el backend para proteger la snapshot interna de runtime settings.
 
 ## Modelo inicial
 

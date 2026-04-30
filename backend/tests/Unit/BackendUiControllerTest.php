@@ -12,10 +12,12 @@ use App\Repository\EntryPointRepository;
 use App\Repository\PlaybookRepository;
 use App\Repository\ProductRepository;
 use App\Repository\TenantRepository;
+use App\Service\RuntimeConfigurationService;
 use App\Service\ProductCatalogImportService;
 use PHPUnit\Framework\TestCase;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\HttpFoundation\Session\Session;
 use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
 use Symfony\Bundle\SecurityBundle\Security;
 use Symfony\Component\Security\Csrf\CsrfToken;
@@ -32,12 +34,14 @@ final class BackendUiControllerTest extends TestCase
         ?UserPasswordHasherInterface $passwordHasher = null,
         ?CsrfTokenManagerInterface $csrfTokenManager = null,
         ?ProductCatalogImportService $productCatalogImportService = null,
+        ?RuntimeConfigurationService $runtimeConfigurationService = null,
     ): BackendUiController {
         $entityManager ??= $this->createStub(EntityManagerInterface::class);
         $passwordHasher ??= $this->createStub(UserPasswordHasherInterface::class);
         $csrfTokenManager ??= $this->createStub(CsrfTokenManagerInterface::class);
+        $runtimeConfigurationService ??= $this->createStub(RuntimeConfigurationService::class);
 
-        return new BackendUiController($security, $entityManager, $passwordHasher, $productCatalogImportService, $csrfTokenManager);
+        return new BackendUiController($security, $entityManager, $passwordHasher, $runtimeConfigurationService, $productCatalogImportService, $csrfTokenManager);
     }
 
     private function createAuthenticatedUser(string $email = 'admin@example.com', array $roles = ['admin'], ?string $name = null): User
@@ -250,6 +254,20 @@ final class BackendUiControllerTest extends TestCase
         self::assertSame(['GET'], $route->getMethods());
     }
 
+    public function testConfigurationRouteExistsForAdminSettings(): void
+    {
+        $reflection = new \ReflectionMethod(BackendUiController::class, 'configuration');
+        $attributes = $reflection->getAttributes(\Symfony\Component\Routing\Attribute\Route::class);
+
+        self::assertCount(1, $attributes);
+
+        /** @var \Symfony\Component\Routing\Attribute\Route $route */
+        $route = $attributes[0]->newInstance();
+
+        self::assertSame('/configuration', $route->getPath());
+        self::assertSame(['GET', 'POST'], $route->getMethods());
+    }
+
     public function testProfileNameRouteExistsForPostSubmission(): void
     {
         $reflection = new \ReflectionMethod(BackendUiController::class, 'profileName');
@@ -381,14 +399,55 @@ final class BackendUiControllerTest extends TestCase
         $tenants = $this->createTenantRepositoryFake([$tenant]);
 
         $controller = $this->createController($security);
-        $response = $controller->tenants($tenants);
+        $response = $controller->tenants(Request::create('/backend/tenants', 'GET'), $tenants);
 
         self::assertSame(Response::HTTP_OK, $response->getStatusCode());
         self::assertStringContainsString('Crear negocio', $response->getContent());
         self::assertStringContainsString('icon-action', $response->getContent());
         self::assertStringContainsString('aria-label="Editar negocio"', $response->getContent());
+        self::assertStringContainsString('aria-label="Eliminar negocio"', $response->getContent());
         self::assertStringContainsString('/backend/tenants/new', $response->getContent());
         self::assertStringContainsString('/backend/tenants/', $response->getContent());
+        self::assertStringContainsString('Contexto:', $response->getContent());
+        self::assertStringContainsString('Tono:', $response->getContent());
+    }
+
+    public function testTenantDeleteRemovesTenantAndShowsFlashOnListing(): void
+    {
+        $tenant = new Tenant('Federico Martin Demo', 'federico-martin-demo');
+
+        $security = $this->createStub(Security::class);
+        $security->method('getUser')->willReturn($this->createAuthenticatedUser('manager@example.com', ['manager'], 'María Manager'));
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => in_array($role, ['ROLE_MANAGER', 'ROLE_ADMIN'], true));
+
+        $entityManager = $this->createMock(EntityManagerInterface::class);
+        $entityManager->expects(self::once())->method('remove')->with($tenant);
+        $entityManager->expects(self::once())->method('flush');
+
+        $tenants = $this->createTenantRepositoryFake([$tenant], $tenant);
+
+        $csrfTokenManager = $this->createStub(CsrfTokenManagerInterface::class);
+        $csrfTokenManager->method('isTokenValid')->willReturn(true);
+        $csrfTokenManager->method('getToken')->willReturnCallback(
+            static fn (string $id): CsrfToken => new CsrfToken($id, 'token-'.$id)
+        );
+
+        $controller = $this->createController($security, $entityManager, null, $csrfTokenManager);
+        $request = Request::create('/backend/tenants/'.$tenant->getId()->toRfc4122().'/delete', 'POST', [
+            '_csrf_token' => 'token',
+        ]);
+        $request->setSession(new Session());
+
+        $response = $controller->tenantDelete($tenant->getId()->toRfc4122(), $request, $tenants);
+
+        self::assertSame(Response::HTTP_FOUND, $response->getStatusCode());
+        self::assertSame('/backend/tenants', $response->headers->get('Location'));
+
+        $listRequest = Request::create('/backend/tenants', 'GET');
+        $listRequest->setSession($request->getSession());
+        $listResponse = $controller->tenants($listRequest, $tenants);
+
+        self::assertStringContainsString('Negocio eliminado.', $listResponse->getContent());
     }
 
     public function testTenantCreateRouteExistsForGetAndPost(): void
@@ -619,13 +678,54 @@ final class BackendUiControllerTest extends TestCase
         $playbooks = $this->createPlaybookRepositoryFake([$playbook]);
 
         $controller = $this->createController($security);
-        $response = $controller->playbooks($playbooks);
+        $response = $controller->playbooks(Request::create('/backend/playbooks', 'GET'), $playbooks);
 
         self::assertSame(Response::HTTP_OK, $response->getStatusCode());
         self::assertStringContainsString('Crear guía comercial', $response->getContent());
         self::assertStringContainsString('icon-action', $response->getContent());
         self::assertStringContainsString('Editar guía comercial', $response->getContent());
+        self::assertStringContainsString('Eliminar guía comercial', $response->getContent());
         self::assertStringContainsString('Guía comercial demo', $response->getContent());
+        self::assertStringContainsString('Resumen:', $response->getContent());
+    }
+
+    public function testPlaybookDeleteRemovesPlaybookAndShowsFlashOnListing(): void
+    {
+        $tenant = new Tenant('Federico Martin Demo', 'federico-martin-demo');
+        $playbook = new Playbook($tenant, 'Guía comercial demo');
+
+        $security = $this->createStub(Security::class);
+        $security->method('getUser')->willReturn($this->createAuthenticatedUser('manager@example.com', ['manager'], 'María Manager'));
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => in_array($role, ['ROLE_MANAGER', 'ROLE_ADMIN'], true));
+
+        $entityManager = $this->createMock(EntityManagerInterface::class);
+        $entityManager->expects(self::once())->method('remove')->with($playbook);
+        $entityManager->expects(self::once())->method('flush');
+
+        $playbooks = $this->createPlaybookRepositoryFake([$playbook], $playbook);
+
+        $csrfTokenManager = $this->createStub(CsrfTokenManagerInterface::class);
+        $csrfTokenManager->method('isTokenValid')->willReturn(true);
+        $csrfTokenManager->method('getToken')->willReturnCallback(
+            static fn (string $id): CsrfToken => new CsrfToken($id, 'token-'.$id)
+        );
+
+        $controller = $this->createController($security, $entityManager, null, $csrfTokenManager);
+        $request = Request::create('/backend/playbooks/'.$playbook->getId()->toRfc4122().'/delete', 'POST', [
+            '_csrf_token' => 'token',
+        ]);
+        $request->setSession(new Session());
+
+        $response = $controller->playbookDelete($playbook->getId()->toRfc4122(), $request, $playbooks);
+
+        self::assertSame(Response::HTTP_FOUND, $response->getStatusCode());
+        self::assertSame('/backend/playbooks', $response->headers->get('Location'));
+
+        $listRequest = Request::create('/backend/playbooks', 'GET');
+        $listRequest->setSession($request->getSession());
+        $listResponse = $controller->playbooks($listRequest, $playbooks);
+
+        self::assertStringContainsString('Guía comercial eliminada.', $listResponse->getContent());
     }
 
     public function testPlaybookCreateFormRendersTheExpectedFields(): void
@@ -714,7 +814,7 @@ final class BackendUiControllerTest extends TestCase
         self::assertSame('/backend/playbooks', $response->headers->get('Location'));
     }
 
-    public function testProductsPageRendersCreateAndEditActions(): void
+    public function testProductsPageRendersCreateEditAndDeleteActions(): void
     {
         $tenant = new Tenant('Federico Martin Demo', 'federico-martin-demo');
         $product = new Product($tenant, 'WhatsApp Automation');
@@ -733,17 +833,51 @@ final class BackendUiControllerTest extends TestCase
         $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => in_array($role, ['ROLE_MANAGER', 'ROLE_ADMIN'], true));
 
         $products = $this->createProductRepositoryFake([$product]);
+        $tenants = $this->createTenantRepositoryFake([$tenant]);
 
         $controller = $this->createController($security);
-        $response = $controller->products($products);
+        $response = $controller->products(Request::create('/backend/products', 'GET'), $products, $tenants);
 
         self::assertSame(Response::HTTP_OK, $response->getStatusCode());
-        self::assertStringContainsString('Importar desde CRM', $response->getContent());
+        self::assertStringContainsString('Importar catálogo', $response->getContent());
         self::assertStringContainsString('Crear producto / servicio', $response->getContent());
         self::assertStringContainsString('icon-action', $response->getContent());
         self::assertStringContainsString('Editar producto / servicio', $response->getContent());
+        self::assertStringContainsString('Eliminar producto / servicio', $response->getContent());
+        self::assertStringContainsString('/backend/products/'.$product->getId()->toRfc4122().'/delete', $response->getContent());
+        self::assertStringContainsString('name="tenantId"', $response->getContent());
+        self::assertStringContainsString('name="product"', $response->getContent());
         self::assertStringContainsString('WhatsApp Automation', $response->getContent());
         self::assertStringContainsString('Slug:', $response->getContent());
+    }
+
+    public function testProductsPageFiltersByTenantAndProductQuery(): void
+    {
+        $tenantA = new Tenant('Federico Martin Demo', 'federico-martin-demo');
+        $tenantB = new Tenant('Tech Investments', 'tech-investments');
+        $productA = new Product($tenantA, 'WhatsApp Automation');
+        $productB = new Product($tenantB, 'RAG Knowledge System');
+
+        $security = $this->createStub(Security::class);
+        $security->method('getUser')->willReturn($this->createAuthenticatedUser('manager@example.com', ['manager'], 'María Manager'));
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => in_array($role, ['ROLE_MANAGER', 'ROLE_ADMIN'], true));
+
+        $products = $this->createProductRepositoryFake([$productA, $productB]);
+        $tenants = $this->createTenantRepositoryFake([$tenantA, $tenantB]);
+
+        $controller = $this->createController($security);
+        $request = Request::create('/backend/products', 'GET', [
+            'tenantId' => $tenantA->getId()->toRfc4122(),
+            'product' => 'whatsapp',
+        ]);
+
+        $response = $controller->products($request, $products, $tenants);
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        self::assertStringContainsString('WhatsApp Automation', $response->getContent());
+        self::assertStringNotContainsString('RAG Knowledge System', $response->getContent());
+        self::assertStringContainsString('value="whatsapp"', $response->getContent());
+        self::assertStringContainsString('selected', $response->getContent());
     }
 
     public function testProductCreateFormRendersTheExpectedFields(): void
@@ -797,12 +931,73 @@ final class BackendUiControllerTest extends TestCase
 
         self::assertSame(Response::HTTP_OK, $response->getStatusCode());
         self::assertStringContainsString('Importar catálogo de productos / servicios', $response->getContent());
-        self::assertStringContainsString('Cómo alinear productos/servicios con CRM', $response->getContent());
+        self::assertStringContainsString('Catálogo independiente', $response->getContent());
         self::assertStringContainsString('name="tenantId"', $response->getContent());
         self::assertStringContainsString('name="format"', $response->getContent());
         self::assertStringContainsString('name="file"', $response->getContent());
         self::assertStringContainsString('name="payload"', $response->getContent());
-        self::assertStringContainsString('integration_key', $response->getContent());
+        self::assertStringContainsString('external_reference', $response->getContent());
+    }
+
+    public function testProductEditDoesNotRenderDeleteAction(): void
+    {
+        $tenant = new Tenant('Federico Martin Demo', 'federico-martin-demo');
+        $product = new Product($tenant, 'WhatsApp Automation');
+
+        $security = $this->createStub(Security::class);
+        $security->method('getUser')->willReturn($this->createAuthenticatedUser('manager@example.com', ['manager'], 'María Manager'));
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => in_array($role, ['ROLE_MANAGER', 'ROLE_ADMIN'], true));
+
+        $products = $this->createProductRepositoryFake([$product], $product);
+        $tenants = $this->createTenantRepositoryFake([$tenant], $tenant);
+
+        $csrfTokenManager = $this->createStub(CsrfTokenManagerInterface::class);
+        $csrfTokenManager->method('getToken')->willReturnCallback(
+            static fn (string $id): CsrfToken => new CsrfToken($id, 'token-'.$id)
+        );
+
+        $controller = $this->createController($security, null, null, $csrfTokenManager);
+        $response = $controller->productEdit($product->getId()->toRfc4122(), Request::create('/backend/products/'.$product->getId()->toRfc4122().'/edit', 'GET'), $tenants, $products);
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        self::assertStringNotContainsString('Eliminar producto / servicio', $response->getContent());
+        self::assertStringNotContainsString('/backend/products/'.$product->getId()->toRfc4122().'/delete', $response->getContent());
+    }
+
+    public function testProductDeleteRemovesProductWhenItHasNoUsage(): void
+    {
+        $tenant = new Tenant('Federico Martin Demo', 'federico-martin-demo');
+        $product = new Product($tenant, 'WhatsApp Automation');
+
+        $security = $this->createStub(Security::class);
+        $security->method('getUser')->willReturn($this->createAuthenticatedUser('manager@example.com', ['manager'], 'María Manager'));
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => in_array($role, ['ROLE_MANAGER', 'ROLE_ADMIN'], true));
+
+        $entityManager = $this->createMock(EntityManagerInterface::class);
+        $entityManager->expects(self::once())->method('remove')->with($product);
+        $entityManager->expects(self::once())->method('flush');
+
+        $products = $this->createProductRepositoryFake([$product], $product);
+
+        $csrfTokenManager = $this->createStub(CsrfTokenManagerInterface::class);
+        $csrfTokenManager->method('isTokenValid')->willReturn(true);
+
+        $controller = $this->createController($security, $entityManager, null, $csrfTokenManager);
+        $request = Request::create('/backend/products/'.$product->getId()->toRfc4122().'/delete', 'POST', [
+            '_csrf_token' => 'token',
+        ]);
+        $request->setSession(new Session());
+
+        $response = $controller->productDelete($product->getId()->toRfc4122(), $request, $products);
+
+        self::assertSame(Response::HTTP_FOUND, $response->getStatusCode());
+        self::assertSame('/backend/products', $response->headers->get('Location'));
+
+        $listRequest = Request::create('/backend/products', 'GET');
+        $listRequest->setSession($request->getSession());
+
+        $listResponse = $controller->products($listRequest, $products);
+        self::assertStringContainsString('Producto / servicio eliminado.', $listResponse->getContent());
     }
 
     public function testProductCreateSubmissionPersistsNewProduct(): void
@@ -1114,5 +1309,356 @@ final class BackendUiControllerTest extends TestCase
 
         self::assertSame(Response::HTTP_FOUND, $response->getStatusCode());
         self::assertSame('/backend/login', $response->headers->get('Location'));
+    }
+
+    public function testConfigurationPageRedirectsWhenUserIsNotAdmin(): void
+    {
+        $security = $this->createStub(Security::class);
+        $security->method('isGranted')->willReturn(false);
+
+        $controller = $this->createController($security);
+        $response = $controller->configuration(Request::create('/backend/configuration', 'GET'));
+
+        self::assertSame(Response::HTTP_FOUND, $response->getStatusCode());
+        self::assertSame('/backend/login', $response->headers->get('Location'));
+    }
+
+    public function testConfigurationPageDisablesAutofillAndKeepsSaveActionAtTheBottom(): void
+    {
+        $security = $this->createStub(Security::class);
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role === 'ROLE_ADMIN');
+
+        $runtimeConfigurationService = $this->createMock(RuntimeConfigurationService::class);
+        $runtimeConfigurationService->expects(self::once())
+            ->method('pageData')
+            ->willReturn([
+                'formState' => [
+                    'llm_default_profile' => [
+                        'key' => 'llm_default_profile',
+                        'label' => 'Perfil LLM por defecto',
+                        'description' => '',
+                        'inputType' => 'select',
+                        'group' => 'llm',
+                        'options' => [],
+                        'defaultValue' => 'auto',
+                        'secret' => false,
+                        'configured' => false,
+                        'value' => 'auto',
+                    ],
+                    'openai_base_url' => [
+                        'key' => 'openai_base_url',
+                        'label' => 'Endpoint OpenAI',
+                        'description' => '',
+                        'inputType' => 'text',
+                        'group' => 'llm',
+                        'options' => [],
+                        'defaultValue' => 'https://api.openai.com/v1',
+                        'secret' => false,
+                        'configured' => false,
+                        'value' => 'https://api.openai.com/v1',
+                    ],
+                    'openai_model' => [
+                        'key' => 'openai_model',
+                        'label' => 'Modelo OpenAI',
+                        'description' => '',
+                        'inputType' => 'select',
+                        'group' => 'llm',
+                        'options' => [],
+                        'defaultValue' => 'gpt-4o-mini',
+                        'secret' => false,
+                        'configured' => false,
+                        'value' => 'gpt-4o-mini',
+                    ],
+                    'openai_api_key' => [
+                        'key' => 'openai_api_key',
+                        'label' => 'Clave API OpenAI',
+                        'description' => '',
+                        'inputType' => 'password',
+                        'group' => 'llm',
+                        'options' => [],
+                        'defaultValue' => '',
+                        'secret' => true,
+                        'configured' => false,
+                        'value' => '',
+                    ],
+                    'ollama_base_url' => [
+                        'key' => 'ollama_base_url',
+                        'label' => 'Endpoint Ollama',
+                        'description' => '',
+                        'inputType' => 'text',
+                        'group' => 'llm',
+                        'options' => [],
+                        'defaultValue' => 'http://ollama:11434',
+                        'secret' => false,
+                        'configured' => false,
+                        'value' => 'http://ollama:11434',
+                    ],
+                    'ollama_model' => [
+                        'key' => 'ollama_model',
+                        'label' => 'Modelo Ollama',
+                        'description' => '',
+                        'inputType' => 'select',
+                        'group' => 'llm',
+                        'options' => [],
+                        'defaultValue' => 'llama3.1',
+                        'secret' => false,
+                        'configured' => false,
+                        'value' => 'llama3.1',
+                    ],
+                    'audio_mode' => [
+                        'key' => 'audio_mode',
+                        'label' => 'Modo audio',
+                        'description' => '',
+                        'inputType' => 'select',
+                        'group' => 'audio',
+                        'options' => [],
+                        'defaultValue' => 'disabled',
+                        'secret' => false,
+                        'configured' => false,
+                        'value' => 'disabled',
+                    ],
+                    'audio_gateway_base_url' => [
+                        'key' => 'audio_gateway_base_url',
+                        'label' => 'Endpoint audio-gateway',
+                        'description' => '',
+                        'inputType' => 'text',
+                        'group' => 'audio',
+                        'options' => [],
+                        'defaultValue' => 'http://audio-gateway',
+                        'secret' => false,
+                        'configured' => false,
+                        'value' => 'http://audio-gateway',
+                    ],
+                    'audio_gateway_token' => [
+                        'key' => 'audio_gateway_token',
+                        'label' => 'Token audio-gateway',
+                        'description' => '',
+                        'inputType' => 'password',
+                        'group' => 'audio',
+                        'options' => [],
+                        'defaultValue' => '',
+                        'secret' => true,
+                        'configured' => false,
+                        'value' => '',
+                    ],
+                ],
+                'values' => [
+                    'llm_default_profile' => 'auto',
+                    'openai_base_url' => 'https://api.openai.com/v1',
+                    'openai_model' => 'gpt-4o-mini',
+                    'openai_api_key' => '',
+                    'ollama_base_url' => 'http://ollama:11434',
+                    'ollama_model' => 'llama3.1',
+                    'audio_mode' => 'disabled',
+                    'audio_gateway_base_url' => 'http://audio-gateway',
+                    'audio_gateway_token' => '',
+                ],
+                'status' => [
+                    'overall' => ['status' => 'ready', 'message' => 'Listo'],
+                    'llm' => ['status' => 'ready'],
+                    'openai' => ['status' => 'ready'],
+                    'ollama' => ['status' => 'ready'],
+                    'audio' => ['status' => 'ready'],
+                ],
+            ]);
+
+        $controller = $this->createController($security, null, null, null, null, $runtimeConfigurationService);
+        $response = $controller->configuration(Request::create('/backend/configuration', 'GET'));
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        self::assertStringContainsString('<form method="post" action="/backend/configuration" class="tenant-form runtime-settings-form">', $response->getContent());
+        self::assertStringNotContainsString('autocomplete="off"', $response->getContent());
+        self::assertGreaterThan(
+            strpos($response->getContent(), 'name="action" value="test_audio"'),
+            strrpos($response->getContent(), 'name="action" value="save"')
+        );
+        self::assertStringContainsString('type="url"', $response->getContent());
+        self::assertStringContainsString('autocomplete="new-password"', $response->getContent());
+    }
+
+    public function testConfigurationSaveRejectsInvalidRuntimeEndpoints(): void
+    {
+        $security = $this->createStub(Security::class);
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role === 'ROLE_ADMIN');
+
+        $runtimeConfigurationService = $this->createMock(RuntimeConfigurationService::class);
+        $submitted = [
+            'llm_default_profile' => 'auto',
+            'openai_base_url' => 'federico.martin2609@gmail.com',
+            'openai_model' => 'gpt-4o-mini',
+            'openai_api_key' => 'wrong-secret',
+            'ollama_base_url' => 'http://ollama:11434',
+            'ollama_model' => 'llama3.1',
+            'audio_mode' => 'disabled',
+            'audio_gateway_base_url' => 'http://audio-gateway',
+            'audio_gateway_token' => '',
+        ];
+
+        $runtimeConfigurationService->expects(self::once())
+            ->method('validate')
+            ->with($submitted)
+            ->willReturn([
+                'El endpoint "Endpoint OpenAI" debe ser una URL válida con http o https.',
+                'La clave API de OpenAI no parece válida.',
+            ]);
+        $runtimeConfigurationService->expects(self::once())
+            ->method('pageData')
+            ->with($submitted, [])
+            ->willReturn([
+                'formState' => [
+                    'llm_default_profile' => [
+                        'key' => 'llm_default_profile',
+                        'label' => 'Perfil LLM por defecto',
+                        'description' => '',
+                        'inputType' => 'select',
+                        'group' => 'llm',
+                        'options' => [],
+                        'defaultValue' => 'auto',
+                        'secret' => false,
+                        'configured' => false,
+                        'value' => 'auto',
+                    ],
+                    'openai_base_url' => [
+                        'key' => 'openai_base_url',
+                        'label' => 'Endpoint OpenAI',
+                        'description' => '',
+                        'inputType' => 'url',
+                        'group' => 'llm',
+                        'options' => [],
+                        'defaultValue' => 'https://api.openai.com/v1',
+                        'secret' => false,
+                        'configured' => false,
+                        'value' => 'federico.martin2609@gmail.com',
+                    ],
+                    'openai_model' => [
+                        'key' => 'openai_model',
+                        'label' => 'Modelo OpenAI',
+                        'description' => '',
+                        'inputType' => 'select',
+                        'group' => 'llm',
+                        'options' => [],
+                        'defaultValue' => 'gpt-4o-mini',
+                        'secret' => false,
+                        'configured' => false,
+                        'value' => 'gpt-4o-mini',
+                    ],
+                    'openai_api_key' => [
+                        'key' => 'openai_api_key',
+                        'label' => 'Clave API OpenAI',
+                        'description' => '',
+                        'inputType' => 'password',
+                        'group' => 'llm',
+                        'options' => [],
+                        'defaultValue' => '',
+                        'secret' => true,
+                        'configured' => false,
+                        'value' => '',
+                    ],
+                    'ollama_base_url' => [
+                        'key' => 'ollama_base_url',
+                        'label' => 'Endpoint Ollama',
+                        'description' => '',
+                        'inputType' => 'url',
+                        'group' => 'llm',
+                        'options' => [],
+                        'defaultValue' => 'http://ollama:11434',
+                        'secret' => false,
+                        'configured' => false,
+                        'value' => 'http://ollama:11434',
+                    ],
+                    'ollama_model' => [
+                        'key' => 'ollama_model',
+                        'label' => 'Modelo Ollama',
+                        'description' => '',
+                        'inputType' => 'select',
+                        'group' => 'llm',
+                        'options' => [],
+                        'defaultValue' => 'llama3.1',
+                        'secret' => false,
+                        'configured' => false,
+                        'value' => 'llama3.1',
+                    ],
+                    'audio_mode' => [
+                        'key' => 'audio_mode',
+                        'label' => 'Modo audio',
+                        'description' => '',
+                        'inputType' => 'select',
+                        'group' => 'audio',
+                        'options' => [],
+                        'defaultValue' => 'disabled',
+                        'secret' => false,
+                        'configured' => false,
+                        'value' => 'disabled',
+                    ],
+                    'audio_gateway_base_url' => [
+                        'key' => 'audio_gateway_base_url',
+                        'label' => 'Endpoint audio-gateway',
+                        'description' => '',
+                        'inputType' => 'url',
+                        'group' => 'audio',
+                        'options' => [],
+                        'defaultValue' => 'http://audio-gateway',
+                        'secret' => false,
+                        'configured' => false,
+                        'value' => 'http://audio-gateway',
+                    ],
+                    'audio_gateway_token' => [
+                        'key' => 'audio_gateway_token',
+                        'label' => 'Token audio-gateway',
+                        'description' => '',
+                        'inputType' => 'password',
+                        'group' => 'audio',
+                        'options' => [],
+                        'defaultValue' => '',
+                        'secret' => true,
+                        'configured' => false,
+                        'value' => '',
+                    ],
+                ],
+                'values' => [
+                    'llm_default_profile' => 'auto',
+                    'openai_base_url' => 'federico.martin2609@gmail.com',
+                    'openai_model' => 'gpt-4o-mini',
+                    'openai_api_key' => 'wrong-secret',
+                    'ollama_base_url' => 'http://ollama:11434',
+                    'ollama_model' => 'llama3.1',
+                    'audio_mode' => 'disabled',
+                    'audio_gateway_base_url' => 'http://audio-gateway',
+                    'audio_gateway_token' => '',
+                ],
+                'status' => [
+                    'overall' => ['status' => 'blocked', 'message' => 'Bloqueado'],
+                    'llm' => ['status' => 'blocked'],
+                    'openai' => ['status' => 'blocked'],
+                    'ollama' => ['status' => 'ready'],
+                    'audio' => ['status' => 'ready'],
+                ],
+            ]);
+        $runtimeConfigurationService->expects(self::never())->method('save');
+
+        $csrfTokenManager = $this->createStub(CsrfTokenManagerInterface::class);
+        $csrfTokenManager->method('isTokenValid')->willReturn(true);
+
+        $controller = $this->createController($security, null, null, $csrfTokenManager, null, $runtimeConfigurationService);
+        $request = Request::create('/backend/configuration', 'POST', [
+            '_csrf_token' => 'token-runtime_configuration',
+            'action' => 'save',
+            'llm_default_profile' => 'auto',
+            'openai_base_url' => 'federico.martin2609@gmail.com',
+            'openai_model' => 'gpt-4o-mini',
+            'openai_api_key' => 'wrong-secret',
+            'ollama_base_url' => 'http://ollama:11434',
+            'ollama_model' => 'llama3.1',
+            'audio_mode' => 'disabled',
+            'audio_gateway_base_url' => 'http://audio-gateway',
+            'audio_gateway_token' => '',
+        ]);
+
+        $response = $controller->configuration($request);
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        self::assertStringContainsString('La clave API de OpenAI no parece válida.', $response->getContent());
+        self::assertStringContainsString('El endpoint &quot;Endpoint OpenAI&quot; debe ser una URL válida con http o https.', $response->getContent());
+        self::assertStringNotContainsString('Configuración guardada', $response->getContent());
     }
 }

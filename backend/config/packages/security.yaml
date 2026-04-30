@@ -21,6 +21,10 @@ security:
       pattern: ^/api/r/wa
       security: false
 
+    runtime_settings_internal:
+      pattern: ^/api/internal/runtime-settings
+      security: false
+
     api_login:
       pattern: ^/api/login
       stateless: true
@@ -60,6 +64,8 @@ security:
     - { path: ^/(dashboard|profile), roles: [ROLE_AGENT, ROLE_MANAGER, ROLE_ADMIN] }
     - { path: ^/(playbooks|tenants|products|api-health|channels|entry-points|tracking), roles: [ROLE_MANAGER, ROLE_ADMIN] }
     - { path: ^/users, roles: ROLE_ADMIN }
+    - { path: ^/backend/configuration, roles: ROLE_ADMIN }
+    - { path: ^/api/internal/runtime-settings, roles: PUBLIC_ACCESS }
     - { path: ^/api/health, roles: PUBLIC_ACCESS }
     - { path: ^/api/login, roles: PUBLIC_ACCESS }
     - { path: ^/api/r/wa, roles: PUBLIC_ACCESS }

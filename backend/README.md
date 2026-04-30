@@ -8,6 +8,7 @@ Este directorio contiene el backend administrativo de `sales-agent`.
 - ofrece un formulario de login en navegador para operar el backend como panel humano
 - incluye `Mi perfil` para actualizar nombre visible y clave de acceso
 - permite crear y editar `negocios`, `guías comerciales`, `productos / servicios` y `puntos de entrada` desde la vista humana con formularios guiados
+- permite editar la configuración operativa de LLM y audio desde `/backend/configuration`
 - permite importar catálogos de productos/servicios desde CRM con `integration_key` como referencia externa
 - la UI heredada ya no expone `canales` ni `tracking`; el flujo canónico se configura con `EntryPoint`, `EntryPointUtm` y `Conversation`
 - presenta un layout tipo CRM para navegación operativa por módulos
@@ -30,6 +31,7 @@ Este directorio contiene el backend administrativo de `sales-agent`.
 - `src/Controller/Web/`: páginas HTML para login y dashboard del backend
 - `src/Controller/Api/`: controladores REST
 - `src/Security/`: handlers de seguridad
+- `src/Service/`: catálogo, cifrado y presentadores de configuración operativa
 - `migrations/`: definiciones históricas de esquema Doctrine, no forman parte del flujo operativo principal
 
 ## Endpoints
@@ -54,11 +56,14 @@ Este directorio contiene el backend administrativo de `sales-agent`.
 - `GET /backend/profile`
 - `POST /backend/profile/name`
 - `POST /backend/profile/password`
+- `GET /backend/configuration`
+- `POST /backend/configuration`
 - `GET /api/health`
 - CRUD:
   - `/api/tenants` para negocios
   - `/api/products`
   - `/api/playbooks` para guías comerciales
+- `GET /api/internal/runtime-settings` para la snapshot operativa que consume el runtime
 - `POST /api/login`
 - Routing público:
   - `GET /api/r/wa/{entrypointCode}`
@@ -99,6 +104,31 @@ El login técnico JSON sigue disponible en:
 - `http://localhost:8080/backend/api/login`
 
 El panel HTML usa sesión de navegador y el login JSON responde con JWT.
+
+## Configuración operativa
+
+La configuración editable ya no vive en `.env`.
+La pantalla `/backend/configuration` permite editar:
+
+- `llm_default_profile`
+- `openai_base_url`
+- `openai_model`
+- `openai_api_key` cifrada en BD
+- `ollama_base_url`
+- `ollama_model`
+- `audio_mode`
+- `audio_gateway_base_url`
+- `audio_gateway_token` cifrado en BD
+
+Reglas operativas:
+
+- `.env` queda para bootstrap, infraestructura y secretos no editables desde UI
+- los secretos se cifran antes de persistirse en `runtime_settings`
+- la snapshot interna que usa el runtime se expone en `GET /api/internal/runtime-settings`
+- la pantalla muestra estado `listo`, `parcial` o `bloqueado` por proveedor y en global
+- los botones de prueba para OpenAI, Ollama y audio realizan requests reales y solo están visibles para administradores
+
+Para que el runtime pueda consultar la snapshot interna, el backend también recibe `SALES_AGENT_BEARER_TOKEN` como secreto de infraestructura.
 
 El routing de WhatsApp ya no depende del bootstrap base. Los `EntryPoint` y `EntryPointUtm` deben configurarse explícitamente con datos reales de campaña y número público.
 Los productos importados desde CRM deben guardar `externalSource = crm` y `externalReference = integration_key`; `slug` queda como identificador local y fallback.

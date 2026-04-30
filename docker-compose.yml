@@ -19,6 +19,7 @@ services:
       APP_DEBUG: ${APP_DEBUG:-1}
       APP_SECRET: ${APP_SECRET:-change-me-in-prod}
       DATABASE_URL: ${DATABASE_URL:-postgresql://sales_agent:secret@sales-agent-db:5432/sales_agent?serverVersion=15&charset=utf8}
+      SALES_AGENT_BEARER_TOKEN: ${SALES_AGENT_BEARER_TOKEN:-change-me-sales-agent-bearer-token}
       JWT_PASSPHRASE: ${JWT_PASSPHRASE:-change-me}
       JWT_SECRET_KEY: ${JWT_SECRET_KEY:-/var/www/html/backend/var/jwt/private.pem}
       JWT_PUBLIC_KEY: ${JWT_PUBLIC_KEY:-/var/www/html/backend/var/jwt/public.pem}
