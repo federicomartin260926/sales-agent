@@ -126,6 +126,7 @@ Además, para resolver la configuración LLM y audio usa:
 
 Ese endpoint devuelve la snapshot operativa que sale de base de datos y se protege con `Authorization: Bearer <SALES_AGENT_BEARER_TOKEN>`.
 Si el backend no responde, el runtime usa los valores bootstrap del entorno como fallback.
+La snapshot incluye también `openai_timeout_seconds`, `ollama_timeout_seconds` y `audio_timeout_seconds` para que el runtime pueda consumirlos cuando se cableen las integraciones activas.
 
 ## Integración con CRM
 

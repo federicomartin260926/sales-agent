@@ -16,9 +16,12 @@ def transport_handler(request: httpx.Request) -> httpx.Response:
                     "openai_base_url": "https://api.openai.com/v1",
                     "openai_api_key": "sk-test",
                     "openai_model": "gpt-4o-mini",
-                    "ollama_base_url": "http://ollama:11434",
+                    "openai_timeout_seconds": "22",
+                    "ollama_base_url": "http://ollama-vpn-bridge:11434",
                     "ollama_model": "llama3.1",
-                    "audio_mode": "disabled",
+                    "ollama_timeout_seconds": "24",
+                    "audio_gateway_base_url": "http://audio-gateway",
+                    "audio_timeout_seconds": "18",
                 }
             },
         )
@@ -37,7 +40,11 @@ async def test_runtime_settings_client_fetches_effective_values_from_backend():
 
     assert values["llm_default_profile"] == "openai"
     assert values["openai_api_key"] == "sk-test"
-    assert values["audio_mode"] == "disabled"
+    assert values["openai_timeout_seconds"] == "22"
+    assert values["audio_gateway_base_url"] == "http://audio-gateway"
+    assert values["audio_timeout_seconds"] == "18"
+    assert values["ollama_base_url"] == "http://ollama-vpn-bridge:11434"
+    assert values["ollama_timeout_seconds"] == "24"
 
 
 @pytest.mark.asyncio
@@ -51,3 +58,6 @@ async def test_runtime_settings_client_falls_back_when_backend_is_unavailable():
 
     assert values["llm_default_profile"] == "openai"
     assert values["openai_model"] == "gpt-4o-mini"
+    assert values["openai_timeout_seconds"] == "15"
+    assert values["ollama_timeout_seconds"] == "15"
+    assert values["audio_timeout_seconds"] == "15"

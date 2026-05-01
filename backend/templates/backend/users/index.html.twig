@@ -1,0 +1,55 @@
+{% extends 'backend/layout.html.twig' %}
+
+{% block content %}
+  <section class="hero-panel">
+    <div class="hero-copy">
+      <div class="eyebrow-dark">Acceso interno</div>
+      <h2>Usuarios</h2>
+      <p>Administración de cuentas, roles y acceso interno. Este panel separa la sesión de navegador de la API técnica.</p>
+    </div>
+    <div class="hero-aside">
+      <div class="badge-live">Admin</div>
+      <div class="hero-aside-title">Control de acceso</div>
+      <p>Los usuarios con rol admin pueden gestionar cuentas; el resto de roles se mantiene orientado a operación.</p>
+    </div>
+  </section>
+
+  <section class="table-card">
+    <div class="table-header">
+      <div>
+        <h3>Usuarios registrados</h3>
+        <p>Email, roles y estado de acceso.</p>
+      </div>
+      <a class="secondary-action" href="/backend/dashboard">Volver al dashboard</a>
+    </div>
+
+    <div class="table-responsive">
+      <table>
+        <thead>
+          <tr>
+            <th scope="col">Email</th>
+            <th scope="col">Roles</th>
+            <th scope="col">Estado</th>
+            <th scope="col">Creado</th>
+            <th class="text-right">Login</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for user in users %}
+            <tr>
+              <td><strong>{{ user.email }}</strong></td>
+              <td>{{ user.roles }}</td>
+              <td><span class="{{ user.status_class }}">{{ user.status_label }}</span></td>
+              <td class="subtle">{{ user.created_at }}</td>
+              <td class="text-right">{{ user.login_label }}</td>
+            </tr>
+          {% else %}
+            <tr>
+              <td colspan="5" class="empty-row">No hay usuarios todavía.</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+{% endblock %}

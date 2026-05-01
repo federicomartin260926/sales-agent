@@ -12,9 +12,9 @@ final class RuntimeSettingsStatePresenter
      */
     public function present(array $settings, array $testResults = []): array
     {
-        $openai = $testResults['openai'] ?? $this->presentOpenAI($settings);
-        $ollama = $testResults['ollama'] ?? $this->presentOllama($settings);
-        $audio = $testResults['audio'] ?? $this->presentAudio($settings);
+        $openai = $this->providerState($testResults['openai'] ?? null, fn (): array => $this->presentOpenAI($settings));
+        $ollama = $this->providerState($testResults['ollama'] ?? null, fn (): array => $this->presentOllama($settings));
+        $audio = $this->providerState($testResults['audio'] ?? null, fn (): array => $this->presentAudio($settings));
         $defaultProfile = trim($settings['llm_default_profile'] ?? 'auto');
         $llm = $this->presentLlm($defaultProfile, $openai, $ollama);
         $overall = $this->presentOverall($llm, $openai, $ollama, $audio);
@@ -26,6 +26,29 @@ final class RuntimeSettingsStatePresenter
             'ollama' => $ollama,
             'audio' => $audio,
         ];
+    }
+
+    /**
+     * @param mixed $value
+     * @param callable(): array<string, string|null> $fallback
+     *
+     * @return array<string, string|null>
+     */
+    private function providerState(mixed $value, callable $fallback): array
+    {
+        if ($value instanceof RuntimeConnectivityTestResult) {
+            return [
+                'status' => $value->status,
+                'message' => $value->message,
+                'endpoint' => $value->endpoint,
+            ];
+        }
+
+        if (is_array($value)) {
+            return $value;
+        }
+
+        return $fallback();
     }
 
     /**
@@ -78,22 +101,13 @@ final class RuntimeSettingsStatePresenter
      */
     private function presentAudio(array $settings): array
     {
-        $mode = trim($settings['audio_mode'] ?? 'disabled');
         $baseUrl = trim($settings['audio_gateway_base_url'] ?? '');
-
-        if ($mode === 'disabled') {
-            return $this->state('ready', 'Audio desactivado por configuración.', null);
-        }
-
-        if ($mode === 'local') {
-            return $this->state('ready', 'Audio local habilitado.', null);
-        }
 
         if ($baseUrl === '') {
             return $this->state('blocked', 'Falta el endpoint de audio-gateway.', null);
         }
 
-        return $this->state('partial', 'Audio gateway configurado. Falta validar la conectividad manual.', null);
+        return $this->state('ready', 'Audio configurado para uso operativo.', null);
     }
 
     /**

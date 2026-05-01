@@ -9,12 +9,14 @@
     </div>
   </div>
   <div class="section-note">{{ section.note }}</div>
-  <div class="form-grid">
-    {% for field in section.fields %}
-      {% include 'backend/configuration/_runtime_field.html.twig' with { field: field } %}
-    {% endfor %}
-  </div>
-  <div class="form-actions{% if section.actions_class is defined %} {{ section.actions_class }}{% endif %}">
+  {% if section.fields is iterable %}
+    <div class="form-grid">
+      {% for field in section.fields %}
+        {% include 'backend/configuration/_runtime_field.html.twig' with { field: field } %}
+      {% endfor %}
+    </div>
+  {% endif %}
+  <div class="form-actions form-actions-start{% if section.actions_class is defined %} {{ section.actions_class }}{% endif %}">
     {% for action in section.actions %}
       <button class="{{ action.class }}" type="submit" name="action" value="{{ action.value }}">{{ action.label }}</button>
     {% endfor %}

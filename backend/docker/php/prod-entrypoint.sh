@@ -8,6 +8,12 @@ JWT_PASSPHRASE_VALUE="${JWT_PASSPHRASE:-}"
 mkdir -p /var/www/html/backend/var/cache /var/www/html/backend/var/log "$(dirname "$JWT_SECRET_KEY_PATH")"
 chown -R www-data:www-data /var/www/html/backend/var || true
 
+if [ "${APP_ENV:-dev}" != "prod" ]; then
+  find /var/www/html/backend/var/cache -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+  mkdir -p /var/www/html/backend/var/cache /var/www/html/backend/var/log
+  chown -R www-data:www-data /var/www/html/backend/var
+fi
+
 if [ ! -f "$JWT_SECRET_KEY_PATH" ] || [ ! -f "$JWT_PUBLIC_KEY_PATH" ]; then
   tmp_private_key="$(mktemp)"
 

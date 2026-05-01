@@ -2,7 +2,6 @@
 
 namespace App\Tests\Unit;
 
-use App\Service\AudioGatewayConnectivityTester;
 use App\Service\OllamaConnectivityTester;
 use App\Service\OpenAIConnectivityTester;
 use PHPUnit\Framework\TestCase;
@@ -45,10 +44,12 @@ final class RuntimeConnectivityTestersTest extends TestCase
             'openai_base_url' => 'https://api.openai.com/v1',
             'openai_api_key' => 'sk-test',
             'openai_model' => 'gpt-4o-mini',
+            'openai_timeout_seconds' => '19',
         ]);
 
         self::assertSame('ready', $result->status);
         self::assertSame('https://api.openai.com/v1/models', $requests[0]['url']);
+        self::assertSame(19.0, $requests[0]['options']['timeout']);
     }
 
     public function testOllamaTesterMarksPartialWhenModelMissing(): void
@@ -61,29 +62,10 @@ final class RuntimeConnectivityTestersTest extends TestCase
         $result = $tester->test([
             'ollama_base_url' => 'http://ollama:11434',
             'ollama_model' => '',
+            'ollama_timeout_seconds' => '27',
         ]);
 
         self::assertSame('partial', $result->status);
         self::assertSame('http://ollama:11434/api/tags', $result->endpoint);
-    }
-
-    public function testAudioTesterResolvesHealthEndpoint(): void
-    {
-        $requests = [];
-        $httpClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$requests): MockResponse {
-            $requests[] = compact('method', 'url', 'options');
-
-            return new MockResponse('{"ok":true}', ['http_code' => 200]);
-        });
-
-        $tester = new AudioGatewayConnectivityTester($httpClient);
-        $result = $tester->test([
-            'audio_mode' => 'gateway',
-            'audio_gateway_base_url' => 'http://audio-gateway',
-            'audio_gateway_token' => 'audio-token',
-        ]);
-
-        self::assertSame('ready', $result->status);
-        self::assertSame('http://audio-gateway/health', $requests[0]['url']);
     }
 }

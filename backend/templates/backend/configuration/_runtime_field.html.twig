@@ -1,6 +1,6 @@
 {% set note = field.description %}
 {% if field.secret %}
-  {% set note = note ~ (field.configured ? ' Valor cifrado ya configurado; deja vacío para conservarlo.' : ' Se guardará cifrado en base de datos.') %}
+  {% set note = note ~ (field.configured ? ' Valor cifrado ya configurado.' : ' Se guardará cifrado en base de datos.') %}
 {% elseif field.value == '' and field.defaultValue != '' %}
   {% set note = note ~ ' Valor por defecto: ' ~ field.defaultValue ~ '.' %}
 {% endif %}
@@ -13,8 +13,10 @@
         <option value="{{ option.value }}"{% if option.value == field.value %} selected{% endif %}>{{ option.label }}{% if option.value == field.value %} (actual){% endif %}</option>
       {% endfor %}
     </select>
+  {% elseif field.inputType == 'number' %}
+    <input id="{{ field.key }}" name="{{ field.key }}" type="number" value="{{ field.value }}" {% if field.min is not null %}min="{{ field.min }}"{% endif %} autocapitalize="off" spellcheck="false">
   {% elseif field.inputType == 'password' %}
-    <input id="{{ field.key }}" name="{{ field.key }}" type="password" value="" autocomplete="new-password" autocapitalize="off" spellcheck="false" placeholder="{{ field.secret and field.configured ? 'Dejar vacío para conservar el valor actual' : 'Escribe el nuevo secreto' }}">
+    <input id="{{ field.key }}" name="{{ field.key }}" type="password" value="{{ field.value }}" autocomplete="new-password" autocapitalize="off" spellcheck="false">
   {% else %}
     <input id="{{ field.key }}" name="{{ field.key }}" type="{{ field.key ends with '_base_url' ? 'url' : 'text' }}" value="{{ field.value }}" autocapitalize="off" spellcheck="false">
   {% endif %}

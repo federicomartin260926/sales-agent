@@ -16,6 +16,7 @@ use App\Service\RuntimeConfigurationService;
 use App\Service\ProductCatalogImportService;
 use PHPUnit\Framework\TestCase;
 use Doctrine\ORM\EntityManagerInterface;
+use Doctrine\ORM\EntityRepository;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Session\Session;
 use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
@@ -371,6 +372,43 @@ final class BackendUiControllerTest extends TestCase
         self::assertStringContainsString('Usuarios', $response->getContent());
         self::assertStringContainsString('Salir', $response->getContent());
         self::assertStringContainsString('Negocios', $response->getContent());
+    }
+
+    public function testUsersRendersTwigListForAdmins(): void
+    {
+        $security = $this->createStub(Security::class);
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role === 'ROLE_ADMIN');
+
+        $userOne = $this->createAuthenticatedUser('ana@example.com', ['admin'], 'Ana');
+        $userTwo = $this->createAuthenticatedUser('pablo@example.com', ['manager'], 'Pablo');
+        $userTwo->setActive(false);
+
+        $usersRepository = $this->createMock(EntityRepository::class);
+        $usersRepository->expects(self::once())
+            ->method('findBy')
+            ->with([], ['createdAt' => 'DESC'])
+            ->willReturn([$userOne, $userTwo]);
+
+        $entityManager = $this->createMock(EntityManagerInterface::class);
+        $entityManager->expects(self::once())
+            ->method('getRepository')
+            ->with(User::class)
+            ->willReturn($usersRepository);
+
+        $controller = $this->createController($security, $entityManager);
+        $response = $controller->users();
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        self::assertStringContainsString('Usuarios registrados', $response->getContent());
+        self::assertStringContainsString('ana@example.com', $response->getContent());
+        self::assertStringContainsString('pablo@example.com', $response->getContent());
+        self::assertStringContainsString('Activo', $response->getContent());
+        self::assertStringContainsString('Inactivo', $response->getContent());
+        self::assertStringContainsString('Login ok', $response->getContent());
+        self::assertStringContainsString('Sin acceso', $response->getContent());
+        self::assertStringNotContainsString('No hay usuarios todavía.', $response->getContent());
+        self::assertStringContainsString('Usuarios', $response->getContent());
+        self::assertStringContainsString('/backend/users', $response->getContent());
     }
 
     public function testEntryPointRoutesExistForListingDetailAndEditing(): void
@@ -1345,6 +1383,7 @@ final class BackendUiControllerTest extends TestCase
         $runtimeConfigurationService = $this->createMock(RuntimeConfigurationService::class);
         $runtimeConfigurationService->expects(self::once())
             ->method('pageData')
+            ->with([], [])
             ->willReturn([
                 'formState' => [
                     'llm_default_profile' => [
@@ -1361,7 +1400,7 @@ final class BackendUiControllerTest extends TestCase
                     ],
                     'openai_base_url' => [
                         'key' => 'openai_base_url',
-                        'label' => 'Endpoint OpenAI',
+                        'label' => 'Base URL de OpenAI',
                         'description' => '',
                         'inputType' => 'text',
                         'group' => 'llm',
@@ -1373,7 +1412,7 @@ final class BackendUiControllerTest extends TestCase
                     ],
                     'openai_model' => [
                         'key' => 'openai_model',
-                        'label' => 'Modelo OpenAI',
+                        'label' => 'Modelo de OpenAI',
                         'description' => '',
                         'inputType' => 'select',
                         'group' => 'llm',
@@ -1385,7 +1424,7 @@ final class BackendUiControllerTest extends TestCase
                     ],
                     'openai_api_key' => [
                         'key' => 'openai_api_key',
-                        'label' => 'Clave API OpenAI',
+                        'label' => 'API key de OpenAI',
                         'description' => '',
                         'inputType' => 'password',
                         'group' => 'llm',
@@ -1394,22 +1433,23 @@ final class BackendUiControllerTest extends TestCase
                         'secret' => true,
                         'configured' => false,
                         'value' => '',
+                        'fullWidth' => true,
                     ],
                     'ollama_base_url' => [
                         'key' => 'ollama_base_url',
-                        'label' => 'Endpoint Ollama',
+                        'label' => 'Base URL de Ollama',
                         'description' => '',
                         'inputType' => 'text',
                         'group' => 'llm',
                         'options' => [],
-                        'defaultValue' => 'http://ollama:11434',
+                        'defaultValue' => 'http://ollama-vpn-bridge:11434',
                         'secret' => false,
                         'configured' => false,
-                        'value' => 'http://ollama:11434',
+                        'value' => 'http://ollama-vpn-bridge:11434',
                     ],
                     'ollama_model' => [
                         'key' => 'ollama_model',
-                        'label' => 'Modelo Ollama',
+                        'label' => 'Modelo de Ollama',
                         'description' => '',
                         'inputType' => 'select',
                         'group' => 'llm',
@@ -1419,21 +1459,9 @@ final class BackendUiControllerTest extends TestCase
                         'configured' => false,
                         'value' => 'llama3.1',
                     ],
-                    'audio_mode' => [
-                        'key' => 'audio_mode',
-                        'label' => 'Modo audio',
-                        'description' => '',
-                        'inputType' => 'select',
-                        'group' => 'audio',
-                        'options' => [],
-                        'defaultValue' => 'disabled',
-                        'secret' => false,
-                        'configured' => false,
-                        'value' => 'disabled',
-                    ],
                     'audio_gateway_base_url' => [
                         'key' => 'audio_gateway_base_url',
-                        'label' => 'Endpoint audio-gateway',
+                        'label' => 'Base URL del audio-gateway',
                         'description' => '',
                         'inputType' => 'text',
                         'group' => 'audio',
@@ -1443,29 +1471,15 @@ final class BackendUiControllerTest extends TestCase
                         'configured' => false,
                         'value' => 'http://audio-gateway',
                     ],
-                    'audio_gateway_token' => [
-                        'key' => 'audio_gateway_token',
-                        'label' => 'Token audio-gateway',
-                        'description' => '',
-                        'inputType' => 'password',
-                        'group' => 'audio',
-                        'options' => [],
-                        'defaultValue' => '',
-                        'secret' => true,
-                        'configured' => false,
-                        'value' => '',
-                    ],
                 ],
                 'values' => [
                     'llm_default_profile' => 'auto',
                     'openai_base_url' => 'https://api.openai.com/v1',
                     'openai_model' => 'gpt-4o-mini',
                     'openai_api_key' => '',
-                    'ollama_base_url' => 'http://ollama:11434',
+                    'ollama_base_url' => 'http://ollama-vpn-bridge:11434',
                     'ollama_model' => 'llama3.1',
-                    'audio_mode' => 'disabled',
                     'audio_gateway_base_url' => 'http://audio-gateway',
-                    'audio_gateway_token' => '',
                 ],
                 'status' => [
                     'overall' => ['status' => 'ready', 'message' => 'Listo'],
@@ -1477,17 +1491,22 @@ final class BackendUiControllerTest extends TestCase
             ]);
 
         $controller = $this->createController($security, null, null, null, null, $runtimeConfigurationService);
-        $response = $controller->configuration(Request::create('/backend/configuration', 'GET'));
+        $request = Request::create('/backend/configuration', 'GET');
+        $request->setSession(new Session());
+        $request->getSession()->getFlashBag()->add('success', 'Configuración guardada.');
+        $response = $controller->configuration($request);
 
         self::assertSame(Response::HTTP_OK, $response->getStatusCode());
         self::assertStringContainsString('<form method="post" action="/backend/configuration" class="tenant-form runtime-settings-form">', $response->getContent());
         self::assertStringNotContainsString('autocomplete="off"', $response->getContent());
         self::assertGreaterThan(
-            strpos($response->getContent(), 'name="action" value="test_audio"'),
+            strpos($response->getContent(), 'name="action" value="test_ollama"'),
             strrpos($response->getContent(), 'name="action" value="save"')
         );
         self::assertStringContainsString('type="url"', $response->getContent());
         self::assertStringContainsString('autocomplete="new-password"', $response->getContent());
+        self::assertStringContainsString('class="alert-dismiss"', $response->getContent());
+        self::assertStringContainsString('aria-label="Cerrar mensaje"', $response->getContent());
     }
 
     public function testConfigurationSaveRejectsInvalidRuntimeEndpoints(): void
@@ -1501,18 +1520,19 @@ final class BackendUiControllerTest extends TestCase
             'openai_base_url' => 'federico.martin2609@gmail.com',
             'openai_model' => 'gpt-4o-mini',
             'openai_api_key' => 'wrong-secret',
-            'ollama_base_url' => 'http://ollama:11434',
+            'openai_timeout_seconds' => '0',
+            'ollama_base_url' => 'http://ollama-vpn-bridge:11434',
             'ollama_model' => 'llama3.1',
-            'audio_mode' => 'disabled',
+            'ollama_timeout_seconds' => 'abc',
             'audio_gateway_base_url' => 'http://audio-gateway',
-            'audio_gateway_token' => '',
+            'audio_timeout_seconds' => '0',
         ];
 
         $runtimeConfigurationService->expects(self::once())
             ->method('validate')
             ->with($submitted)
             ->willReturn([
-                'El endpoint "Endpoint OpenAI" debe ser una URL válida con http o https.',
+                'El endpoint "Base URL de OpenAI" debe ser una URL válida con http o https.',
                 'La clave API de OpenAI no parece válida.',
             ]);
         $runtimeConfigurationService->expects(self::once())
@@ -1534,7 +1554,7 @@ final class BackendUiControllerTest extends TestCase
                     ],
                     'openai_base_url' => [
                         'key' => 'openai_base_url',
-                        'label' => 'Endpoint OpenAI',
+                        'label' => 'Base URL de OpenAI',
                         'description' => '',
                         'inputType' => 'url',
                         'group' => 'llm',
@@ -1546,7 +1566,7 @@ final class BackendUiControllerTest extends TestCase
                     ],
                     'openai_model' => [
                         'key' => 'openai_model',
-                        'label' => 'Modelo OpenAI',
+                        'label' => 'Modelo de OpenAI',
                         'description' => '',
                         'inputType' => 'select',
                         'group' => 'llm',
@@ -1558,7 +1578,7 @@ final class BackendUiControllerTest extends TestCase
                     ],
                     'openai_api_key' => [
                         'key' => 'openai_api_key',
-                        'label' => 'Clave API OpenAI',
+                        'label' => 'API key de OpenAI',
                         'description' => '',
                         'inputType' => 'password',
                         'group' => 'llm',
@@ -1567,22 +1587,23 @@ final class BackendUiControllerTest extends TestCase
                         'secret' => true,
                         'configured' => false,
                         'value' => '',
+                        'fullWidth' => true,
                     ],
                     'ollama_base_url' => [
                         'key' => 'ollama_base_url',
-                        'label' => 'Endpoint Ollama',
+                        'label' => 'Base URL de Ollama',
                         'description' => '',
                         'inputType' => 'url',
                         'group' => 'llm',
                         'options' => [],
-                        'defaultValue' => 'http://ollama:11434',
+                        'defaultValue' => 'http://ollama-vpn-bridge:11434',
                         'secret' => false,
                         'configured' => false,
-                        'value' => 'http://ollama:11434',
+                        'value' => 'http://ollama-vpn-bridge:11434',
                     ],
                     'ollama_model' => [
                         'key' => 'ollama_model',
-                        'label' => 'Modelo Ollama',
+                        'label' => 'Modelo de Ollama',
                         'description' => '',
                         'inputType' => 'select',
                         'group' => 'llm',
@@ -1592,21 +1613,9 @@ final class BackendUiControllerTest extends TestCase
                         'configured' => false,
                         'value' => 'llama3.1',
                     ],
-                    'audio_mode' => [
-                        'key' => 'audio_mode',
-                        'label' => 'Modo audio',
-                        'description' => '',
-                        'inputType' => 'select',
-                        'group' => 'audio',
-                        'options' => [],
-                        'defaultValue' => 'disabled',
-                        'secret' => false,
-                        'configured' => false,
-                        'value' => 'disabled',
-                    ],
                     'audio_gateway_base_url' => [
                         'key' => 'audio_gateway_base_url',
-                        'label' => 'Endpoint audio-gateway',
+                        'label' => 'Base URL del audio-gateway',
                         'description' => '',
                         'inputType' => 'url',
                         'group' => 'audio',
@@ -1616,29 +1625,15 @@ final class BackendUiControllerTest extends TestCase
                         'configured' => false,
                         'value' => 'http://audio-gateway',
                     ],
-                    'audio_gateway_token' => [
-                        'key' => 'audio_gateway_token',
-                        'label' => 'Token audio-gateway',
-                        'description' => '',
-                        'inputType' => 'password',
-                        'group' => 'audio',
-                        'options' => [],
-                        'defaultValue' => '',
-                        'secret' => true,
-                        'configured' => false,
-                        'value' => '',
-                    ],
                 ],
                 'values' => [
                     'llm_default_profile' => 'auto',
                     'openai_base_url' => 'federico.martin2609@gmail.com',
                     'openai_model' => 'gpt-4o-mini',
                     'openai_api_key' => 'wrong-secret',
-                    'ollama_base_url' => 'http://ollama:11434',
+                    'ollama_base_url' => 'http://ollama-vpn-bridge:11434',
                     'ollama_model' => 'llama3.1',
-                    'audio_mode' => 'disabled',
                     'audio_gateway_base_url' => 'http://audio-gateway',
-                    'audio_gateway_token' => '',
                 ],
                 'status' => [
                     'overall' => ['status' => 'blocked', 'message' => 'Bloqueado'],
@@ -1661,18 +1656,19 @@ final class BackendUiControllerTest extends TestCase
             'openai_base_url' => 'federico.martin2609@gmail.com',
             'openai_model' => 'gpt-4o-mini',
             'openai_api_key' => 'wrong-secret',
-            'ollama_base_url' => 'http://ollama:11434',
+            'openai_timeout_seconds' => '0',
+            'ollama_base_url' => 'http://ollama-vpn-bridge:11434',
             'ollama_model' => 'llama3.1',
-            'audio_mode' => 'disabled',
+            'ollama_timeout_seconds' => 'abc',
             'audio_gateway_base_url' => 'http://audio-gateway',
-            'audio_gateway_token' => '',
+            'audio_timeout_seconds' => '0',
         ]);
 
         $response = $controller->configuration($request);
 
         self::assertSame(Response::HTTP_OK, $response->getStatusCode());
         self::assertStringContainsString('La clave API de OpenAI no parece válida.', $response->getContent());
-        self::assertStringContainsString('El endpoint &quot;Endpoint OpenAI&quot; debe ser una URL válida con http o https.', $response->getContent());
+        self::assertStringContainsString('El endpoint &quot;Base URL de OpenAI&quot; debe ser una URL válida con http o https.', $response->getContent());
         self::assertStringNotContainsString('Configuración guardada', $response->getContent());
     }
 }

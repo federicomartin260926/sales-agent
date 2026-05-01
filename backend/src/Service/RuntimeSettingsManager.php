@@ -7,6 +7,8 @@ use App\Repository\RuntimeSettingRepository;
 
 final class RuntimeSettingsManager
 {
+    private const SECRET_PLACEHOLDER = '********';
+
     public function __construct(
         private readonly RuntimeSettingRepository $repository,
         private readonly RuntimeSettingCatalog $catalog,
@@ -45,7 +47,7 @@ final class RuntimeSettingsManager
 
         foreach ($this->catalog->indexed() as $key => $definition) {
             $configured = $this->repository->findOneByKey($key) !== null;
-            $value = $definition['secret'] ? '' : $values[$key];
+            $value = $definition['secret'] ? ($configured ? self::SECRET_PLACEHOLDER : '') : $values[$key];
 
             $state[$key] = [
                 'key' => $key,
@@ -58,6 +60,8 @@ final class RuntimeSettingsManager
                 'secret' => $definition['secret'],
                 'configured' => $configured,
                 'value' => $value,
+                'fullWidth' => $key === 'openai_api_key',
+                'min' => $definition['min'] ?? null,
             ];
         }
 
@@ -80,7 +84,7 @@ final class RuntimeSettingsManager
             $rawValue = array_key_exists($key, $submitted) ? trim((string) $submitted[$key]) : '';
 
             if ($definition['secret']) {
-                if ($rawValue === '') {
+                if ($rawValue === '' || $rawValue === self::SECRET_PLACEHOLDER) {
                     if ($existing === null) {
                         $unchanged[] = $key;
                     }
@@ -121,7 +125,7 @@ final class RuntimeSettingsManager
         foreach ($this->catalog->indexed() as $key => $definition) {
             $rawValue = trim((string) ($submitted[$key] ?? ''));
 
-            if ($rawValue === '') {
+            if ($rawValue === '' || ($definition['secret'] && $rawValue === self::SECRET_PLACEHOLDER)) {
                 continue;
             }
 
@@ -132,6 +136,20 @@ final class RuntimeSettingsManager
                 );
                 if (!in_array($rawValue, $allowedValues, true)) {
                     $errors[] = sprintf('El valor de "%s" no es válido.', $definition['label']);
+                }
+
+                continue;
+            }
+
+            if (($definition['inputType'] ?? 'text') === 'number') {
+                if (filter_var($rawValue, FILTER_VALIDATE_INT) === false) {
+                    $errors[] = sprintf('El valor de "%s" debe ser un entero valido.', $definition['label']);
+                    continue;
+                }
+
+                $min = (int) ($definition['min'] ?? 0);
+                if ((int) $rawValue < $min) {
+                    $errors[] = sprintf('El valor de "%s" debe ser mayor o igual que %d.', $definition['label'], $min);
                 }
 
                 continue;
@@ -185,7 +203,11 @@ final class RuntimeSettingsManager
 
             $rawValue = trim((string) $submitted[$key]);
             if ($definition['secret']) {
-                $values[$key] = $rawValue !== '' ? $rawValue : $values[$key];
+                if ($rawValue === '' || $rawValue === self::SECRET_PLACEHOLDER) {
+                    continue;
+                }
+
+                $values[$key] = $rawValue;
                 continue;
             }
 

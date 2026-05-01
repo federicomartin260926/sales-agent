@@ -22,6 +22,7 @@ final class OpenAIConnectivityTester implements RuntimeConnectivityTesterInterfa
         $baseUrl = trim($settings['openai_base_url'] ?? '');
         $apiKey = trim($settings['openai_api_key'] ?? '');
         $model = trim($settings['openai_model'] ?? '');
+        $timeout = max(1, (int) ($settings['openai_timeout_seconds'] ?? 15));
 
         if ($baseUrl === '') {
             return new RuntimeConnectivityTestResult('blocked', 'Falta el endpoint de OpenAI.');
@@ -42,7 +43,7 @@ final class OpenAIConnectivityTester implements RuntimeConnectivityTesterInterfa
                 'headers' => [
                     'Authorization' => 'Bearer '.$apiKey,
                 ],
-                'timeout' => 6.0,
+                'timeout' => (float) $timeout,
             ]);
 
             $statusCode = $response->getStatusCode();

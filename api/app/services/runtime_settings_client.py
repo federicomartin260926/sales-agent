@@ -57,9 +57,10 @@ class RuntimeSettingsClient:
             "openai_api_key": self.settings.openai_api_key,
             "openai_base_url": "https://api.openai.com/v1",
             "openai_model": "gpt-4o-mini",
+            "openai_timeout_seconds": str(self.settings.openai_timeout_seconds),
             "ollama_base_url": self.settings.ollama_base_url,
             "ollama_model": "llama3.1",
-            "audio_mode": "disabled",
+            "ollama_timeout_seconds": str(self.settings.ollama_timeout_seconds),
             "audio_gateway_base_url": "",
-            "audio_gateway_token": "",
+            "audio_timeout_seconds": str(self.settings.audio_timeout_seconds),
         }

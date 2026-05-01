@@ -9,7 +9,14 @@ COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
 
 WORKDIR /var/www/html/backend
 
-RUN mkdir -p var/cache var/log vendor
+COPY composer.json ./
+COPY composer.lock ./
+RUN composer install --no-interaction --prefer-dist
+
+COPY . ./
+
+RUN mkdir -p var/cache var/log \
+ && chown -R www-data:www-data var
 
 COPY docker/php/prod-entrypoint.sh /usr/local/bin/sales-agent-php-entrypoint
 RUN chmod +x /usr/local/bin/sales-agent-php-entrypoint

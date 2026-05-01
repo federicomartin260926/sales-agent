@@ -10,6 +10,7 @@ Este directorio contiene el backend administrativo de `sales-agent`.
 - permite crear y editar `negocios`, `guías comerciales`, `productos / servicios` y `puntos de entrada` desde la vista humana con formularios guiados
 - permite editar la configuración operativa de LLM y audio desde `/backend/configuration`
 - usa Twig como base de render para el layout común y la primera pantalla migrada de configuración
+- sirve los estilos del panel desde `public/assets/backend.css` para evitar CSS embebido en Twig y en el login
 - permite importar catálogos de productos/servicios desde CRM con `integration_key` como referencia externa
 - la UI heredada ya no expone `canales` ni `tracking`; el flujo canónico se configura con `EntryPoint`, `EntryPointUtm` y `Conversation`
 - presenta un layout tipo CRM para navegación operativa por módulos
@@ -31,6 +32,8 @@ Este directorio contiene el backend administrativo de `sales-agent`.
 - `src/Repository/`: repositorios Doctrine
 - `src/Controller/Web/`: páginas HTML para login y dashboard del backend
 - `templates/`: base Twig, layout backend y plantillas de la pantalla de configuración
+- `templates/backend/users/index.html.twig`: primera migración de la lista de usuarios a Twig
+- `public/assets/backend.css`: estilos del backend y del login, cargados como asset estático
 - `src/Controller/Api/`: controladores REST
 - `src/Security/`: handlers de seguridad
 - `src/Service/`: catálogo, cifrado y presentadores de configuración operativa
@@ -116,11 +119,12 @@ La pantalla `/backend/configuration` permite editar:
 - `openai_base_url`
 - `openai_model`
 - `openai_api_key` cifrada en BD
-- `ollama_base_url`
+- `openai_timeout_seconds`
+- `ollama_base_url` con valor base `http://ollama-vpn-bridge:11434`
 - `ollama_model`
-- `audio_mode`
+- `ollama_timeout_seconds`
 - `audio_gateway_base_url`
-- `audio_gateway_token` cifrado en BD
+- `audio_timeout_seconds`
 
 Reglas operativas:
 
@@ -128,7 +132,7 @@ Reglas operativas:
 - los secretos se cifran antes de persistirse en `runtime_settings`
 - la snapshot interna que usa el runtime se expone en `GET /api/internal/runtime-settings`
 - la pantalla muestra estado `listo`, `parcial` o `bloqueado` por proveedor y en global
-- los botones de prueba para OpenAI, Ollama y audio realizan requests reales y solo están visibles para administradores
+- los botones de prueba para OpenAI y Ollama realizan requests reales y solo están visibles para administradores
 
 Para que el runtime pueda consultar la snapshot interna, el backend también recibe `SALES_AGENT_BEARER_TOKEN` como secreto de infraestructura.
 
@@ -146,7 +150,12 @@ El backend humano está pensado como un CRM clásico:
 - secciones específicas para `Puntos de entrada` y atribución técnica
 - perfil de usuario con cambio de nombre y contraseña
 - shell visual separado de la API técnica
-- Twig como base de render para layouts y formularios nuevos
+- Twig como base de render para layouts y formularios nuevos, con estilos en assets estáticos
+
+## TODO
+
+- migrar el resto de pantallas inline del controlador a plantillas Twig
+- eliminar progresivamente el HTML embebido en `BackendUiController`
 
 ## Notas de seguridad
 

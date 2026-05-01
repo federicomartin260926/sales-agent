@@ -28,10 +28,25 @@
   <form method="post" action="/backend/configuration" class="tenant-form runtime-settings-form">
     <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
 
-    {% include 'backend/configuration/_runtime_section.html.twig' with { section: llm } %}
-    {% include 'backend/configuration/_runtime_section.html.twig' with { section: audio } %}
+    <section class="table-card">
+      <div class="table-header">
+        <div>
+          <h3>LLM</h3>
+          <p>Configuración de proveedores, modelos y endpoints usados por el scoring y la extracción con IA.</p>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">
+          <span class="{{ profile_badge_class }}">{{ profile_badge_label }}</span>
+        </div>
+      </div>
+      {% include 'backend/configuration/_runtime_field.html.twig' with { field: profile } %}
+    </section>
 
-    <div class="form-actions runtime-settings-actions">
+    <div class="config-columns">
+      {% include 'backend/configuration/_runtime_section.html.twig' with { section: openai } %}
+      {% include 'backend/configuration/_runtime_section.html.twig' with { section: local } %}
+    </div>
+
+    <div class="form-actions runtime-settings-actions form-actions-start">
       <button class="primary-action" type="submit" name="action" value="save">Guardar cambios</button>
     </div>
   </form>

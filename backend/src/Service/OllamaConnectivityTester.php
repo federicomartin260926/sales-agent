@@ -21,6 +21,7 @@ final class OllamaConnectivityTester implements RuntimeConnectivityTesterInterfa
     {
         $baseUrl = trim($settings['ollama_base_url'] ?? '');
         $model = trim($settings['ollama_model'] ?? '');
+        $timeout = max(1, (int) ($settings['ollama_timeout_seconds'] ?? 15));
 
         if ($baseUrl === '') {
             return new RuntimeConnectivityTestResult('blocked', 'Falta el endpoint de Ollama.');
@@ -30,7 +31,7 @@ final class OllamaConnectivityTester implements RuntimeConnectivityTesterInterfa
 
         try {
             $response = $this->httpClient->request('GET', $endpoint, [
-                'timeout' => 6.0,
+                'timeout' => (float) $timeout,
             ]);
 
             $statusCode = $response->getStatusCode();

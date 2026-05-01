@@ -72,174 +72,9 @@ final class BackendUiController
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Sales Agent Backend</title>
-  <style>
-    :root {
-      color-scheme: light;
-      --page-bg: #f5f7fb;
-      --panel: #ffffff;
-      --panel-soft: #f8fafc;
-      --panel-dark: #1f242a;
-      --panel-darker: #151a20;
-      --border: #d9e0ea;
-      --border-strong: #c7d0dc;
-      --text: #182433;
-      --muted: #637287;
-      --accent: #0f6ec7;
-      --accent-strong: #134fbf;
-      --success: #0f6ec7;
-      --danger: #c33434;
-      --shadow: 0 18px 42px rgba(15, 23, 42, 0.08);
-      --radius: 18px;
-    }
-    * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      min-height: 100vh;
-      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      color: var(--text);
-      background:
-        radial-gradient(circle at top left, rgba(15, 110, 199, 0.12), transparent 28%),
-        radial-gradient(circle at bottom right, rgba(19, 79, 191, 0.08), transparent 26%),
-        var(--page-bg);
-      padding: 28px 18px;
-    }
-    .shell {
-      width: min(1160px, 100%);
-      margin: 0 auto;
-      display: grid;
-      grid-template-columns: 1.08fr 0.92fr;
-      gap: 24px;
-      align-items: stretch;
-    }
-    .hero, .card {
-      border: 1px solid var(--border);
-      border-radius: var(--radius);
-      box-shadow: var(--shadow);
-    }
-    .hero {
-      padding: 34px;
-      background: linear-gradient(180deg, #20272f 0%, #131922 100%);
-      color: #f8fbff;
-      min-height: 560px;
-      display: flex;
-      flex-direction: column;
-      justify-content: space-between;
-    }
-    .eyebrow {
-      display: inline-flex;
-      align-items: center;
-      gap: 10px;
-      color: #9ed0ff;
-      text-transform: uppercase;
-      letter-spacing: 0.18em;
-      font-size: 12px;
-      font-weight: 700;
-    }
-    .eyebrow:before {
-      content: "";
-      width: 10px;
-      height: 10px;
-      border-radius: 999px;
-      background: #4fc3f7;
-      box-shadow: 0 0 0 6px rgba(79, 195, 247, 0.14);
-    }
-    h1 {
-      margin: 18px 0 14px;
-      font-size: clamp(36px, 5vw, 58px);
-      line-height: 0.96;
-      letter-spacing: -0.06em;
-    }
-    p {
-      margin: 0;
-      color: rgba(248, 251, 255, 0.76);
-      font-size: 16px;
-      line-height: 1.7;
-      max-width: 60ch;
-    }
-    .card {
-      background: var(--panel);
-      padding: 30px;
-      display: flex;
-      flex-direction: column;
-      justify-content: center;
-    }
-    .card h2 {
-      margin: 0 0 8px;
-      font-size: 28px;
-      letter-spacing: -0.04em;
-    }
-    .card .subtitle {
-      color: var(--muted);
-      margin-bottom: 26px;
-    }
-    .alert {
-      border-radius: 16px;
-      padding: 14px 16px;
-      margin-bottom: 16px;
-      font-size: 14px;
-    }
-    .alert-error {
-      background: rgba(195, 52, 52, 0.08);
-      border: 1px solid rgba(195, 52, 52, 0.22);
-      color: #a42222;
-    }
-    label {
-      display: block;
-      margin-bottom: 8px;
-      font-size: 14px;
-      color: var(--muted);
-      font-weight: 700;
-    }
-    input {
-      width: 100%;
-      border-radius: 14px;
-      border: 1px solid var(--border);
-      background: var(--panel-soft);
-      color: var(--text);
-      padding: 14px 16px;
-      font-size: 15px;
-      outline: none;
-      transition: border-color 120ms ease, box-shadow 120ms ease;
-    }
-    input:focus {
-      border-color: rgba(15, 110, 199, 0.55);
-      box-shadow: 0 0 0 4px rgba(15, 110, 199, 0.1);
-    }
-    .field + .field {
-      margin-top: 16px;
-    }
-    .button {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      width: 100%;
-      border: 0;
-      border-radius: 14px;
-      margin-top: 22px;
-      padding: 14px 18px;
-      background: linear-gradient(135deg, var(--accent), #134fbf);
-      color: white;
-      font-weight: 800;
-      cursor: pointer;
-      text-decoration: none;
-    }
-    .footer {
-      margin-top: 20px;
-      color: var(--muted);
-      font-size: 13px;
-      line-height: 1.6;
-    }
-    .footer code {
-      color: var(--text);
-    }
-    @media (max-width: 960px) {
-      body { padding: 18px 14px; }
-      .shell { grid-template-columns: 1fr; }
-      .hero { min-height: auto; }
-    }
-  </style>
+  <link rel="stylesheet" href="/assets/backend.css">
 </head>
-<body>
+<body class="login-page">
   <main class="shell">
     <section class="hero">
       <div>
@@ -304,7 +139,7 @@ HTML;
             return new RedirectResponse('/backend/login');
         }
 
-        $submitted = $this->runtimeConfigurationValuesFromRequest($request);
+        $submitted = $request->isMethod('POST') ? $this->runtimeConfigurationValuesFromRequest($request) : [];
         $action = trim((string) $request->request->get('action', ''));
 
         if ($request->isMethod('POST') && $action === 'save') {
@@ -313,12 +148,13 @@ HTML;
             }
 
             $validationErrors = $this->runtimeConfigurationService->validate($submitted);
+
             if ($validationErrors !== []) {
                 $pageData = $this->runtimeConfigurationService->pageData($submitted, []);
                 $feedbackHtml = $this->renderProfileFeedback($request);
                 foreach ($validationErrors as $validationError) {
-                    $feedbackHtml .= sprintf(
-                        '<div class="alert alert-error">%s</div>',
+                    $feedbackHtml .= $this->renderDismissibleAlert(
+                        'alert-error',
                         htmlspecialchars($validationError, ENT_QUOTES, 'UTF-8')
                     );
                 }
@@ -858,68 +694,29 @@ HTML;
     }
 
     #[Route('/users', methods: ['GET'])]
-    public function users(?UserRepository $users = null): Response
+    public function users(): Response
     {
         if (!$this->security->isGranted('ROLE_ADMIN')) {
             return new RedirectResponse('/backend/dashboard');
         }
 
-        $rows = array_map(static function (User $user): string {
-            $roles = implode(', ', array_map(static fn (string $role): string => strtoupper($role), $user->getRoles()));
-            $status = $user->isActive() ? '<span class="status-ok">Activo</span>' : '<span class="status-off">Inactivo</span>';
-
-            return sprintf(
-                '<tr>
-                    <td><strong>%s</strong></td>
-                    <td>%s</td>
-                    <td>%s</td>
-                    <td>%s</td>
-                    <td class="text-right">%s</td>
-                  </tr>',
-                htmlspecialchars($user->getEmail(), ENT_QUOTES, 'UTF-8'),
-                htmlspecialchars($roles, ENT_QUOTES, 'UTF-8'),
-                $status,
-                htmlspecialchars($user->getCreatedAt()->format('Y-m-d H:i'), ENT_QUOTES, 'UTF-8'),
-                $user->isActive() ? 'Login ok' : 'Sin acceso'
-            );
-        }, $users ? $users->findBy([], ['createdAt' => 'DESC']) : []);
-
-        $content = sprintf(
-            '
-            <section class="hero-panel">
-              <div class="hero-copy">
-                <div class="eyebrow-dark">Acceso interno</div>
-                <h2>Usuarios</h2>
-                <p>Administración de cuentas, roles y acceso interno. Este panel separa la sesión de navegador de la API técnica.</p>
-              </div>
-              <div class="hero-aside">
-                <div class="badge-live">Admin</div>
-                <div class="hero-aside-title">Control de acceso</div>
-                <p>Los usuarios con rol admin pueden gestionar cuentas; el resto de roles se mantiene orientado a operación.</p>
-              </div>
-            </section>
-            <section class="table-card">
-              <div class="table-header">
-                <div>
-                  <h3>Usuarios registrados</h3>
-                  <p>Email, roles y estado de acceso.</p>
-                </div>
-                <a class="secondary-action" href="/backend/dashboard">Volver al dashboard</a>
-              </div>
-              <div class="table-responsive">
-                <table>
-                  <thead>
-                    <tr><th>Email</th><th>Roles</th><th>Estado</th><th>Creado</th><th class="text-right">Login</th></tr>
-                  </thead>
-                  <tbody>%s</tbody>
-                </table>
-              </div>
-            </section>
-            ',
-            $rows !== [] ? implode('', $rows) : '<tr><td colspan="5" class="empty-row">No hay usuarios todavía.</td></tr>'
+        /** @var \Doctrine\Persistence\ObjectRepository<User> $users */
+        $users = $this->entityManager->getRepository(User::class);
+        $rows = array_map(
+            static function (User $user): array {
+                return [
+                    'email' => $user->getEmail(),
+                    'roles' => implode(', ', array_map(static fn (string $role): string => strtoupper($role), $user->getRoles())),
+                    'status_label' => $user->isActive() ? 'Activo' : 'Inactivo',
+                    'status_class' => $user->isActive() ? 'status-ok' : 'status-off',
+                    'created_at' => $user->getCreatedAt()->format('Y-m-d H:i'),
+                    'login_label' => $user->isActive() ? 'Login ok' : 'Sin acceso',
+                ];
+            },
+            $users->findBy([], ['createdAt' => 'DESC']) ?? []
         );
 
-        return $this->renderBackendShell('Usuarios', 'Cuentas y roles de acceso interno.', 'users', $content);
+        return $this->renderUsersPage($rows);
     }
 
     #[Route('/products', methods: ['GET'])]
@@ -1680,6 +1477,7 @@ HTML;
 
     private function renderBackendShell(string $pageTitle, string $pageSubtitle, string $activeNav, string $contentHtml): Response
     {
+        // @todo Migrate the remaining inline backend views to Twig.
         $navHtml = $this->renderNav($activeNav);
         $html = <<<'HTML'
 <!doctype html>
@@ -2055,11 +1853,33 @@ HTML;
       margin-top: 6px;
     }
     .alert {
+      position: relative;
       border-radius: 16px;
-      padding: 14px 16px;
+      padding: 14px 48px 14px 16px;
       margin-bottom: 16px;
       font-size: 14px;
       border: 1px solid transparent;
+    }
+    .alert-dismiss {
+      position: absolute;
+      top: 10px;
+      right: 12px;
+      border: 0;
+      background: transparent;
+      color: inherit;
+      width: 24px;
+      height: 24px;
+      padding: 0;
+      margin: 0;
+      opacity: 0.5;
+      cursor: pointer;
+      font-size: 20px;
+      line-height: 24px;
+      text-align: center;
+      font-weight: 400;
+    }
+    .alert-dismiss:hover {
+      opacity: 1;
     }
     .alert-success {
       background: rgba(15, 110, 199, 0.08);
@@ -2595,6 +2415,20 @@ HTML;
     }
 
     /**
+     * @param array<int, array{email: string, roles: string, status_label: string, status_class: string, created_at: string, login_label: string}> $users
+     */
+    private function renderUsersPage(array $users): Response
+    {
+        return new Response($this->twig->render('backend/users/index.html.twig', [
+            'page_title' => 'Usuarios',
+            'page_subtitle' => 'Cuentas y roles de acceso interno.',
+            'active_nav' => 'admin-users',
+            'users' => $users,
+            ...$this->currentUserTemplateData(),
+        ]));
+    }
+
+    /**
      * @param array<string, array{href: string, label: string, meta: string, roles: string[]}> $items
      */
     private function renderNav(string $activeNav): string
@@ -2701,6 +2535,17 @@ HTML;
         }
 
         return strtoupper(substr($seed, 0, 2));
+    }
+
+    /**
+     * @return array{current_user_display_name: string, current_user_initials: string}
+     */
+    private function currentUserTemplateData(): array
+    {
+        return [
+            'current_user_display_name' => $this->currentUserDisplayName(),
+            'current_user_initials' => $this->currentUserInitials(),
+        ];
     }
 
     private function currentUser(): ?User
@@ -4378,19 +4223,28 @@ service,pack-starter,Pack Starter,pack-starter,"Solución inicial para pymes..."
 
         $html = '';
         foreach ($success as $message) {
-            $html .= sprintf(
-                '<div class="alert alert-success">%s</div>',
+            $html .= $this->renderDismissibleAlert(
+                'alert-success',
                 htmlspecialchars((string) $message, ENT_QUOTES, 'UTF-8')
             );
         }
         foreach ($errors as $message) {
-            $html .= sprintf(
-                '<div class="alert alert-error">%s</div>',
+            $html .= $this->renderDismissibleAlert(
+                'alert-error',
                 htmlspecialchars((string) $message, ENT_QUOTES, 'UTF-8')
             );
         }
 
         return $html;
+    }
+
+    private function renderDismissibleAlert(string $class, string $content): string
+    {
+        return sprintf(
+            '<div class="alert %s">%s<button class="alert-dismiss" type="button" aria-label="Cerrar mensaje" onclick="this.parentElement.remove()">×</button></div>',
+            htmlspecialchars($class, ENT_QUOTES, 'UTF-8'),
+            $content
+        );
     }
 
     /**
@@ -4403,11 +4257,12 @@ service,pack-starter,Pack Starter,pack-starter,"Solución inicial para pymes..."
             'openai_base_url' => trim((string) $request->request->get('openai_base_url', '')),
             'openai_model' => trim((string) $request->request->get('openai_model', '')),
             'openai_api_key' => trim((string) $request->request->get('openai_api_key', '')),
+            'openai_timeout_seconds' => trim((string) $request->request->get('openai_timeout_seconds', '')),
             'ollama_base_url' => trim((string) $request->request->get('ollama_base_url', '')),
             'ollama_model' => trim((string) $request->request->get('ollama_model', '')),
-            'audio_mode' => trim((string) $request->request->get('audio_mode', '')),
+            'ollama_timeout_seconds' => trim((string) $request->request->get('ollama_timeout_seconds', '')),
             'audio_gateway_base_url' => trim((string) $request->request->get('audio_gateway_base_url', '')),
-            'audio_gateway_token' => trim((string) $request->request->get('audio_gateway_token', '')),
+            'audio_timeout_seconds' => trim((string) $request->request->get('audio_timeout_seconds', '')),
         ];
     }
 
@@ -4416,7 +4271,6 @@ service,pack-starter,Pack Starter,pack-starter,"Solución inicial para pymes..."
         return match ($action) {
             'test_openai' => 'openai',
             'test_ollama' => 'ollama',
-            'test_audio' => 'audio',
             default => null,
         };
     }
@@ -4454,7 +4308,6 @@ service,pack-starter,Pack Starter,pack-starter,"Solución inicial para pymes..."
      */
     private function runtimeConfigurationTemplateData(array $pageData, string $feedbackHtml, string $csrfToken): array
     {
-        $formState = $pageData['formState'] ?? [];
         $status = $pageData['status'] ?? [];
 
         $overallStatus = $status['overall'] ?? [];
@@ -4462,6 +4315,7 @@ service,pack-starter,Pack Starter,pack-starter,"Solución inicial para pymes..."
         $openaiStatus = $status['openai'] ?? [];
         $ollamaStatus = $status['ollama'] ?? [];
         $audioStatus = $status['audio'] ?? [];
+        $formState = $pageData['formState'] ?? [];
 
         $metrics = [
             [
@@ -4490,44 +4344,45 @@ service,pack-starter,Pack Starter,pack-starter,"Solución inicial para pymes..."
             'page_title' => 'Configuración',
             'page_subtitle' => 'Ajustes operativos de LLM, audio y conectividad externa.',
             'active_nav' => 'admin-configuration',
-            'current_user_display_name' => $this->currentUserDisplayName(),
-            'current_user_initials' => $this->currentUserInitials(),
+            ...$this->currentUserTemplateData(),
             'feedback_html' => $feedbackHtml,
             'csrf_token' => $csrfToken,
             'overall_status_message' => (string) (($overallStatus['message'] ?? 'Sin estado operativo.') ?: 'Sin estado operativo.'),
             'metrics' => $metrics,
-            'llm' => [
-                'title' => 'LLM',
-                'subtitle' => 'OpenAI, Ollama y el perfil por defecto que usará el runtime.',
-                'note' => 'Los botones de prueba consumen una request real contra el proveedor seleccionado.',
-                'badge_label' => $this->runtimeStatusLabel((string) ($llmStatus['status'] ?? 'blocked')),
-                'badge_class' => $this->runtimeStatusClass((string) ($llmStatus['status'] ?? 'blocked')),
+            'profile' => $this->runtimeConfigurationFieldForKey($formState, 'llm_default_profile'),
+            'profile_badge_label' => $this->runtimeStatusLabel((string) ($llmStatus['status'] ?? 'blocked')),
+            'profile_badge_class' => $this->runtimeStatusClass((string) ($llmStatus['status'] ?? 'blocked')),
+            'openai' => [
+                'title' => 'OPENAI',
+                'subtitle' => 'Proveedor de pago',
+                'note' => 'Prueba manual: hace 1 request real a /models y no genera tokens.',
+                'badge_label' => 'Cloud',
+                'badge_class' => $this->runtimeStatusClass((string) ($openaiStatus['status'] ?? 'blocked')),
                 'fields' => $this->runtimeConfigurationFieldsForKeys($formState, [
-                    'llm_default_profile',
-                    'openai_base_url',
                     'openai_model',
+                    'openai_base_url',
                     'openai_api_key',
-                    'ollama_base_url',
-                    'ollama_model',
+                    'openai_timeout_seconds',
                 ]),
                 'actions' => [
-                    ['class' => 'secondary-action', 'name' => 'action', 'value' => 'test_openai', 'label' => 'Probar OpenAI'],
-                    ['class' => 'secondary-action', 'name' => 'action', 'value' => 'test_ollama', 'label' => 'Probar Ollama'],
+                    ['class' => 'secondary-action', 'name' => 'action', 'value' => 'test_openai', 'label' => 'Probar conexión de OpenAI'],
                 ],
             ],
-            'audio' => [
-                'title' => 'Audio',
-                'subtitle' => 'Modo audio local o gateway y conectividad simple contra el endpoint de salud.',
-                'note' => 'Si el modo es `gateway`, la prueba valida el endpoint remoto configurado.',
-                'badge_label' => $this->runtimeStatusLabel((string) ($audioStatus['status'] ?? 'blocked')),
-                'badge_class' => $this->runtimeStatusClass((string) ($audioStatus['status'] ?? 'blocked')),
+            'local' => [
+                'title' => 'OLLAMA Y AUDIO',
+                'subtitle' => 'Autocalojado',
+                'note' => 'Prueba manual: Ollama valida /api/tags y no genera tokens.',
+                'badge_label' => 'Local',
+                'badge_class' => $this->runtimeStatusClass((string) ($ollamaStatus['status'] ?? 'blocked')),
                 'fields' => $this->runtimeConfigurationFieldsForKeys($formState, [
-                    'audio_mode',
+                    'ollama_model',
+                    'ollama_base_url',
                     'audio_gateway_base_url',
-                    'audio_gateway_token',
+                    'ollama_timeout_seconds',
+                    'audio_timeout_seconds',
                 ]),
                 'actions' => [
-                    ['class' => 'secondary-action', 'name' => 'action', 'value' => 'test_audio', 'label' => 'Probar audio'],
+                    ['class' => 'secondary-action', 'name' => 'action', 'value' => 'test_ollama', 'label' => 'Probar conexión de Ollama'],
                 ],
             ],
         ];
@@ -4553,6 +4408,20 @@ service,pack-starter,Pack Starter,pack-starter,"Solución inicial para pymes..."
         return $fields;
     }
 
+    /**
+     * @param array<string, array<string, mixed>> $formState
+     *
+     * @return array<string, mixed>|null
+     */
+    private function runtimeConfigurationFieldForKey(array $formState, string $key): ?array
+    {
+        if (!isset($formState[$key]) || !is_array($formState[$key])) {
+            return null;
+        }
+
+        return $formState[$key];
+    }
+
     private function runtimeTestFeedback(\App\Service\RuntimeConnectivityTestResult $result): string
     {
         $class = match ($result->status) {
@@ -4570,216 +4439,7 @@ service,pack-starter,Pack Starter,pack-starter,"Solución inicial para pymes..."
             $parts[] = sprintf('<div class="subtle">HTTP %d</div>', $result->httpCode);
         }
 
-        return sprintf('<div class="alert %s">%s</div>', $class, implode('', $parts));
-    }
-
-    /**
-     * @param array<string, mixed> $pageData
-     */
-    private function renderRuntimeConfigurationContent(array $pageData, string $feedbackHtml, string $csrfToken): string
-    {
-        $formState = $pageData['formState'] ?? [];
-        $status = $pageData['status'] ?? [];
-        $values = $pageData['values'] ?? [];
-
-        $llmFields = $this->renderRuntimeFields($formState, [
-            'llm_default_profile',
-            'openai_base_url',
-            'openai_model',
-            'openai_api_key',
-            'ollama_base_url',
-            'ollama_model',
-        ]);
-
-        $audioFields = $this->renderRuntimeFields($formState, [
-            'audio_mode',
-            'audio_gateway_base_url',
-            'audio_gateway_token',
-        ]);
-
-        $overallStatus = $status['overall'] ?? [];
-        $llmStatus = $status['llm'] ?? [];
-        $openaiStatus = $status['openai'] ?? [];
-        $ollamaStatus = $status['ollama'] ?? [];
-        $audioStatus = $status['audio'] ?? [];
-
-        $content = sprintf(
-            '
-            <section class="hero-panel">
-              <div class="hero-copy">
-                <div class="eyebrow-dark">Configuración operativa</div>
-                <h2>LLM, audio y conectividad externa</h2>
-                <p>
-                  La configuración editable vive en base de datos. Los valores sensibles se cifran y el runtime consume esta
-                  información como fuente de verdad, con `.env` reservado para bootstrap e infraestructura.
-                </p>
-              </div>
-              <div class="hero-aside">
-                <div class="badge-live">Operativo</div>
-                <div class="hero-aside-title">Estado actual</div>
-                <p>%s</p>
-              </div>
-            </section>
-            <section class="stats-grid">
-              %s
-              %s
-              %s
-              %s
-            </section>
-            %s
-            <form method="post" action="/backend/configuration" class="tenant-form runtime-settings-form">
-              <input type="hidden" name="_csrf_token" value="%s">
-              <section class="table-card">
-                <div class="table-header">
-                  <div>
-                    <h3>LLM</h3>
-                    <p>OpenAI, Ollama y el perfil por defecto que usará el runtime.</p>
-                  </div>
-                  <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">
-                    %s
-                  </div>
-                </div>
-                <div class="section-note">Los botones de prueba consumen una request real contra el proveedor seleccionado.</div>
-                <div class="form-grid">%s</div>
-                <div class="form-actions" style="justify-content:flex-start;gap:12px;flex-wrap:wrap;">
-                  <button class="secondary-action" type="submit" name="action" value="test_openai">Probar OpenAI</button>
-                  <button class="secondary-action" type="submit" name="action" value="test_ollama">Probar Ollama</button>
-                </div>
-              </section>
-              <section class="table-card">
-                <div class="table-header">
-                  <div>
-                    <h3>Audio</h3>
-                    <p>Modo audio local o gateway y conectividad simple contra el endpoint de salud.</p>
-                  </div>
-                  <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">
-                    %s
-                  </div>
-                </div>
-                <div class="section-note">Si el modo es `gateway`, la prueba valida el endpoint remoto configurado.</div>
-                <div class="form-grid">%s</div>
-                <div class="form-actions" style="justify-content:flex-start;gap:12px;flex-wrap:wrap;">
-                  <button class="secondary-action" type="submit" name="action" value="test_audio">Probar audio</button>
-                </div>
-              </section>
-              <div class="form-actions runtime-settings-actions" style="justify-content:flex-start;gap:12px;flex-wrap:wrap;">
-                <button class="primary-action" type="submit" name="action" value="save">Guardar cambios</button>
-              </div>
-            </form>
-            ',
-            htmlspecialchars((string) (($overallStatus['message'] ?? 'Sin estado operativo.') ?: 'Sin estado operativo.'), ENT_QUOTES, 'UTF-8'),
-            $this->metricCard('Estado general', $this->runtimeStatusLabel((string) ($overallStatus['status'] ?? 'blocked')), (string) ($overallStatus['message'] ?? 'Sin estado operativo.')),
-            $this->metricCard('OpenAI', $this->runtimeStatusLabel((string) ($openaiStatus['status'] ?? 'blocked')), (string) ($openaiStatus['message'] ?? 'Sin validación')),
-            $this->metricCard('Ollama', $this->runtimeStatusLabel((string) ($ollamaStatus['status'] ?? 'blocked')), (string) ($ollamaStatus['message'] ?? 'Sin validación')),
-            $this->metricCard('Audio', $this->runtimeStatusLabel((string) ($audioStatus['status'] ?? 'blocked')), (string) ($audioStatus['message'] ?? 'Sin validación')),
-            $feedbackHtml,
-            htmlspecialchars($csrfToken, ENT_QUOTES, 'UTF-8'),
-            $this->runtimeStatusBadge((string) ($llmStatus['status'] ?? 'blocked')),
-            $llmFields,
-            $this->runtimeStatusBadge((string) ($audioStatus['status'] ?? 'blocked')),
-            $audioFields
-        );
-
-        return $content;
-    }
-
-    /**
-     * @param array<string, array<string, mixed>> $formState
-     * @param string[] $keys
-     */
-    private function renderRuntimeFields(array $formState, array $keys): string
-    {
-        $html = '';
-        foreach ($keys as $key) {
-            if (!isset($formState[$key]) || !is_array($formState[$key])) {
-                continue;
-            }
-
-            $html .= $this->renderRuntimeField($formState[$key]);
-        }
-
-        return $html;
-    }
-
-    /**
-     * @param array<string, mixed> $field
-     */
-    private function renderRuntimeField(array $field): string
-    {
-        $key = (string) ($field['key'] ?? '');
-        $label = (string) ($field['label'] ?? $key);
-        $description = (string) ($field['description'] ?? '');
-        $inputType = (string) ($field['inputType'] ?? 'text');
-        $value = (string) ($field['value'] ?? '');
-        $defaultValue = (string) ($field['defaultValue'] ?? '');
-        $secret = (bool) ($field['secret'] ?? false);
-        $configured = (bool) ($field['configured'] ?? false);
-        $note = $description;
-
-        if ($secret) {
-            $note .= $configured ? ' Valor cifrado ya configurado; deja vacío para conservarlo.' : ' Se guardará cifrado en base de datos.';
-        } elseif ($value === '' && $defaultValue !== '') {
-            $note .= ' Valor por defecto: '.$defaultValue.'.';
-        }
-
-        $control = match ($inputType) {
-            'select' => $this->renderRuntimeSelect($key, $value, is_array($field['options'] ?? null) ? $field['options'] : []),
-            'password' => sprintf(
-                '<input id="%s" name="%s" type="password" value="" autocomplete="new-password" autocapitalize="off" spellcheck="false" placeholder="%s">',
-                htmlspecialchars($key, ENT_QUOTES, 'UTF-8'),
-                htmlspecialchars($key, ENT_QUOTES, 'UTF-8'),
-                htmlspecialchars($secret && $configured ? 'Dejar vacío para conservar el valor actual' : 'Escribe el nuevo secreto', ENT_QUOTES, 'UTF-8')
-            ),
-            default => sprintf(
-                '<input id="%s" name="%s" type="%s" value="%s" autocapitalize="off" spellcheck="false">',
-                htmlspecialchars($key, ENT_QUOTES, 'UTF-8'),
-                htmlspecialchars($key, ENT_QUOTES, 'UTF-8'),
-                htmlspecialchars(str_ends_with($key, '_base_url') ? 'url' : 'text', ENT_QUOTES, 'UTF-8'),
-                htmlspecialchars($value, ENT_QUOTES, 'UTF-8')
-            ),
-        };
-
-        return sprintf(
-            '<div class="field"><label for="%s">%s</label>%s<div class="field-note">%s</div></div>',
-            htmlspecialchars($key, ENT_QUOTES, 'UTF-8'),
-            htmlspecialchars($label, ENT_QUOTES, 'UTF-8'),
-            $control,
-            htmlspecialchars($note, ENT_QUOTES, 'UTF-8')
-        );
-    }
-
-    /**
-     * @param array<int, array{value: string, label: string}> $options
-     */
-    private function renderRuntimeSelect(string $key, string $value, array $options): string
-    {
-        $selectedValues = array_map(static fn (array $option): string => (string) $option['value'], $options);
-        if ($value !== '' && !in_array($value, $selectedValues, true)) {
-            array_unshift($options, ['value' => $value, 'label' => $value.' (actual)']);
-        }
-
-        $html = sprintf('<select id="%s" name="%s">', htmlspecialchars($key, ENT_QUOTES, 'UTF-8'), htmlspecialchars($key, ENT_QUOTES, 'UTF-8'));
-        foreach ($options as $option) {
-            $selected = ($option['value'] ?? '') === $value ? ' selected' : '';
-            $html .= sprintf(
-                '<option value="%s"%s>%s</option>',
-                htmlspecialchars((string) ($option['value'] ?? ''), ENT_QUOTES, 'UTF-8'),
-                $selected,
-                htmlspecialchars((string) ($option['label'] ?? ''), ENT_QUOTES, 'UTF-8')
-            );
-        }
-        $html .= '</select>';
-
-        return $html;
-    }
-
-    private function runtimeStatusBadge(string $status): string
-    {
-        return sprintf(
-            '<span class="%s">%s</span>',
-            htmlspecialchars($this->runtimeStatusClass($status), ENT_QUOTES, 'UTF-8'),
-            htmlspecialchars($this->runtimeStatusLabel($status), ENT_QUOTES, 'UTF-8')
-        );
+        return $this->renderDismissibleAlert($class, implode('', $parts));
     }
 
     private function runtimeStatusClass(string $status): string

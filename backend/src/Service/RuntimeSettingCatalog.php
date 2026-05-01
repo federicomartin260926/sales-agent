@@ -13,7 +13,8 @@ final class RuntimeSettingCatalog
      *     defaultValue: string,
      *     group: string,
      *     options: array<int, array{value: string, label: string}>,
-     *     secret: bool
+     *     secret: bool,
+     *     min?: int
      * }>
      */
     public function all(): array
@@ -21,8 +22,8 @@ final class RuntimeSettingCatalog
         return [
             [
                 'key' => 'llm_default_profile',
-                'label' => 'Perfil LLM por defecto',
-                'description' => 'Proveedor preferido para el runtime. Si no hay respuesta válida, el sistema queda parcial o bloqueado según el resto de ajustes.',
+                'label' => 'LLM por defecto',
+                'description' => 'Perfil usado cuando un playbook no define uno propio o el perfil configurado no está disponible.',
                 'inputType' => 'select',
                 'defaultValue' => 'auto',
                 'group' => 'llm',
@@ -31,8 +32,8 @@ final class RuntimeSettingCatalog
             ],
             [
                 'key' => 'openai_base_url',
-                'label' => 'Endpoint OpenAI',
-                'description' => 'Base URL del API compatible con OpenAI. Se usa para conectividad y, más adelante, para la generación de texto.',
+                'label' => 'Base URL de OpenAI',
+                'description' => 'Endpoint de la API compatible con chat completions.',
                 'inputType' => 'text',
                 'defaultValue' => 'https://api.openai.com/v1',
                 'group' => 'llm',
@@ -41,8 +42,8 @@ final class RuntimeSettingCatalog
             ],
             [
                 'key' => 'openai_model',
-                'label' => 'Modelo OpenAI',
-                'description' => 'Modelo operativo que usará el runtime cuando OpenAI sea el perfil activo.',
+                'label' => 'Modelo de OpenAI',
+                'description' => 'Modelo que usa el worker cuando el perfil LLM apunta a OpenAI.',
                 'inputType' => 'select',
                 'defaultValue' => 'gpt-4o-mini',
                 'group' => 'llm',
@@ -51,8 +52,8 @@ final class RuntimeSettingCatalog
             ],
             [
                 'key' => 'openai_api_key',
-                'label' => 'Clave API OpenAI',
-                'description' => 'Se guarda cifrada en base de datos y no se expone en la UI ni en logs.',
+                'label' => 'API key de OpenAI',
+                'description' => 'Clave usada por OpenAI y por la extracción con IA.',
                 'inputType' => 'password',
                 'defaultValue' => '',
                 'group' => 'llm',
@@ -60,19 +61,30 @@ final class RuntimeSettingCatalog
                 'secret' => true,
             ],
             [
+                'key' => 'openai_timeout_seconds',
+                'label' => 'Timeout de OpenAI',
+                'description' => 'Tiempo maximo de espera para respuestas de OpenAI.',
+                'inputType' => 'number',
+                'defaultValue' => '15',
+                'group' => 'llm',
+                'options' => [],
+                'secret' => false,
+                'min' => 1,
+            ],
+            [
                 'key' => 'ollama_base_url',
-                'label' => 'Endpoint Ollama',
-                'description' => 'Base URL del servicio Ollama local o remoto.',
+                'label' => 'Base URL de Ollama',
+                'description' => 'Endpoint interno o de red compartida para el servicio Ollama.',
                 'inputType' => 'text',
-                'defaultValue' => 'http://ollama:11434',
+                'defaultValue' => 'http://ollama-vpn-bridge:11434',
                 'group' => 'llm',
                 'options' => [],
                 'secret' => false,
             ],
             [
                 'key' => 'ollama_model',
-                'label' => 'Modelo Ollama',
-                'description' => 'Modelo local que usará el runtime si Ollama es el perfil activo.',
+                'label' => 'Modelo de Ollama',
+                'description' => 'Modelo que usa el worker cuando el perfil LLM apunta a Ollama.',
                 'inputType' => 'select',
                 'defaultValue' => 'llama3.1',
                 'group' => 'llm',
@@ -80,19 +92,20 @@ final class RuntimeSettingCatalog
                 'secret' => false,
             ],
             [
-                'key' => 'audio_mode',
-                'label' => 'Modo audio',
-                'description' => 'Permite desactivar audio o apuntarlo a un gateway local/remoto.',
-                'inputType' => 'select',
-                'defaultValue' => 'disabled',
-                'group' => 'audio',
-                'options' => $this->audioModeOptions(),
+                'key' => 'ollama_timeout_seconds',
+                'label' => 'Timeout de Ollama',
+                'description' => 'Tiempo maximo de espera para respuestas de Ollama.',
+                'inputType' => 'number',
+                'defaultValue' => '15',
+                'group' => 'llm',
+                'options' => [],
                 'secret' => false,
+                'min' => 1,
             ],
             [
                 'key' => 'audio_gateway_base_url',
-                'label' => 'Endpoint audio-gateway',
-                'description' => 'Base URL del servicio de audio cuando el modo seleccionado es gateway.',
+                'label' => 'Base URL del audio-gateway',
+                'description' => 'Endpoint interno del servicio transversal preparado para audio.',
                 'inputType' => 'text',
                 'defaultValue' => 'http://audio-gateway',
                 'group' => 'audio',
@@ -100,14 +113,15 @@ final class RuntimeSettingCatalog
                 'secret' => false,
             ],
             [
-                'key' => 'audio_gateway_token',
-                'label' => 'Token audio-gateway',
-                'description' => 'Token secreto para el gateway de audio; se cifra en base de datos.',
-                'inputType' => 'password',
-                'defaultValue' => '',
+                'key' => 'audio_timeout_seconds',
+                'label' => 'Timeout de audio',
+                'description' => 'Tiempo maximo de espera para respuestas del audio-gateway.',
+                'inputType' => 'number',
+                'defaultValue' => '15',
                 'group' => 'audio',
                 'options' => [],
-                'secret' => true,
+                'secret' => false,
+                'min' => 1,
             ],
         ];
     }
@@ -121,7 +135,8 @@ final class RuntimeSettingCatalog
      *     defaultValue: string,
      *     group: string,
      *     options: array<int, array{value: string, label: string}>,
-     *     secret: bool
+     *     secret: bool,
+     *     min?: int
      * }>
      */
     public function indexed(): array
@@ -183,15 +198,4 @@ final class RuntimeSettingCatalog
         ];
     }
 
-    /**
-     * @return array<int, array{value: string, label: string}>
-     */
-    private function audioModeOptions(): array
-    {
-        return [
-            ['value' => 'disabled', 'label' => 'Desactivado'],
-            ['value' => 'local', 'label' => 'Local'],
-            ['value' => 'gateway', 'label' => 'Audio gateway'],
-        ];
-    }
 }

@@ -18,9 +18,7 @@ final class RuntimeSettingsStatePresenterTest extends TestCase
             'openai_model' => 'gpt-4o-mini',
             'ollama_base_url' => 'http://localhost:11434',
             'ollama_model' => 'llama3.1',
-            'audio_mode' => 'disabled',
-            'audio_gateway_base_url' => '',
-            'audio_gateway_token' => '',
+            'audio_gateway_base_url' => 'http://audio-gateway',
         ]);
 
         self::assertSame('ready', $state['overall']['status']);
@@ -40,9 +38,7 @@ final class RuntimeSettingsStatePresenterTest extends TestCase
             'openai_model' => 'gpt-4o-mini',
             'ollama_base_url' => 'http://localhost:11434',
             'ollama_model' => 'llama3.1',
-            'audio_mode' => 'gateway',
             'audio_gateway_base_url' => '',
-            'audio_gateway_token' => '',
         ]);
 
         self::assertSame('blocked', $state['overall']['status']);
