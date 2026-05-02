@@ -1,16 +1,22 @@
 import asyncio
+import logging
 
 from app.schemas.agent import AgentRequest, AgentResponse
 from app.services.backend_client import BackendClient, BackendPlaybook, CommercialContext
 from app.config import get_settings
 from app.services.crm_client import CRMClient, CRMContactContext
+from app.services.llm_decision_service import LLMDecisionDraft, LLMDecisionService
 from app.services.routing_resolver import RoutingContext
+
+
+logger = logging.getLogger(__name__)
 
 
 class DecisionEngine:
     def __init__(self, backend_client: BackendClient | None = None, crm_client: CRMClient | None = None) -> None:
         self.backend_client = backend_client or BackendClient(get_settings())
         self.crm_client = crm_client or CRMClient(get_settings())
+        self.llm_decision_service = LLMDecisionService(get_settings())
 
     async def decide(
         self,
@@ -27,6 +33,10 @@ class DecisionEngine:
                         resolved_tenant_id,
                         routing.product_id if routing is not None else None,
                         routing.playbook_id if routing is not None else None,
+                        routing.entry_point_id if routing is not None else None,
+                        routing.entrypoint_ref if routing is not None else None,
+                        payload.contact.phone,
+                        routing.external_channel_id if routing is not None else payload.external_channel_id,
                     ),
                     self.crm_client.fetch_contact_context(payload.contact.phone),
                 )
@@ -35,16 +45,51 @@ class DecisionEngine:
                     resolved_tenant_id,
                     routing.product_id if routing is not None else None,
                     routing.playbook_id if routing is not None else None,
+                    routing.entry_point_id if routing is not None else None,
+                    routing.entrypoint_ref if routing is not None else None,
+                    payload.contact.phone,
+                    routing.external_channel_id if routing is not None else payload.external_channel_id,
                 )
             elif crm_context is None:
                 crm_context = await self.crm_client.fetch_contact_context(payload.contact.phone)
 
         message = payload.message.text.lower().strip()
 
+        llm_decision = await self.llm_decision_service.propose(payload, routing, backend_context, crm_context)
+        if llm_decision is not None:
+            logger.debug("LLM decision accepted intent=%s action=%s", llm_decision.intent, llm_decision.action)
+            return self._build_llm_response(payload, routing, backend_context, crm_context, llm_decision)
+
         if backend_context is not None:
             return self._decide_with_context(payload, backend_context, crm_context, routing, message)
 
         return self._decide_without_context(payload, crm_context, routing, message)
+
+    def _build_llm_response(
+        self,
+        payload: AgentRequest,
+        routing: RoutingContext | None,
+        backend_context: CommercialContext | None,
+        crm_context: CRMContactContext | None,
+        llm_decision: LLMDecisionDraft,
+    ) -> AgentResponse:
+        topic = self._topic_from_intent(llm_decision.intent)
+        if backend_context is not None:
+            base_data = self._base_context_save(payload, backend_context, crm_context, routing, topic)
+        else:
+            base_data = self._base_fallback_save(payload, crm_context, routing, topic)
+
+        merged_data = dict(llm_decision.data_to_save)
+        merged_data.update(base_data)
+
+        return AgentResponse(
+            reply=llm_decision.reply,
+            intent=llm_decision.intent,
+            score=llm_decision.score,
+            action=llm_decision.action,
+            needs_human=llm_decision.needs_human,
+            data_to_save=merged_data,
+        )
 
     def _decide_without_context(
         self,
@@ -357,6 +402,20 @@ class DecisionEngine:
             return payload.tenant_id.strip()
 
         return None
+
+    def _topic_from_intent(self, intent: str) -> str:
+        mapping = {
+            "greeting": "greeting",
+            "qualification": "qualification",
+            "agenda": "agenda",
+            "handoff": "handoff",
+            "open_question": "discovery",
+            "info": "info",
+            "objection": "objection",
+            "not_interested": "not_interested",
+            "unknown": "unknown",
+        }
+        return mapping.get(intent.strip().lower(), "unknown")
 
     def _infer_product_name(self, context: CommercialContext, message: str) -> str | None:
         if not context.products:

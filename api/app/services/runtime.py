@@ -36,6 +36,10 @@ class AgentRuntime:
             routing.tenant_id,
             routing.product_id,
             routing.playbook_id,
+            routing.entry_point_id,
+            routing.entrypoint_ref,
+            payload.contact.phone,
+            routing.external_channel_id or payload.external_channel_id,
         )
 
         crm_context = await self.crm_client.fetch_contact_context(payload.contact.phone)

@@ -5,7 +5,7 @@ import logging
 from typing import Any
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 from app.config import Settings
 
@@ -19,39 +19,106 @@ class BackendTenant(BaseModel):
     id: str
     name: str
     slug: str
-    business_context: str = Field(alias="businessContext")
+    business_context: str = Field(validation_alias=AliasChoices("businessContext", "business_context"))
     tone: str | None = None
-    sales_policy: dict[str, Any] = Field(default_factory=dict, alias="salesPolicy")
-    is_active: bool = Field(alias="isActive")
-    created_at: str = Field(alias="createdAt")
+    sales_policy: dict[str, Any] = Field(default_factory=dict, validation_alias=AliasChoices("salesPolicy", "sales_policy"))
+    is_active: bool = Field(validation_alias=AliasChoices("isActive", "is_active"))
+    whatsapp_phone_number_id: str | None = Field(default=None, validation_alias=AliasChoices("whatsappPhoneNumberId", "whatsapp_phone_number_id"))
+    whatsapp_public_phone: str | None = Field(default=None, validation_alias=AliasChoices("whatsappPublicPhone", "whatsapp_public_phone"))
+    created_at: str | None = Field(default=None, validation_alias=AliasChoices("createdAt", "created_at"))
+
+    @field_validator("sales_policy", mode="before")
+    @classmethod
+    def normalize_sales_policy(cls, value: Any) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return value
+
+        if isinstance(value, list):
+            return {}
+
+        if value is None:
+            return {}
+
+        return {}
 
 
 class BackendProduct(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     id: str
-    tenant_id: str = Field(alias="tenantId")
+    tenant_id: str = Field(validation_alias=AliasChoices("tenantId", "tenant_id"))
     name: str
     slug: str | None = None
-    external_source: str | None = Field(default=None, alias="externalSource")
-    external_reference: str | None = Field(default=None, alias="externalReference")
+    external_source: str | None = Field(default=None, validation_alias=AliasChoices("externalSource", "external_source"))
+    external_reference: str | None = Field(default=None, validation_alias=AliasChoices("externalReference", "external_reference"))
     description: str = ""
-    value_proposition: str = Field(default="", alias="valueProposition")
-    base_price_cents: int | None = Field(default=None, alias="basePriceCents")
+    value_proposition: str = Field(default="", validation_alias=AliasChoices("valueProposition", "value_proposition"))
+    base_price_cents: int | None = Field(default=None, validation_alias=AliasChoices("basePriceCents", "base_price_cents"))
     currency: str | None = None
-    sales_policy: dict[str, Any] = Field(default_factory=dict, alias="salesPolicy")
-    is_active: bool = Field(alias="isActive")
+    sales_policy: dict[str, Any] = Field(default_factory=dict, validation_alias=AliasChoices("salesPolicy", "sales_policy"))
+    is_active: bool = Field(validation_alias=AliasChoices("isActive", "is_active"))
+
+    @field_validator("sales_policy", mode="before")
+    @classmethod
+    def normalize_sales_policy(cls, value: Any) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return value
+
+        if isinstance(value, list):
+            return {}
+
+        if value is None:
+            return {}
+
+        return {}
 
 
 class BackendPlaybook(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     id: str
-    tenant_id: str = Field(alias="tenantId")
-    product_id: str | None = Field(default=None, alias="productId")
+    tenant_id: str = Field(validation_alias=AliasChoices("tenantId", "tenant_id"))
+    product_id: str | None = Field(default=None, validation_alias=AliasChoices("productId", "product_id"))
     name: str
     config: dict[str, Any] = Field(default_factory=dict)
-    is_active: bool = Field(alias="isActive")
+    is_active: bool = Field(validation_alias=AliasChoices("isActive", "is_active"))
+
+    @field_validator("config", mode="before")
+    @classmethod
+    def normalize_config(cls, value: Any) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return value
+
+        if isinstance(value, list):
+            return {}
+
+        if value is None:
+            return {}
+
+        return {}
+
+
+class BackendEntryPoint(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    code: str
+    name: str
+    description: str | None = None
+    initial_message: str | None = None
+    crm_branch_ref: str | None = None
+    is_active: bool = Field(validation_alias=AliasChoices("is_active", "isActive"))
+
+
+class BackendSalesRuntime(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    has_product_context: bool = False
+    has_playbook_context: bool = False
+    has_entry_point_context: bool = False
+    handoff_enabled: bool = False
+    booking_enabled: bool = False
+    rag_enabled: bool = False
 
 
 class BackendRoutingEntryPointUtmContext(BaseModel):
@@ -104,6 +171,8 @@ class CommercialContext(BaseModel):
     tenant: BackendTenant
     products: list[BackendProduct] = Field(default_factory=list)
     playbooks: list[BackendPlaybook] = Field(default_factory=list)
+    entry_point: BackendEntryPoint | None = None
+    sales_runtime: BackendSalesRuntime = Field(default_factory=BackendSalesRuntime)
     selected_product: BackendProduct | None = None
     selected_playbook: BackendPlaybook | None = None
     selected_product_is_fallback: bool = False
@@ -115,6 +184,8 @@ class CommercialContext(BaseModel):
             parts.append(self.selected_product.name)
         if self.selected_playbook is not None:
             parts.append(self.selected_playbook.name)
+        if self.entry_point is not None:
+            parts.append(self.entry_point.name)
 
         return " · ".join(parts)
 
@@ -148,39 +219,109 @@ class BackendClient:
         tenant_id: str,
         selected_product_id: str | None = None,
         selected_playbook_id: str | None = None,
+        entry_point_id: str | None = None,
+        entrypoint_ref: str | None = None,
+        customer_phone: str | None = None,
+        external_channel_id: str | None = None,
     ) -> CommercialContext | None:
-        base_url = self.settings.backend_base_url.strip().rstrip("/")
-        if base_url == "":
+        payload = await self.get_commercial_context(
+            tenant_id=tenant_id,
+            product_id=selected_product_id,
+            playbook_id=selected_playbook_id,
+            entry_point_id=entry_point_id,
+            entrypoint_ref=entrypoint_ref,
+            customer_phone=customer_phone,
+            external_channel_id=external_channel_id,
+        )
+        if payload is None:
             return None
 
-        timeout = httpx.Timeout(5.0, connect=2.0)
-        try:
-            async with httpx.AsyncClient(base_url=base_url, timeout=timeout, transport=self.transport) as client:
-                tenant = await self._get_json(client, f"/api/tenants/{tenant_id}")
-                if tenant is None or not tenant.get("isActive", True):
-                    return None
-
-                products = await self._get_json(client, "/api/products") or []
-                playbooks = await self._get_json(client, "/api/playbooks") or []
-        except httpx.HTTPError:
+        tenant_payload = payload.get("tenant")
+        if not isinstance(tenant_payload, dict):
             return None
 
-        tenant_model = BackendTenant.model_validate(tenant)
-        product_models = self._filter_active_products(products, tenant_id)
-        playbook_models = self._filter_active_playbooks(playbooks, tenant_id)
+        tenant_model = BackendTenant.model_validate(tenant_payload)
 
-        selected_product, selected_product_is_fallback = self._select_product(product_models, selected_product_id)
-        selected_playbook, selected_playbook_is_fallback = self._select_playbook(playbook_models, selected_product, selected_playbook_id)
+        product_payload = payload.get("product") if isinstance(payload.get("product"), dict) else None
+        playbook_payload = payload.get("playbook") if isinstance(payload.get("playbook"), dict) else None
+        entry_point_payload = payload.get("entry_point") if isinstance(payload.get("entry_point"), dict) else None
+        sales_runtime_payload = payload.get("sales_runtime") if isinstance(payload.get("sales_runtime"), dict) else None
+
+        selected_product = BackendProduct.model_validate(product_payload) if product_payload is not None else None
+        selected_playbook = BackendPlaybook.model_validate(playbook_payload) if playbook_payload is not None else None
+        entry_point = BackendEntryPoint.model_validate(entry_point_payload) if entry_point_payload is not None else None
+        sales_runtime = BackendSalesRuntime.model_validate(sales_runtime_payload) if sales_runtime_payload is not None else BackendSalesRuntime()
+
+        products = [selected_product] if selected_product is not None else []
+        playbooks = [selected_playbook] if selected_playbook is not None else []
 
         return CommercialContext(
             tenant=tenant_model,
-            products=product_models,
-            playbooks=playbook_models,
+            products=products,
+            playbooks=playbooks,
+            entry_point=entry_point,
+            sales_runtime=sales_runtime,
             selected_product=selected_product,
             selected_playbook=selected_playbook,
-            selected_product_is_fallback=selected_product_is_fallback,
-            selected_playbook_is_fallback=selected_playbook_is_fallback,
+            selected_product_is_fallback=selected_product is not None and (selected_product_id is None or selected_product_id.strip() == ""),
+            selected_playbook_is_fallback=selected_playbook is not None and (selected_playbook_id is None or selected_playbook_id.strip() == ""),
         )
+
+    async def get_commercial_context(
+        self,
+        tenant_id: str,
+        product_id: str | None = None,
+        playbook_id: str | None = None,
+        entry_point_id: str | None = None,
+        entrypoint_ref: str | None = None,
+        customer_phone: str | None = None,
+        external_channel_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        base_url = self.settings.backend_base_url.strip().rstrip("/")
+        if base_url == "" or tenant_id.strip() == "":
+            return None
+
+        timeout = httpx.Timeout(5.0, connect=2.0)
+        params: dict[str, str] = {"tenant_id": tenant_id.strip()}
+        if product_id is not None and product_id.strip() != "":
+            params["product_id"] = product_id.strip()
+        if playbook_id is not None and playbook_id.strip() != "":
+            params["playbook_id"] = playbook_id.strip()
+        if entry_point_id is not None and entry_point_id.strip() != "":
+            params["entry_point_id"] = entry_point_id.strip()
+        if entrypoint_ref is not None and entrypoint_ref.strip() != "":
+            params["entrypoint_ref"] = entrypoint_ref.strip()
+        if customer_phone is not None and customer_phone.strip() != "":
+            params["customer_phone"] = customer_phone.strip()
+        if external_channel_id is not None and external_channel_id.strip() != "":
+            params["external_channel_id"] = external_channel_id.strip()
+
+        try:
+            async with httpx.AsyncClient(base_url=base_url, timeout=timeout, transport=self.transport) as client:
+                response = await client.get("/api/internal/commercial-context", params=params, headers=self._auth_headers())
+                if response.status_code == httpx.codes.NOT_FOUND:
+                    logger.warning(
+                        "Backend commercial context lookup returned 404 for %s %s body=%s",
+                        response.request.method,
+                        response.request.url,
+                        self._response_snippet(response),
+                    )
+                    return None
+                if response.status_code >= 400:
+                    logger.warning(
+                        "Backend commercial context lookup failed for %s %s with status %s body=%s",
+                        response.request.method,
+                        response.request.url,
+                        response.status_code,
+                        self._response_snippet(response),
+                    )
+                    response.raise_for_status()
+
+                payload = response.json()
+        except (httpx.HTTPError, ValueError):
+            return None
+
+        return payload if isinstance(payload, dict) else None
 
     async def resolve_whatsapp_phone(self, phone_number_id: str) -> dict[str, Any] | None:
         base_url = self.settings.backend_base_url.strip().rstrip("/")

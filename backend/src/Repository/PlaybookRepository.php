@@ -3,6 +3,7 @@
 namespace App\Repository;
 
 use App\Entity\Playbook;
+use App\Entity\Tenant;
 use Doctrine\Bundle\DoctrineBundle\Repository\ServiceEntityRepository;
 use Doctrine\Persistence\ManagerRegistry;
 
@@ -47,5 +48,28 @@ class PlaybookRepository extends ServiceEntityRepository
             ->orderBy('p.name', 'ASC')
             ->getQuery()
             ->getResult();
+    }
+
+    public function findActiveGeneralByTenant(Tenant $tenant): ?Playbook
+    {
+        $playbooks = $this->createQueryBuilder('p')
+            ->leftJoin('p.product', 'pr')
+            ->addSelect('pr')
+            ->andWhere('p.tenant = :tenant')
+            ->andWhere('p.isActive = true')
+            ->andWhere('p.product IS NULL')
+            ->setParameter('tenant', $tenant)
+            ->orderBy('p.name', 'ASC')
+            ->setMaxResults(2)
+            ->getQuery()
+            ->getResult();
+
+        if (count($playbooks) !== 1) {
+            return null;
+        }
+
+        $playbook = $playbooks[0];
+
+        return $playbook instanceof Playbook ? $playbook : null;
     }
 }
