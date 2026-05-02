@@ -11,6 +11,7 @@ from app.services.backend_client import BackendClient
 class RoutingContext:
     tenant_id: str
     tenant_slug: str | None = None
+    external_channel_id: str | None = None
     product_id: str | None = None
     product_name: str | None = None
     playbook_id: str | None = None
@@ -39,30 +40,28 @@ class RuntimeRoutingResolver:
         entrypoint_ref = self._extract_entrypoint_ref(payload)
         if entrypoint_ref is not None:
             ref_context = await self.backend_client.resolve_entrypoint_ref(entrypoint_ref)
-            if ref_context is None:
-                return None
-
-            return RoutingContext(
-                tenant_id=ref_context.tenant_id,
-                tenant_slug=ref_context.tenant_slug,
-                product_id=ref_context.product_id,
-                product_name=ref_context.product_name,
-                playbook_id=ref_context.playbook_id,
-                entry_point_id=ref_context.entry_point_id,
-                entry_point_code=ref_context.entry_point_code,
-                entry_point_utm_id=ref_context.entry_point_utm_id,
-                entrypoint_ref=entrypoint_ref,
-                crm_branch_ref=ref_context.crm_branch_ref,
-                utm_source=ref_context.utm_source,
-                utm_medium=ref_context.utm_medium,
-                utm_campaign=ref_context.utm_campaign,
-                utm_term=ref_context.utm_term,
-                utm_content=ref_context.utm_content,
-                gclid=ref_context.gclid,
-                fbclid=ref_context.fbclid,
-                status=ref_context.status,
-                source="entrypoint_ref",
-            )
+            if ref_context is not None:
+                return RoutingContext(
+                    tenant_id=ref_context.tenant_id,
+                    tenant_slug=ref_context.tenant_slug,
+                    product_id=ref_context.product_id,
+                    product_name=ref_context.product_name,
+                    playbook_id=ref_context.playbook_id,
+                    entry_point_id=ref_context.entry_point_id,
+                    entry_point_code=ref_context.entry_point_code,
+                    entry_point_utm_id=ref_context.entry_point_utm_id,
+                    entrypoint_ref=entrypoint_ref,
+                    crm_branch_ref=ref_context.crm_branch_ref,
+                    utm_source=ref_context.utm_source,
+                    utm_medium=ref_context.utm_medium,
+                    utm_campaign=ref_context.utm_campaign,
+                    utm_term=ref_context.utm_term,
+                    utm_content=ref_context.utm_content,
+                    gclid=ref_context.gclid,
+                    fbclid=ref_context.fbclid,
+                    status=ref_context.status,
+                    source="entrypoint_ref",
+                )
 
         external_channel_id = self._resolve_external_channel_id(payload)
         if external_channel_id is not None:
@@ -71,12 +70,14 @@ class RuntimeRoutingResolver:
                 return RoutingContext(
                     tenant_id=str(channel_context["tenant_id"]),
                     tenant_slug=str(channel_context.get("tenant_slug")) if channel_context.get("tenant_slug") else None,
+                    external_channel_id=external_channel_id,
                     source="whatsapp_phone_number_id",
                 )
             if channel_context is not None:
                 return RoutingContext(
                     tenant_id=str(channel_context.get("tenant_id", "")),
                     tenant_slug=str(channel_context.get("tenant_slug")) if channel_context.get("tenant_slug") else None,
+                    external_channel_id=external_channel_id,
                     source="whatsapp_phone_number_id",
                 )
 

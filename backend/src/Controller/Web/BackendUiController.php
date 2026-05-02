@@ -2570,7 +2570,7 @@ HTML;
     }
 
     /**
-     * @return array{name: string, slug: string, businessContext: string, tone: string, positioning: string, qualificationFocus: string, handoffRules: string, salesBoundaries: string, notes: string, isActive: bool}
+     * @return array{name: string, slug: string, businessContext: string, tone: string, whatsappPhoneNumberId: string, whatsappPublicPhone: string, positioning: string, qualificationFocus: string, handoffRules: string, salesBoundaries: string, notes: string, isActive: bool}
      */
     private function tenantFormDefaults(?Tenant $tenant = null): array
     {
@@ -2581,6 +2581,8 @@ HTML;
             'slug' => $tenant?->getSlug() ?? '',
             'businessContext' => $tenant?->getBusinessContext() ?? '',
             'tone' => $tenant?->getTone() ?? '',
+            'whatsappPhoneNumberId' => $tenant?->getWhatsappPhoneNumberId() ?? '',
+            'whatsappPublicPhone' => $tenant?->getWhatsappPublicPhone() ?? '',
             'positioning' => $this->tenantPolicyValue($salesPolicy, 'positioning'),
             'qualificationFocus' => $this->tenantPolicyValue($salesPolicy, 'qualificationFocus'),
             'handoffRules' => $this->tenantPolicyValue($salesPolicy, 'handoffRules'),
@@ -2591,7 +2593,7 @@ HTML;
     }
 
     /**
-     * @return array{name: string, slug: string, businessContext: string, tone: string, positioning: string, qualificationFocus: string, handoffRules: string, salesBoundaries: string, notes: string, isActive: bool}
+     * @return array{name: string, slug: string, businessContext: string, tone: string, whatsappPhoneNumberId: string, whatsappPublicPhone: string, positioning: string, qualificationFocus: string, handoffRules: string, salesBoundaries: string, notes: string, isActive: bool}
      */
     private function tenantFormValuesFromRequest(Request $request): array
     {
@@ -2600,6 +2602,8 @@ HTML;
             'slug' => trim((string) $request->request->get('slug', '')),
             'businessContext' => trim((string) $request->request->get('businessContext', '')),
             'tone' => trim((string) $request->request->get('tone', '')),
+            'whatsappPhoneNumberId' => trim((string) $request->request->get('whatsappPhoneNumberId', '')),
+            'whatsappPublicPhone' => trim((string) $request->request->get('whatsappPublicPhone', '')),
             'positioning' => trim((string) $request->request->get('positioning', '')),
             'qualificationFocus' => trim((string) $request->request->get('qualificationFocus', '')),
             'handoffRules' => trim((string) $request->request->get('handoffRules', '')),
@@ -2662,6 +2666,22 @@ HTML;
                     <label for="tenant-tone">Tono</label>
                     <input id="tenant-tone" name="tone" type="text" value="%s" maxlength="120" placeholder="Cercano, profesional, directo...">
                     <div class="field-note">Cómo debe expresarse el agente en este negocio.</div>
+                  </div>
+                  <div class="field field-full">
+                    <div class="section-label">WhatsApp Business</div>
+                    <div class="section-note">Completa estos campos si este negocio enruta tráfico o genera enlaces wa.me desde WhatsApp.</div>
+                    <div class="form-grid">
+                      <div class="field">
+                        <label for="tenant-whatsapp-phone-number-id">WhatsApp Phone Number ID</label>
+                        <input id="tenant-whatsapp-phone-number-id" name="whatsappPhoneNumberId" type="text" value="%s" maxlength="255" placeholder="123456789012345">
+                        <div class="field-note">ID técnico de Meta WhatsApp Cloud API. Se usa para enrutar mensajes entrantes al negocio correcto.</div>
+                      </div>
+                      <div class="field">
+                        <label for="tenant-whatsapp-public-phone">WhatsApp público para wa.me</label>
+                        <input id="tenant-whatsapp-public-phone" name="whatsappPublicPhone" type="text" value="%s" maxlength="50" placeholder="34612345678">
+                        <div class="field-note">Número internacional sin + ni espacios. Se usa para generar enlaces wa.me en puntos de entrada. Ejemplo: 34612345678.</div>
+                      </div>
+                    </div>
                   </div>
                   <div class="field field-check">
                     <label for="tenant-active">Estado</label>
@@ -2763,6 +2783,8 @@ HTML;
             htmlspecialchars($values['name'], ENT_QUOTES, 'UTF-8'),
             htmlspecialchars($values['slug'], ENT_QUOTES, 'UTF-8'),
             htmlspecialchars($values['tone'], ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($values['whatsappPhoneNumberId'], ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($values['whatsappPublicPhone'], ENT_QUOTES, 'UTF-8'),
             $values['isActive'] ? ' checked' : '',
             htmlspecialchars($values['businessContext'], ENT_QUOTES, 'UTF-8'),
             htmlspecialchars($values['positioning'], ENT_QUOTES, 'UTF-8'),
@@ -2802,6 +2824,14 @@ HTML;
             return 'El tono no puede superar 120 caracteres.';
         }
 
+        if ($values['whatsappPhoneNumberId'] !== '' && mb_strlen($values['whatsappPhoneNumberId']) > 255) {
+            return 'El WhatsApp Phone Number ID no puede superar 255 caracteres.';
+        }
+
+        if ($values['whatsappPublicPhone'] !== '' && mb_strlen($values['whatsappPublicPhone']) > 50) {
+            return 'El WhatsApp público no puede superar 50 caracteres.';
+        }
+
         $salesPolicy = $this->tenantSalesPolicyFromForm($values);
         $error = CommercialDomainSchema::validateTenantSalesPolicy($salesPolicy);
         if ($error !== null) {
@@ -2826,12 +2856,14 @@ HTML;
         $tenant->setSlug($values['slug']);
         $tenant->setBusinessContext($values['businessContext']);
         $tenant->setTone($values['tone'] !== '' ? $values['tone'] : null);
+        $tenant->setWhatsappPhoneNumberId($values['whatsappPhoneNumberId'] !== '' ? $values['whatsappPhoneNumberId'] : null);
+        $tenant->setWhatsappPublicPhone($values['whatsappPublicPhone'] !== '' ? $values['whatsappPublicPhone'] : null);
         $tenant->setSalesPolicy($this->tenantSalesPolicyFromForm($values));
         $tenant->setActive($values['isActive']);
     }
 
     /**
-     * @param array{name: string, slug: string, businessContext: string, tone: string, positioning: string, qualificationFocus: string, handoffRules: string, salesBoundaries: string, notes: string, isActive: bool} $values
+     * @param array{name: string, slug: string, businessContext: string, tone: string, whatsappPhoneNumberId: string, whatsappPublicPhone: string, positioning: string, qualificationFocus: string, handoffRules: string, salesBoundaries: string, notes: string, isActive: bool} $values
      * @return array<string, mixed>
      */
     private function tenantSalesPolicyFromForm(array $values): array

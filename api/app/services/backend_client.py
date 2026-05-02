@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import hashlib
+import logging
 from typing import Any
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.config import Settings
+
+
+logger = logging.getLogger(__name__)
 
 
 class BackendTenant(BaseModel):
@@ -119,6 +124,25 @@ class BackendClient:
         self.settings = settings
         self.transport = transport
 
+    def _auth_headers(self) -> dict[str, str]:
+        bearer_token = self.settings.sales_agent_bearer_token.strip()
+        if bearer_token == "":
+            logger.debug("Using internal backend bearer token (present=%s length=%d sha256_prefix=%s)", False, 0, "")
+            return {"Accept": "application/json"}
+
+        token_digest = hashlib.sha256(bearer_token.encode("utf-8")).hexdigest()
+        logger.debug(
+            "Using internal backend bearer token (present=%s length=%d sha256_prefix=%s)",
+            True,
+            len(bearer_token),
+            token_digest[:8],
+        )
+
+        return {
+            "Authorization": f"Bearer {bearer_token}",
+            "Accept": "application/json",
+        }
+
     async def fetch_tenant_context(
         self,
         tenant_id: str,
@@ -166,11 +190,26 @@ class BackendClient:
         timeout = httpx.Timeout(5.0, connect=2.0)
         try:
             async with httpx.AsyncClient(base_url=base_url, timeout=timeout, transport=self.transport) as client:
-                response = await client.get(f"/api/internal/routing/whatsapp-phone/{phone_number_id.strip()}")
+                path = f"/api/internal/routing/whatsapp-phone/{phone_number_id.strip()}"
+                response = await client.get(path, headers=self._auth_headers())
                 if response.status_code == httpx.codes.NOT_FOUND:
+                    logger.warning(
+                        "Backend routing lookup returned 404 for %s %s body=%s",
+                        response.request.method,
+                        response.request.url,
+                        self._response_snippet(response),
+                    )
                     return None
+                if response.status_code >= 400:
+                    logger.warning(
+                        "Backend routing lookup failed for %s %s with status %s body=%s",
+                        response.request.method,
+                        response.request.url,
+                        response.status_code,
+                        self._response_snippet(response),
+                    )
+                    response.raise_for_status()
 
-                response.raise_for_status()
                 payload = response.json()
         except (httpx.HTTPError, ValueError):
             return None
@@ -188,11 +227,26 @@ class BackendClient:
         timeout = httpx.Timeout(5.0, connect=2.0)
         try:
             async with httpx.AsyncClient(base_url=base_url, timeout=timeout, transport=self.transport) as client:
-                response = await client.get(f"/api/internal/routing/entrypoint-ref/{ref.strip()}")
+                path = f"/api/internal/routing/entrypoint-ref/{ref.strip()}"
+                response = await client.get(path, headers=self._auth_headers())
                 if response.status_code == httpx.codes.NOT_FOUND:
+                    logger.warning(
+                        "Backend routing lookup returned 404 for %s %s body=%s",
+                        response.request.method,
+                        response.request.url,
+                        self._response_snippet(response),
+                    )
                     return None
+                if response.status_code >= 400:
+                    logger.warning(
+                        "Backend routing lookup failed for %s %s with status %s body=%s",
+                        response.request.method,
+                        response.request.url,
+                        response.status_code,
+                        self._response_snippet(response),
+                    )
+                    response.raise_for_status()
 
-                response.raise_for_status()
                 payload = response.json()
         except (httpx.HTTPError, ValueError):
             return None
@@ -210,7 +264,11 @@ class BackendClient:
         timeout = httpx.Timeout(5.0, connect=2.0)
         try:
             async with httpx.AsyncClient(base_url=base_url, timeout=timeout, transport=self.transport) as client:
-                response = await client.post("/api/internal/conversations/upsert", json=payload.model_dump(by_alias=True))
+                response = await client.post(
+                    "/api/internal/conversations/upsert",
+                    json=payload.model_dump(by_alias=True),
+                    headers=self._auth_headers(),
+                )
                 response.raise_for_status()
                 payload_data = response.json()
         except (httpx.HTTPError, ValueError):
@@ -225,6 +283,12 @@ class BackendClient:
 
         response.raise_for_status()
         return response.json()
+
+    def _response_snippet(self, response: httpx.Response) -> str:
+        try:
+            return response.text[:200].replace("\n", " ").replace("\r", " ")
+        except Exception:
+            return "<unavailable>"
 
     def _filter_active_products(self, payload: Any, tenant_id: str) -> list[BackendProduct]:
         if not isinstance(payload, list):

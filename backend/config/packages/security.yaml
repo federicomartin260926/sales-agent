@@ -21,9 +21,11 @@ security:
       pattern: ^/api/r/wa
       security: false
 
-    runtime_settings_internal:
-      pattern: ^/api/internal/runtime-settings
-      security: false
+    internal_api:
+      pattern: ^/api/internal
+      stateless: true
+      custom_authenticators:
+        - App\Security\InternalBearerTokenAuthenticator
 
     api_login:
       pattern: ^/api/login
@@ -65,7 +67,7 @@ security:
     - { path: ^/(playbooks|tenants|products|api-health|channels|entry-points|tracking), roles: [ROLE_MANAGER, ROLE_ADMIN] }
     - { path: ^/users, roles: ROLE_ADMIN }
     - { path: ^/backend/configuration, roles: ROLE_ADMIN }
-    - { path: ^/api/internal/runtime-settings, roles: PUBLIC_ACCESS }
+    - { path: ^/api/internal, roles: ROLE_INTERNAL_SERVICE }
     - { path: ^/api/health, roles: PUBLIC_ACCESS }
     - { path: ^/api/login, roles: PUBLIC_ACCESS }
     - { path: ^/api/r/wa, roles: PUBLIC_ACCESS }

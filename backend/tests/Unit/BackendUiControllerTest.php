@@ -549,6 +549,9 @@ final class BackendUiControllerTest extends TestCase
         self::assertStringContainsString('name="name"', $response->getContent());
         self::assertStringContainsString('name="slug"', $response->getContent());
         self::assertStringContainsString('name="tone"', $response->getContent());
+        self::assertStringContainsString('name="whatsappPhoneNumberId"', $response->getContent());
+        self::assertStringContainsString('name="whatsappPublicPhone"', $response->getContent());
+        self::assertStringContainsString('WhatsApp Business', $response->getContent());
         self::assertStringContainsString('name="businessContext"', $response->getContent());
         self::assertStringContainsString('name="positioning"', $response->getContent());
         self::assertStringContainsString('name="qualificationFocus"', $response->getContent());
@@ -573,6 +576,8 @@ final class BackendUiControllerTest extends TestCase
                     && $tenant->getSlug() === 'academia-nova'
                     && $tenant->getBusinessContext() === 'Negocio demo'
                     && $tenant->getTone() === 'Cercano'
+                    && $tenant->getWhatsappPhoneNumberId() === '123456789012345'
+                    && $tenant->getWhatsappPublicPhone() === '34612345678'
                     && $tenant->getSalesPolicy() === [
                         'positioning' => 'Demo comercial',
                         'qualificationFocus' => 'Identificar tipo de negocio',
@@ -596,6 +601,8 @@ final class BackendUiControllerTest extends TestCase
             'slug' => 'academia-nova',
             'businessContext' => 'Negocio demo',
             'tone' => 'Cercano',
+            'whatsappPhoneNumberId' => '123456789012345',
+            'whatsappPublicPhone' => '34612345678',
             'positioning' => 'Demo comercial',
             'qualificationFocus' => 'Identificar tipo de negocio',
             'handoffRules' => 'Derivar cuando el lead pida demo',
@@ -613,6 +620,8 @@ final class BackendUiControllerTest extends TestCase
         $tenant = new Tenant('Federico Martin Demo', 'federico-martin-demo');
         $tenant->setBusinessContext('Tenant de arranque para pruebas del backend administrativo.');
         $tenant->setTone('Profesional');
+        $tenant->setWhatsappPhoneNumberId('123456789012345');
+        $tenant->setWhatsappPublicPhone('34612345678');
         $tenant->setSalesPolicy([
             'positioning' => 'Demo comercial',
             'qualificationFocus' => 'Detectar tipo de negocio',
@@ -641,6 +650,10 @@ final class BackendUiControllerTest extends TestCase
         self::assertStringContainsString('Federico Martin Demo', $response->getContent());
         self::assertStringContainsString('federico-martin-demo', $response->getContent());
         self::assertStringContainsString('Profesional', $response->getContent());
+        self::assertStringContainsString('name="whatsappPhoneNumberId"', $response->getContent());
+        self::assertStringContainsString('name="whatsappPublicPhone"', $response->getContent());
+        self::assertStringContainsString('value="123456789012345"', $response->getContent());
+        self::assertStringContainsString('value="34612345678"', $response->getContent());
         self::assertStringContainsString('action="/backend/tenants/'.$tenant->getId()->toRfc4122().'/edit"', $response->getContent());
     }
 
@@ -678,6 +691,8 @@ final class BackendUiControllerTest extends TestCase
             'slug' => 'federico-martin-demo-2',
             'businessContext' => 'Contexto actualizado',
             'tone' => 'Cercano',
+            'whatsappPhoneNumberId' => '123456789012345',
+            'whatsappPublicPhone' => '34612345678',
             'positioning' => 'Nueva propuesta',
             'qualificationFocus' => 'Recoger necesidad',
             'handoffRules' => 'Handoff ante oportunidad',
@@ -691,6 +706,8 @@ final class BackendUiControllerTest extends TestCase
         self::assertSame('federico-martin-demo-2', $tenant->getSlug());
         self::assertSame('Contexto actualizado', $tenant->getBusinessContext());
         self::assertSame('Cercano', $tenant->getTone());
+        self::assertSame('123456789012345', $tenant->getWhatsappPhoneNumberId());
+        self::assertSame('34612345678', $tenant->getWhatsappPublicPhone());
         self::assertSame([
             'positioning' => 'Nueva propuesta',
             'qualificationFocus' => 'Recoger necesidad',

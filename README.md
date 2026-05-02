@@ -128,6 +128,7 @@ La UI heredada todavía conserva compatibilidad con piezas antiguas, pero el mod
 El catálogo de productos puede importarse desde CRM con `externalSource = crm` y `externalReference = integration_key`.
 La configuración operativa de LLM y audio ahora vive en `runtime_settings` y se edita desde `GET /backend/configuration`.
 Los secretos de esa pantalla se cifran en base de datos y el runtime consulta la snapshot interna en `GET /api/internal/runtime-settings` con `Authorization: Bearer ...`.
+Todas las rutas `/api/internal/*` usan `Authorization: Bearer <SALES_AGENT_BEARER_TOKEN>` y no JWT de usuario.
 
 ## Bootstrap inicial del backend
 

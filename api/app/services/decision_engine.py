@@ -391,8 +391,14 @@ class DecisionEngine:
         data["tenant_id"] = routing.tenant_id
         if routing.tenant_slug is not None:
             data["tenant_slug"] = routing.tenant_slug
+        if routing.external_channel_id is not None:
+            data["external_channel_id"] = routing.external_channel_id
+        if routing.product_id is not None:
+            data["product_id"] = routing.product_id
         if routing.product_name is not None:
             data["product_name"] = routing.product_name
+        if routing.playbook_id is not None:
+            data["playbook_id"] = routing.playbook_id
         if routing.entry_point_id is not None:
             data["entry_point_id"] = routing.entry_point_id
         if routing.entry_point_code is not None:

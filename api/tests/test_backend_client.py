@@ -2,11 +2,11 @@ import httpx
 import pytest
 
 from app.config import Settings
-from app.services.backend_client import BackendClient
+from app.services.backend_client import BackendClient, BackendConversationUpsertPayload
 
 
 def transport_handler(request: httpx.Request) -> httpx.Response:
-    if request.method == "GET" and request.url.path == "/backend/api/tenants/tenant-1":
+    if request.method == "GET" and request.url.path == "/api/tenants/tenant-1":
         return httpx.Response(
             200,
             json={
@@ -21,7 +21,7 @@ def transport_handler(request: httpx.Request) -> httpx.Response:
             },
         )
 
-    if request.method == "GET" and request.url.path == "/backend/api/products":
+    if request.method == "GET" and request.url.path == "/api/products":
         return httpx.Response(
             200,
             json=[
@@ -42,10 +42,11 @@ def transport_handler(request: httpx.Request) -> httpx.Response:
             ],
         )
 
-    if request.method == "GET" and request.url.path == "/backend/api/playbooks":
+    if request.method == "GET" and request.url.path == "/api/playbooks":
         return httpx.Response(200, json=[])
 
-    if request.method == "GET" and request.url.path == "/backend/api/internal/routing/entrypoint-ref/abc123":
+    if request.method == "GET" and request.url.path == "/api/internal/routing/entrypoint-ref/abc123":
+        assert request.headers.get("Authorization") == "Bearer test-internal-token"
         return httpx.Response(
             200,
             json={
@@ -66,8 +67,19 @@ def transport_handler(request: httpx.Request) -> httpx.Response:
             },
         )
 
-    if request.method == "GET" and request.url.path == "/backend/api/internal/routing/whatsapp-phone/phone-number-id-1":
+    if request.method == "GET" and request.url.path == "/api/internal/routing/whatsapp-phone/phone-number-id-1":
+        assert request.headers.get("Authorization") == "Bearer test-internal-token"
         return httpx.Response(200, json={"tenant_id": "tenant-1", "tenant_slug": "negocio-demo"})
+
+    if request.method == "POST" and request.url.path == "/api/internal/conversations/upsert":
+        assert request.headers.get("Authorization") == "Bearer test-internal-token"
+        return httpx.Response(
+            200,
+            json={
+                "created": True,
+                "conversation": {"id": "conversation-1"},
+            },
+        )
 
     return httpx.Response(404, json={"detail": "not found"})
 
@@ -75,7 +87,7 @@ def transport_handler(request: httpx.Request) -> httpx.Response:
 @pytest.mark.asyncio
 async def test_backend_client_loads_tenant_context():
     client = BackendClient(
-        Settings(BACKEND_BASE_URL="http://sales-agent-nginx/backend"),
+        Settings(BACKEND_BASE_URL="http://sales-agent-nginx"),
         transport=httpx.MockTransport(transport_handler),
     )
 
@@ -93,7 +105,7 @@ async def test_backend_client_loads_tenant_context():
 @pytest.mark.asyncio
 async def test_backend_client_resolves_entrypoint_ref():
     client = BackendClient(
-        Settings(BACKEND_BASE_URL="http://sales-agent-nginx/backend"),
+        Settings(BACKEND_BASE_URL="http://sales-agent-nginx"),
         transport=httpx.MockTransport(transport_handler),
     )
 
@@ -108,7 +120,7 @@ async def test_backend_client_resolves_entrypoint_ref():
 @pytest.mark.asyncio
 async def test_backend_client_resolves_whatsapp_phone():
     client = BackendClient(
-        Settings(BACKEND_BASE_URL="http://sales-agent-nginx/backend"),
+        Settings(BACKEND_BASE_URL="http://sales-agent-nginx"),
         transport=httpx.MockTransport(transport_handler),
     )
 
@@ -121,10 +133,29 @@ async def test_backend_client_resolves_whatsapp_phone():
 @pytest.mark.asyncio
 async def test_backend_client_returns_none_for_missing_tenant():
     client = BackendClient(
-        Settings(BACKEND_BASE_URL="http://sales-agent-nginx/backend"),
+        Settings(BACKEND_BASE_URL="http://sales-agent-nginx"),
         transport=httpx.MockTransport(lambda request: httpx.Response(404, json={"detail": "not found"})),
     )
 
     context = await client.fetch_tenant_context("missing")
 
     assert context is None
+
+
+@pytest.mark.asyncio
+async def test_backend_client_upserts_conversation_with_internal_bearer():
+    client = BackendClient(
+        Settings(BACKEND_BASE_URL="http://sales-agent-nginx", SALES_AGENT_BEARER_TOKEN="test-internal-token"),
+        transport=httpx.MockTransport(transport_handler),
+    )
+
+    result = await client.upsert_conversation(
+        BackendConversationUpsertPayload(
+            tenant_id="tenant-1",
+            customer_phone="+34999999999",
+            first_message="Hola",
+        )
+    )
+
+    assert result is not None
+    assert result["created"] is True

@@ -52,6 +52,7 @@ Esta matriz define qué puede hacer cada rol dentro del backend de `sales-agent`
 - `admin`: acceso
 - `manager`: acceso
 - `agent`: no acceso
+- Las rutas `/api/internal/*` no usan JWT de usuario. Se protegen con `SALES_AGENT_BEARER_TOKEN` y solo sirven para comunicación service-to-service.
 
 ### Configuración general de la app
 

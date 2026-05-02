@@ -6,7 +6,7 @@ from app.services.runtime_settings_client import RuntimeSettingsClient
 
 
 def transport_handler(request: httpx.Request) -> httpx.Response:
-    if request.method == "GET" and request.url.path == "/backend/api/internal/runtime-settings":
+    if request.method == "GET" and request.url.path == "/api/internal/runtime-settings":
         assert request.headers.get("Authorization") == "Bearer test-internal-token"
         return httpx.Response(
             200,
@@ -32,7 +32,7 @@ def transport_handler(request: httpx.Request) -> httpx.Response:
 @pytest.mark.asyncio
 async def test_runtime_settings_client_fetches_effective_values_from_backend():
     client = RuntimeSettingsClient(
-        Settings(BACKEND_BASE_URL="http://sales-agent-nginx/backend", SALES_AGENT_BEARER_TOKEN="test-internal-token"),
+        Settings(BACKEND_BASE_URL="http://sales-agent-nginx", SALES_AGENT_BEARER_TOKEN="test-internal-token"),
         transport=httpx.MockTransport(transport_handler),
     )
 
@@ -50,7 +50,7 @@ async def test_runtime_settings_client_fetches_effective_values_from_backend():
 @pytest.mark.asyncio
 async def test_runtime_settings_client_falls_back_when_backend_is_unavailable():
     client = RuntimeSettingsClient(
-        Settings(BACKEND_BASE_URL="http://sales-agent-nginx/backend", SALES_AGENT_BEARER_TOKEN="test-internal-token"),
+        Settings(BACKEND_BASE_URL="http://sales-agent-nginx", SALES_AGENT_BEARER_TOKEN="test-internal-token"),
         transport=httpx.MockTransport(lambda request: httpx.Response(500, json={"detail": "boom"})),
     )
 

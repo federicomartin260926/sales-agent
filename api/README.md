@@ -102,7 +102,7 @@ FastAPI lee contexto comercial desde el backend Symfony a través de:
 
 En Docker local el valor por defecto apunta a:
 
-- `http://sales-agent-nginx/backend`
+- `http://sales-agent-nginx`
 
 El runtime consulta:
 
@@ -125,6 +125,13 @@ Además, para resolver la configuración LLM y audio usa:
 - `GET /api/internal/runtime-settings`
 
 Ese endpoint devuelve la snapshot operativa que sale de base de datos y se protege con `Authorization: Bearer <SALES_AGENT_BEARER_TOKEN>`.
+Las rutas internas de Symfony se consumen como `BACKEND_BASE_URL + /api/internal/...`, por ejemplo:
+
+- `GET /api/internal/runtime-settings`
+- `GET /api/internal/routing/entrypoint-ref/{ref}`
+- `GET /api/internal/routing/whatsapp-phone/{phoneNumberId}`
+- `POST /api/internal/conversations/upsert`
+
 Si el backend no responde, el runtime usa los valores bootstrap del entorno como fallback.
 La snapshot incluye también `openai_timeout_seconds`, `ollama_timeout_seconds` y `audio_timeout_seconds` para que el runtime pueda consumirlos cuando se cableen las integraciones activas.
 

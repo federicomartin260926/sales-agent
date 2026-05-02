@@ -37,7 +37,7 @@ services:
     environment:
       PYTHONPATH: /app
       APP_ENV: ${APP_ENV:-dev}
-      BACKEND_BASE_URL: ${BACKEND_BASE_URL:-http://sales-agent-nginx/backend}
+      BACKEND_BASE_URL: ${BACKEND_BASE_URL:-http://sales-agent-nginx}
       LLM_PROVIDER: ${LLM_PROVIDER:-openai}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama-vpn-bridge:11434}

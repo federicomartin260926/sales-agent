@@ -11,6 +11,7 @@ Este directorio contiene el backend administrativo de `sales-agent`.
 - permite editar la configuración operativa de LLM y audio desde `/backend/configuration`
 - usa Twig como base de render para el layout común y la primera pantalla migrada de configuración
 - sirve los estilos del panel desde `public/assets/backend.css` para evitar CSS embebido en Twig y en el login
+- permite editar en `Negocio` `whatsappPhoneNumberId` y `whatsappPublicPhone` para routing técnico y enlaces `wa.me`
 - permite importar catálogos de productos/servicios desde CRM con `integration_key` como referencia externa
 - la UI heredada ya no expone `canales` ni `tracking`; el flujo canónico se configura con `EntryPoint`, `EntryPointUtm` y `Conversation`
 - presenta un layout tipo CRM para navegación operativa por módulos
@@ -135,6 +136,7 @@ Reglas operativas:
 - los botones de prueba para OpenAI y Ollama realizan requests reales y solo están visibles para administradores
 
 Para que el runtime pueda consultar la snapshot interna, el backend también recibe `SALES_AGENT_BEARER_TOKEN` como secreto de infraestructura.
+Todas las rutas `/api/internal/*` usan ese mismo bearer de servicio. No pasan por JWT de usuario ni por `json_login`.
 
 El routing de WhatsApp ya no depende del bootstrap base. Los `EntryPoint` y `EntryPointUtm` deben configurarse explícitamente con datos reales de campaña y número público.
 Los productos importados desde CRM deben guardar `externalSource = crm` y `externalReference = integration_key`; `slug` queda como identificador local y fallback.

@@ -44,6 +44,20 @@ final class TenantController extends AbstractApiController
         $tenant = new Tenant((string) $data['name'], (string) $data['slug']);
         $tenant->setBusinessContext((string) ($data['businessContext'] ?? ''));
         $tenant->setTone(isset($data['tone']) ? (string) $data['tone'] : null);
+        if (array_key_exists('whatsappPhoneNumberId', $data)) {
+            $whatsappPhoneNumberId = trim((string) $data['whatsappPhoneNumberId']);
+            if ($whatsappPhoneNumberId !== '' && mb_strlen($whatsappPhoneNumberId) > 255) {
+                return $this->badRequest('whatsappPhoneNumberId cannot exceed 255 characters');
+            }
+            $tenant->setWhatsappPhoneNumberId($whatsappPhoneNumberId !== '' ? $whatsappPhoneNumberId : null);
+        }
+        if (array_key_exists('whatsappPublicPhone', $data)) {
+            $whatsappPublicPhone = trim((string) $data['whatsappPublicPhone']);
+            if ($whatsappPublicPhone !== '' && mb_strlen($whatsappPublicPhone) > 50) {
+                return $this->badRequest('whatsappPublicPhone cannot exceed 50 characters');
+            }
+            $tenant->setWhatsappPublicPhone($whatsappPublicPhone !== '' ? $whatsappPublicPhone : null);
+        }
         $salesPolicy = CommercialDomainSchema::normalizeTenantSalesPolicy($data['salesPolicy'] ?? []);
         if (($error = CommercialDomainSchema::validateTenantSalesPolicy($salesPolicy)) !== null) {
             return $this->badRequest($error);
@@ -100,6 +114,22 @@ final class TenantController extends AbstractApiController
 
         if (array_key_exists('tone', $data)) {
             $tenant->setTone($data['tone'] === null ? null : (string) $data['tone']);
+        }
+
+        if (array_key_exists('whatsappPhoneNumberId', $data)) {
+            $whatsappPhoneNumberId = trim((string) $data['whatsappPhoneNumberId']);
+            if ($whatsappPhoneNumberId !== '' && mb_strlen($whatsappPhoneNumberId) > 255) {
+                return $this->badRequest('whatsappPhoneNumberId cannot exceed 255 characters');
+            }
+            $tenant->setWhatsappPhoneNumberId($whatsappPhoneNumberId !== '' ? $whatsappPhoneNumberId : null);
+        }
+
+        if (array_key_exists('whatsappPublicPhone', $data)) {
+            $whatsappPublicPhone = trim((string) $data['whatsappPublicPhone']);
+            if ($whatsappPublicPhone !== '' && mb_strlen($whatsappPublicPhone) > 50) {
+                return $this->badRequest('whatsappPublicPhone cannot exceed 50 characters');
+            }
+            $tenant->setWhatsappPublicPhone($whatsappPublicPhone !== '' ? $whatsappPublicPhone : null);
         }
 
         if (array_key_exists('salesPolicy', $data)) {

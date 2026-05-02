@@ -278,6 +278,7 @@ La API de runtime debe aceptar solo tráfico service-to-service autenticado con:
 - `Authorization: Bearer <SALES_AGENT_BEARER_TOKEN>`
 
 Ese token no representa a una persona. Es un secreto de integración entre servicios.
+En Symfony, ese mismo bearer protege toda la superficie `/api/internal/*`. No debe tratarse como JWT de usuario ni pasar por el firewall `api` normal.
 
 ### 3. Resolución de tenant
 

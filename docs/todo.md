@@ -79,6 +79,7 @@ Lista ordenada de trabajo para llevar `sales-agent` desde la base actual al runt
 - afinar la UX del importador de catálogo CRM para revisión masiva y errores por fila
 - completar la edición de perfiles y roles internos
 - asegurar que el panel humano refleje el estado real del modelo
+- añadir validación estricta del formato internacional de `whatsappPublicPhone` y del identificador técnico de Meta cuando el proyecto necesite endurecer la captura de canales comerciales
 
 ## 11. Calidad y tests
 

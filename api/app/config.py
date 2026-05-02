@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     ollama_base_url: str = Field(default="http://ollama-vpn-bridge:11434", alias="OLLAMA_BASE_URL")
     ollama_timeout_seconds: int = Field(default=15, alias="OLLAMA_TIMEOUT_SECONDS")
     audio_timeout_seconds: int = Field(default=15, alias="AUDIO_TIMEOUT_SECONDS")
-    backend_base_url: str = Field(default="http://sales-agent-nginx/backend", alias="BACKEND_BASE_URL")
+    backend_base_url: str = Field(default="http://sales-agent-nginx", alias="BACKEND_BASE_URL")
     crm_base_url: str = Field(default="", alias="CRM_BASE_URL")
     rag_api_url: str = Field(default="", alias="RAG_API_URL")
     sales_agent_bearer_token: str = Field(default="", alias="SALES_AGENT_BEARER_TOKEN")

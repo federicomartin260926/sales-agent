@@ -87,6 +87,7 @@ async def test_runtime_resolves_whatsapp_phone_when_ref_is_missing():
     backend = RecordingBackendClient(phone_context={"tenant_id": "tenant-1", "tenant_slug": "negocio-demo"})
     resolver = RuntimeRoutingResolver(backend)  # type: ignore[arg-type]
     payload = AgentRequest(
+        entrypoint_ref="missing-ref",
         external_channel_id="phone-number-id-1",
         message="Hola",
         contact=Contact(phone="+34999999999"),
@@ -97,7 +98,57 @@ async def test_runtime_resolves_whatsapp_phone_when_ref_is_missing():
     assert routing is not None
     assert routing.source == "whatsapp_phone_number_id"
     assert routing.tenant_id == "tenant-1"
-    assert backend.calls == [("resolve_whatsapp_phone", ("phone-number-id-1",))]
+    assert backend.calls == [("resolve_entrypoint_ref", ("missing-ref",)), ("resolve_whatsapp_phone", ("phone-number-id-1",))]
+
+
+@pytest.mark.asyncio
+async def test_runtime_uses_entrypoint_ref_context_in_agent_response():
+    backend = RecordingBackendClient(
+        ref_context=BackendRoutingEntryPointUtmContext.model_validate(
+            {
+                "entry_point_utm_id": "utm-1",
+                "ref": "abc123",
+                "entry_point_id": "entrypoint-1",
+                "entry_point_code": "crm-demo",
+                "tenant_id": "tenant-1",
+                "tenant_slug": "negocio-demo",
+                "product_id": "product-1",
+                "product_name": "CRM Automation",
+                "playbook_id": "playbook-1",
+                "crm_branch_ref": "branch-1",
+                "utm_source": "google",
+                "utm_medium": "cpc",
+                "utm_campaign": "crm_pymes",
+                "status": "matched",
+            }
+        )
+    )
+    runtime = AgentRuntime(backend, NullCRMClient(), RuntimeRoutingResolver(backend), DecisionEngine(backend, NullCRMClient()))  # type: ignore[arg-type]
+    payload = AgentRequest(
+        tenant_id="tenant-ignored",
+        entrypoint_ref="abc123",
+        message="Hola",
+        contact=Contact(phone="+34999999999"),
+    )
+
+    response = await runtime.respond(payload)
+
+    assert response.action == "greet"
+    assert response.needs_human is False
+    assert response.data_to_save["tenant_id"] == "tenant-1"
+    assert response.data_to_save["tenant_slug"] == "negocio-demo"
+    assert response.data_to_save["product_id"] == "product-1"
+    assert response.data_to_save["product_name"] == "CRM Automation"
+    assert response.data_to_save["playbook_id"] == "playbook-1"
+    assert response.data_to_save["entry_point_id"] == "entrypoint-1"
+    assert response.data_to_save["entry_point_code"] == "crm-demo"
+    assert response.data_to_save["entry_point_utm_id"] == "utm-1"
+    assert response.data_to_save["entrypoint_ref"] == "abc123"
+    assert response.data_to_save["crm_branch_ref"] == "branch-1"
+    assert response.data_to_save["utm_source"] == "google"
+    assert response.data_to_save["utm_medium"] == "cpc"
+    assert response.data_to_save["utm_campaign"] == "crm_pymes"
+    assert backend.calls[0] == ("resolve_entrypoint_ref", ("abc123",))
 
 
 @pytest.mark.asyncio
