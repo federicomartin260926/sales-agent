@@ -22,6 +22,7 @@ services:
     networks:
       - sales-agent-net
       - ai-egress
+      - commercial_internal
     environment:
       PYTHONPATH: /app
       APP_ENV: prod
@@ -32,9 +33,6 @@ services:
       CRM_BASE_URL: ${CRM_BASE_URL:-http://crm-nginx}
       RAG_API_URL: ${RAG_API_URL:-}
       SALES_AGENT_BEARER_TOKEN: ${SALES_AGENT_BEARER_TOKEN:-change-me-sales-agent-bearer-token}
-    networks:
-      - sales-agent-net
-      - commercial_internal
     restart: unless-stopped
 
   sales-agent-nginx:
