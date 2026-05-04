@@ -9,7 +9,6 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from app.config import Settings
 from app.schemas.agent import AgentRequest
 from app.services.backend_client import CommercialContext
-from app.services.crm_client import CRMContactContext
 from app.services.llm_client import LLMClient
 from app.services.llm_prompt_builder import LLMPromptBuilder
 from app.services.routing_resolver import RoutingContext
@@ -47,7 +46,7 @@ class LLMDecisionService:
         payload: AgentRequest,
         routing: RoutingContext | None,
         backend_context: CommercialContext | None,
-        crm_context: CRMContactContext | None,
+        contact_context: dict[str, Any] | None = None,
     ) -> LLMDecisionDraft | None:
         configuration = await self.llm_client.resolve_configuration()
         provider_profile = configuration.get("llm_default_profile", "").strip().lower()
@@ -60,7 +59,7 @@ class LLMDecisionService:
             logger.debug("LLM heuristics fallback: provider profile disabled or unrecognized (%s)", provider_profile or "empty")
             return None
 
-        system_prompt, user_prompt = self.prompt_builder.build(payload, routing, backend_context, crm_context)
+        system_prompt, user_prompt = self.prompt_builder.build(payload, routing, backend_context, contact_context)
 
         for provider in provider_order:
             if not self._provider_config_ready(provider, configuration):

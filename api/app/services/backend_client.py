@@ -5,7 +5,7 @@ import logging
 from typing import Any
 
 import httpx
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from app.config import Settings
 
@@ -143,6 +143,28 @@ class BackendRoutingEntryPointUtmContext(BaseModel):
     fbclid: str | None = None
     status: str | None = None
 
+
+class BackendExternalTool(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    tenant_id: str = Field(validation_alias=AliasChoices("tenantId", "tenant_id"))
+    name: str
+    type: str
+    provider: str
+    webhook_url: str | None = Field(default=None, validation_alias=AliasChoices("webhookUrl", "webhook_url"))
+    auth_type: str | None = Field(default=None, validation_alias=AliasChoices("authType", "auth_type"))
+    bearer_token: str | None = Field(default=None, validation_alias=AliasChoices("bearerToken", "bearer_token"))
+    timeout_seconds: int = Field(default=5, validation_alias=AliasChoices("timeoutSeconds", "timeout_seconds"))
+    config: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("config", mode="before")
+    @classmethod
+    def normalize_config(cls, value: Any) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return value
+
+        return {}
 
 class BackendConversationUpsertPayload(BaseModel):
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
@@ -452,6 +474,51 @@ class BackendClient:
             return None
 
         return BackendRoutingEntryPointUtmContext.model_validate(payload)
+
+    async def get_external_tool(self, tenant_id: str, tool_type: str) -> BackendExternalTool | None:
+        base_url = self.settings.backend_base_url.strip().rstrip("/")
+        if base_url == "" or tenant_id.strip() == "" or tool_type.strip() == "":
+            return None
+
+        timeout = httpx.Timeout(5.0, connect=2.0)
+        try:
+            async with httpx.AsyncClient(base_url=base_url, timeout=timeout, transport=self.transport) as client:
+                path = f"/api/internal/external-tools/{tenant_id.strip()}/{tool_type.strip()}"
+                response = await client.get(path, headers=self._auth_headers())
+                if response.status_code == httpx.codes.NOT_FOUND:
+                    logger.warning(
+                        "Backend external tool lookup returned 404 for %s %s body=%s",
+                        response.request.method,
+                        response.request.url,
+                        self._response_snippet(response),
+                    )
+                    return None
+                if response.status_code >= 400:
+                    logger.warning(
+                        "Backend external tool lookup failed for %s %s with status %s body=%s",
+                        response.request.method,
+                        response.request.url,
+                        response.status_code,
+                        self._response_snippet(response),
+                    )
+                    response.raise_for_status()
+
+                payload = response.json()
+        except (httpx.HTTPError, ValueError):
+            return None
+
+        if not isinstance(payload, dict):
+            return None
+
+        tool = payload.get("tool")
+        if not isinstance(tool, dict):
+            return None
+
+        try:
+            return BackendExternalTool.model_validate(tool)
+        except ValidationError:
+            logger.warning("Backend external tool payload validation failed for tenant=%s type=%s", tenant_id, tool_type)
+            return None
 
     async def upsert_conversation(self, payload: BackendConversationUpsertPayload) -> dict[str, Any] | None:
         base_url = self.settings.backend_base_url.strip().rstrip("/")

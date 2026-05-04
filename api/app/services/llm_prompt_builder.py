@@ -5,7 +5,6 @@ from typing import Any
 
 from app.schemas.agent import AgentRequest
 from app.services.backend_client import CommercialContext
-from app.services.crm_client import CRMContactContext
 from app.services.routing_resolver import RoutingContext
 
 
@@ -15,17 +14,20 @@ class LLMPromptBuilder:
         payload: AgentRequest,
         routing: RoutingContext | None,
         backend_context: CommercialContext | None,
-        crm_context: CRMContactContext | None,
+        contact_context: dict[str, Any] | None = None,
     ) -> tuple[str, str]:
         system_prompt = (
             "Eres un asistente de ventas por WhatsApp para sales-agent/api. "
             "Responde siempre en español, breve y natural. "
             "Devuelve solo JSON válido, sin markdown ni texto adicional, con estas claves: "
-            'reply, intent, score, action, needs_human, data_to_save. '
+            "reply, intent, score, action, needs_human, data_to_save. "
             "No inventes precios, plazos ni funcionalidades. "
             "Si preguntan por precio y no hay un precio claro, pide 1-2 datos de cualificación. "
             "Si piden humano/persona/asesor/comercial, needs_human debe ser true. "
-            "No menciones que eres un modelo ni expongas IDs internos, UTM, refs, tokens o detalles técnicos. "
+            "Si external_context.flags.needs_human es true, needs_human debe ser true. "
+            "Si external_context.flags.do_not_contact es true, responde de forma conservadora y needs_human debe ser true. "
+            "Puedes usar external_context.summary, recent_activity y open_opportunities para responder con más contexto, "
+            "pero no menciones sistemas internos, CRM, n8n, webhooks, IDs internos, UTM, refs, tokens o detalles técnicos. "
             "Mantén el tono breve, útil y orientado a conversación."
         )
 
@@ -46,7 +48,7 @@ class LLMPromptBuilder:
             "playbook": self._playbook_payload(backend_context),
             "entry_point": self._entry_point_payload(backend_context),
             "sales_runtime": self._sales_runtime_payload(backend_context),
-            "crm": self._crm_payload(crm_context),
+            "external_context": self._external_context_payload(contact_context),
         }
 
         return system_prompt, json.dumps(user_payload, ensure_ascii=False, indent=2)
@@ -146,26 +148,100 @@ class LLMPromptBuilder:
 
         return backend_context.sales_runtime.model_dump(exclude_none=True)
 
-    def _crm_payload(self, crm_context: CRMContactContext | None) -> dict[str, Any] | None:
-        if crm_context is None:
+    def _external_context_payload(self, contact_context: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not isinstance(contact_context, dict):
             return None
 
-        contact = crm_context.contact
         payload: dict[str, Any] = {
-            "contact": {
-                "phone": contact.phone,
-                "name": contact.name,
-                "email": contact.email,
-            },
-            "flags": crm_context.flags.model_dump(exclude_none=True),
-            "recent_notes": crm_context.recent_notes,
-            "last_activity_at": crm_context.last_activity_at,
-            "summary": crm_context.summary,
+            "available": bool(contact_context.get("available", False)),
+            "configured": bool(contact_context.get("configured", False)),
+            "provider": self._clean_string(contact_context.get("provider")),
+            "ok": bool(contact_context.get("ok", False)),
+            "found": bool(contact_context.get("found", False)),
+            "error_code": self._clean_string(contact_context.get("error_code")),
         }
 
-        if crm_context.lead is not None:
-            payload["lead"] = crm_context.lead.model_dump(exclude_none=True)
-        if crm_context.opportunity is not None:
-            payload["opportunity"] = crm_context.opportunity.model_dump(exclude_none=True)
+        data = contact_context.get("data")
+        if not isinstance(data, dict):
+            return payload
+
+        flags = data.get("flags")
+        contact = data.get("contact")
+        recent_activity = data.get("recent_activity")
+        open_opportunities = data.get("open_opportunities")
+
+        payload.update(
+            {
+                "source": self._clean_string(data.get("source")),
+                "summary": self._clean_string(data.get("summary")),
+                "contact": self._clean_contact(contact),
+                "recent_activity": self._clean_list_of_dicts(recent_activity, max_items=5),
+                "open_opportunities": self._clean_list_of_dicts(open_opportunities, max_items=5),
+                "flags": self._clean_flags(flags),
+            }
+        )
 
         return payload
+
+    def _clean_contact(self, contact: Any) -> dict[str, Any] | None:
+        if not isinstance(contact, dict):
+            return None
+
+        allowed = ("type", "name", "phone", "email", "status", "stage", "owner")
+        cleaned: dict[str, Any] = {}
+
+        for key in allowed:
+            value = self._clean_string(contact.get(key))
+            if value is not None:
+                cleaned[key] = value
+
+        return cleaned or None
+
+    def _clean_flags(self, flags: Any) -> dict[str, bool]:
+        if not isinstance(flags, dict):
+            return {
+                "needs_human": False,
+                "do_not_contact": False,
+                "existing_customer": False,
+            }
+
+        return {
+            "needs_human": bool(flags.get("needs_human", False)),
+            "do_not_contact": bool(flags.get("do_not_contact", False)),
+            "existing_customer": bool(flags.get("existing_customer", False)),
+        }
+
+    def _clean_list_of_dicts(self, value: Any, max_items: int) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            return []
+
+        cleaned: list[dict[str, Any]] = []
+        for item in value[:max_items]:
+            if not isinstance(item, dict):
+                continue
+
+            cleaned_item: dict[str, Any] = {}
+            for key, item_value in item.items():
+                clean_value = self._clean_scalar(item_value)
+                if clean_value is not None:
+                    cleaned_item[str(key)] = clean_value
+
+            if cleaned_item:
+                cleaned.append(cleaned_item)
+
+        return cleaned
+
+    def _clean_scalar(self, value: Any) -> str | int | float | bool | None:
+        if isinstance(value, bool):
+            return value
+
+        if isinstance(value, (int, float)):
+            return value
+
+        return self._clean_string(value)
+
+    def _clean_string(self, value: Any) -> str | None:
+        if isinstance(value, str) and value.strip() != "":
+            return value.strip()
+
+        return None

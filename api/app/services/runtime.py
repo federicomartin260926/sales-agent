@@ -10,21 +10,20 @@ from app.services.backend_client import (
     BackendConversationUpsertPayload,
     CommercialContext,
 )
-from app.services.crm_client import CRMClient, CRMContactContext
 from app.services.decision_engine import DecisionEngine
+from app.services.external_tool_client import ExternalToolClient
 from app.services.routing_resolver import RoutingContext, RuntimeRoutingResolver
-
 
 class AgentRuntime:
     def __init__(
         self,
         backend_client: BackendClient,
-        crm_client: CRMClient,
+        external_tool_client: ExternalToolClient,
         routing_resolver: RuntimeRoutingResolver,
         decision_engine: DecisionEngine,
     ) -> None:
         self.backend_client = backend_client
-        self.crm_client = crm_client
+        self.external_tool_client = external_tool_client
         self.routing_resolver = routing_resolver
         self.decision_engine = decision_engine
 
@@ -49,8 +48,6 @@ class AgentRuntime:
             payload.contact.phone,
             routing.external_channel_id or payload.external_channel_id,
         )
-
-        crm_context = await self.crm_client.fetch_contact_context(payload.contact.phone)
 
         conversation_result = await self.backend_client.upsert_conversation(
             BackendConversationUpsertPayload(
@@ -110,12 +107,30 @@ class AgentRuntime:
             if isinstance(conversation, dict) and isinstance(conversation.get("id"), str):
                 routing.conversation_id = conversation["id"]
 
+        contact_context = await self.external_tool_client.fetch_contact_context(
+            tenant_id=routing.tenant_id,
+            tenant_slug=routing.tenant_slug,
+            channel=payload.channel_type or "whatsapp",
+            external_channel_id=routing.external_channel_id or payload.external_channel_id,
+            contact=payload.contact,
+            conversation_id=routing.conversation_id or conversation_id,
+            last_messages=[],
+            message_text=payload.message.text,
+            external_message_id=self._raw_event_field(
+                payload.raw_event,
+                "whatsapp_message_id",
+                "whatsappMessageId",
+                "message_id",
+                "id",
+            ),
+        )
+
         started_at = time.perf_counter()
         response = await self.decision_engine.decide(
             payload,
             routing=routing,
             backend_context=backend_context,
-            crm_context=crm_context,
+            contact_context=contact_context,
         )
         latency_ms = int(round((time.perf_counter() - started_at) * 1000))
 
