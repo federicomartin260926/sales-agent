@@ -89,6 +89,8 @@ class DecisionEngine:
             action=llm_decision.action,
             needs_human=llm_decision.needs_human,
             data_to_save=merged_data,
+            provider=llm_decision.provider,
+            model=llm_decision.model,
         )
 
     def _decide_without_context(

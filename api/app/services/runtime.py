@@ -120,7 +120,6 @@ class AgentRuntime:
         latency_ms = int(round((time.perf_counter() - started_at) * 1000))
 
         if conversation_id is not None:
-            provider, model = self._llm_trace_from_response(response)
             await self.backend_client.create_conversation_message(
                 BackendConversationMessagePayload(
                     conversation_id=conversation_id,
@@ -128,8 +127,8 @@ class AgentRuntime:
                     role="assistant",
                     message_type="text",
                     body=response.reply,
-                    provider=provider,
-                    model=model,
+                    provider=response.provider,
+                    model=response.model,
                     latency_ms=latency_ms,
                     intent=response.intent,
                     score=self._score_to_integer(response.score),
@@ -190,16 +189,3 @@ class AgentRuntime:
             return int(round(score * 100))
         except Exception:
             return None
-
-    def _llm_trace_from_response(self, response: AgentResponse) -> tuple[str | None, str | None]:
-        trace = response.data_to_save.get("llm_trace")
-        if not isinstance(trace, dict):
-            return None, None
-
-        provider = trace.get("provider")
-        model = trace.get("model")
-
-        provider_value = provider.strip() if isinstance(provider, str) and provider.strip() != "" else None
-        model_value = model.strip() if isinstance(model, str) and model.strip() != "" else None
-
-        return provider_value, model_value

@@ -27,6 +27,8 @@ class LLMDecisionDraft(BaseModel):
     action: str = Field(min_length=1)
     needs_human: bool
     data_to_save: dict[str, Any] = Field(default_factory=dict)
+    provider: str | None = None
+    model: str | None = None
 
 
 class LLMDecisionService:
@@ -86,7 +88,16 @@ class LLMDecisionService:
                 continue
 
             logger.info("LLM provider used=%s", result.provider)
-            return draft
+            return LLMDecisionDraft(
+                reply=draft.reply,
+                intent=draft.intent,
+                score=draft.score,
+                action=draft.action,
+                needs_human=draft.needs_human,
+                data_to_save=draft.data_to_save,
+                provider=result.provider,
+                model=result.model,
+            )
 
         logger.info("LLM fallback reason=no provider succeeded")
         return None

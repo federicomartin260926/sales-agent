@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 @dataclass(slots=True)
 class LLMGenerationResult:
     provider: str
+    model: str | None
     content: str
 
 
@@ -82,7 +83,7 @@ class LLMClient:
             raise ValueError("OpenAI response did not include message content")
 
         logger.debug("LLM openai generation completed model=%s", model)
-        return LLMGenerationResult(provider="openai", content=content)
+        return LLMGenerationResult(provider="openai", model=model, content=content)
 
     async def _generate_ollama(self, system_prompt: str, user_prompt: str, configuration: dict[str, str]) -> LLMGenerationResult:
         base_url = configuration.get("ollama_base_url", "").strip().rstrip("/")
@@ -117,7 +118,7 @@ class LLMClient:
             raise ValueError("Ollama response did not include message content")
 
         logger.debug("LLM ollama generation completed model=%s", model)
-        return LLMGenerationResult(provider="ollama", content=content)
+        return LLMGenerationResult(provider="ollama", model=model, content=content)
 
     def _extract_openai_content(self, payload: Any) -> str | None:
         if not isinstance(payload, dict):
