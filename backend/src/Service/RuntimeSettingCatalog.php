@@ -169,6 +169,7 @@ final class RuntimeSettingCatalog
     {
         return [
             ['value' => 'auto', 'label' => 'Auto'],
+            ['value' => 'heuristic', 'label' => 'Heurística / Sin LLM'],
             ['value' => 'openai', 'label' => 'OpenAI'],
             ['value' => 'ollama', 'label' => 'Ollama'],
         ];

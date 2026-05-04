@@ -122,6 +122,10 @@ final class RuntimeSettingsStatePresenter
             return $this->state('blocked', 'No hay perfil LLM por defecto configurado.', null);
         }
 
+        if ($defaultProfile === 'heuristic') {
+            return $this->state('ready', 'El sistema usa heurísticas sin llamar a un LLM.', null);
+        }
+
         if ($defaultProfile === 'openai') {
             return $this->state($openai['status'] === 'ready' ? 'ready' : $openai['status'], $this->profileMessage('OpenAI', $openai), null);
         }

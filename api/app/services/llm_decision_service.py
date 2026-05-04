@@ -49,6 +49,10 @@ class LLMDecisionService:
     ) -> LLMDecisionDraft | None:
         configuration = await self.llm_client.resolve_configuration()
         provider_profile = configuration.get("llm_default_profile", "").strip().lower()
+        if provider_profile == "heuristic":
+            logger.debug("LLM heuristics mode selected; skipping provider calls")
+            return None
+
         provider_order = self._provider_order(provider_profile)
         if not provider_order:
             logger.debug("LLM heuristics fallback: provider profile disabled or unrecognized (%s)", provider_profile or "empty")
