@@ -140,9 +140,12 @@ class AgentRequest(BaseModel):
 class AgentResponse(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    reply: str = Field(min_length=1)
+    reply: str = ""
     intent: str = Field(min_length=1)
     score: float = Field(ge=0, le=1)
     action: str = Field(min_length=1)
     needs_human: bool
     data_to_save: dict[str, Any] = Field(default_factory=dict)
+    provider: str | None = None
+    model: str | None = None
+    latency_ms: int | None = None

@@ -86,7 +86,7 @@ final class RuntimeSettingCatalog
                 'label' => 'Modelo de Ollama',
                 'description' => 'Modelo que usa el worker cuando el perfil LLM apunta a Ollama.',
                 'inputType' => 'select',
-                'defaultValue' => 'llama3.1',
+                'defaultValue' => 'qwen2.5:7b-instruct',
                 'group' => 'llm',
                 'options' => $this->ollamaModelOptions(),
                 'secret' => false,
@@ -192,9 +192,9 @@ final class RuntimeSettingCatalog
     private function ollamaModelOptions(): array
     {
         return [
-            ['value' => 'llama3.1', 'label' => 'llama3.1'],
-            ['value' => 'qwen2.5', 'label' => 'qwen2.5'],
-            ['value' => 'mistral', 'label' => 'mistral'],
+            ['value' => 'qwen2.5:7b-instruct', 'label' => 'qwen2.5:7b-instruct'],
+            ['value' => 'qwen2.5:14b-instruct', 'label' => 'qwen2.5:14b-instruct'],
+            ['value' => 'llama3.2:3b', 'label' => 'llama3.2:3b'],
         ];
     }
 

@@ -33,4 +33,25 @@ class ConversationMessageRepository extends ServiceEntityRepository
             $this->getEntityManager()->flush();
         }
     }
+
+    public function findOneByExternalMessageId(?string $externalMessageId): ?ConversationMessage
+    {
+        if ($externalMessageId === null) {
+            return null;
+        }
+
+        $externalMessageId = trim($externalMessageId);
+        if ($externalMessageId === '') {
+            return null;
+        }
+
+        return $this->createQueryBuilder('m')
+            ->join('m.conversation', 'c')
+            ->addSelect('c')
+            ->andWhere('m.externalMessageId = :externalMessageId')
+            ->setParameter('externalMessageId', $externalMessageId)
+            ->setMaxResults(1)
+            ->getQuery()
+            ->getOneOrNullResult();
+    }
 }

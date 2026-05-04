@@ -165,6 +165,62 @@ class BackendConversationUpsertPayload(BaseModel):
     crm_branch_ref: str | None = Field(default=None, alias="crm_branch_ref")
 
 
+class BackendConversationMessagePayload(BaseModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    conversation_id: str = Field(alias="conversation_id")
+    direction: str = Field(alias="direction")
+    role: str = Field(alias="role")
+    message_type: str = Field(alias="message_type")
+    body: str = Field(alias="body")
+    external_message_id: str | None = Field(default=None, alias="external_message_id")
+    external_timestamp: str | None = Field(default=None, alias="external_timestamp")
+    provider: str | None = Field(default=None, alias="provider")
+    model: str | None = Field(default=None, alias="model")
+    latency_ms: int | None = Field(default=None, alias="latency_ms")
+    intent: str | None = Field(default=None, alias="intent")
+    score: int | None = Field(default=None, alias="score")
+    action: str | None = Field(default=None, alias="action")
+    needs_human: bool = Field(default=False, alias="needs_human")
+    error_code: str | None = Field(default=None, alias="error_code")
+    error_message: str | None = Field(default=None, alias="error_message")
+    raw_payload: Any | None = Field(default=None, alias="raw_payload")
+    metadata: dict[str, Any] = Field(default_factory=dict, alias="metadata")
+
+
+class BackendConversationMessage(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    conversation_id: str = Field(validation_alias=AliasChoices("conversationId", "conversation_id"))
+    direction: str
+    role: str | None = None
+    message_type: str | None = Field(default=None, validation_alias=AliasChoices("messageType", "message_type"))
+    body: str
+    external_message_id: str | None = Field(default=None, validation_alias=AliasChoices("externalMessageId", "external_message_id"))
+    external_timestamp: str | None = Field(default=None, validation_alias=AliasChoices("externalTimestamp", "external_timestamp"))
+    provider: str | None = None
+    model: str | None = None
+    latency_ms: int | None = Field(default=None, validation_alias=AliasChoices("latencyMs", "latency_ms"))
+    intent: str | None = None
+    score: int | None = None
+    action: str | None = None
+    needs_human: bool = Field(default=False, validation_alias=AliasChoices("needsHuman", "needs_human"))
+    error_code: str | None = Field(default=None, validation_alias=AliasChoices("errorCode", "error_code"))
+    error_message: str | None = Field(default=None, validation_alias=AliasChoices("errorMessage", "error_message"))
+    raw_payload: Any | None = Field(default=None, validation_alias=AliasChoices("rawPayload", "raw_payload"))
+    metadata: dict[str, Any] | None = None
+    created_at: str | None = Field(default=None, validation_alias=AliasChoices("createdAt", "created_at"))
+
+
+class BackendConversationMessageResult(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    created: bool
+    duplicate: bool
+    message: BackendConversationMessage
+
+
 class CommercialContext(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -416,6 +472,29 @@ class BackendClient:
             return None
 
         return payload_data if isinstance(payload_data, dict) else None
+
+    async def create_conversation_message(self, payload: BackendConversationMessagePayload) -> BackendConversationMessageResult | None:
+        base_url = self.settings.backend_base_url.strip().rstrip("/")
+        if base_url == "":
+            return None
+
+        timeout = httpx.Timeout(5.0, connect=2.0)
+        try:
+            async with httpx.AsyncClient(base_url=base_url, timeout=timeout, transport=self.transport) as client:
+                response = await client.post(
+                    "/api/internal/conversations/messages",
+                    json=payload.model_dump(by_alias=True),
+                    headers=self._auth_headers(),
+                )
+                response.raise_for_status()
+                payload_data = response.json()
+        except (httpx.HTTPError, ValueError):
+            return None
+
+        if not isinstance(payload_data, dict):
+            return None
+
+        return BackendConversationMessageResult.model_validate(payload_data)
 
     async def _get_json(self, client: httpx.AsyncClient, path: str) -> Any:
         response = await client.get(path)

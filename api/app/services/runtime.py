@@ -1,7 +1,15 @@
 from __future__ import annotations
 
+import time
+from typing import Any
+
 from app.schemas.agent import AgentRequest, AgentResponse
-from app.services.backend_client import BackendClient, BackendConversationUpsertPayload, CommercialContext
+from app.services.backend_client import (
+    BackendClient,
+    BackendConversationMessagePayload,
+    BackendConversationUpsertPayload,
+    CommercialContext,
+)
 from app.services.crm_client import CRMClient, CRMContactContext
 from app.services.decision_engine import DecisionEngine
 from app.services.routing_resolver import RoutingContext, RuntimeRoutingResolver
@@ -64,17 +72,75 @@ class AgentRuntime:
             )
         )
 
+        conversation_id = self._conversation_id_from_result(conversation_result)
+        if conversation_id is not None:
+            inbound_result = await self.backend_client.create_conversation_message(
+                BackendConversationMessagePayload(
+                    conversation_id=conversation_id,
+                    direction="inbound",
+                    role="user",
+                    message_type="text",
+                    body=payload.message.text,
+                    external_message_id=self._raw_event_field(payload.raw_event, "whatsapp_message_id", "whatsappMessageId", "message_id", "id"),
+                    external_timestamp=self._raw_event_field(payload.raw_event, "timestamp"),
+                    raw_payload=payload.raw_event,
+                    metadata={
+                        "channel_type": payload.channel_type,
+                        "external_channel_id": payload.external_channel_id,
+                        "entrypoint_ref": payload.entrypoint_ref,
+                        "contact": payload.contact.model_dump(),
+                    },
+                )
+            )
+            if inbound_result is not None and inbound_result.duplicate:
+                return AgentResponse(
+                    reply="",
+                    intent="duplicate_message",
+                    score=0,
+                    action="ignore",
+                    needs_human=False,
+                    data_to_save={
+                        "duplicate": True,
+                        "reason": "inbound_message_already_processed",
+                    },
+                )
+
         if isinstance(conversation_result, dict):
             conversation = conversation_result.get("conversation")
             if isinstance(conversation, dict) and isinstance(conversation.get("id"), str):
                 routing.conversation_id = conversation["id"]
 
-        return await self.decision_engine.decide(
+        started_at = time.perf_counter()
+        response = await self.decision_engine.decide(
             payload,
             routing=routing,
             backend_context=backend_context,
             crm_context=crm_context,
         )
+        latency_ms = int(round((time.perf_counter() - started_at) * 1000))
+
+        if conversation_id is not None:
+            provider, model = self._llm_trace_from_response(response)
+            await self.backend_client.create_conversation_message(
+                BackendConversationMessagePayload(
+                    conversation_id=conversation_id,
+                    direction="outbound",
+                    role="assistant",
+                    message_type="text",
+                    body=response.reply,
+                    provider=provider,
+                    model=model,
+                    latency_ms=latency_ms,
+                    intent=response.intent,
+                    score=self._score_to_integer(response.score),
+                    action=response.action,
+                    needs_human=response.needs_human,
+                    raw_payload=response.model_dump(),
+                    metadata={"data_to_save": response.data_to_save},
+                )
+            )
+
+        return response
 
     def _missing_routing_data(self, payload: AgentRequest) -> dict[str, str]:
         data = {
@@ -91,3 +157,49 @@ class AgentRuntime:
             data["entrypoint_ref"] = payload.entrypoint_ref.strip()
 
         return data
+
+    def _conversation_id_from_result(self, conversation_result: dict[str, Any] | None) -> str | None:
+        if not isinstance(conversation_result, dict):
+            return None
+
+        conversation = conversation_result.get("conversation")
+        if not isinstance(conversation, dict):
+            return None
+
+        conversation_id = conversation.get("id")
+        if isinstance(conversation_id, str) and conversation_id.strip() != "":
+            return conversation_id.strip()
+
+        return None
+
+    def _raw_event_field(self, raw_event: Any | None, *names: str) -> str | None:
+        if not isinstance(raw_event, dict):
+            return None
+
+        for name in names:
+            value = raw_event.get(name)
+            if isinstance(value, str) and value.strip() != "":
+                return value.strip()
+            if isinstance(value, (int, float)) and str(value).strip() != "":
+                return str(value)
+
+        return None
+
+    def _score_to_integer(self, score: float) -> int | None:
+        try:
+            return int(round(score * 100))
+        except Exception:
+            return None
+
+    def _llm_trace_from_response(self, response: AgentResponse) -> tuple[str | None, str | None]:
+        trace = response.data_to_save.get("llm_trace")
+        if not isinstance(trace, dict):
+            return None, None
+
+        provider = trace.get("provider")
+        model = trace.get("model")
+
+        provider_value = provider.strip() if isinstance(provider, str) and provider.strip() != "" else None
+        model_value = model.strip() if isinstance(model, str) and model.strip() != "" else None
+
+        return provider_value, model_value

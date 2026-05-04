@@ -3,11 +3,13 @@
 namespace App\Controller\Api;
 
 use App\Entity\Conversation;
+use App\Entity\ConversationMessage;
 use App\Entity\EntryPoint;
 use App\Entity\EntryPointUtm;
 use App\Entity\Product;
 use App\Entity\Tenant;
 use App\Repository\ConversationRepository;
+use App\Repository\ConversationMessageRepository;
 use App\Repository\EntryPointRepository;
 use App\Repository\EntryPointUtmRepository;
 use App\Repository\ProductRepository;
@@ -16,6 +18,7 @@ use App\Service\ConversationService;
 use App\Service\EntryPointUtmFactory;
 use App\Service\RoutingResolver;
 use App\Service\WhatsAppRedirectUrlBuilder;
+use App\Security\InternalBearerTokenValidator;
 use InvalidArgumentException;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\RedirectResponse;
@@ -35,6 +38,8 @@ final class RoutingController extends AbstractApiController
         private readonly ProductRepository $products,
         private readonly ConversationService $conversationService,
         private readonly ConversationRepository $conversations,
+        private readonly ConversationMessageRepository $conversationMessages,
+        private readonly InternalBearerTokenValidator $validator,
     ) {
     }
 
@@ -177,6 +182,76 @@ final class RoutingController extends AbstractApiController
         ]);
     }
 
+    #[Route('/internal/conversations/messages', methods: ['POST'])]
+    public function createConversationMessage(Request $request): JsonResponse
+    {
+        if (!$this->validator->isAuthorized($request)) {
+            return $this->json(['message' => 'Unauthorized'], JsonResponse::HTTP_UNAUTHORIZED);
+        }
+
+        $data = $this->readJson($request);
+        $conversationId = trim((string) ($data['conversation_id'] ?? ''));
+        $direction = strtolower(trim((string) ($data['direction'] ?? '')));
+        $role = trim((string) ($data['role'] ?? ''));
+        $body = trim((string) ($data['body'] ?? ''));
+
+        if ($conversationId === '' || $direction === '' || $role === '' || $body === '') {
+            return $this->badRequest('conversation_id, direction, role and body are required');
+        }
+
+        if (!in_array($direction, ['inbound', 'outbound'], true)) {
+            return $this->badRequest('direction must be inbound or outbound');
+        }
+
+        $conversation = $this->conversations->find($conversationId);
+        if (!$conversation instanceof Conversation) {
+            return $this->notFound('Conversation not found');
+        }
+
+        $externalMessageId = $this->normalizeNullableString($data['external_message_id'] ?? null);
+        if ($externalMessageId !== null) {
+            $existingMessage = $this->conversationMessages->findOneByExternalMessageId($externalMessageId);
+            if ($existingMessage instanceof ConversationMessage) {
+                return $this->json([
+                    'created' => false,
+                    'duplicate' => true,
+                    'message' => $existingMessage->toArray(),
+                ]);
+            }
+        }
+
+        $message = new ConversationMessage($conversation, $direction, $body);
+        $message->setRole($role);
+        $message->setMessageType($this->normalizeNullableString($data['message_type'] ?? null));
+        $message->setExternalMessageId($externalMessageId);
+        $message->setExternalTimestamp($this->normalizeNullableString($data['external_timestamp'] ?? null));
+        $message->setProvider($this->normalizeNullableString($data['provider'] ?? null));
+        $message->setModel($this->normalizeNullableString($data['model'] ?? null));
+        $message->setLatencyMs(isset($data['latency_ms']) && is_numeric($data['latency_ms']) ? (int) $data['latency_ms'] : null);
+        $message->setIntent($this->normalizeNullableString($data['intent'] ?? null));
+        $message->setScore(isset($data['score']) && is_numeric($data['score']) ? (int) $data['score'] : null);
+        $message->setAction($this->normalizeNullableString($data['action'] ?? null));
+        $message->setNeedsHuman(isset($data['needs_human']) ? filter_var($data['needs_human'], FILTER_VALIDATE_BOOLEAN) : false);
+        $message->setErrorCode($this->normalizeNullableString($data['error_code'] ?? null));
+        $message->setErrorMessage($this->normalizeNullableString($data['error_message'] ?? null));
+        $message->setRawPayload(isset($data['raw_payload']) && is_array($data['raw_payload']) ? $data['raw_payload'] : null);
+        $message->setMetadata(isset($data['metadata']) && is_array($data['metadata']) ? $data['metadata'] : null);
+
+        $conversation->setLastMessageAt(new \DateTimeImmutable());
+        if ($direction === 'outbound' && $message->isNeedsHuman()) {
+            $conversation->setStatus('pending_human');
+        }
+
+        $this->conversationMessages->save($message, false);
+        $this->conversations->save($conversation);
+
+        return $this->json([
+            'created' => true,
+            'duplicate' => false,
+            'message' => $message->toArray(),
+        ]);
+    }
+
     private function resolveTenantFromPayload(array $data): ?Tenant
     {
         $tenantId = trim((string) ($data['tenant_id'] ?? ''));
@@ -232,5 +307,16 @@ final class RoutingController extends AbstractApiController
         }
 
         return null;
+    }
+
+    private function normalizeNullableString(mixed $value): ?string
+    {
+        if (!is_string($value)) {
+            return null;
+        }
+
+        $trimmed = trim($value);
+
+        return $trimmed !== '' ? $trimmed : null;
     }
 }
