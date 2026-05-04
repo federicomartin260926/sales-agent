@@ -38,6 +38,7 @@ services:
   sales-agent-nginx:
     volumes:
       - ./docker/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./backend/public:/var/www/html/backend/public:ro
     networks:
       - sales-agent-net
       - proxy
