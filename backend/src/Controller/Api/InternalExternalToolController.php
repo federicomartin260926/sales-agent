@@ -6,6 +6,7 @@ use App\Entity\ExternalTool;
 use App\Entity\Tenant;
 use App\Repository\ExternalToolRepository;
 use App\Repository\TenantRepository;
+use App\Service\RuntimeSettingCipher;
 use App\Security\InternalBearerTokenValidator;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
@@ -17,6 +18,7 @@ final class InternalExternalToolController extends AbstractApiController
     public function __construct(
         private readonly TenantRepository $tenants,
         private readonly ExternalToolRepository $externalTools,
+        private readonly RuntimeSettingCipher $cipher,
         private readonly InternalBearerTokenValidator $validator,
     ) {
     }
@@ -58,6 +60,15 @@ final class InternalExternalToolController extends AbstractApiController
 
     private function toolPayload(ExternalTool $externalTool): array
     {
+        $bearerToken = null;
+        if ($externalTool->getAuthType() === 'bearer' && $externalTool->getBearerToken() !== null) {
+            try {
+                $bearerToken = $this->cipher->decrypt($externalTool->getBearerToken());
+            } catch (\Throwable $exception) {
+                $bearerToken = null;
+            }
+        }
+
         return [
             'id' => $externalTool->getId()->toRfc4122(),
             'tenant_id' => $externalTool->getTenant()->getId()->toRfc4122(),
@@ -66,9 +77,9 @@ final class InternalExternalToolController extends AbstractApiController
             'provider' => $externalTool->getProvider(),
             'webhook_url' => $externalTool->getWebhookUrl(),
             'auth_type' => $externalTool->getAuthType(),
-            'bearer_token' => $externalTool->getBearerToken(),
+            'bearer_token' => $bearerToken,
             'timeout_seconds' => $externalTool->getTimeoutSeconds(),
-            'config' => $externalTool->getConfig(),
+            'config' => $externalTool->getConfig() !== [] ? $externalTool->getConfig() : (object) [],
         ];
     }
 }

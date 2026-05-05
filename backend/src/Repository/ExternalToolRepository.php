@@ -35,6 +35,35 @@ class ExternalToolRepository extends ServiceEntityRepository
         }
     }
 
+    /**
+     * @return ExternalTool[]
+     */
+    public function findAllOrdered(): array
+    {
+        return $this->createQueryBuilder('t')
+            ->join('t.tenant', 'tenant')
+            ->addSelect('tenant')
+            ->orderBy('tenant.name', 'ASC')
+            ->addOrderBy('t.name', 'ASC')
+            ->getQuery()
+            ->getResult();
+    }
+
+    /**
+     * @return ExternalTool[]
+     */
+    public function findByTenantOrdered(Tenant $tenant): array
+    {
+        return $this->createQueryBuilder('t')
+            ->join('t.tenant', 'tenant')
+            ->addSelect('tenant')
+            ->andWhere('t.tenant = :tenant')
+            ->setParameter('tenant', $tenant)
+            ->orderBy('t.name', 'ASC')
+            ->getQuery()
+            ->getResult();
+    }
+
     public function findActiveByTenantAndType(Tenant $tenant, string $type): ?ExternalTool
     {
         return $this->createQueryBuilder('t')

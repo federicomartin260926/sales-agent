@@ -26,7 +26,11 @@ class LLMPromptBuilder:
             "Si piden humano/persona/asesor/comercial, needs_human debe ser true. "
             "Si external_context.flags.needs_human es true, needs_human debe ser true. "
             "Si external_context.flags.do_not_contact es true, responde de forma conservadora y needs_human debe ser true. "
-            "Puedes usar external_context.summary, recent_activity y open_opportunities para responder con más contexto, "
+            "Si external_context.appointments.next existe, úsala directamente para responder sobre la próxima cita, reunión o reserva. "
+            "Si external_context.summary, appointments, recent_activity, open_opportunities o sales contienen datos útiles, usa esa información y no inventes citas. "
+            "Si no tienes acceso a la agenda, dilo claramente; si no hay próxima cita, indícalo sin pedir datos innecesarios. "
+            "Si la respuesta usa una cita real, clasifícala como agenda con action answer_question; si no hay próxima cita pero el usuario quiere agendar, usa action offer_booking u offer_booking_or_handoff. "
+            "Puedes usar external_context.summary, appointments, recent_activity, open_opportunities y sales para responder con más contexto, "
             "pero no menciones sistemas internos, CRM, n8n, webhooks, IDs internos, UTM, refs, tokens o detalles técnicos. "
             "Mantén el tono breve, útil y orientado a conversación."
         )
@@ -169,6 +173,8 @@ class LLMPromptBuilder:
         contact = data.get("contact")
         recent_activity = data.get("recent_activity")
         open_opportunities = data.get("open_opportunities")
+        appointments = data.get("appointments")
+        sales = data.get("sales")
 
         payload.update(
             {
@@ -177,6 +183,8 @@ class LLMPromptBuilder:
                 "contact": self._clean_contact(contact),
                 "recent_activity": self._clean_list_of_dicts(recent_activity, max_items=5),
                 "open_opportunities": self._clean_list_of_dicts(open_opportunities, max_items=5),
+                "appointments": self._clean_appointments(appointments),
+                "sales": self._clean_sales(sales),
                 "flags": self._clean_flags(flags),
             }
         )
@@ -230,6 +238,62 @@ class LLMPromptBuilder:
                 cleaned.append(cleaned_item)
 
         return cleaned
+
+    def _clean_appointments(self, value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+
+        cleaned: dict[str, Any] = {}
+        next_appointment = self._clean_appointment(value.get("next"))
+        last_appointment = self._clean_appointment(value.get("last"))
+
+        if next_appointment is not None:
+            cleaned["next"] = next_appointment
+        if last_appointment is not None:
+            cleaned["last"] = last_appointment
+
+        return cleaned or None
+
+    def _clean_appointment(self, value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+
+        allowed = ("id", "title", "start_at", "end_at", "note", "summary", "status")
+        cleaned: dict[str, Any] = {}
+        for key in allowed:
+            clean_value = self._clean_scalar(value.get(key))
+            if clean_value is not None:
+                cleaned[key] = clean_value
+
+        for alias_key, target_key in (("startAt", "start_at"), ("endAt", "end_at")):
+            clean_value = self._clean_scalar(value.get(alias_key))
+            if clean_value is not None and target_key not in cleaned:
+                cleaned[target_key] = clean_value
+
+        return cleaned or None
+
+    def _clean_sales(self, value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict):
+            return None
+
+        cleaned: dict[str, Any] = {}
+        has_won_deals = value.get("has_won_deals")
+        if isinstance(has_won_deals, bool):
+            cleaned["has_won_deals"] = has_won_deals
+
+        won_deals_count = value.get("won_deals_count")
+        if isinstance(won_deals_count, int):
+            cleaned["won_deals_count"] = won_deals_count
+
+        total_won_amount = value.get("total_won_amount")
+        if isinstance(total_won_amount, (int, float)):
+            cleaned["total_won_amount"] = total_won_amount
+
+        currency = self._clean_string(value.get("currency"))
+        if currency is not None:
+            cleaned["currency"] = currency
+
+        return cleaned or None
 
     def _clean_scalar(self, value: Any) -> str | int | float | bool | None:
         if isinstance(value, bool):

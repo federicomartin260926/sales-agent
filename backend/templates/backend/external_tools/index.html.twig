@@ -1,0 +1,140 @@
+{% extends 'backend/layout.html.twig' %}
+
+{% block content %}
+  <section class="hero-panel">
+    <div class="hero-copy">
+      <div class="eyebrow-dark">Herramientas externas</div>
+      <h2>Contact context vía n8n</h2>
+      <p>
+        Configura por tenant la herramienta externa que enriquece el contexto del contacto. La URL visible desde el navegador
+        puede diferir de la que ve el contenedor: en local suele funcionar <code>http://host.docker.internal:5680/webhook/sales-agent/contact-context</code>.
+      </p>
+    </div>
+    <div class="hero-aside">
+      <div class="badge-live">Admin</div>
+      <div class="hero-aside-title">Prueba segura</div>
+      <p>No usa DecisionEngine ni crea conversaciones. Sólo prueba el webhook guardado.</p>
+      <a class="primary-action" href="/backend/external-tools/new">Crear herramienta externa</a>
+    </div>
+  </section>
+
+  {% for message in app.flashes('success') %}
+    <div class="alert alert-success">{{ message }}</div>
+  {% endfor %}
+
+  {% for message in app.flashes('error') %}
+    <div class="alert alert-error">{{ message }}</div>
+  {% endfor %}
+
+  {% if filter_error is not null %}
+    <div class="alert alert-error">{{ filter_error }}</div>
+  {% endif %}
+
+  {% if test_result is defined and test_result is not null %}
+    <div class="alert {{ test_result.ok ? 'alert-success' : 'alert-warning' }}">
+      <strong>Resultado de prueba</strong>
+      <div class="subtle">ok: {{ test_result.ok ? 'true' : 'false' }} | found: {{ test_result.found ? 'true' : 'false' }} | provider: {{ test_result.provider|default('') }}</div>
+      <div class="subtle">status_code: {{ test_result.status_code is not null ? test_result.status_code : 'null' }} | latency_ms: {{ test_result.latency_ms|default(0) }} | error_code: {{ test_result.error_code|default('null') }}</div>
+      <div>{{ test_result.summary|default('') }}</div>
+    </div>
+  {% endif %}
+
+  <section class="table-card external-tools-filter-card">
+    <div class="table-header">
+      <div>
+        <h3>Filtrar por tenant</h3>
+        <p>Selecciona un negocio para revisar sus herramientas externas.</p>
+      </div>
+    </div>
+    <form method="get" action="/backend/external-tools" class="tenant-form tenant-form-compact">
+      <div class="form-grid">
+        <div class="field">
+          <label for="tenant-filter">Tenant</label>
+          <select id="tenant-filter" name="tenant_id">
+            <option value="">Todos los tenants</option>
+            {% for tenant in tenants %}
+              <option value="{{ tenant.id }}"{{ tenant_filter == tenant.id ? ' selected' : '' }}>{{ tenant.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+      <div class="form-actions form-actions-end">
+        <button class="secondary-action" type="submit">Aplicar filtro</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="table-card">
+    <div class="table-header">
+      <div>
+        <h3>Herramientas externas configuradas</h3>
+        <p>Se listan las herramientas activas e inactivas registradas por tenant.</p>
+      </div>
+      <a class="primary-action" href="/backend/external-tools/new">Nueva herramienta</a>
+    </div>
+    <div class="table-responsive">
+      <table>
+        <thead>
+          <tr>
+            <th>Tenant</th>
+            <th>Herramienta</th>
+            <th>Tipo / proveedor</th>
+            <th>Webhook</th>
+            <th>Auth</th>
+            <th>Timeout</th>
+            <th>Estado</th>
+            <th class="text-right">Acciones</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for tool in tools %}
+            <tr>
+              <td>
+                <strong>{{ tool.tenantName }}</strong>
+                <div class="subtle">{{ tool.tenantId }}</div>
+              </td>
+              <td>
+                <strong>{{ tool.name }}</strong>
+                <div class="subtle">Config: {{ tool.configSummary }}</div>
+              </td>
+              <td>
+                <div>{{ tool.type }}</div>
+                <div class="subtle">{{ tool.provider }}</div>
+              </td>
+              <td><code>{{ tool.webhookUrl ?: '—' }}</code></td>
+              <td>
+                <div>{{ tool.authType }}</div>
+                {% if tool.hasBearerToken %}
+                  <div class="subtle">Token: ********</div>
+                {% endif %}
+              </td>
+              <td>{{ tool.timeoutSeconds }}s</td>
+              <td>{% if tool.isActive %}<span class="status-ok">Activo</span>{% else %}<span class="status-off">Inactivo</span>{% endif %}</td>
+              <td class="text-right">
+                <div class="tool-actions-inline">
+                  <a class="icon-action tool-action-icon-button" href="/backend/external-tools/{{ tool.id }}/edit" title="Editar herramienta externa" aria-label="Editar herramienta externa">✎</a>
+                  <form method="post" action="/backend/external-tools/{{ tool.id }}/test" style="display:inline-flex;">
+                    <input type="hidden" name="_csrf_token" value="{{ tool.testToken }}">
+                    <button class="icon-action tool-action-icon-button" type="submit" title="Probar herramienta" aria-label="Probar herramienta">▶</button>
+                  </form>
+                  <form method="post" action="/backend/external-tools/{{ tool.id }}/toggle" style="display:inline-flex;">
+                    <input type="hidden" name="_csrf_token" value="{{ tool.toggleToken }}">
+                    <button class="icon-action tool-action-icon-button" type="submit" title="{{ tool.isActive ? 'Desactivar' : 'Activar' }}" aria-label="{{ tool.isActive ? 'Desactivar' : 'Activar' }}">{{ tool.isActive ? '⏸' : '▶' }}</button>
+                  </form>
+                  <form method="post" action="/backend/external-tools/{{ tool.id }}/delete" onsubmit="return confirm('¿Eliminar esta herramienta externa?');" style="display:inline-flex;">
+                    <input type="hidden" name="_csrf_token" value="{{ tool.deleteToken }}">
+                    <button class="icon-action icon-action-danger tool-action-icon-button" type="submit" title="Eliminar herramienta externa" aria-label="Eliminar herramienta externa">🗑</button>
+                  </form>
+                </div>
+              </td>
+            </tr>
+          {% else %}
+            <tr>
+              <td colspan="8" class="empty-row">No hay herramientas externas todavía.</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+{% endblock %}

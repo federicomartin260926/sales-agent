@@ -1023,6 +1023,59 @@ body.login-page .footer code {
   padding: 18px;
 }
 
+.external-tools-filter-card {
+  margin-bottom: 24px;
+}
+
+.external-tools-filter-card .tenant-form-compact {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: end;
+  max-width: 100%;
+}
+
+.external-tools-filter-card .form-grid {
+  display: contents;
+}
+
+.external-tools-filter-card .field {
+  max-width: 760px;
+}
+
+.external-tools-filter-card .form-actions-end {
+  justify-content: flex-end;
+  margin: 0;
+  padding: 0;
+  align-self: end;
+}
+
+.tool-actions-inline {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+  min-width: 190px;
+}
+
+.tool-actions-inline .icon-action {
+  width: 36px;
+  height: 36px;
+  border-radius: 12px;
+  flex: 0 0 36px;
+}
+
+.tool-actions-inline form {
+  display: inline-flex;
+  margin: 0;
+}
+
+.tool-actions-inline .icon-action-danger {
+  flex: 0 0 36px;
+}
+
 .table-header {
   display: flex;
   justify-content: space-between;
@@ -1079,6 +1132,12 @@ body.login-page .footer code {
   display: block;
 }
 
+.tool-action-icon {
+  width: 18px;
+  text-align: center;
+  flex: 0 0 18px;
+}
+
 .table-header h3 {
   margin: 0 0 6px;
   font-size: 18px;
@@ -1088,6 +1147,7 @@ body.login-page .footer code {
 
 .table-responsive {
   overflow-x: auto;
+  overflow-y: visible;
 }
 
 .table-card table {

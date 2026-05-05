@@ -125,6 +125,15 @@ class AgentRuntime:
             ),
         )
 
+        agenda_response = self.decision_engine.resolve_agenda_response(
+            payload,
+            routing=routing,
+            backend_context=backend_context,
+            contact_context=contact_context,
+        )
+        if agenda_response is not None:
+            return agenda_response
+
         started_at = time.perf_counter()
         response = await self.decision_engine.decide(
             payload,
@@ -132,7 +141,8 @@ class AgentRuntime:
             backend_context=backend_context,
             contact_context=contact_context,
         )
-        latency_ms = int(round((time.perf_counter() - started_at) * 1000))
+        decision_latency_ms = int(round((time.perf_counter() - started_at) * 1000))
+        latency_ms = response.latency_ms if response.latency_ms is not None else decision_latency_ms
 
         if conversation_id is not None:
             await self.backend_client.create_conversation_message(

@@ -48,6 +48,60 @@ class DecisionEngine:
 
         return self._decide_without_context(payload, routing, message, contact_context)
 
+    def resolve_agenda_response(
+        self,
+        payload: AgentRequest,
+        routing: RoutingContext | None,
+        backend_context: CommercialContext | None,
+        contact_context: dict | None,
+    ) -> AgentResponse | None:
+        message = payload.message.text.lower().strip()
+        if not self._is_agenda_message(message):
+            return None
+
+        state = self._agenda_context_state(contact_context)
+        base_data = self._base_context_save(payload, backend_context, routing, "agenda", contact_context) if backend_context is not None else self._base_fallback_save(payload, routing, "agenda", contact_context)
+
+        if state == "not_configured":
+            return AgentResponse(
+                reply="No tengo acceso a la agenda en este momento. Si quieres, puedo dejarte una reserva o pasar el caso a una persona del equipo.",
+                intent="agenda",
+                score=0.75,
+                action="offer_booking_or_handoff",
+                needs_human=False,
+                data_to_save=base_data,
+            )
+
+        if state == "unavailable":
+            return AgentResponse(
+                reply="Ahora mismo no puedo consultar la agenda. Si quieres, puedo ayudarte a dejar una reserva o pasar el caso a una persona del equipo.",
+                intent="agenda",
+                score=0.74,
+                action="offer_booking_or_handoff",
+                needs_human=False,
+                data_to_save=base_data,
+            )
+
+        next_appointment = self._agenda_next_appointment(contact_context)
+        if next_appointment is None:
+            return AgentResponse(
+                reply="No veo una próxima cita registrada. Si quieres, puedo ayudarte a dejar una nueva reserva.",
+                intent="agenda",
+                score=0.78,
+                action="offer_booking",
+                needs_human=False,
+                data_to_save=self._agenda_data_to_save(base_data, contact_context),
+            )
+
+        return AgentResponse(
+            reply=self._format_next_appointment_reply(next_appointment),
+            intent="agenda",
+            score=0.92,
+            action="answer_question",
+            needs_human=False,
+            data_to_save=self._agenda_data_to_save(base_data, contact_context),
+        )
+
     def _build_llm_response(
         self,
         payload: AgentRequest,
@@ -56,7 +110,16 @@ class DecisionEngine:
         contact_context: dict | None,
         llm_decision: LLMDecisionDraft,
     ) -> AgentResponse:
-        topic = self._topic_from_intent(llm_decision.intent)
+        agenda_context = self._should_promote_agenda_response(payload.message.text, contact_context)
+        intent = llm_decision.intent
+        action = llm_decision.action
+        topic = self._topic_from_intent(intent)
+
+        if agenda_context:
+            intent = "agenda"
+            action = "answer_question"
+            topic = "agenda"
+
         if backend_context is not None:
             base_data = self._base_context_save(payload, backend_context, routing, topic, contact_context)
         else:
@@ -71,13 +134,14 @@ class DecisionEngine:
 
         return AgentResponse(
             reply=llm_decision.reply,
-            intent=llm_decision.intent,
+            intent=intent,
             score=llm_decision.score,
-            action=llm_decision.action,
+            action=action,
             needs_human=needs_human,
             data_to_save=merged_data,
             provider=llm_decision.provider,
             model=llm_decision.model,
+            latency_ms=llm_decision.latency_ms,
         )
 
     def _decide_without_context(
@@ -399,6 +463,162 @@ class DecisionEngine:
         }
         return mapping.get(intent.strip().lower(), "unknown")
 
+    def _is_agenda_message(self, message: str) -> bool:
+        return any(
+            keyword in message
+            for keyword in (
+                "próxima cita",
+                "proxima cita",
+                "mi cita",
+                "cuándo era mi cita",
+                "cuando era mi cita",
+                "qué día tengo cita",
+                "que dia tengo cita",
+                "hora de la cita",
+                "tengo cita",
+                "reunión",
+                "reunion",
+                "reserva",
+                "agenda",
+                "cita",
+            )
+        )
+
+    def _agenda_context_state(self, contact_context: dict | None) -> str:
+        if not isinstance(contact_context, dict):
+            return "unavailable"
+
+        if not bool(contact_context.get("configured", False)):
+            return "not_configured"
+
+        if not bool(contact_context.get("available", False)) or not bool(contact_context.get("ok", False)):
+            return "unavailable"
+
+        error_code = contact_context.get("error_code")
+        if isinstance(error_code, str) and error_code.strip() != "":
+            return "unavailable"
+
+        return "available"
+
+    def _agenda_next_appointment(self, contact_context: dict | None) -> dict[str, Any] | None:
+        data = self._external_context_data(contact_context)
+        appointments = data.get("appointments")
+        if not isinstance(appointments, dict):
+            return None
+
+        next_appointment = appointments.get("next")
+        return next_appointment if isinstance(next_appointment, dict) else None
+
+    def _format_next_appointment_reply(self, next_appointment: dict[str, Any]) -> str:
+        title = self._agenda_text(next_appointment, "title")
+        start_at = self._agenda_text(next_appointment, "start_at", "startAt", "date")
+        end_at = self._agenda_text(next_appointment, "end_at", "endAt")
+        note = self._agenda_text(next_appointment, "note", "summary")
+
+        parts = ["Sí, tu próxima cita está registrada"]
+        if title is not None:
+            parts.append(f"para {title}")
+        if start_at is not None:
+            parts.append(f"el {start_at}")
+        if end_at is not None:
+            parts.append(f"hasta {end_at}")
+
+        reply = " ".join(parts).strip()
+        if note is not None:
+            reply = f"{reply}. {note}"
+
+        return reply if reply.endswith(".") else reply + "."
+
+    def _agenda_text(self, data: dict[str, Any], *keys: str) -> str | None:
+        for key in keys:
+            value = data.get(key)
+            if isinstance(value, str) and value.strip() != "":
+                return value.strip()
+        return None
+
+    def _agenda_data_to_save(self, data: dict, contact_context: dict | None) -> dict:
+        self._apply_agenda_context_data(data, contact_context)
+        return data
+
+    def _should_promote_agenda_response(self, message: str, contact_context: dict | None) -> bool:
+        if not self._message_mentions_agenda(message):
+            return False
+
+        if not isinstance(contact_context, dict):
+            return False
+
+        data = contact_context.get("data")
+        if not isinstance(data, dict):
+            return False
+
+        if self._text_has_agenda_signal(data.get("summary")):
+            return True
+
+        if self._value_has_items(data.get("appointments")) or self._value_has_items(data.get("next_appointment")):
+            return True
+
+        recent_activity = data.get("recent_activity")
+        if isinstance(recent_activity, list):
+            for item in recent_activity:
+                if isinstance(item, dict) and self._text_has_agenda_signal(item.get("summary")):
+                    return True
+
+        return False
+
+    def _message_mentions_agenda(self, message: str) -> bool:
+        normalized = message.lower().strip()
+        return any(
+            keyword in normalized
+            for keyword in (
+                "agenda",
+                "agendar",
+                "cita",
+                "citas",
+                "reunión",
+                "reunion",
+                "reserva",
+                "reservar",
+                "próxima cita",
+                "proxima cita",
+                "appointment",
+                "meeting",
+                "calendar",
+                "schedule",
+            )
+        )
+
+    def _text_has_agenda_signal(self, value: Any) -> bool:
+        if not isinstance(value, str):
+            return False
+
+        normalized = value.lower().strip()
+        return any(
+            keyword in normalized
+            for keyword in (
+                "agenda",
+                "agendar",
+                "cita",
+                "citas",
+                "reunión",
+                "reunion",
+                "reserva",
+                "reservar",
+                "appointment",
+                "meeting",
+                "calendar",
+                "schedule",
+            )
+        )
+
+    def _value_has_items(self, value: Any) -> bool:
+        if isinstance(value, list):
+            return len(value) > 0
+
+        if isinstance(value, dict):
+            return len(value) > 0
+
+        return isinstance(value, str) and value.strip() != ""
+
     def _infer_product_name(self, context: CommercialContext, message: str) -> str | None:
         if not context.products:
             return None
@@ -477,6 +697,72 @@ class DecisionEngine:
         if isinstance(flags, dict):
             for key in ("needs_human", "do_not_contact", "existing_customer"):
                 data[f"external_flag_{key}"] = bool(flags.get(key, False))
+
+        self._apply_agenda_context_data(data, contact_context)
+
+    def _apply_agenda_context_data(self, data: dict, contact_context: dict | None) -> None:
+        if not isinstance(contact_context, dict):
+            return
+
+        payload_data = contact_context.get("data")
+        if not isinstance(payload_data, dict):
+            return
+
+        appointments = payload_data.get("appointments")
+        if isinstance(appointments, dict):
+            next_appointment = appointments.get("next")
+            if isinstance(next_appointment, dict):
+                self._copy_appointment_fields(
+                    data,
+                    next_appointment,
+                    {
+                        "id": "external_next_appointment_id",
+                        "title": "external_next_appointment_title",
+                        "start_at": "external_next_appointment_start_at",
+                        "end_at": "external_next_appointment_end_at",
+                        "note": "external_next_appointment_note",
+                        "startAt": "external_next_appointment_start_at",
+                        "endAt": "external_next_appointment_end_at",
+                    },
+                )
+
+            last_appointment = appointments.get("last")
+            if isinstance(last_appointment, dict):
+                self._copy_appointment_fields(
+                    data,
+                    last_appointment,
+                    {
+                        "start_at": "external_last_appointment_start_at",
+                        "title": "external_last_appointment_title",
+                        "startAt": "external_last_appointment_start_at",
+                    },
+                )
+
+        sales = payload_data.get("sales")
+        if isinstance(sales, dict):
+            has_won_deals = sales.get("has_won_deals")
+            if isinstance(has_won_deals, bool):
+                data["external_sales_has_won_deals"] = has_won_deals
+
+            won_deals_count = sales.get("won_deals_count")
+            if isinstance(won_deals_count, int):
+                data["external_sales_won_deals_count"] = won_deals_count
+
+            total_won_amount = sales.get("total_won_amount")
+            if isinstance(total_won_amount, (int, float)):
+                data["external_sales_total_won_amount"] = total_won_amount
+
+            currency = sales.get("currency")
+            if isinstance(currency, str) and currency.strip() != "":
+                data["external_sales_currency"] = currency.strip()
+
+    def _copy_appointment_fields(self, target: dict, source: dict[str, Any], mapping: dict[str, str]) -> None:
+        for source_key, target_key in mapping.items():
+            value = source.get(source_key)
+            if isinstance(value, str) and value.strip() != "":
+                target[target_key] = value.strip()
+            elif isinstance(value, (int, float)):
+                target[target_key] = value
 
     def _apply_routing_data(self, data: dict, routing: RoutingContext | None) -> None:
         if routing is None:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -28,6 +29,7 @@ class LLMDecisionDraft(BaseModel):
     data_to_save: dict[str, Any] = Field(default_factory=dict)
     provider: str | None = None
     model: str | None = None
+    latency_ms: int | None = None
 
 
 class LLMDecisionService:
@@ -69,6 +71,7 @@ class LLMDecisionService:
                     return None
                 continue
 
+            started_at = time.perf_counter()
             try:
                 result = await self.llm_client.generate(provider, system_prompt, user_prompt, configuration)
             except Exception as exc:
@@ -86,6 +89,20 @@ class LLMDecisionService:
                     return None
                 continue
 
+            agenda_action = self._agenda_action_from_context(payload.message.text, contact_context, draft)
+            if agenda_action is not None and draft.intent in {"open_question", "unknown"}:
+                draft = LLMDecisionDraft(
+                    reply=draft.reply,
+                    intent="agenda",
+                    score=draft.score,
+                    action=agenda_action,
+                    needs_human=draft.needs_human,
+                    data_to_save=draft.data_to_save,
+                    provider=draft.provider,
+                    model=draft.model,
+                    latency_ms=draft.latency_ms,
+                )
+
             logger.info("LLM provider used=%s", result.provider)
             return LLMDecisionDraft(
                 reply=draft.reply,
@@ -96,6 +113,7 @@ class LLMDecisionService:
                 data_to_save=draft.data_to_save,
                 provider=result.provider,
                 model=result.model,
+                latency_ms=int(round((time.perf_counter() - started_at) * 1000)),
             )
 
         logger.info("LLM fallback reason=no provider succeeded")
@@ -185,6 +203,11 @@ class LLMDecisionService:
             "pricing": "qualification",
             "qualification": "qualification",
             "meeting": "agenda",
+            "appointment": "agenda",
+            "booking": "agenda",
+            "calendar": "agenda",
+            "reservation": "agenda",
+            "schedule": "agenda",
             "objection": "open_question",
             "handoff": "handoff",
             "not_interested": "open_question",
@@ -198,6 +221,10 @@ class LLMDecisionService:
         mapping = {
             "greet": "greet",
             "ask_question": "ask_question",
+            "answer_question": "answer_question",
+            "answer": "answer_question",
+            "respond_question": "answer_question",
+            "reply_question": "answer_question",
             "qualify": "ask_question",
             "offer_booking": "propose_meeting",
             "propose_meeting": "propose_meeting",
@@ -207,3 +234,74 @@ class LLMDecisionService:
             "handoff_to_human": "handoff_to_human",
         }
         return mapping.get(normalized, "ask_question")
+
+    def _agenda_action_from_context(
+        self,
+        message: str,
+        contact_context: dict[str, Any] | None,
+        draft: LLMDecisionDraft,
+    ) -> str | None:
+        if not self._is_agenda_message(message):
+            return None
+
+        state = self._agenda_context_state(contact_context)
+        if state in {"not_configured", "unavailable"}:
+            return "offer_booking_or_handoff"
+
+        if self._agenda_next_appointment(contact_context) is not None:
+            return "answer_question"
+
+        return "offer_booking"
+
+    def _is_agenda_message(self, message: str) -> bool:
+        normalized = message.lower().strip()
+        return any(
+            keyword in normalized
+            for keyword in (
+                "próxima cita",
+                "proxima cita",
+                "mi cita",
+                "cuándo era mi cita",
+                "cuando era mi cita",
+                "qué día tengo cita",
+                "que dia tengo cita",
+                "hora de la cita",
+                "tengo cita",
+                "reunión",
+                "reunion",
+                "reserva",
+                "agenda",
+                "cita",
+            )
+        )
+
+    def _agenda_context_state(self, contact_context: dict[str, Any] | None) -> str:
+        if not isinstance(contact_context, dict):
+            return "unavailable"
+
+        if not bool(contact_context.get("configured", False)):
+            return "not_configured"
+
+        if not bool(contact_context.get("available", False)) or not bool(contact_context.get("ok", False)):
+            return "unavailable"
+
+        error_code = contact_context.get("error_code")
+        if isinstance(error_code, str) and error_code.strip() != "":
+            return "unavailable"
+
+        return "available"
+
+    def _agenda_next_appointment(self, contact_context: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not isinstance(contact_context, dict):
+            return None
+
+        data = contact_context.get("data")
+        if not isinstance(data, dict):
+            return None
+
+        appointments = data.get("appointments")
+        if not isinstance(appointments, dict):
+            return None
+
+        next_appointment = appointments.get("next")
+        return next_appointment if isinstance(next_appointment, dict) else None

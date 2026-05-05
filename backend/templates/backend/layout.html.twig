@@ -19,11 +19,12 @@
         <a class="{{ active_nav == 'playbooks' ? 'active' : '' }}" href="/backend/playbooks">Guías comerciales</a>
         <a class="{{ active_nav == 'products' ? 'active' : '' }}" href="/backend/products">Productos / servicios</a>
         <a class="{{ active_nav == 'entry-points' ? 'active' : '' }}" href="/backend/entry-points">Puntos de entrada</a>
-        <details class="nav-group"{{ active_nav in ['admin-users', 'admin-configuration'] ? ' open' : '' }}>
+        <details class="nav-group"{{ active_nav in ['admin-users', 'admin-configuration', 'admin-external-tools'] ? ' open' : '' }}>
           <summary>Administración <span class="nav-caret">▾</span></summary>
           <div class="nav-subitems">
             <a class="{{ active_nav == 'admin-users' ? 'active' : '' }}" href="/backend/users">Usuarios</a>
             <a class="{{ active_nav == 'admin-configuration' ? 'active' : '' }}" href="/backend/configuration">Configuración</a>
+            <a class="{{ active_nav == 'admin-external-tools' ? 'active' : '' }}" href="/backend/external-tools">Herramientas externas</a>
           </div>
         </details>
       </nav>

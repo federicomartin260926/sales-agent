@@ -1,0 +1,123 @@
+{% extends 'backend/layout.html.twig' %}
+
+{% block content %}
+  <section class="hero-panel">
+    <div class="hero-copy">
+      <div class="eyebrow-dark">Herramientas externas</div>
+      <h2>{{ hero_title }}</h2>
+      <p>
+        Configura el webhook que n8n expondrá para este tenant. Si el contenedor no resuelve `localhost`, usa
+        <code>http://host.docker.internal:5680/webhook/sales-agent/contact-context</code>.
+      </p>
+    </div>
+    <div class="hero-aside">
+      <div class="badge-live">Admin</div>
+      <div class="hero-aside-title">Seguridad</div>
+      <p>El token se guarda cifrado. Si ya existe, el formulario lo oculta y puedes dejarlo vacío para conservarlo.</p>
+    </div>
+  </section>
+
+  {% if errors is not empty %}
+    <div class="alert alert-error">
+      <strong>Revisa el formulario</strong>
+      <ul>
+        {% for error in errors %}
+          <li>{{ error }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+  {% endif %}
+
+  <section class="table-card">
+    <div class="table-header">
+      <div>
+        <h3>Ficha de la herramienta</h3>
+        <p>Una sola herramienta por tenant y tipo es suficiente para el contexto de contacto.</p>
+      </div>
+      <a class="secondary-action" href="/backend/external-tools">Volver al listado</a>
+    </div>
+
+    <form method="post" action="{{ action_url }}" class="tenant-form">
+      <input type="hidden" name="_csrf_token" value="{{ form_token }}">
+      <div class="form-grid">
+        <div class="field">
+          <label for="tool-tenant">Tenant</label>
+          <select id="tool-tenant" name="tenantId" required>
+            <option value="">Selecciona un tenant</option>
+            {% for tenant in tenants %}
+              <option value="{{ tenant.id }}"{{ values.tenantId == tenant.id ? ' selected' : '' }}>{{ tenant.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div class="field">
+          <label for="tool-name">Nombre</label>
+          <input id="tool-name" name="name" type="text" value="{{ values.name }}" maxlength="255" required>
+        </div>
+
+        <div class="field">
+          <label for="tool-type">Tipo</label>
+          <select id="tool-type" name="type" required>
+            <option value="contact_context"{{ values.type == 'contact_context' ? ' selected' : '' }}>contact_context</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label for="tool-provider">Proveedor</label>
+          <select id="tool-provider" name="provider" required>
+            <option value="n8n_webhook"{{ values.provider == 'n8n_webhook' ? ' selected' : '' }}>n8n_webhook</option>
+          </select>
+          <div class="field-note">Por ahora el runtime soporta este proveedor. No uses webhook-test como configuración final.</div>
+        </div>
+
+        <div class="field field-full">
+          <label for="tool-webhook">Webhook URL</label>
+          <input id="tool-webhook" name="webhookUrl" type="url" value="{{ values.webhookUrl }}" maxlength="2048" placeholder="http://host.docker.internal:5680/webhook/sales-agent/contact-context" required>
+          <div class="field-note">Desde el navegador puede verse como <code>localhost</code>, pero el contenedor suele necesitar <code>host.docker.internal</code>.</div>
+        </div>
+
+        <div class="field">
+          <label for="tool-auth">Auth type</label>
+          <select id="tool-auth" name="authType" required>
+            <option value="none"{{ values.authType == 'none' ? ' selected' : '' }}>none</option>
+            <option value="bearer"{{ values.authType == 'bearer' ? ' selected' : '' }}>bearer</option>
+          </select>
+          <div class="field-note">Para n8n Header Auth usa <code>Name=Authorization</code> y <code>Value=Bearer &lt;token&gt;</code>. En sales-agent guarda sólo el token, sin el prefijo Bearer.</div>
+        </div>
+
+        <div class="field">
+          <label for="tool-token">Bearer token (sin prefijo Bearer)</label>
+          <input id="tool-token" name="bearerToken" type="password" value="" autocomplete="new-password" placeholder="{{ has_token ? 'Token ya guardado: ********' : 'Opcional' }}">
+          {% if has_token %}
+            <div class="field-note">Hay un token guardado. Déjalo vacío para conservarlo o escribe uno nuevo para reemplazarlo.</div>
+          {% else %}
+            <div class="field-note">Opcional por ahora. Si usas bearer, puedes guardarlo más tarde. En n8n Header Auth usa Name=Authorization y Value=Bearer &lt;token&gt;.</div>
+          {% endif %}
+        </div>
+
+        <div class="field">
+          <label for="tool-timeout">Timeout segundos</label>
+          <input id="tool-timeout" name="timeoutSeconds" type="number" min="1" max="30" step="1" value="{{ values.timeoutSeconds }}" required>
+        </div>
+
+        <div class="field field-check">
+          <label for="tool-active">Estado</label>
+          <label class="checkbox-inline" for="tool-active">
+            <input id="tool-active" name="isActive" type="checkbox" value="1"{{ values.isActive ? ' checked' : '' }}>
+            <span>Herramienta activa</span>
+          </label>
+        </div>
+
+        <div class="field field-full">
+          <label for="tool-config">Config JSON</label>
+          <textarea id="tool-config" name="config" rows="8" spellcheck="false" placeholder="{}">{{ values.config }}</textarea>
+          <div class="field-note">Si lo dejas vacío se guardará como <code>{}</code>. Debe ser JSON válido.</div>
+        </div>
+      </div>
+
+      <div class="form-actions">
+        <button class="primary-action" type="submit">{{ submit_label }}</button>
+      </div>
+    </form>
+  </section>
+{% endblock %}

@@ -204,10 +204,10 @@ class ExternalTool
             'provider' => $this->provider,
             'webhookUrl' => $this->webhookUrl,
             'authType' => $this->authType,
-            'bearerToken' => $this->bearerToken,
+            'bearerToken' => null,
             'timeoutSeconds' => $this->timeoutSeconds,
             'isActive' => $this->isActive,
-            'config' => $this->config,
+            'config' => $this->config !== [] ? $this->config : (object) [],
             'createdAt' => $this->createdAt->format(\DateTimeInterface::ATOM),
             'updatedAt' => $this->updatedAt?->format(\DateTimeInterface::ATOM),
         ];
