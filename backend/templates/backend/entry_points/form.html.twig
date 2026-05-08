@@ -1,0 +1,74 @@
+<section class="hero-panel">
+  <div class="hero-copy">
+    <div class="eyebrow-dark">Puntos de entrada</div>
+    <h2>{{ hero_title }}</h2>
+    <p>{{ page_subtitle }}</p>
+  </div>
+  <div class="hero-aside">
+    <div class="badge-live">Campaigns</div>
+    <div class="hero-aside-title">Attribution</div>
+    <p>Define código, canal, producto, playbook y referencia CRM antes de emitir la URL pública.</p>
+  </div>
+</section>
+<section class="table-card">
+  <div class="table-header"><div><h3>Ficha del punto de entrada</h3><p>Todo el contexto comercial se expresa aquí de forma explícita.</p></div></div>
+  {{ error_html|raw }}
+  <form method="post" action="{{ action_url }}" class="tenant-form">
+    <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
+    <div class="form-grid">
+      <div class="field">
+        <label for="entrypoint-product">Producto</label>
+        <select id="entrypoint-product" name="productId" required>{{ product_options_html|raw }}</select>
+        <div class="field-note">El negocio se infiere desde el producto.</div>
+      </div>
+      <div class="field">
+        <label for="entrypoint-playbook">Playbook</label>
+        <select id="entrypoint-playbook" name="playbookId">{{ playbook_options_html|raw }}</select>
+      </div>
+      <div class="field">
+        <label for="entrypoint-code">Código</label>
+        <input id="entrypoint-code" name="code" type="text" value="{{ values.code }}" maxlength="120" required>
+      </div>
+      <div class="field field-check">
+        <label for="entrypoint-active">Estado</label>
+        <label class="checkbox-inline" for="entrypoint-active">
+          <input id="entrypoint-active" name="isActive" type="checkbox" value="1"{% if values.isActive %} checked{% endif %}>
+          <span>Punto de entrada activo</span>
+        </label>
+      </div>
+      <div class="field">
+        <label for="entrypoint-name">Nombre</label>
+        <input id="entrypoint-name" name="name" type="text" value="{{ values.name }}" maxlength="255" required>
+      </div>
+      <div class="field">
+        <label for="entrypoint-crm-branch">CRM branch ref</label>
+        <input id="entrypoint-crm-branch" name="crmBranchRef" type="text" value="{{ values.crmBranchRef }}" maxlength="255">
+      </div>
+      <div class="field">
+        <label for="entrypoint-source">source</label>
+        <input id="entrypoint-source" name="source" type="text" value="{{ values.source }}" maxlength="120">
+      </div>
+      <div class="field">
+        <label for="entrypoint-medium">medium</label>
+        <input id="entrypoint-medium" name="medium" type="text" value="{{ values.medium }}" maxlength="120">
+      </div>
+      <div class="field">
+        <label for="entrypoint-campaign">campaign</label>
+        <input id="entrypoint-campaign" name="campaign" type="text" value="{{ values.campaign }}" maxlength="120">
+      </div>
+      <div class="field">
+        <label for="entrypoint-content">content</label>
+        <input id="entrypoint-content" name="content" type="text" value="{{ values.content }}" maxlength="120">
+      </div>
+      <div class="field">
+        <label for="entrypoint-term">term</label>
+        <input id="entrypoint-term" name="term" type="text" value="{{ values.term }}" maxlength="120">
+      </div>
+      <div class="field field-full">
+        <label for="entrypoint-message">Mensaje por defecto</label>
+        <textarea id="entrypoint-message" name="defaultMessage" rows="4" maxlength="5000">{{ values.defaultMessage }}</textarea>
+      </div>
+    </div>
+    <div class="form-actions"><button class="primary-action" type="submit">{{ submit_label }}</button></div>
+  </form>
+</section>

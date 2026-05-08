@@ -1,0 +1,121 @@
+<section class="hero-panel">
+  <div class="hero-copy">
+    <div class="eyebrow-dark">Productos / servicios</div>
+    <h2>{{ hero_title }}</h2>
+    <p>{{ page_subtitle }}</p>
+  </div>
+  <div class="hero-aside">
+    <div class="badge-live">Manager</div>
+    <div class="hero-aside-title">Oferta comercial</div>
+    <p>Ordena cada producto o servicio con su mensaje, precio orientativo, objeciones y límites de venta.</p>
+  </div>
+</section>
+<section class="table-card">
+  <div class="table-header">
+    <div>
+      <h3>Ficha del producto / servicio</h3>
+      <p>Define la oferta asociada al negocio y cómo debe venderla el agente.</p>
+    </div>
+  </div>
+  {{ error_html|raw }}
+  <form method="post" action="{{ action_url }}" class="tenant-form">
+    <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
+    <div class="form-grid">
+      <div class="field">
+        <label for="product-tenant">Negocio</label>
+        <select id="product-tenant" name="tenantId" required>{{ tenant_options_html|raw }}</select>
+        <div class="field-note">Cada producto pertenece a un negocio concreto.</div>
+      </div>
+      <div class="field">
+        <label for="product-name">Nombre del producto / servicio</label>
+        <input id="product-name" name="name" type="text" value="{{ values.name }}" maxlength="255" required>
+        <div class="field-note">Nombre visible para el catálogo comercial.</div>
+      </div>
+      <div class="field">
+        <label for="product-slug">Slug local</label>
+        <input id="product-slug" name="slug" type="text" value="{{ values.slug }}" maxlength="180" placeholder="producto-local">
+        <div class="field-note">Identificador local/fallback. Si lo dejas vacío, se conserva o se genera desde el nombre.</div>
+      </div>
+      <div class="field">
+        <label for="product-external-source">Origen externo</label>
+        <input id="product-external-source" name="externalSource" type="text" value="{{ values.externalSource }}" maxlength="100" placeholder="crm">
+        <div class="field-note">Para catálogos importados desde CRM debe ser <code>crm</code>.</div>
+      </div>
+      <div class="field">
+        <label for="product-external-reference">Referencia externa</label>
+        <input id="product-external-reference" name="externalReference" type="text" value="{{ values.externalReference }}" maxlength="255" placeholder="integration_key">
+        <div class="field-note">Clave estable del sistema externo. En CRM debe coincidir con <code>integration_key</code>.</div>
+      </div>
+      <div class="field">
+        <label for="product-base-price">Precio base en céntimos</label>
+        <input id="product-base-price" name="basePriceCents" type="number" value="{{ values.basePriceCents }}" min="0" step="1" placeholder="150000">
+        <div class="field-note">Opcional. Si existe, se usa el valor en céntimos.</div>
+      </div>
+      <div class="field">
+        <label for="product-currency">Moneda</label>
+        <input id="product-currency" name="currency" type="text" value="{{ values.currency }}" maxlength="10" placeholder="EUR">
+        <div class="field-note">Código ISO de moneda, por ejemplo EUR o USD.</div>
+      </div>
+      <div class="field field-check">
+        <label for="product-active">Estado</label>
+        <label class="checkbox-inline" for="product-active">
+          <input id="product-active" name="isActive" type="checkbox" value="1"{% if values.isActive %} checked{% endif %}>
+          <span>Producto activo</span>
+        </label>
+      </div>
+      <div class="field field-full">
+        <label for="product-description">Descripción</label>
+        <textarea id="product-description" name="description" rows="4" maxlength="5000" placeholder="Qué es, a quién va dirigido y qué resuelve.">{{ values.description }}</textarea>
+        <div class="field-note">Explica el producto o servicio de forma clara y comercial.</div>
+      </div>
+      <div class="field field-full">
+        <label for="product-value">Propuesta de valor</label>
+        <textarea id="product-value" name="valueProposition" rows="4" maxlength="5000" placeholder="Por qué debería comprarlo.">{{ values.valueProposition }}</textarea>
+        <div class="field-note">Resumen de la promesa comercial y la diferencia respecto a otras opciones.</div>
+      </div>
+      <div class="field field-full">
+        <div class="section-label">Política comercial</div>
+        <div class="section-note">La política del producto se organiza en pestañas para facilitar la edición y mantener el criterio comercial visible.</div>
+        <div class="policy-tabs" data-policy-tabs>
+          <div class="policy-tablist" role="tablist" aria-label="Política de producto">
+            <button class="policy-tab active" type="button" role="tab" aria-selected="true" data-policy-tab="positioning">Welcome</button>
+            <button class="policy-tab" type="button" role="tab" aria-selected="false" data-policy-tab="pricing">Pricing</button>
+            <button class="policy-tab" type="button" role="tab" aria-selected="false" data-policy-tab="objections">Objeciones</button>
+            <button class="policy-tab" type="button" role="tab" aria-selected="false" data-policy-tab="handoff">Handoff</button>
+            <button class="policy-tab" type="button" role="tab" aria-selected="false" data-policy-tab="notes">Notas</button>
+          </div>
+          <div class="policy-panels">
+            <div class="policy-panel active" role="tabpanel" data-policy-panel="positioning">
+              <label for="product-positioning">Welcome / posicionamiento</label>
+              <textarea id="product-positioning" name="positioning" rows="4" maxlength="2000" required placeholder="Cómo se presenta este producto o servicio.">{{ values.positioning }}</textarea>
+              <div class="field-note">Cómo debe arrancar la conversación comercial sobre esta oferta.</div>
+            </div>
+            <div class="policy-panel" role="tabpanel" data-policy-panel="pricing" hidden>
+              <label for="product-pricing">Pricing notes</label>
+              <textarea id="product-pricing" name="pricingNotes" rows="4" maxlength="2000" placeholder="Notas de precio, rangos o condiciones.">{{ values.pricingNotes }}</textarea>
+              <div class="field-note">Aclara precios, condiciones o matices que el agente deba tener presentes.</div>
+            </div>
+            <div class="policy-panel" role="tabpanel" data-policy-panel="objections" hidden>
+              <label for="product-objections">Objeciones</label>
+              <textarea id="product-objections" name="objections" rows="4" maxlength="4000" placeholder="Una objeción por línea.">{{ values.objections }}</textarea>
+              <div class="field-note">Respuestas o señales para gestionar dudas comunes del cliente.</div>
+            </div>
+            <div class="policy-panel" role="tabpanel" data-policy-panel="handoff" hidden>
+              <label for="product-handoff">Handoff / derivación</label>
+              <textarea id="product-handoff" name="handoffRules" rows="4" maxlength="2000" placeholder="Cuándo derivar a una persona.">{{ values.handoffRules }}</textarea>
+              <div class="field-note">Cuándo el agente debe pasar la conversación a humano.</div>
+            </div>
+            <div class="policy-panel" role="tabpanel" data-policy-panel="notes" hidden>
+              <label for="product-notes">Notas</label>
+              <textarea id="product-notes" name="notes" rows="4" maxlength="2000" placeholder="Matices adicionales.">{{ values.notes }}</textarea>
+              <div class="field-note">Observaciones generales para el equipo comercial.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="form-actions">
+      <button class="primary-action" type="submit">{{ submit_label }}</button>
+    </div>
+  </form>
+</section>

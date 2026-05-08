@@ -3,6 +3,7 @@
 {% block title %}{{ page_title }} - Sales Agent{% endblock %}
 
 {% block stylesheets %}
+{{ parent() }}
 <link rel="stylesheet" href="/assets/backend.css">
 {% endblock %}
 
@@ -54,8 +55,50 @@
       </header>
 
       <main class="main">
-        {% block content %}{% endblock %}
+        {% block content %}{{ content|default('')|raw }}{% endblock %}
       </main>
     </section>
   </main>
+  <script>
+    (() => {
+      const tabRoots = Array.from(document.querySelectorAll('[data-policy-tabs]'));
+      if (tabRoots.length === 0) {
+        return;
+      }
+
+      tabRoots.forEach((root) => {
+        const tabs = Array.from(root.querySelectorAll('[data-policy-tab]'));
+        const panels = Array.from(root.querySelectorAll('[data-policy-panel]'));
+
+        if (tabs.length === 0 || panels.length === 0) {
+          return;
+        }
+
+        const setActive = (key) => {
+          tabs.forEach((tab) => {
+            const isActive = tab.dataset.policyTab === key;
+            tab.classList.toggle('active', isActive);
+            tab.setAttribute('aria-selected', isActive ? 'true' : 'false');
+          });
+
+          panels.forEach((panel) => {
+            const isActive = panel.dataset.policyPanel === key;
+            panel.classList.toggle('active', isActive);
+            if (isActive) {
+              panel.removeAttribute('hidden');
+            } else {
+              panel.setAttribute('hidden', '');
+            }
+          });
+        };
+
+        const initialTab = tabs.find((tab) => tab.classList.contains('active')) || tabs[0];
+        setActive(initialTab.dataset.policyTab);
+
+        tabs.forEach((tab) => {
+          tab.addEventListener('click', () => setActive(tab.dataset.policyTab));
+        });
+      });
+    })();
+  </script>
 {% endblock %}

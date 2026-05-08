@@ -1,0 +1,84 @@
+<section class="hero-panel">
+  <div class="hero-copy">
+    <div class="eyebrow-dark">Importación CRM</div>
+    <h2>{{ hero_title }}</h2>
+    <p>{{ page_subtitle }}</p>
+  </div>
+  <div class="hero-aside">
+    <div class="badge-live">SA</div>
+    <div class="hero-aside-title">Catálogo independiente</div>
+    <p>Importa CSV o JSON sin depender de UUIDs internos. La clave estable se guarda como referencia externa y el negocio seleccionado define el alcance de la importación.</p>
+  </div>
+</section>
+<section style="display:grid;grid-template-columns:minmax(0,1.02fr) minmax(320px,0.98fr);gap:18px;align-items:start;">
+  <section class="table-card" style="margin-bottom:0;">
+    <div class="table-header"><div><h3>Archivo CSV o JSON</h3><p>Puedes subir un export de otra aplicación o pegar su contenido en el campo inferior.</p></div></div>
+    {{ error_html|raw }}
+    <form method="post" action="{{ action_url }}" class="tenant-form" enctype="multipart/form-data">
+      <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
+      <div class="form-grid">
+        <div class="field">
+          <label for="product-import-tenant">Negocio</label>
+          <select id="product-import-tenant" name="tenantId" required>{{ tenant_options_html|raw }}</select>
+          <div class="field-note">La importación queda asociada al negocio seleccionado.</div>
+        </div>
+        <div class="field">
+          <label for="product-import-format">Formato</label>
+          <select id="product-import-format" name="format">
+            <option value="auto"{% if values.format == 'auto' %} selected{% endif %}>Auto</option>
+            <option value="json"{% if values.format == 'json' %} selected{% endif %}>JSON</option>
+            <option value="csv"{% if values.format == 'csv' %} selected{% endif %}>CSV</option>
+          </select>
+          <div class="field-note">Si no lo indicas, se detecta automáticamente.</div>
+        </div>
+        <div class="field field-full">
+          <label for="product-import-file">Archivo</label>
+          <input id="product-import-file" name="file" type="file" accept=".csv,.json,application/json,text/csv">
+          <div class="field-note">Opcional. Si subes un archivo, se prioriza sobre el texto pegado.</div>
+        </div>
+        <div class="field field-full">
+          <label for="product-import-payload">Contenido</label>
+          <textarea id="product-import-payload" name="payload" rows="12" placeholder="Pega aquí el CSV o JSON exportado por otra aplicación">{{ values.payload }}</textarea>
+        </div>
+      </div>
+      <div class="form-actions"><button class="primary-action" type="submit">{{ submit_label }}</button></div>
+    </form>
+  </section>
+  <div style="display:grid;gap:16px;">
+    <article class="info-card">
+      <h3>Qué debe contener el archivo</h3>
+      <p>Sales Agent importa un catálogo local de productos / servicios. Si el archivo incluye una referencia externa, se guarda en <code>external_reference</code>.</p>
+      <p><code>external_reference</code> es el campo canónico en SA para enlazar el producto / servicio con sistemas externos o con exports de otras aplicaciones.</p>
+      <p><code>integration_key</code> es un alias habitual en algunos exports para esa misma referencia; al importar, SA lo traduce a <code>external_reference</code>.</p>
+      <p><code>slug</code> se conserva como identificador local y legible; no es la clave contractual de integración.</p>
+      <p><strong>Campos obligatorios:</strong> <code>name</code> y <code>slug</code>.</p>
+      <p><strong>Campos recomendados:</strong> <code>external_reference</code> o <code>integration_key</code>, <code>description</code>, <code>base_price_cents</code>, <code>currency</code> y <code>active</code>.</p>
+      <p class="mb-0">Si el archivo viene de una app externa, puede incluir más columnas; SA ignorará las que no use y mantendrá el catálogo independiente.</p>
+    </article>
+    <article class="info-card">
+      <h3>Ejemplo CSV</h3>
+      <pre class="sample-block">type,external_reference,name,slug,description,base_price_cents,currency,active,created_at,updated_at
+service,pack-starter,Pack Starter,pack-starter,"Solución inicial para pymes...",150000,EUR,1,2026-04-25 08:33,2026-04-25 08:33</pre>
+    </article>
+    <article class="info-card">
+      <h3>Ejemplo JSON</h3>
+      <pre class="sample-block">{
+  "source": "external-app",
+  "resource": "services",
+  "items": [
+    {
+      "type": "service",
+      "external_reference": "pack-starter",
+      "name": "Pack Starter",
+      "slug": "pack-starter",
+      "description": "Solución inicial para pymes...",
+      "base_price_cents": 150000,
+      "currency": "EUR",
+      "active": true
+    }
+  ]
+}</pre>
+    </article>
+  </div>
+</section>
+{{ result_html|raw }}

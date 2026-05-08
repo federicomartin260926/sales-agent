@@ -1,0 +1,60 @@
+{{ feedback_html|raw }}
+
+<section class="hero-panel">
+  <div class="hero-copy">
+    <div class="eyebrow-dark">Catálogo comercial</div>
+    <h2>Productos / servicios</h2>
+    <p>Catálogo de productos y servicios asociados a cada negocio. Esto alimenta la lógica comercial del backend.</p>
+  </div>
+  <div class="hero-aside">
+    <div class="badge-live">Manager</div>
+    <div class="hero-aside-title">Oferta</div>
+    <p>Los productos y servicios agrupan descripción, propuesta de valor y política de venta para el runtime.</p>
+  </div>
+</section>
+<section class="table-card filters-card">
+  <div class="table-header">
+    <div>
+      <h3>Filtros</h3>
+      <p>Filtra el catálogo por negocio o por producto / servicio.</p>
+    </div>
+  </div>
+  <form method="get" action="/backend/products" class="tenant-form">
+    <div class="form-grid">
+      <div class="field">
+        <label for="product-filter-tenant">Negocio</label>
+        <select id="product-filter-tenant" name="tenantId">{{ tenant_options_html|raw }}</select>
+        <div class="field-note">Filtra el catálogo por negocio asociado.</div>
+      </div>
+      <div class="field">
+        <label for="product-filter-product">Producto / servicio</label>
+        <input id="product-filter-product" name="product" type="text" value="{{ product_filter }}" placeholder="Nombre, slug o referencia externa">
+        <div class="field-note">Busca por nombre, slug, origen o referencia externa.</div>
+      </div>
+    </div>
+    <div class="form-actions" style="justify-content:flex-start;gap:12px;flex-wrap:wrap;">
+      <button class="primary-action" type="submit">Filtrar</button>
+      <a class="secondary-action" href="/backend/products">Limpiar</a>
+    </div>
+  </form>
+</section>
+<section class="table-card">
+  <div class="table-header">
+    <div>
+      <h3>Productos / servicios registrados</h3>
+      <p>Negocio, slug, referencia externa y estado.</p>
+    </div>
+    <div style="display:flex;gap:12px;flex-wrap:wrap;justify-content:flex-end">
+      <a class="secondary-action" href="/backend/products/import">Importar catálogo</a>
+      <a class="primary-action" href="/backend/products/new">Crear producto / servicio</a>
+    </div>
+  </div>
+  <div class="table-responsive">
+    <table>
+      <thead>
+        <tr><th>Producto / servicio</th><th>Negocio</th><th>Identidad</th><th>Estado</th><th class="text-right">Acciones</th></tr>
+      </thead>
+      <tbody>{{ rows_html|raw }}</tbody>
+    </table>
+  </div>
+</section>

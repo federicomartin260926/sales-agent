@@ -1,0 +1,31 @@
+{{ feedback_html|raw }}
+
+<section class="hero-panel">
+  <div class="hero-copy">
+    <div class="eyebrow-dark">Configuración comercial</div>
+    <h2>Guías comerciales</h2>
+    <p>Ajustes del comportamiento del agente por negocio o producto. Aquí defines el enfoque, el tono, el scoring y las reglas de respuesta.</p>
+  </div>
+  <div class="hero-aside">
+    <div class="badge-live">Manager</div>
+    <div class="hero-aside-title">Reglas</div>
+    <p>Los ajustes se activan y mantienen desde este panel, por negocio y sin mezclar la API técnica.</p>
+  </div>
+</section>
+<section class="table-card">
+  <div class="table-header">
+    <div>
+      <h3>Guías comerciales activas e inactivas</h3>
+      <p>Vista rápida del catálogo y su contexto.</p>
+    </div>
+    <a class="primary-action" href="/backend/playbooks/new">Crear guía comercial</a>
+  </div>
+  <div class="table-responsive">
+    <table>
+      <thead>
+        <tr><th>Guía comercial</th><th>Negocio</th><th>Producto / servicio</th><th>Estado</th><th class="text-right">Acciones</th></tr>
+      </thead>
+      <tbody>{{ rows_html|raw }}</tbody>
+    </table>
+  </div>
+</section>

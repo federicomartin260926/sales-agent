@@ -1,0 +1,29 @@
+<section class="hero-panel">
+  <div class="hero-copy">
+    <div class="eyebrow-dark">Routing comercial</div>
+    <h2>Puntos de entrada</h2>
+    <p>Define campañas, botones y QR que crean contexto comercial antes de abrir WhatsApp.</p>
+  </div>
+  <div class="hero-aside">
+    <div class="badge-live">Campaigns</div>
+    <div class="hero-aside-title">Contexto</div>
+    <p>Un punto de entrada enlaza producto, playbook y atribución técnica con una URL pública estable.</p>
+  </div>
+</section>
+<section class="table-card">
+  <div class="table-header">
+    <div>
+      <h3>Puntos de entrada registrados</h3>
+      <p>Usa estos códigos para campañas, landings y botones de contacto.</p>
+    </div>
+    <a class="primary-action" href="/backend/entry-points/new">Crear punto de entrada</a>
+  </div>
+  <div class="table-responsive">
+    <table>
+      <thead>
+        <tr><th>Punto de entrada</th><th>Código</th><th>Negocio</th><th>Producto</th><th>Estado</th><th class="text-right">Acciones</th></tr>
+      </thead>
+      <tbody>{{ rows_html|raw }}</tbody>
+    </table>
+  </div>
+</section>

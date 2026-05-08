@@ -1060,6 +1060,29 @@ body.login-page .footer code {
   min-width: 190px;
 }
 
+.table-card td.text-right {
+  white-space: nowrap;
+}
+
+.table-card td.text-right > div {
+  display: inline-flex !important;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: nowrap !important;
+  white-space: nowrap;
+}
+
+.table-card td.text-right > div > * {
+  flex: 0 0 auto;
+}
+
+.table-card td.text-right form {
+  display: inline-flex !important;
+  margin: 0;
+  flex: 0 0 auto;
+}
+
 .tool-actions-inline .icon-action {
   width: 36px;
   height: 36px;

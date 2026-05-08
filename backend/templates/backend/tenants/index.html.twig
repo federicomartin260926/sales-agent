@@ -1,0 +1,32 @@
+{{ feedback_html|raw }}
+
+<section class="hero-panel">
+  <div class="hero-copy">
+    <div class="eyebrow-dark">Negocios y contexto</div>
+    <h2>Negocios</h2>
+    <p>Cada negocio agrupa usuarios, reglas y contexto comercial del agente IA. Así mantienes separada la relación con cada cliente.</p>
+  </div>
+  <div class="hero-aside">
+    <div class="badge-live">Admin</div>
+    <div class="hero-aside-title">Contexto</div>
+    <p>Cada negocio agrupa contexto, usuarios y reglas comerciales de forma aislada.</p>
+  </div>
+</section>
+
+<section class="table-card">
+  <div class="table-header">
+    <div>
+      <h3>Negocios registrados</h3>
+      <p>Nombre, slug y política comercial de arranque.</p>
+    </div>
+    <a class="primary-action" href="/backend/tenants/new">Crear negocio</a>
+  </div>
+  <div class="table-responsive">
+    <table>
+      <thead>
+        <tr><th>Negocio</th><th>Slug</th><th>Política comercial</th><th>Estado</th><th class="text-right">Acciones</th></tr>
+      </thead>
+      <tbody>{{ rows_html|raw }}</tbody>
+    </table>
+  </div>
+</section>

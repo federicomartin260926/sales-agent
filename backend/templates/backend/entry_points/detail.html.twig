@@ -1,0 +1,50 @@
+<section class="hero-panel">
+  <div class="hero-copy">
+    <div class="eyebrow-dark">Routing comercial</div>
+    <h2>{{ entrypoint_name }}</h2>
+    <p>{{ entrypoint_default_message }}</p>
+  </div>
+  <div class="hero-aside">
+    <div class="badge-live">{{ entrypoint_state }}</div>
+    <div class="hero-aside-title">Detalle</div>
+    <p>Usa este punto de entrada para campañas, botones o QR con contexto comercial explícito.</p>
+  </div>
+</section>
+<section class="table-card">
+  <div class="table-header">
+    <div>
+      <h3>URLs públicas</h3>
+      <p>La URL de redirección se expone sin JWT y preserva el ref para atribución.</p>
+    </div>
+  </div>
+  <div class="form-grid">
+    <div class="field field-full">
+      <label for="entrypoint-url">URL de redirección</label>
+      <input id="entrypoint-url" type="text" value="{{ redirect_url }}" readonly>
+    </div>
+    <div class="field field-full">
+      <label for="entrypoint-example">Ejemplo con UTM</label>
+      <input id="entrypoint-example" type="text" value="{{ example_url }}" readonly>
+    </div>
+    <div class="field">
+      <label>Código</label>
+      <input type="text" value="{{ code }}" readonly>
+    </div>
+    <div class="field">
+      <label>Negocio</label>
+      <input type="text" value="{{ tenant_name }}" readonly>
+    </div>
+    <div class="field">
+      <label>Producto</label>
+      <input type="text" value="{{ product_name }}" readonly>
+    </div>
+    <div class="field">
+      <label>Playbook</label>
+      <input type="text" value="{{ playbook_name }}" readonly>
+    </div>
+    <div class="field">
+      <label>CRM branch ref</label>
+      <input type="text" value="{{ crm_branch_ref }}" readonly>
+    </div>
+  </div>
+</section>

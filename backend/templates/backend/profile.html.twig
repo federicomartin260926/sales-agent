@@ -1,0 +1,56 @@
+{{ feedback_html|raw }}
+
+<section class="hero-panel hero-panel-single">
+  <div class="hero-copy">
+    <div class="eyebrow-dark">Sesión</div>
+    <h2>Mi perfil</h2>
+    <p>Actualiza tu nombre visible y tu clave de acceso. El panel humano sigue separado de la API técnica y de las integraciones entre servicios.</p>
+  </div>
+</section>
+
+<section class="profile-grid">
+  <article class="profile-card">
+    <div class="profile-card-header">Datos de usuario</div>
+    <div class="profile-card-body">
+      <div class="profile-meta">
+        <div><strong>Email:</strong> {{ email }}</div>
+        <div><strong>Rol:</strong> {{ role_label }}</div>
+        <div><strong>Creado:</strong> {{ created_at }}</div>
+      </div>
+
+      <form method="post" action="/backend/profile/name" class="profile-form">
+        <input type="hidden" name="_csrf_token" value="{{ profile_name_token }}">
+        <div class="field">
+          <label for="profile-name">Nombre</label>
+          <input id="profile-name" name="name" type="text" value="{{ name }}" maxlength="180" required>
+        </div>
+        <div class="profile-actions">
+          <button class="primary-action" type="submit">Guardar nombre</button>
+        </div>
+      </form>
+    </div>
+  </article>
+
+  <article class="profile-card">
+    <div class="profile-card-header">Cambiar clave</div>
+    <div class="profile-card-body">
+      <form method="post" action="/backend/profile/password" class="profile-form">
+        <input type="hidden" name="_csrf_token" value="{{ profile_password_token }}">
+        <div class="field">
+          <label for="profile-current-password">Clave actual</label>
+          <input id="profile-current-password" name="currentPassword" type="password" autocomplete="current-password" required>
+        </div>
+
+        <div class="field">
+          <label for="profile-new-password">Nueva clave</label>
+          <input id="profile-new-password" name="newPassword" type="password" autocomplete="new-password" minlength="8" required>
+          <div class="field-note">Mínimo 8 caracteres.</div>
+        </div>
+
+        <div class="profile-actions">
+          <button class="primary-action" type="submit">Actualizar clave</button>
+        </div>
+      </form>
+    </div>
+  </article>
+</section>

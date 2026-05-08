@@ -1,0 +1,41 @@
+{% extends 'base.html.twig' %}
+
+{% block title %}Sales Agent Backend{% endblock %}
+
+{% block stylesheets %}
+  {{ parent() }}
+  <link rel="stylesheet" href="/assets/backend.css">
+{% endblock %}
+
+{% block body_attributes %} class="login-page"{% endblock %}
+
+{% block body %}
+  <main class="shell">
+    <section class="hero">
+      <div>
+        <div class="eyebrow">Sales Agent Backend</div>
+        <h1>Gestiona negocios y agentes IA desde un solo lugar.</h1>
+        <p>
+          Desde aquí defines cómo se comporta cada negocio, producto o servicio: qué usuarios lo administran,
+          qué conocimiento utiliza el agente y qué enfoque comercial aplica con cada cliente.
+        </p>
+      </div>
+    </section>
+    <section class="card">
+      <h2>Iniciar sesión</h2>
+      <div class="subtitle">Usa tu usuario de administración para entrar al backend.</div>
+      {{ error_html|raw }}
+      <form method="post" action="/backend/login-check">
+        <div class="field">
+          <label for="email">Email</label>
+          <input id="email" name="email" type="email" value="{{ last_username|e('html_attr') }}" autocomplete="username" required>
+        </div>
+        <div class="field">
+          <label for="password">Clave</label>
+          <input id="password" name="password" type="password" autocomplete="current-password" required>
+        </div>
+        <button class="button" type="submit">Entrar al backend</button>
+      </form>
+    </section>
+  </main>
+{% endblock %}
