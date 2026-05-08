@@ -138,6 +138,15 @@ Reglas operativas:
 Para que el runtime pueda consultar la snapshot interna, el backend también recibe `SALES_AGENT_BEARER_TOKEN` como secreto de infraestructura.
 Todas las rutas `/api/internal/*` usan ese mismo bearer de servicio. No pasan por JWT de usuario ni por `json_login`.
 
+## Logs y rotación
+
+Symfony escribe sus logs en `backend/var/log/`.
+En desarrollo se rota con una retención corta para mantener trazas útiles sin crecer sin límite.
+En producción se rota con una política más conservadora y solo se conservan los últimos archivos relevantes.
+
+Si necesitas liberar espacio rápido, para el backend y trunca el log activo con `truncate -s 0` en lugar de borrar el directorio completo.
+Eso conserva permisos e inodos y evita problemas al reiniciar Symfony.
+
 El routing de WhatsApp ya no depende del bootstrap base. Los `EntryPoint` y `EntryPointUtm` deben configurarse explícitamente con datos reales de campaña y número público.
 Los productos importados desde CRM deben guardar `externalSource = crm` y `externalReference = integration_key`; `slug` queda como identificador local y fallback.
 
