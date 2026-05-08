@@ -1,10 +1,13 @@
 import pytest
 
+from app.config import Settings
 from app.schemas.agent import AgentRequest, Contact
 from app.services.backend_client import BackendPlaybook, BackendProduct, BackendTenant, CommercialContext
+from app.schemas.llm import McpRemoteConfig
 from app.services.decision_engine import DecisionEngine
-from app.services.crm_client import CRMContact, CRMContactContext, CRMInteractionFlags, CRMLead
 from app.services.routing_resolver import RoutingContext
+from app.services.llm_client import LLMClient
+from app.services.llm_decision_service import LLMDecisionService
 
 
 class FakeBackendClient:
@@ -17,19 +20,26 @@ class FakeBackendClient:
         tenant_id: str,
         selected_product_id: str | None = None,
         selected_playbook_id: str | None = None,
+        *args: object,
     ) -> CommercialContext | None:
-        self.calls.append(("fetch_tenant_context", (tenant_id, selected_product_id, selected_playbook_id)))
+        self.calls.append(("fetch_tenant_context", (tenant_id, selected_product_id, selected_playbook_id, *args)))
         return self.context
 
+    async def fetch_mcp_config(self, tenant_id: str) -> McpRemoteConfig:
+        self.calls.append(("fetch_mcp_config", (tenant_id,)))
+        return McpRemoteConfig(enabled=False)
 
-class FakeCRMClient:
-    def __init__(self, context: CRMContactContext | None) -> None:
-        self.context = context
-        self.calls: list[tuple[str, tuple[object, ...]]] = []
 
-    async def fetch_contact_context(self, phone: str) -> CRMContactContext | None:
-        self.calls.append(("fetch_contact_context", (phone,)))
-        return self.context
+@pytest.fixture(autouse=True)
+def force_heuristic_llm(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _skip_llm(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(
+        LLMDecisionService,
+        "propose",
+        _skip_llm,
+    )
 
 
 def build_backend_context() -> CommercialContext:
@@ -134,45 +144,6 @@ def build_multi_product_context(selected_product: BackendProduct | None = None) 
     )
 
 
-def build_crm_context() -> CRMContactContext:
-    return CRMContactContext.model_validate(
-        {
-            "contact": {
-                "phone": "+34999999999",
-                "name": "Ana García",
-                "email": "ana@example.com",
-            },
-            "lead": {
-                "id": "lead-1",
-                "status": "qualified",
-                "stage": "proposal",
-                "ownerName": "Carlos",
-                "score": 82,
-                "source": "whatsapp",
-                "isQualified": True,
-                "lastInteractionAt": "2026-04-28T11:30:00+00:00",
-                "lastTouchSummary": "Pidió información de precios.",
-            },
-            "opportunity": {
-                "id": "opp-1",
-                "pipeline": "default",
-                "stage": "proposal",
-                "nextAction": "schedule_demo",
-                "amount": 1200,
-            },
-            "flags": {
-                "alreadyContacted": True,
-                "askedForPrice": True,
-                "askedForDemo": False,
-                "needsHuman": False,
-            },
-            "recentNotes": ["Le interesa automatizar WhatsApp."],
-            "lastActivityAt": "2026-04-28T11:30:00+00:00",
-            "summary": "Lead cualificado y en propuesta.",
-        }
-    )
-
-
 @pytest.mark.asyncio
 async def test_decision_engine_greeting_uses_context():
     payload = AgentRequest(
@@ -181,7 +152,7 @@ async def test_decision_engine_greeting_uses_context():
         contact=Contact(phone="+34999999999"),
     )
 
-    response = await DecisionEngine(FakeBackendClient(build_backend_context()), FakeCRMClient(None)).decide(payload)
+    response = await DecisionEngine(FakeBackendClient(build_backend_context())).decide(payload)
 
     assert response.intent == "greeting"
     assert response.action == "greet"
@@ -218,11 +189,10 @@ async def test_decision_engine_uses_routing_attribution():
         status="matched",
     )
 
-    response = await DecisionEngine(FakeBackendClient(build_backend_context()), FakeCRMClient(build_crm_context())).decide(
+    response = await DecisionEngine(FakeBackendClient(build_backend_context())).decide(
         payload,
         routing=routing,
         backend_context=build_backend_context(),
-        crm_context=build_crm_context(),
     )
 
     assert response.data_to_save["tenant_id"] == "tenant-1"
@@ -233,7 +203,6 @@ async def test_decision_engine_uses_routing_attribution():
     assert response.data_to_save["utm_source"] == "google"
     assert response.data_to_save["gclid"] == "gclid-1"
     assert response.data_to_save["conversation_id"] == "conversation-1"
-    assert response.data_to_save["crm_contact_phone"] == "+34999999999"
     assert response.data_to_save["product_slug"] == "whatsapp-automation"
     assert response.data_to_save["product_external_source"] == "crm"
     assert response.data_to_save["product_external_reference"] == "pack-starter"
@@ -250,10 +219,9 @@ async def test_decision_engine_confirms_inferred_product_without_selected_produc
     )
 
     context = build_multi_product_context()
-    response = await DecisionEngine(FakeBackendClient(context), FakeCRMClient(None)).decide(
+    response = await DecisionEngine(FakeBackendClient(context)).decide(
         payload,
         backend_context=context,
-        crm_context=None,
     )
 
     assert response.intent == "qualification"
@@ -270,10 +238,9 @@ async def test_decision_engine_does_not_pick_first_active_product_blindly():
     )
 
     context = build_multi_product_context()
-    response = await DecisionEngine(FakeBackendClient(context), FakeCRMClient(None)).decide(
+    response = await DecisionEngine(FakeBackendClient(context)).decide(
         payload,
         backend_context=context,
-        crm_context=None,
     )
 
     assert response.intent == "greeting"
@@ -288,7 +255,7 @@ async def test_decision_engine_handoff_uses_context():
         contact=Contact(phone="+34999999999"),
     )
 
-    response = await DecisionEngine(FakeBackendClient(build_backend_context()), FakeCRMClient(build_crm_context())).decide(payload)
+    response = await DecisionEngine(FakeBackendClient(build_backend_context())).decide(payload)
 
     assert response.intent == "handoff"
     assert response.action == "handoff_to_human"

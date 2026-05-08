@@ -9,6 +9,7 @@ use App\Repository\TenantRepository;
 use App\Service\RuntimeSettingCipher;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
+use Symfony\Component\DependencyInjection\Attribute\Autowire;
 use Symfony\Bundle\SecurityBundle\Security;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\RedirectResponse;
@@ -21,10 +22,16 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
 #[Route('/external-tools')]
 final class ExternalToolController extends AbstractController
 {
-    private const TOOL_TYPES = ['contact_context'];
-    private const PROVIDERS = ['n8n_webhook'];
+    private const SALES_AGENT_API_BASE_URL = 'http://sales-agent-api:8000';
+    private const SALES_AGENT_API_RESPOND_PATH = '/agent/respond';
+    private const TOOL_TYPES = ['contact_context', 'mcp_remote'];
+    private const PROVIDERS = ['n8n_webhook', 'openai_remote_mcp', 'mcp_remote'];
     private const AUTH_TYPES = ['none', 'bearer'];
     private const TEST_TOOL_TYPE = 'contact_context';
+    private const MCP_TOOL_TYPE = 'mcp_remote';
+    private const MCP_PROVIDER = 'openai_remote_mcp';
+    private const MCP_PROVIDER_ALTERNATE = 'mcp_remote';
+    private const MCP_TEST_MESSAGE = 'Busca el contexto del contacto con teléfono +34600000000 usando la herramienta contact_context_mock disponible.';
 
     public function __construct(
         private readonly Security $security,
@@ -33,6 +40,8 @@ final class ExternalToolController extends AbstractController
         private readonly ExternalToolRepository $externalTools,
         private readonly RuntimeSettingCipher $cipher,
         private readonly HttpClientInterface $httpClient,
+        #[Autowire('%env(string:SALES_AGENT_BEARER_TOKEN)%')]
+        private readonly string $salesAgentBearerToken,
         private readonly ?CsrfTokenManagerInterface $csrfTokenManager = null,
     ) {
     }
@@ -56,8 +65,8 @@ final class ExternalToolController extends AbstractController
             : $this->externalTools->findAllOrdered();
 
         return $this->render('backend/external_tools/index.html.twig', [
-            'page_title' => 'Herramientas externas',
-            'page_subtitle' => 'Configuración y prueba de ExternalTools por tenant.',
+            'page_title' => 'Servidores MCP',
+            'page_subtitle' => 'Configuración de servidores MCP remotos por tenant.',
             'active_nav' => 'admin-external-tools',
             'tenants' => $this->tenantOptions(),
             'tenant_filter' => $tenantFilter,
@@ -100,10 +109,10 @@ final class ExternalToolController extends AbstractController
         }
 
         return $this->renderToolFormPage(
-            'Crear herramienta externa',
-            'Define el webhook externo que el runtime usará para contextos de contacto.',
-            'Crear herramienta externa',
-            'Guardar herramienta',
+            'Servidores MCP',
+            'Define el servidor MCP remoto que el runtime usará como tool nativa.',
+            'Crear servidor MCP',
+            'Guardar servidor MCP',
             '/backend/external-tools/new',
             $values,
             $errors,
@@ -149,9 +158,9 @@ final class ExternalToolController extends AbstractController
         }
 
         return $this->renderToolFormPage(
-            'Editar herramienta externa',
-            'Ajusta el webhook, seguridad y parámetros de la herramienta.',
-            'Editar herramienta externa',
+            'Servidores MCP',
+            'Ajusta el servidor remoto, seguridad y parámetros de la herramienta.',
+            'Editar servidor MCP',
             'Guardar cambios',
             '/backend/external-tools/'.$tool->getId()->toRfc4122().'/edit',
             $values,
@@ -226,11 +235,11 @@ final class ExternalToolController extends AbstractController
             return new RedirectResponse($this->backendExternalToolsIndexUrl($tool->getTenant()->getId()->toRfc4122()));
         }
 
-        $testResult = $this->runContactContextTest($tool);
+        $testResult = $this->runMcpTest($tool);
 
         return $this->render('backend/external_tools/index.html.twig', [
-            'page_title' => 'Herramientas externas',
-            'page_subtitle' => 'Configuración y prueba de ExternalTools por tenant.',
+            'page_title' => 'Servidores MCP',
+            'page_subtitle' => 'Configuración de servidores MCP remotos por tenant.',
             'active_nav' => 'admin-external-tools',
             'tenants' => $this->tenantOptions(),
             'tenant_filter' => $tool->getTenant()->getId()->toRfc4122(),
@@ -260,6 +269,7 @@ final class ExternalToolController extends AbstractController
      */
     private function toolRow(ExternalTool $tool): array
     {
+        $config = $tool->getConfig();
         return [
             'id' => $tool->getId()->toRfc4122(),
             'tenantId' => $tool->getTenant()->getId()->toRfc4122(),
@@ -272,8 +282,9 @@ final class ExternalToolController extends AbstractController
             'hasBearerToken' => $tool->getBearerToken() !== null && $tool->getBearerToken() !== '',
             'timeoutSeconds' => $tool->getTimeoutSeconds(),
             'isActive' => $tool->isActive(),
-            'configText' => $this->configToTextarea($tool->getConfig()),
-            'configSummary' => $this->configSummary($tool->getConfig()),
+            'configText' => $this->configToTextarea($config),
+            'configSummary' => $this->configSummary($config, $tool),
+            'canTest' => $this->canTestTool($tool),
             'testToken' => $this->externalToolTokenValue('external_tool_test_'.$tool->getId()->toRfc4122()),
             'toggleToken' => $this->externalToolTokenValue('external_tool_toggle_'.$tool->getId()->toRfc4122()),
             'deleteToken' => $this->externalToolTokenValue('external_tool_delete_'.$tool->getId()->toRfc4122()),
@@ -281,10 +292,11 @@ final class ExternalToolController extends AbstractController
     }
 
     /**
-     * @return array{name: string, tenantId: string, type: string, provider: string, webhookUrl: string, authType: string, bearerToken: string, timeoutSeconds: string, isActive: bool, config: string}
+     * @return array{name: string, tenantId: string, type: string, provider: string, webhookUrl: string, authType: string, bearerToken: string, timeoutSeconds: string, isActive: bool, config: string, serverLabel: string, allowedTools: string, requireApproval: string, enabledForLlm: bool, notes: string}
      */
     private function toolFormDefaults(?ExternalTool $tool = null): array
     {
+        $config = $tool?->getConfig() ?? [];
         return [
             'name' => $tool?->getName() ?? '',
             'tenantId' => $tool?->getTenant()?->getId()->toRfc4122() ?? '',
@@ -295,12 +307,17 @@ final class ExternalToolController extends AbstractController
             'bearerToken' => '',
             'timeoutSeconds' => (string) ($tool?->getTimeoutSeconds() ?? 5),
             'isActive' => $tool?->isActive() ?? true,
-            'config' => $this->configToTextarea($tool?->getConfig() ?? []),
+            'config' => $this->configToTextarea($config),
+            'serverLabel' => $this->configStringField($config, 'server_label'),
+            'allowedTools' => $this->configAllowedToolsField($config),
+            'requireApproval' => $this->configStringField($config, 'require_approval', 'auto'),
+            'enabledForLlm' => $this->configBoolField($config, 'enabled_for_llm', $tool?->getType() === self::MCP_TOOL_TYPE),
+            'notes' => $this->configStringField($config, 'notes'),
         ];
     }
 
     /**
-     * @return array{name: string, tenantId: string, type: string, provider: string, webhookUrl: string, authType: string, bearerToken: string, timeoutSeconds: string, isActive: bool, config: string}
+     * @return array{name: string, tenantId: string, type: string, provider: string, webhookUrl: string, authType: string, bearerToken: string, timeoutSeconds: string, isActive: bool, config: string, serverLabel: string, allowedTools: string, requireApproval: string, enabledForLlm: bool, notes: string}
      */
     private function toolFormValuesFromRequest(Request $request): array
     {
@@ -315,11 +332,16 @@ final class ExternalToolController extends AbstractController
             'timeoutSeconds' => trim((string) $request->request->get('timeoutSeconds', '5')),
             'isActive' => $request->request->has('isActive'),
             'config' => trim((string) $request->request->get('config', '{}')),
+            'serverLabel' => trim((string) $request->request->get('serverLabel', '')),
+            'allowedTools' => trim((string) $request->request->get('allowedTools', '')),
+            'requireApproval' => trim((string) $request->request->get('requireApproval', 'auto')),
+            'enabledForLlm' => $request->request->has('enabledForLlm'),
+            'notes' => trim((string) $request->request->get('notes', '')),
         ];
     }
 
     /**
-     * @param array{name: string, tenantId: string, type: string, provider: string, webhookUrl: string, authType: string, bearerToken: string, timeoutSeconds: string, isActive: bool, config: string} $values
+     * @param array{name: string, tenantId: string, type: string, provider: string, webhookUrl: string, authType: string, bearerToken: string, timeoutSeconds: string, isActive: bool, config: string, serverLabel: string, allowedTools: string, requireApproval: string, enabledForLlm: bool, notes: string} $values
      *
      * @return list<string>
      */
@@ -345,8 +367,16 @@ final class ExternalToolController extends AbstractController
             $errors[] = 'El proveedor no es válido.';
         }
 
-        if ($values['provider'] === 'n8n_webhook' && $values['webhookUrl'] === '') {
-            $errors[] = 'La URL del webhook es obligatoria para n8n_webhook.';
+        if ($values['type'] === self::TEST_TOOL_TYPE && $values['provider'] !== 'n8n_webhook') {
+            $errors[] = 'contact_context es legacy y sólo mantiene compatibilidad con n8n_webhook.';
+        }
+
+        if ($values['type'] === self::MCP_TOOL_TYPE && !in_array($values['provider'], [self::MCP_PROVIDER, self::MCP_PROVIDER_ALTERNATE], true)) {
+            $errors[] = 'mcp_remote sólo puede usar un proveedor MCP remoto.';
+        }
+
+        if ($values['webhookUrl'] === '') {
+            $errors[] = 'La URL del webhook es obligatoria.';
         }
 
         if ($values['webhookUrl'] !== '' && !$this->isValidHttpUrl($values['webhookUrl'])) {
@@ -373,6 +403,16 @@ final class ExternalToolController extends AbstractController
             }
         }
 
+        if ($values['type'] === self::MCP_TOOL_TYPE) {
+            if ($values['serverLabel'] === '') {
+                $errors[] = 'El server label es obligatorio para MCP remoto.';
+            }
+
+            if (!in_array($values['requireApproval'], ['auto', 'never', 'always'], true)) {
+                $errors[] = 'El modo de aprobación MCP no es válido.';
+            }
+        }
+
         if ($values['authType'] === 'bearer' && $tool === null && $values['bearerToken'] === '') {
             // Permitido por ahora: se muestra la advertencia en la UI.
         }
@@ -396,7 +436,7 @@ final class ExternalToolController extends AbstractController
         $tool->setAuthType($values['authType'] !== 'none' ? $values['authType'] : null);
         $tool->setTimeoutSeconds((int) $values['timeoutSeconds']);
         $tool->setActive($values['isActive']);
-        $tool->setConfig($this->decodeConfig($values['config']));
+        $tool->setConfig($this->buildConfig($values));
         $this->applyBearerToken($tool, $values['authType'], $values['bearerToken'], $isNew);
     }
 
@@ -420,6 +460,68 @@ final class ExternalToolController extends AbstractController
     }
 
     /**
+     * @param array{name: string, tenantId: string, type: string, provider: string, webhookUrl: string, authType: string, bearerToken: string, timeoutSeconds: string, isActive: bool, config: string, serverLabel: string, allowedTools: string, requireApproval: string, enabledForLlm: bool, notes: string} $values
+     *
+     * @return array<string, mixed>
+     */
+    private function buildConfig(array $values): array
+    {
+        $config = $this->decodeConfig($values['config']);
+
+        if ($values['type'] === self::MCP_TOOL_TYPE) {
+            $config['server_label'] = $values['serverLabel'];
+            $config['allowed_tools'] = $this->parseAllowedTools($values['allowedTools']);
+            $config['require_approval'] = $values['requireApproval'] !== '' ? $values['requireApproval'] : 'auto';
+            $config['enabled_for_llm'] = $values['enabledForLlm'];
+            if ($values['notes'] !== '') {
+                $config['notes'] = $values['notes'];
+            } else {
+                unset($config['notes']);
+            }
+        } else {
+            unset($config['server_label'], $config['allowed_tools'], $config['require_approval'], $config['enabled_for_llm'], $config['notes']);
+        }
+
+        return $config;
+    }
+
+    private function configStringField(array $config, string $key, string $default = ''): string
+    {
+        $value = $config[$key] ?? $default;
+        if (!is_string($value)) {
+            return $default;
+        }
+
+        return trim($value);
+    }
+
+    private function configBoolField(array $config, string $key, bool $default = false): bool
+    {
+        if (!array_key_exists($key, $config)) {
+            return $default;
+        }
+
+        return (bool) $config[$key];
+    }
+
+    private function configAllowedToolsField(array $config): string
+    {
+        $value = $config['allowed_tools'] ?? [];
+        if (!is_array($value)) {
+            return '';
+        }
+
+        $tools = [];
+        foreach ($value as $item) {
+            if (is_string($item) && trim($item) !== '') {
+                $tools[] = trim($item);
+            }
+        }
+
+        return implode("\n", array_values(array_unique($tools)));
+    }
+
+    /**
      * @return array<string, mixed>
      */
     private function decodeConfig(string $rawConfig): array
@@ -433,6 +535,28 @@ final class ExternalToolController extends AbstractController
         return is_array($decoded) ? $decoded : [];
     }
 
+    /**
+     * @return list<string>
+     */
+    private function parseAllowedTools(string $rawAllowedTools): array
+    {
+        $rawAllowedTools = trim($rawAllowedTools);
+        if ($rawAllowedTools === '') {
+            return [];
+        }
+
+        $parts = preg_split('/[\r\n,]+/', $rawAllowedTools) ?: [];
+        $tools = [];
+        foreach ($parts as $part) {
+            $tool = trim($part);
+            if ($tool !== '') {
+                $tools[] = $tool;
+            }
+        }
+
+        return array_values(array_unique($tools));
+    }
+
     private function configToTextarea(array $config): string
     {
         if ($config === []) {
@@ -443,10 +567,32 @@ final class ExternalToolController extends AbstractController
         return is_string($json) && $json !== '' ? $json : '{}';
     }
 
-    private function configSummary(array $config): string
+    private function configSummary(array $config, ?ExternalTool $tool = null): string
     {
         if ($config === []) {
             return '{}';
+        }
+
+        if ($tool instanceof ExternalTool && $tool->getType() === self::MCP_TOOL_TYPE) {
+            $parts = [];
+            $serverLabel = $tool->getServerLabel();
+            if ($serverLabel !== null) {
+                $parts[] = 'server: '.$serverLabel;
+            }
+
+            $allowedTools = $tool->getAllowedTools();
+            if ($allowedTools !== []) {
+                $parts[] = 'tools: '.implode(', ', array_slice($allowedTools, 0, 3)).(count($allowedTools) > 3 ? '…' : '');
+            }
+
+            $requireApproval = $tool->getRequireApproval();
+            if ($requireApproval !== null) {
+                $parts[] = 'approval: '.$requireApproval;
+            }
+
+            if ($parts !== []) {
+                return implode(' | ', $parts);
+            }
         }
 
         $json = json_encode($config, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
@@ -481,6 +627,7 @@ final class ExternalToolController extends AbstractController
             'is_edit' => $isEdit,
             'tool_id' => $tool?->getId()->toRfc4122(),
             'has_token' => $tool?->getBearerToken() !== null && $tool->getBearerToken() !== '',
+            'can_test' => $tool === null ? false : $this->canTestTool($tool),
             'form_token' => $this->externalToolTokenValue($isEdit && $tool instanceof ExternalTool ? 'external_tool_form_'.$tool->getId()->toRfc4122() : 'external_tool_form_create'),
             ...$this->templateUserDefaults(),
         ]);
@@ -532,59 +679,119 @@ final class ExternalToolController extends AbstractController
         return '/backend/external-tools'.$query;
     }
 
+    private function canTestTool(ExternalTool $tool): bool
+    {
+        return $tool->getType() === self::MCP_TOOL_TYPE && $tool->isEnabledForLlm();
+    }
+
+    /**
+     * @param mixed $value
+     * @return list<string>
+     */
+    private function normalizeList(mixed $value): array
+    {
+        if (!is_array($value)) {
+            return [];
+        }
+
+        $items = [];
+        foreach ($value as $item) {
+            if (is_string($item) && trim($item) !== '') {
+                $items[] = trim($item);
+            }
+        }
+
+        return array_values(array_unique($items));
+    }
+
+    /**
+     * @param mixed $value
+     * @return list<array{type: string, tool_name: string, status: string, output: mixed}>
+     */
+    private function normalizeToolTraces(mixed $value): array
+    {
+        if (!is_array($value)) {
+            return [];
+        }
+
+        $traces = [];
+        foreach ($value as $trace) {
+            if (!is_array($trace)) {
+                continue;
+            }
+
+            $traces[] = [
+                'type' => self::cleanString($trace['type'] ?? null),
+                'tool_name' => self::cleanString($trace['tool_name'] ?? $trace['toolName'] ?? null),
+                'status' => self::cleanString($trace['status'] ?? null),
+                'output' => $trace['output'] ?? null,
+            ];
+        }
+
+        return $traces;
+    }
+
+    private static function cleanString(mixed $value): string
+    {
+        if (!is_string($value)) {
+            return '';
+        }
+
+        return trim($value);
+    }
+
     /**
      * @return array<string, mixed>
      */
-    private function runContactContextTest(ExternalTool $tool): array
+    private function runMcpTest(ExternalTool $tool): array
     {
         $payload = [
-            'tool_type' => self::TEST_TOOL_TYPE,
             'tenant_id' => $tool->getTenant()->getId()->toRfc4122(),
-            'tenant_slug' => $tool->getTenant()->getSlug(),
-            'channel' => 'whatsapp',
-            'external_channel_id' => 'test',
+            'channel_type' => 'whatsapp',
+            'external_channel_id' => 'ui-mcp-test',
             'contact' => [
-                'wa_id' => 'test',
-                'phone' => 'test',
-                'name' => 'Cliente Test',
+                'wa_id' => '+34600000000',
+                'phone' => '+34600000000',
+                'name' => 'Cliente Demo',
             ],
             'conversation' => [
-                'id' => null,
+                'external_id' => 'ui-mcp-test-'.$tool->getId()->toRfc4122().'-'.time(),
                 'last_messages' => [],
             ],
             'message' => [
-                'text' => 'Hola, vengo por información.',
-                'external_message_id' => 'test',
+                'text' => self::MCP_TEST_MESSAGE,
+            ],
+            'raw_event' => [
+                'source' => 'ui_mcp_test',
             ],
         ];
 
-        if ($tool->getProvider() !== 'n8n_webhook' || $tool->getWebhookUrl() === null || $tool->getWebhookUrl() === '') {
+        if (!$this->canTestTool($tool)) {
             return [
                 'ok' => false,
                 'found' => false,
                 'provider' => $tool->getProvider(),
                 'status_code' => null,
                 'latency_ms' => 0,
-                'error_code' => 'unsupported_provider',
-                'summary' => 'La herramienta no usa el proveedor n8n_webhook o no tiene webhook configurado.',
+                'error_code' => 'provider_not_supported',
+                'summary' => 'MCP remoto requiere OpenAI Responses API. Con Ollama se omite.',
+                'reply' => '',
+                'model' => null,
+                'mcp_response_id' => null,
+                'mcp_tool_traces' => [],
+                'mcp_errors' => [],
             ];
-        }
-
-        $headers = [];
-        if ($tool->getAuthType() === 'bearer' && $tool->getBearerToken() !== null) {
-            try {
-                $headers['Authorization'] = 'Bearer '.$this->cipher->decrypt($tool->getBearerToken());
-            } catch (\Throwable) {
-                $headers['Authorization'] = 'Bearer '.$tool->getBearerToken();
-            }
         }
 
         $startedAt = microtime(true);
         try {
-            $response = $this->httpClient->request('POST', $tool->getWebhookUrl(), [
-                'headers' => $headers,
+            $response = $this->httpClient->request('POST', self::SALES_AGENT_API_BASE_URL.self::SALES_AGENT_API_RESPOND_PATH, [
+                'headers' => [
+                    'Authorization' => 'Bearer '.$this->salesAgentBearerToken,
+                    'Accept' => 'application/json',
+                ],
                 'json' => $payload,
-                'timeout' => max(1, min(30, $tool->getTimeoutSeconds())),
+                'timeout' => 60,
             ]);
 
             $statusCode = $response->getStatusCode();
@@ -601,32 +808,46 @@ final class ExternalToolController extends AbstractController
                     'latency_ms' => $latencyMs,
                     'error_code' => 'invalid_response',
                     'summary' => 'La respuesta no es JSON válido.',
+                    'reply' => '',
+                    'model' => null,
+                    'mcp_response_id' => null,
+                    'mcp_tool_traces' => [],
+                    'mcp_errors' => [],
                 ];
             }
 
-            if (!($decoded['ok'] ?? false)) {
+            $dataToSave = is_array($decoded['data_to_save'] ?? null) ? $decoded['data_to_save'] : [];
+            $mcpSkippedReason = is_string($dataToSave['mcp_skipped_reason'] ?? null) ? trim((string) $dataToSave['mcp_skipped_reason']) : null;
+            if (($decoded['provider'] ?? null) !== 'openai' || $mcpSkippedReason === 'provider_not_supported') {
                 return [
                     'ok' => false,
                     'found' => false,
-                    'provider' => $tool->getProvider(),
+                    'provider' => is_string($decoded['provider'] ?? null) ? $decoded['provider'] : $tool->getProvider(),
                     'status_code' => $statusCode,
                     'latency_ms' => $latencyMs,
-                    'error_code' => is_string($decoded['error_code'] ?? null) ? $decoded['error_code'] : 'tool_error',
-                    'summary' => is_string($decoded['summary'] ?? null) ? $decoded['summary'] : 'La herramienta respondió con error.',
+                    'error_code' => 'provider_not_supported',
+                    'summary' => 'MCP remoto requiere OpenAI Responses API. Con Ollama se omite.',
+                    'reply' => is_string($decoded['reply'] ?? null) ? $decoded['reply'] : '',
+                    'model' => is_string($decoded['model'] ?? null) ? $decoded['model'] : null,
+                    'mcp_response_id' => is_string($dataToSave['mcp_response_id'] ?? null) ? $dataToSave['mcp_response_id'] : null,
+                    'mcp_tool_traces' => $this->normalizeToolTraces($dataToSave['mcp_tool_traces'] ?? []),
+                    'mcp_errors' => $this->normalizeList($dataToSave['mcp_errors'] ?? []),
                 ];
             }
 
             return [
                 'ok' => true,
                 'found' => (bool) ($decoded['found'] ?? false),
-                'provider' => $tool->getProvider(),
+                'provider' => is_string($decoded['provider'] ?? null) ? $decoded['provider'] : 'openai',
                 'status_code' => $statusCode,
                 'latency_ms' => $latencyMs,
                 'error_code' => null,
-                'summary' => is_string($decoded['summary'] ?? null)
-                    ? $decoded['summary']
-                    : ($decoded['data']['summary'] ?? 'La herramienta respondió correctamente.'),
-                'data' => $decoded,
+                'summary' => 'La prueba MCP se ejecutó correctamente.',
+                'reply' => is_string($decoded['reply'] ?? null) ? $decoded['reply'] : '',
+                'model' => is_string($decoded['model'] ?? null) ? $decoded['model'] : null,
+                'mcp_response_id' => is_string($dataToSave['mcp_response_id'] ?? null) ? $dataToSave['mcp_response_id'] : null,
+                'mcp_tool_traces' => $this->normalizeToolTraces($dataToSave['mcp_tool_traces'] ?? []),
+                'mcp_errors' => $this->normalizeList($dataToSave['mcp_errors'] ?? []),
             ];
         } catch (\Throwable $exception) {
             $latencyMs = (int) round((microtime(true) - $startedAt) * 1000);
@@ -639,6 +860,11 @@ final class ExternalToolController extends AbstractController
                 'latency_ms' => $latencyMs,
                 'error_code' => $exception instanceof \Symfony\Contracts\HttpClient\Exception\TimeoutExceptionInterface ? 'timeout' : 'unexpected_error',
                 'summary' => 'No se pudo ejecutar la prueba de la herramienta.',
+                'reply' => '',
+                'model' => null,
+                'mcp_response_id' => null,
+                'mcp_tool_traces' => [],
+                'mcp_errors' => [self::cleanString($exception->getMessage())],
             ];
         }
     }

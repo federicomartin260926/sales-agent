@@ -11,6 +11,7 @@ Este directorio contiene el backend administrativo de `sales-agent`.
 - permite editar la configuración operativa de LLM y audio desde `/backend/configuration`
 - usa Twig como base de render para el layout común y la primera pantalla migrada de configuración
 - sirve los estilos del panel desde `public/assets/backend.css` para evitar CSS embebido en Twig y en el login
+- permite registrar `ExternalTool` de `contact_context` legacy vía n8n y `mcp_remote` para preparar herramientas nativas del LLM
 - permite editar en `Negocio` `whatsappPhoneNumberId` y `whatsappPublicPhone` para routing técnico y enlaces `wa.me`
 - permite importar catálogos de productos/servicios desde CRM con `integration_key` como referencia externa
 - la UI heredada ya no expone `canales` ni `tracking`; el flujo canónico se configura con `EntryPoint`, `EntryPointUtm` y `Conversation`
@@ -126,6 +127,14 @@ La pantalla `/backend/configuration` permite editar:
 - `ollama_timeout_seconds`
 - `audio_gateway_base_url`
 - `audio_timeout_seconds`
+
+Las `Herramientas externas` permiten registrar:
+
+- `contact_context` legacy con `n8n_webhook`
+- `mcp_remote` para dejar configurado el servidor MCP remoto del tenant que usará OpenAI Responses API
+
+La configuración MCP queda guardada en `ExternalTool.config` con campos como `server_label`, `allowed_tools`, `require_approval`, `enabled_for_llm` y `notes`.
+Cuando el runtime usa un perfil no compatible con Responses API, el MCP se ignora y se registra la causa en la traza del mensaje.
 
 Reglas operativas:
 

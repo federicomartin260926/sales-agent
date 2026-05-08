@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from app.config import Settings
 from app.schemas.agent import AgentRequest
+from app.schemas.llm import LLMToolTrace, McpRemoteConfig
 from app.services.backend_client import CommercialContext
 from app.services.llm_client import LLMClient
 from app.services.llm_prompt_builder import LLMPromptBuilder
@@ -30,6 +31,8 @@ class LLMDecisionDraft(BaseModel):
     provider: str | None = None
     model: str | None = None
     latency_ms: int | None = None
+    response_id: str | None = None
+    tool_traces: list[LLMToolTrace] = Field(default_factory=list)
 
 
 class LLMDecisionService:
@@ -42,6 +45,7 @@ class LLMDecisionService:
         self.settings = settings
         self.llm_client = llm_client or LLMClient(settings)
         self.prompt_builder = prompt_builder or LLMPromptBuilder()
+        self.last_mcp_skip_reason: str | None = None
 
     async def propose(
         self,
@@ -49,9 +53,14 @@ class LLMDecisionService:
         routing: RoutingContext | None,
         backend_context: CommercialContext | None,
         contact_context: dict[str, Any] | None = None,
+        mcp_config: McpRemoteConfig | None = None,
     ) -> LLMDecisionDraft | None:
+        self.last_mcp_skip_reason = None
         configuration = await self.llm_client.resolve_configuration()
         provider_profile = configuration.get("llm_default_profile", "").strip().lower()
+        if mcp_config is not None and mcp_config.enabled and provider_profile != "openai":
+            self.last_mcp_skip_reason = "provider_not_supported"
+            logger.warning("MCP remote skipped reason=%s provider_profile=%s", self.last_mcp_skip_reason, provider_profile or "empty")
         if provider_profile == "heuristic":
             logger.debug("LLM heuristics mode selected; skipping provider calls")
             return None
@@ -61,9 +70,13 @@ class LLMDecisionService:
             logger.debug("LLM heuristics fallback: provider profile disabled or unrecognized (%s)", provider_profile or "empty")
             return None
 
-        system_prompt, user_prompt = self.prompt_builder.build(payload, routing, backend_context, contact_context)
+        system_prompt, user_prompt = self.prompt_builder.build(payload, routing, backend_context, contact_context, mcp_config)
 
         for provider in provider_order:
+            if mcp_config is not None and mcp_config.enabled and provider != "openai":
+                self.last_mcp_skip_reason = "provider_not_supported"
+                logger.warning("MCP remote skipped reason=%s provider=%s", self.last_mcp_skip_reason, provider)
+
             if not self._provider_config_ready(provider, configuration):
                 reason = f"missing configuration for {provider}"
                 logger.info("LLM fallback reason=%s", reason)
@@ -73,7 +86,10 @@ class LLMDecisionService:
 
             started_at = time.perf_counter()
             try:
-                result = await self.llm_client.generate(provider, system_prompt, user_prompt, configuration)
+                if provider == "openai" and mcp_config is not None and mcp_config.enabled:
+                    result = await self.llm_client.generate_with_mcp(provider, system_prompt, user_prompt, mcp_config, configuration)
+                else:
+                    result = await self.llm_client.generate(provider, system_prompt, user_prompt, configuration)
             except Exception as exc:
                 reason = f"{provider} request failed: {exc.__class__.__name__}"
                 logger.warning("LLM fallback reason=%s", reason)
@@ -101,19 +117,50 @@ class LLMDecisionService:
                     provider=draft.provider,
                     model=draft.model,
                     latency_ms=draft.latency_ms,
+                    response_id=draft.response_id,
+                    tool_traces=draft.tool_traces,
                 )
 
             logger.info("LLM provider used=%s", result.provider)
+            data_to_save = dict(draft.data_to_save)
+            if result.response_id is not None and result.response_id.strip() != "":
+                data_to_save.setdefault("mcp_response_id", result.response_id)
+            if result.tool_traces != []:
+                data_to_save.setdefault(
+                    "mcp_tool_traces",
+                    [trace.model_dump(exclude_none=True) for trace in result.tool_traces],
+                )
+                data_to_save.setdefault("mcp_enabled", True)
+            if mcp_config is not None and mcp_config.enabled:
+                data_to_save.setdefault("mcp_enabled", True)
+                if mcp_config.server_label is not None and mcp_config.server_label.strip() != "":
+                    data_to_save.setdefault("mcp_server_label", mcp_config.server_label.strip())
+                if mcp_config.server_url is not None and mcp_config.server_url.strip() != "":
+                    data_to_save.setdefault("mcp_server_url", mcp_config.server_url.strip())
+                if mcp_config.allowed_tools != []:
+                    data_to_save.setdefault("mcp_allowed_tools", mcp_config.allowed_tools)
+                if mcp_config.require_approval is not None and mcp_config.require_approval.strip() != "":
+                    data_to_save.setdefault("mcp_require_approval", mcp_config.require_approval.strip())
+            mcp_error = getattr(self.llm_client, "last_mcp_error", None)
+            if isinstance(mcp_error, str) and mcp_error.strip() != "":
+                errors = data_to_save.setdefault("mcp_errors", [])
+                if isinstance(errors, list):
+                    errors.append(mcp_error.strip())
+            if self.last_mcp_skip_reason is not None:
+                data_to_save.setdefault("mcp_skipped_reason", self.last_mcp_skip_reason)
+
             return LLMDecisionDraft(
                 reply=draft.reply,
                 intent=draft.intent,
                 score=draft.score,
                 action=draft.action,
                 needs_human=draft.needs_human,
-                data_to_save=draft.data_to_save,
+                data_to_save=data_to_save,
                 provider=result.provider,
                 model=result.model,
                 latency_ms=int(round((time.perf_counter() - started_at) * 1000)),
+                response_id=result.response_id,
+                tool_traces=result.tool_traces,
             )
 
         logger.info("LLM fallback reason=no provider succeeded")
@@ -193,6 +240,11 @@ class LLMDecisionService:
             action=action,
             needs_human=needs_human,
             data_to_save=data_to_save,
+            provider=draft.provider,
+            model=draft.model,
+            latency_ms=draft.latency_ms,
+            response_id=draft.response_id,
+            tool_traces=draft.tool_traces,
         )
 
     def _normalize_intent(self, intent: str) -> str:

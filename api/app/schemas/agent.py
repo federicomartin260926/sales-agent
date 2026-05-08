@@ -75,10 +75,28 @@ class Message(BaseModel):
 class Conversation(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
+    external_id: str | None = Field(default=None, validation_alias=AliasChoices("external_id", "externalId"))
     last_messages: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def normalize_conversation_payload(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+
+        normalized = dict(data)
+        external_id = normalized.get("external_id")
+        if isinstance(external_id, str):
+            normalized["external_id"] = external_id.strip()
+        elif isinstance(normalized.get("externalId"), str):
+            normalized["externalId"] = normalized["externalId"].strip()
+
+        return normalized
 
     @model_validator(mode="after")
     def normalize_conversation_values(self) -> "Conversation":
+        if self.external_id is not None:
+            self.external_id = self.external_id.strip() or None
         self.last_messages = [message.strip() for message in self.last_messages if isinstance(message, str) and message.strip() != ""]
         return self
 

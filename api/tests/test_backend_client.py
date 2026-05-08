@@ -6,6 +6,47 @@ from app.services.backend_client import BackendClient, BackendConversationUpsert
 
 
 def transport_handler(request: httpx.Request) -> httpx.Response:
+    if request.method == "GET" and request.url.path == "/api/internal/commercial-context":
+        assert request.headers.get("Authorization") == "Bearer test-internal-token"
+        assert request.url.params.get("tenant_id") == "tenant-1"
+        return httpx.Response(
+            200,
+            json={
+                "tenant": {
+                    "id": "tenant-1",
+                    "name": "Negocio Demo",
+                    "slug": "negocio-demo",
+                    "businessContext": "Contexto comercial",
+                    "tone": "consultivo",
+                    "salesPolicy": {},
+                    "isActive": True,
+                    "createdAt": "2026-04-28T12:00:00+00:00",
+                },
+                "product": {
+                    "id": "product-1",
+                    "tenantId": "tenant-1",
+                    "name": "WhatsApp Automation",
+                    "slug": "whatsapp-automation",
+                    "externalSource": "crm",
+                    "externalReference": "pack-starter",
+                    "description": "Automatización de conversaciones.",
+                    "valueProposition": "Atiende leads 24/7 con reglas comerciales.",
+                    "basePriceCents": 150000,
+                    "currency": "EUR",
+                    "salesPolicy": {},
+                    "isActive": True,
+                },
+                "playbook": {
+                    "id": "playbook-1",
+                    "tenantId": "tenant-1",
+                    "productId": "product-1",
+                    "name": "Guía comercial WhatsApp",
+                    "config": {},
+                    "isActive": True,
+                },
+            },
+        )
+
     if request.method == "GET" and request.url.path == "/api/tenants/tenant-1":
         return httpx.Response(
             200,
@@ -81,13 +122,30 @@ def transport_handler(request: httpx.Request) -> httpx.Response:
             },
         )
 
+    if request.method == "GET" and request.url.path == "/api/internal/mcp/tenant-1/config":
+        assert request.headers.get("Authorization") == "Bearer test-internal-token"
+        return httpx.Response(
+            200,
+            json={
+                "enabled": True,
+                "server_label": "tenant_main_mcp",
+                "server_url": "https://mcp.example.test",
+                "auth_type": "bearer",
+                "bearer_token": "mcp-token",
+                "allowed_tools": ["search_properties"],
+                "require_approval": "never",
+                "timeout_seconds": 15,
+                "config": {},
+            },
+        )
+
     return httpx.Response(404, json={"detail": "not found"})
 
 
 @pytest.mark.asyncio
 async def test_backend_client_loads_tenant_context():
     client = BackendClient(
-        Settings(BACKEND_BASE_URL="http://sales-agent-nginx"),
+        Settings(BACKEND_BASE_URL="http://sales-agent-nginx", SALES_AGENT_BEARER_TOKEN="test-internal-token"),
         transport=httpx.MockTransport(transport_handler),
     )
 
@@ -105,7 +163,7 @@ async def test_backend_client_loads_tenant_context():
 @pytest.mark.asyncio
 async def test_backend_client_resolves_entrypoint_ref():
     client = BackendClient(
-        Settings(BACKEND_BASE_URL="http://sales-agent-nginx"),
+        Settings(BACKEND_BASE_URL="http://sales-agent-nginx", SALES_AGENT_BEARER_TOKEN="test-internal-token"),
         transport=httpx.MockTransport(transport_handler),
     )
 
@@ -120,7 +178,7 @@ async def test_backend_client_resolves_entrypoint_ref():
 @pytest.mark.asyncio
 async def test_backend_client_resolves_whatsapp_phone():
     client = BackendClient(
-        Settings(BACKEND_BASE_URL="http://sales-agent-nginx"),
+        Settings(BACKEND_BASE_URL="http://sales-agent-nginx", SALES_AGENT_BEARER_TOKEN="test-internal-token"),
         transport=httpx.MockTransport(transport_handler),
     )
 
@@ -133,7 +191,7 @@ async def test_backend_client_resolves_whatsapp_phone():
 @pytest.mark.asyncio
 async def test_backend_client_returns_none_for_missing_tenant():
     client = BackendClient(
-        Settings(BACKEND_BASE_URL="http://sales-agent-nginx"),
+        Settings(BACKEND_BASE_URL="http://sales-agent-nginx", SALES_AGENT_BEARER_TOKEN="test-internal-token"),
         transport=httpx.MockTransport(lambda request: httpx.Response(404, json={"detail": "not found"})),
     )
 
@@ -159,3 +217,33 @@ async def test_backend_client_upserts_conversation_with_internal_bearer():
 
     assert result is not None
     assert result["created"] is True
+
+
+@pytest.mark.asyncio
+async def test_backend_client_fetches_mcp_config():
+    client = BackendClient(
+        Settings(BACKEND_BASE_URL="http://sales-agent-nginx", SALES_AGENT_BEARER_TOKEN="test-internal-token"),
+        transport=httpx.MockTransport(transport_handler),
+    )
+
+    config = await client.fetch_mcp_config("tenant-1")
+
+    assert config.enabled is True
+    assert config.server_label == "tenant_main_mcp"
+    assert config.server_url == "https://mcp.example.test"
+    assert config.auth_type == "bearer"
+    assert config.bearer_token == "mcp-token"
+    assert config.allowed_tools == ["search_properties"]
+
+
+@pytest.mark.asyncio
+async def test_backend_client_fetches_disabled_mcp_config_when_missing():
+    client = BackendClient(
+        Settings(BACKEND_BASE_URL="http://sales-agent-nginx", SALES_AGENT_BEARER_TOKEN="test-internal-token"),
+        transport=httpx.MockTransport(lambda request: httpx.Response(404, json={"detail": "not found"})),
+    )
+
+    config = await client.fetch_mcp_config("tenant-1")
+
+    assert config.enabled is False
+    assert config.error_code == "not_configured"

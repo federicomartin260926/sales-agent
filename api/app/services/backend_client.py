@@ -8,6 +8,7 @@ import httpx
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from app.config import Settings
+from app.schemas.llm import McpRemoteConfig
 
 
 logger = logging.getLogger(__name__)
@@ -520,6 +521,48 @@ class BackendClient:
             logger.warning("Backend external tool payload validation failed for tenant=%s type=%s", tenant_id, tool_type)
             return None
 
+    async def fetch_mcp_config(self, tenant_id: str) -> McpRemoteConfig:
+        base_url = self.settings.backend_base_url.strip().rstrip("/")
+        if base_url == "" or tenant_id.strip() == "":
+            return self._disabled_mcp_config("not_configured", "Missing backend URL or tenant id")
+
+        timeout = httpx.Timeout(5.0, connect=2.0)
+        try:
+            async with httpx.AsyncClient(base_url=base_url, timeout=timeout, transport=self.transport) as client:
+                path = f"/api/internal/mcp/{tenant_id.strip()}/config"
+                response = await client.get(path, headers=self._auth_headers())
+                if response.status_code == httpx.codes.NOT_FOUND:
+                    return self._disabled_mcp_config("not_configured", "MCP config not found")
+                if response.status_code >= 400:
+                    logger.warning(
+                        "Backend MCP config lookup failed for %s %s with status %s body=%s",
+                        response.request.method,
+                        response.request.url,
+                        response.status_code,
+                        self._response_snippet(response),
+                    )
+                    response.raise_for_status()
+
+                payload = response.json()
+        except httpx.TimeoutException:
+            return self._disabled_mcp_config("timeout", "Backend MCP config lookup timed out")
+        except (httpx.HTTPError, ValueError):
+            return self._disabled_mcp_config("backend_error", "Backend MCP config lookup failed")
+
+        if not isinstance(payload, dict):
+            return self._disabled_mcp_config("invalid_response", "Backend MCP config payload was not an object")
+
+        try:
+            config = McpRemoteConfig.model_validate(payload)
+        except ValidationError:
+            logger.warning("Backend MCP config payload validation failed for tenant=%s", tenant_id)
+            return self._disabled_mcp_config("invalid_response", "Backend MCP config payload validation failed")
+
+        if not config.enabled:
+            config.error_code = config.error_code or "not_configured"
+
+        return config
+
     async def upsert_conversation(self, payload: BackendConversationUpsertPayload) -> dict[str, Any] | None:
         base_url = self.settings.backend_base_url.strip().rstrip("/")
         if base_url == "":
@@ -576,6 +619,13 @@ class BackendClient:
             return response.text[:200].replace("\n", " ").replace("\r", " ")
         except Exception:
             return "<unavailable>"
+
+    def _disabled_mcp_config(self, error_code: str, error_message: str) -> McpRemoteConfig:
+        return McpRemoteConfig(
+            enabled=False,
+            error_code=error_code,
+            error_message=error_message,
+        )
 
     def _filter_active_products(self, payload: Any, tenant_id: str) -> list[BackendProduct]:
         if not isinstance(payload, list):

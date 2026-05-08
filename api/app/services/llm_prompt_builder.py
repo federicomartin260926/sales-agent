@@ -5,6 +5,7 @@ from typing import Any
 
 from app.schemas.agent import AgentRequest
 from app.services.backend_client import CommercialContext
+from app.schemas.llm import McpRemoteConfig
 from app.services.routing_resolver import RoutingContext
 
 
@@ -15,6 +16,7 @@ class LLMPromptBuilder:
         routing: RoutingContext | None,
         backend_context: CommercialContext | None,
         contact_context: dict[str, Any] | None = None,
+        mcp_config: McpRemoteConfig | None = None,
     ) -> tuple[str, str]:
         system_prompt = (
             "Eres un asistente de ventas por WhatsApp para sales-agent/api. "
@@ -24,16 +26,18 @@ class LLMPromptBuilder:
             "No inventes precios, plazos ni funcionalidades. "
             "Si preguntan por precio y no hay un precio claro, pide 1-2 datos de cualificación. "
             "Si piden humano/persona/asesor/comercial, needs_human debe ser true. "
-            "Si external_context.flags.needs_human es true, needs_human debe ser true. "
-            "Si external_context.flags.do_not_contact es true, responde de forma conservadora y needs_human debe ser true. "
-            "Si external_context.appointments.next existe, úsala directamente para responder sobre la próxima cita, reunión o reserva. "
-            "Si external_context.summary, appointments, recent_activity, open_opportunities o sales contienen datos útiles, usa esa información y no inventes citas. "
-            "Si no tienes acceso a la agenda, dilo claramente; si no hay próxima cita, indícalo sin pedir datos innecesarios. "
-            "Si la respuesta usa una cita real, clasifícala como agenda con action answer_question; si no hay próxima cita pero el usuario quiere agendar, usa action offer_booking u offer_booking_or_handoff. "
-            "Puedes usar external_context.summary, appointments, recent_activity, open_opportunities y sales para responder con más contexto, "
-            "pero no menciones sistemas internos, CRM, n8n, webhooks, IDs internos, UTM, refs, tokens o detalles técnicos. "
+            "Si tienes herramientas MCP nativas del tenant, úsalas cuando hagan falta para completar la respuesta. "
+            "No inventes datos ni cites sistemas internos, CRM, n8n, webhooks, IDs internos, UTM, refs, tokens o detalles técnicos. "
             "Mantén el tono breve, útil y orientado a conversación."
         )
+
+        if mcp_config is not None and mcp_config.enabled and (mcp_config.server_label or "").strip() != "":
+            allowed_tools = ", ".join(mcp_config.allowed_tools) if mcp_config.allowed_tools else "las herramientas autorizadas"
+            system_prompt += (
+                f" Tienes acceso a un MCP remoto nativo del tenant llamado {mcp_config.server_label.strip()}. "
+                f"Úsalo cuando necesites datos o acciones cubiertas por {allowed_tools}. "
+                "Si el MCP no está disponible, sigue con el flujo normal y no inventes resultados."
+            )
 
         user_payload = {
             "current_message": payload.message.text,
@@ -44,6 +48,7 @@ class LLMPromptBuilder:
                 "external_channel_id": payload.external_channel_id,
             },
             "conversation": {
+                "external_id": payload.conversation.external_id,
                 "last_messages": payload.conversation.last_messages,
             },
             "routing": self._routing_payload(routing),
@@ -52,7 +57,6 @@ class LLMPromptBuilder:
             "playbook": self._playbook_payload(backend_context),
             "entry_point": self._entry_point_payload(backend_context),
             "sales_runtime": self._sales_runtime_payload(backend_context),
-            "external_context": self._external_context_payload(contact_context),
         }
 
         return system_prompt, json.dumps(user_payload, ensure_ascii=False, indent=2)

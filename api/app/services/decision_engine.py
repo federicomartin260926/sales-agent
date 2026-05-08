@@ -2,6 +2,7 @@ import logging
 from typing import Any
 
 from app.schemas.agent import AgentRequest, AgentResponse
+from app.schemas.llm import McpRemoteConfig
 from app.services.backend_client import BackendClient, BackendPlaybook, CommercialContext
 from app.config import get_settings
 from app.services.llm_decision_service import LLMDecisionDraft, LLMDecisionService
@@ -22,6 +23,7 @@ class DecisionEngine:
         routing: RoutingContext | None = None,
         backend_context: CommercialContext | None = None,
         contact_context: dict | None = None,
+        mcp_config: McpRemoteConfig | None = None,
     ) -> AgentResponse:
         if backend_context is None:
             resolved_tenant_id = self._resolved_tenant_id(payload, routing)
@@ -38,7 +40,7 @@ class DecisionEngine:
 
         message = payload.message.text.lower().strip()
 
-        llm_decision = await self.llm_decision_service.propose(payload, routing, backend_context, contact_context)
+        llm_decision = await self.llm_decision_service.propose(payload, routing, backend_context, contact_context, mcp_config)
         if llm_decision is not None:
             logger.debug("LLM decision accepted intent=%s action=%s", llm_decision.intent, llm_decision.action)
             return self._build_llm_response(payload, routing, backend_context, contact_context, llm_decision)

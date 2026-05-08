@@ -1,9 +1,12 @@
 import pytest
 
+from app.config import Settings
+from app.schemas.agent import AgentResponse
 from app.schemas.agent import AgentRequest, Contact
 from app.services.backend_client import BackendRoutingEntryPointUtmContext
-from app.services.crm_client import CRMClient
+from app.schemas.llm import McpRemoteConfig
 from app.services.decision_engine import DecisionEngine
+from app.services.llm_decision_service import LLMDecisionService
 from app.services.routing_resolver import RuntimeRoutingResolver
 from app.services.runtime import AgentRuntime
 
@@ -13,9 +16,11 @@ class RecordingBackendClient:
         self,
         ref_context: BackendRoutingEntryPointUtmContext | None = None,
         phone_context: dict[str, str] | None = None,
+        mcp_config: McpRemoteConfig | None = None,
     ) -> None:
         self.ref_context = ref_context
         self.phone_context = phone_context
+        self.mcp_config = mcp_config
         self.calls: list[tuple[str, tuple[object, ...]]] = []
 
     async def resolve_entrypoint_ref(self, ref: str) -> BackendRoutingEntryPointUtmContext | None:
@@ -26,21 +31,40 @@ class RecordingBackendClient:
         self.calls.append(("resolve_whatsapp_phone", (phone_number_id,)))
         return self.phone_context
 
-    async def fetch_tenant_context(self, tenant_id: str, selected_product_id: str | None = None, selected_playbook_id: str | None = None):
-        self.calls.append(("fetch_tenant_context", (tenant_id, selected_product_id, selected_playbook_id)))
+    async def fetch_tenant_context(self, tenant_id: str, selected_product_id: str | None = None, selected_playbook_id: str | None = None, *args):
+        self.calls.append(("fetch_tenant_context", (tenant_id, selected_product_id, selected_playbook_id, *args)))
         return None
+
+    async def fetch_mcp_config(self, tenant_id: str) -> McpRemoteConfig:
+        self.calls.append(("fetch_mcp_config", (tenant_id,)))
+        return self.mcp_config or McpRemoteConfig(enabled=False)
 
     async def upsert_conversation(self, payload):
         self.calls.append(("upsert_conversation", (payload.model_dump(by_alias=True),)))
         return {"created": True, "conversation": {"id": "conversation-1"}}
 
+    async def create_conversation_message(self, payload):
+        self.calls.append(("create_conversation_message", (payload.model_dump(by_alias=True),)))
+        return type(
+            "BackendConversationMessageResultStub",
+            (),
+            {
+                "created": True,
+                "duplicate": False,
+                "message": type("BackendConversationMessageStub", (), {"id": "message-1"})(),
+            },
+        )()
 
-class NullCRMClient(CRMClient):
-    def __init__(self) -> None:
-        pass
-
-    async def fetch_contact_context(self, phone: str):
+@pytest.fixture(autouse=True)
+def force_heuristic_llm(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _skip_llm(*args, **kwargs):
         return None
+
+    monkeypatch.setattr(
+        LLMDecisionService,
+        "propose",
+        _skip_llm,
+    )
 
 
 @pytest.mark.asyncio
@@ -123,7 +147,7 @@ async def test_runtime_uses_entrypoint_ref_context_in_agent_response():
             }
         )
     )
-    runtime = AgentRuntime(backend, NullCRMClient(), RuntimeRoutingResolver(backend), DecisionEngine(backend, NullCRMClient()))  # type: ignore[arg-type]
+    runtime = AgentRuntime(backend, RuntimeRoutingResolver(backend), DecisionEngine(backend))  # type: ignore[arg-type]
     payload = AgentRequest(
         tenant_id="tenant-ignored",
         entrypoint_ref="abc123",
@@ -154,7 +178,7 @@ async def test_runtime_uses_entrypoint_ref_context_in_agent_response():
 @pytest.mark.asyncio
 async def test_runtime_missing_routing_context_returns_human_handoff():
     backend = RecordingBackendClient()
-    runtime = AgentRuntime(backend, NullCRMClient(), RuntimeRoutingResolver(backend), DecisionEngine(backend, NullCRMClient()))  # type: ignore[arg-type]
+    runtime = AgentRuntime(backend, RuntimeRoutingResolver(backend), DecisionEngine(backend))  # type: ignore[arg-type]
     payload = AgentRequest(
         message="Hola",
         contact=Contact(phone="+34999999999"),
@@ -166,3 +190,146 @@ async def test_runtime_missing_routing_context_returns_human_handoff():
     assert response.action == "missing_routing_context"
     assert response.intent == "routing"
     assert backend.calls == []
+
+
+@pytest.mark.asyncio
+async def test_runtime_persists_mcp_metadata_for_openai_response(monkeypatch: pytest.MonkeyPatch):
+    backend = RecordingBackendClient(
+        ref_context=BackendRoutingEntryPointUtmContext.model_validate(
+            {
+                "entry_point_utm_id": "utm-1",
+                "ref": "abc123",
+                "entry_point_id": "entrypoint-1",
+                "entry_point_code": "crm-demo",
+                "tenant_id": "tenant-1",
+                "tenant_slug": "negocio-demo",
+                "product_id": "product-1",
+                "product_name": "CRM Automation",
+                "playbook_id": "playbook-1",
+                "crm_branch_ref": "branch-1",
+                "utm_source": "google",
+                "utm_medium": "cpc",
+                "utm_campaign": "crm_pymes",
+                "status": "matched",
+            }
+        ),
+        mcp_config=McpRemoteConfig(
+            enabled=True,
+            server_label="tech_investments_mcp",
+            server_url="https://mcp.tech-investments.net/mcp",
+            allowed_tools=["echo", "contact_context_mock"],
+            timeout_seconds=15,
+        ),
+    )
+
+    async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None):
+        assert mcp_config is not None and mcp_config.enabled is True
+        return AgentResponse(
+            reply="Tu próxima cita es mañana a las 10:00.",
+            intent="agenda",
+            score=0.93,
+            action="answer_question",
+            needs_human=False,
+            data_to_save={
+                "topic": "agenda",
+                "mcp_enabled": True,
+                "mcp_server_label": "tech_investments_mcp",
+                "mcp_response_id": "resp_123",
+                "mcp_tool_traces": [
+                    {
+                        "type": "mcp_call",
+                        "server_label": "tech_investments_mcp",
+                        "tool_name": "contact_context_mock",
+                        "arguments": {"phone": "+34600000000"},
+                        "output": {"found": True},
+                        "status": "completed",
+                    }
+                ],
+            },
+            provider="openai",
+            model="gpt-4.1-mini",
+            latency_ms=87,
+        )
+
+    monkeypatch.setattr(DecisionEngine, "decide", fake_decide)
+
+    runtime = AgentRuntime(backend, RuntimeRoutingResolver(backend), DecisionEngine(backend))  # type: ignore[arg-type]
+    payload = AgentRequest(
+        tenant_id="tenant-ignored",
+        entrypoint_ref="abc123",
+        message="Cuéntame sobre el servicio disponible",
+        contact=Contact(phone="+34999999999"),
+    )
+
+    response = await runtime.respond(payload)
+
+    assert response.provider == "openai"
+    create_calls = [call for call in backend.calls if call[0] == "create_conversation_message"]
+    assert len(create_calls) == 2
+    outbound_payload = create_calls[-1][1][0]
+    assert outbound_payload["metadata"]["mcp_enabled"] is True
+    assert outbound_payload["metadata"]["mcp_server_label"] == "tech_investments_mcp"
+    assert outbound_payload["metadata"]["mcp_response_id"] == "resp_123"
+    assert outbound_payload["metadata"]["mcp_tool_traces"][0]["tool_name"] == "contact_context_mock"
+
+
+@pytest.mark.asyncio
+async def test_runtime_skips_mcp_for_ollama_and_records_reason(monkeypatch: pytest.MonkeyPatch):
+    backend = RecordingBackendClient(
+        ref_context=BackendRoutingEntryPointUtmContext.model_validate(
+            {
+                "entry_point_utm_id": "utm-1",
+                "ref": "abc123",
+                "entry_point_id": "entrypoint-1",
+                "entry_point_code": "crm-demo",
+                "tenant_id": "tenant-1",
+                "tenant_slug": "negocio-demo",
+                "product_id": "product-1",
+                "product_name": "CRM Automation",
+                "playbook_id": "playbook-1",
+                "crm_branch_ref": "branch-1",
+                "utm_source": "google",
+                "utm_medium": "cpc",
+                "utm_campaign": "crm_pymes",
+                "status": "matched",
+            }
+        ),
+        mcp_config=McpRemoteConfig(
+            enabled=True,
+            server_label="tech_investments_mcp",
+            server_url="https://mcp.tech-investments.net/mcp",
+            allowed_tools=["echo", "contact_context_mock"],
+            timeout_seconds=15,
+        ),
+    )
+
+    async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None):
+        return AgentResponse(
+            reply="No puedo usar MCP con Ollama.",
+            intent="open_question",
+            score=0.5,
+            action="ask_question",
+            needs_human=False,
+            data_to_save={},
+            provider="ollama",
+            model="llama3.1",
+            latency_ms=42,
+        )
+
+    monkeypatch.setattr(DecisionEngine, "decide", fake_decide)
+
+    runtime = AgentRuntime(backend, RuntimeRoutingResolver(backend), DecisionEngine(backend))  # type: ignore[arg-type]
+    payload = AgentRequest(
+        tenant_id="tenant-ignored",
+        entrypoint_ref="abc123",
+        message="Hola",
+        contact=Contact(phone="+34999999999"),
+    )
+
+    response = await runtime.respond(payload)
+
+    assert response.provider == "ollama"
+    create_calls = [call for call in backend.calls if call[0] == "create_conversation_message"]
+    assert len(create_calls) == 2
+    outbound_payload = create_calls[-1][1][0]
+    assert outbound_payload["metadata"]["mcp_skipped_reason"] == "provider_not_supported"

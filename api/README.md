@@ -9,6 +9,7 @@ Este directorio contiene el runtime del agente conversacional.
 - decide respuestas simples sin invocar todavía un LLM real
 - deja listos los clientes para LLM, CRM, RAG y backend
 - consulta la snapshot operativa de `runtime_settings` en el backend cuando necesita resolver la configuración LLM
+- obtiene configuración MCP remota por tenant desde Symfony para abrir herramientas nativas en OpenAI Responses API
 - protege el runtime con `Authorization: Bearer <token>` para tráfico service-to-service
 - resuelve routing explícito por `entrypoint_ref`, `phone_number_id` o `tenant_id`
 - persiste o actualiza una conversación mínima cuando el routing está resuelto
@@ -28,8 +29,9 @@ Este directorio contiene el runtime del agente conversacional.
 3. resuelve routing por `entrypoint_ref`, `phone_number_id` o `tenant_id`
 4. consulta el backend Symfony para cargar el contexto del negocio, producto y guía comercial
 5. consulta el CRM por teléfono si está disponible
-6. ejecuta el `DecisionEngine`
-7. devuelve una respuesta estructurada con intención, score y acción sugerida
+6. consulta la configuración MCP remota del tenant si existe
+7. ejecuta el `DecisionEngine`
+8. devuelve una respuesta estructurada con intención, score y acción sugerida
 
 ## Contrato de dominio
 
@@ -130,6 +132,7 @@ Las rutas internas de Symfony se consumen como `BACKEND_BASE_URL + /api/internal
 - `GET /api/internal/runtime-settings`
 - `GET /api/internal/routing/entrypoint-ref/{ref}`
 - `GET /api/internal/routing/whatsapp-phone/{phoneNumberId}`
+- `GET /api/internal/mcp/{tenantId}/config`
 - `POST /api/internal/conversations/upsert`
 
 Si el backend no responde, el runtime usa los valores bootstrap del entorno como fallback.
@@ -155,6 +158,40 @@ Si el routing aporta `crm_branch_ref`, el runtime lo conserva en `data_to_save` 
 Si el contexto comercial incluye un producto, `data_to_save` también conserva `product_slug`, `product_external_source`, `product_external_reference`, `product_base_price_cents` y `product_currency` cuando existen.
 
 El runtime no escribe en el CRM. Solo consume ese contexto para enriquecer la decisión conversacional.
+
+## Integración con MCP remoto
+
+Si un tenant tiene `ExternalTool` activo de tipo `mcp_remote`, el runtime lee la configuración interna en Symfony y, cuando el perfil LLM activo es OpenAI compatible con Responses API, puede exponer ese MCP como herramienta nativa para el modelo.
+
+En esta fase:
+
+- `contact_context` legacy vía n8n queda deprecado y ya no forma parte del runtime principal
+- `ollama` sigue en flujo legacy sin MCP
+- `heuristic` sigue sin LLM
+- la configuración MCP se ignora si el proveedor activo no es compatible con Responses API
+
+Prueba manual recomendada, una vez que `sales-agent` tenga un tenant con `mcp_remote` activo y `mcp-gateway` desplegado detrás de NPM:
+
+```bash
+curl -X POST http://localhost:8080/api/agent/respond \
+  -H 'Content-Type: application/json' \
+  -H 'Authorization: Bearer <SALES_AGENT_BEARER_TOKEN>' \
+  -d '{
+    "tenant_id": "tenant-1",
+    "channel_type": "whatsapp",
+    "external_channel_id": "test",
+    "contact": {
+      "wa_id": "34600000000",
+      "from": "34600000000",
+      "name": "Cliente Demo"
+    },
+    "message": {
+      "text": "Busca el contexto del contacto con teléfono +34600000000 usando la herramienta disponible."
+    }
+  }'
+```
+
+La validación end-to-end real contra `https://mcp.tech-investments.net/mcp` queda pendiente hasta que `mcp-gateway` esté expuesto públicamente y accesible desde OpenAI Responses API.
 
 ## Formato de entrada
 

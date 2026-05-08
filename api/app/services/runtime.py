@@ -4,6 +4,7 @@ import time
 from typing import Any
 
 from app.schemas.agent import AgentRequest, AgentResponse
+from app.schemas.llm import McpRemoteConfig
 from app.services.backend_client import (
     BackendClient,
     BackendConversationMessagePayload,
@@ -11,19 +12,16 @@ from app.services.backend_client import (
     CommercialContext,
 )
 from app.services.decision_engine import DecisionEngine
-from app.services.external_tool_client import ExternalToolClient
 from app.services.routing_resolver import RoutingContext, RuntimeRoutingResolver
 
 class AgentRuntime:
     def __init__(
         self,
         backend_client: BackendClient,
-        external_tool_client: ExternalToolClient,
         routing_resolver: RuntimeRoutingResolver,
         decision_engine: DecisionEngine,
     ) -> None:
         self.backend_client = backend_client
-        self.external_tool_client = external_tool_client
         self.routing_resolver = routing_resolver
         self.decision_engine = decision_engine
 
@@ -48,6 +46,7 @@ class AgentRuntime:
             payload.contact.phone,
             routing.external_channel_id or payload.external_channel_id,
         )
+        mcp_config = await self.backend_client.fetch_mcp_config(routing.tenant_id)
 
         conversation_result = await self.backend_client.upsert_conversation(
             BackendConversationUpsertPayload(
@@ -107,29 +106,11 @@ class AgentRuntime:
             if isinstance(conversation, dict) and isinstance(conversation.get("id"), str):
                 routing.conversation_id = conversation["id"]
 
-        contact_context = await self.external_tool_client.fetch_contact_context(
-            tenant_id=routing.tenant_id,
-            tenant_slug=routing.tenant_slug,
-            channel=payload.channel_type or "whatsapp",
-            external_channel_id=routing.external_channel_id or payload.external_channel_id,
-            contact=payload.contact,
-            conversation_id=routing.conversation_id or conversation_id,
-            last_messages=[],
-            message_text=payload.message.text,
-            external_message_id=self._raw_event_field(
-                payload.raw_event,
-                "whatsapp_message_id",
-                "whatsappMessageId",
-                "message_id",
-                "id",
-            ),
-        )
-
         agenda_response = self.decision_engine.resolve_agenda_response(
             payload,
             routing=routing,
             backend_context=backend_context,
-            contact_context=contact_context,
+            contact_context=None,
         )
         if agenda_response is not None:
             return agenda_response
@@ -139,7 +120,8 @@ class AgentRuntime:
             payload,
             routing=routing,
             backend_context=backend_context,
-            contact_context=contact_context,
+            contact_context=None,
+            mcp_config=mcp_config,
         )
         decision_latency_ms = int(round((time.perf_counter() - started_at) * 1000))
         latency_ms = response.latency_ms if response.latency_ms is not None else decision_latency_ms
@@ -160,7 +142,7 @@ class AgentRuntime:
                     action=response.action,
                     needs_human=response.needs_human,
                     raw_payload=response.model_dump(),
-                    metadata={"data_to_save": response.data_to_save},
+                    metadata=self._outbound_metadata(response, mcp_config),
                 )
             )
 
@@ -214,3 +196,37 @@ class AgentRuntime:
             return int(round(score * 100))
         except Exception:
             return None
+
+    def _outbound_metadata(self, response: AgentResponse, mcp_config: McpRemoteConfig | None) -> dict[str, Any]:
+        metadata: dict[str, Any] = {
+            "data_to_save": response.data_to_save,
+        }
+
+        if mcp_config is None:
+            return metadata
+
+        metadata["mcp_enabled"] = bool(mcp_config.enabled)
+        if mcp_config.server_label is not None and mcp_config.server_label.strip() != "":
+            metadata["mcp_server_label"] = mcp_config.server_label.strip()
+        if mcp_config.server_url is not None and mcp_config.server_url.strip() != "":
+            metadata["mcp_server_url"] = mcp_config.server_url.strip()
+        if mcp_config.allowed_tools != []:
+            metadata["mcp_allowed_tools"] = mcp_config.allowed_tools
+        if mcp_config.require_approval is not None and mcp_config.require_approval.strip() != "":
+            metadata["mcp_require_approval"] = mcp_config.require_approval.strip()
+        if mcp_config.error_code is not None and mcp_config.error_code.strip() != "":
+            metadata["mcp_error_code"] = mcp_config.error_code.strip()
+        if mcp_config.error_message is not None and mcp_config.error_message.strip() != "":
+            metadata["mcp_error_message"] = mcp_config.error_message.strip()
+
+        if mcp_config.enabled and response.provider != "openai":
+            metadata["mcp_skipped_reason"] = "provider_not_supported"
+
+        if isinstance(response.data_to_save.get("mcp_tool_traces"), list) and response.data_to_save["mcp_tool_traces"] != []:
+            metadata["mcp_tool_traces"] = response.data_to_save["mcp_tool_traces"]
+        if "mcp_response_id" in response.data_to_save:
+            metadata["mcp_response_id"] = response.data_to_save["mcp_response_id"]
+        if isinstance(response.data_to_save.get("mcp_errors"), list) and response.data_to_save["mcp_errors"] != []:
+            metadata["mcp_errors"] = response.data_to_save["mcp_errors"]
+
+        return metadata

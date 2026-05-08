@@ -48,6 +48,7 @@ final class InternalApiSecurityTest extends WebTestCase
     public static function internalPathsProvider(): iterable
     {
         yield 'runtime settings' => ['/api/internal/runtime-settings', 'GET'];
+        yield 'mcp config' => ['/api/internal/mcp/tenant-1/config', 'GET'];
         yield 'entry point ref' => ['/api/internal/routing/entrypoint-ref/abc123', 'GET'];
         yield 'whatsapp phone' => ['/api/internal/routing/whatsapp-phone/phone-number-id-1', 'GET'];
         yield 'conversation upsert' => ['/api/internal/conversations/upsert', 'POST'];

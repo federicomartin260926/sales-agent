@@ -78,4 +78,22 @@ class ExternalToolRepository extends ServiceEntityRepository
             ->getQuery()
             ->getOneOrNullResult();
     }
+
+    public function findActiveMcpByTenant(Tenant $tenant): ?ExternalTool
+    {
+        return $this->createQueryBuilder('t')
+            ->join('t.tenant', 'tenant')
+            ->addSelect('tenant')
+            ->andWhere('t.tenant = :tenant')
+            ->andWhere('t.isActive = true')
+            ->andWhere('t.type = :type')
+            ->andWhere('t.provider IN (:providers)')
+            ->setParameter('tenant', $tenant)
+            ->setParameter('type', 'mcp_remote')
+            ->setParameter('providers', ['openai_remote_mcp', 'mcp_remote'])
+            ->orderBy('t.updatedAt', 'DESC')
+            ->setMaxResults(1)
+            ->getQuery()
+            ->getOneOrNullResult();
+    }
 }

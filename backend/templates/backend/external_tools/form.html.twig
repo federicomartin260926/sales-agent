@@ -3,11 +3,11 @@
 {% block content %}
   <section class="hero-panel">
     <div class="hero-copy">
-      <div class="eyebrow-dark">Herramientas externas</div>
+      <div class="eyebrow-dark">Servidores MCP</div>
       <h2>{{ hero_title }}</h2>
       <p>
-        Configura el webhook que n8n expondrá para este tenant. Si el contenedor no resuelve `localhost`, usa
-        <code>http://host.docker.internal:5680/webhook/sales-agent/contact-context</code>.
+        Configura el servidor MCP remoto que OpenAI Responses API podrá usar como tool nativa para este tenant.
+        En Docker local, la URL pública visible desde el navegador puede diferir de la que resuelve el contenedor.
       </p>
     </div>
     <div class="hero-aside">
@@ -39,6 +39,8 @@
 
     <form method="post" action="{{ action_url }}" class="tenant-form">
       <input type="hidden" name="_csrf_token" value="{{ form_token }}">
+      <input type="hidden" name="type" value="mcp_remote">
+      <input type="hidden" name="provider" value="openai_remote_mcp">
       <div class="form-grid">
         <div class="field">
           <label for="tool-tenant">Tenant</label>
@@ -55,25 +57,10 @@
           <input id="tool-name" name="name" type="text" value="{{ values.name }}" maxlength="255" required>
         </div>
 
-        <div class="field">
-          <label for="tool-type">Tipo</label>
-          <select id="tool-type" name="type" required>
-            <option value="contact_context"{{ values.type == 'contact_context' ? ' selected' : '' }}>contact_context</option>
-          </select>
-        </div>
-
-        <div class="field">
-          <label for="tool-provider">Proveedor</label>
-          <select id="tool-provider" name="provider" required>
-            <option value="n8n_webhook"{{ values.provider == 'n8n_webhook' ? ' selected' : '' }}>n8n_webhook</option>
-          </select>
-          <div class="field-note">Por ahora el runtime soporta este proveedor. No uses webhook-test como configuración final.</div>
-        </div>
-
         <div class="field field-full">
           <label for="tool-webhook">Webhook URL</label>
           <input id="tool-webhook" name="webhookUrl" type="url" value="{{ values.webhookUrl }}" maxlength="2048" placeholder="http://host.docker.internal:5680/webhook/sales-agent/contact-context" required>
-          <div class="field-note">Desde el navegador puede verse como <code>localhost</code>, pero el contenedor suele necesitar <code>host.docker.internal</code>.</div>
+          <div class="field-note">En MCP remoto apunta al servidor MCP. En Docker local puede necesitar <code>host.docker.internal</code>.</div>
         </div>
 
         <div class="field">
@@ -93,6 +80,42 @@
           {% else %}
             <div class="field-note">Opcional por ahora. Si usas bearer, puedes guardarlo más tarde. En n8n Header Auth usa Name=Authorization y Value=Bearer &lt;token&gt;.</div>
           {% endif %}
+        </div>
+
+        <div class="field">
+          <label for="tool-server-label">Server label MCP</label>
+          <input id="tool-server-label" name="serverLabel" type="text" value="{{ values.serverLabel }}" maxlength="120" placeholder="tenant_main_mcp">
+          <div class="field-note">Usado sólo para MCP remoto. Debe identificar el servidor remoto del tenant.</div>
+        </div>
+
+        <div class="field field-full">
+          <label for="tool-allowed-tools">Allowed tools MCP</label>
+          <textarea id="tool-allowed-tools" name="allowedTools" rows="3" spellcheck="false" placeholder="search_properties&#10;appointment_availability">{{ values.allowedTools }}</textarea>
+          <div class="field-note">Opcional. Una herramienta por línea o separadas por coma.</div>
+        </div>
+
+        <div class="field">
+          <label for="tool-approval">Require approval</label>
+          <select id="tool-approval" name="requireApproval">
+            <option value="auto"{{ values.requireApproval == 'auto' ? ' selected' : '' }}>auto (legacy)</option>
+            <option value="never"{{ values.requireApproval == 'never' ? ' selected' : '' }}>never</option>
+            <option value="always"{{ values.requireApproval == 'always' ? ' selected' : '' }}>always</option>
+          </select>
+          <div class="field-note">Para MCP remoto, auto se interpreta como never en el runtime.</div>
+        </div>
+
+        <div class="field field-check">
+          <label for="tool-llm-enabled">LLM enabled</label>
+          <label class="checkbox-inline" for="tool-llm-enabled">
+            <input id="tool-llm-enabled" name="enabledForLlm" type="checkbox" value="1"{{ values.enabledForLlm ? ' checked' : '' }}>
+            <span>Disponible para el LLM</span>
+          </label>
+        </div>
+
+        <div class="field field-full">
+          <label for="tool-notes">Notas MCP</label>
+          <textarea id="tool-notes" name="notes" rows="3" placeholder="Observaciones internas, scopes, comportamiento esperado">{{ values.notes }}</textarea>
+          <div class="field-note">Opcional. Útil para documentar el servidor MCP remoto de cada tenant.</div>
         </div>
 
         <div class="field">

@@ -184,6 +184,74 @@ class ExternalTool
         $this->updatedAt = new \DateTimeImmutable();
     }
 
+    public function getConfigValue(string $key, mixed $default = null): mixed
+    {
+        return $this->config[$key] ?? $default;
+    }
+
+    public function isEnabledForLlm(): bool
+    {
+        return (bool) $this->getConfigValue('enabled_for_llm', false);
+    }
+
+    public function getServerLabel(): ?string
+    {
+        $value = $this->getConfigValue('server_label');
+        if (!is_string($value)) {
+            return null;
+        }
+
+        $trimmed = trim($value);
+        return $trimmed !== '' ? $trimmed : null;
+    }
+
+    /**
+     * @return list<string>
+     */
+    public function getAllowedTools(): array
+    {
+        $value = $this->getConfigValue('allowed_tools', []);
+        if (!is_array($value)) {
+            return [];
+        }
+
+        $tools = [];
+        foreach ($value as $item) {
+            if (!is_string($item)) {
+                continue;
+            }
+
+            $tool = trim($item);
+            if ($tool !== '') {
+                $tools[] = $tool;
+            }
+        }
+
+        return array_values(array_unique($tools));
+    }
+
+    public function getRequireApproval(): ?string
+    {
+        $value = $this->getConfigValue('require_approval');
+        if (!is_string($value)) {
+            return null;
+        }
+
+        $trimmed = trim($value);
+        return $trimmed !== '' ? $trimmed : null;
+    }
+
+    public function getNotes(): ?string
+    {
+        $value = $this->getConfigValue('notes');
+        if (!is_string($value)) {
+            return null;
+        }
+
+        $trimmed = trim($value);
+        return $trimmed !== '' ? $trimmed : null;
+    }
+
     public function getCreatedAt(): \DateTimeImmutable
     {
         return $this->createdAt;
