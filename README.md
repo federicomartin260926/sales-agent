@@ -60,6 +60,8 @@ La separación se mantiene explícita:
 make up
 ```
 
+`make up` levanta los servicios, instala dependencias PHP del backend y limpia la caché de Symfony para evitar que queden vistas compiladas antiguas.
+
 Para ver logs:
 
 ```bash
@@ -77,6 +79,8 @@ make down
 ```bash
 make prod-up
 ```
+
+`make prod-up` levanta la stack de producción y recompila la caché de Symfony en el contenedor del backend.
 
 En producción, `sales-agent-nginx` se publica por la red Docker compartida `proxy` y el runtime de la API usa `Authorization: Bearer ...` para llamadas de otros servicios.
 Cuando `sales-agent` y `crm` conviven en el mismo VPS, la API lee el CRM por la red interna compartida `commercial_internal` usando `CRM_BASE_URL=http://crm-nginx`.
