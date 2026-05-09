@@ -15,6 +15,7 @@ use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\RedirectResponse;
 use Symfony\Component\HttpFoundation\Response;
 use Symfony\Component\Routing\Attribute\Route;
+use Symfony\Component\Security\Core\User\UserInterface;
 use Symfony\Component\Security\Csrf\CsrfToken;
 use Symfony\Component\Security\Csrf\CsrfTokenManagerInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
@@ -72,7 +73,7 @@ final class ExternalToolController extends AbstractController
             'tenant_filter' => $tenantFilter,
             'filter_error' => $filterError,
             'tools' => array_map([$this, 'toolRow'], $tools),
-            ...$this->templateUserDefaults(),
+            ...$this->currentUserTemplateData(),
         ]);
     }
 
@@ -246,7 +247,7 @@ final class ExternalToolController extends AbstractController
             'filter_error' => null,
             'tools' => array_map([$this, 'toolRow'], $this->externalTools->findByTenantOrdered($tool->getTenant())),
             'test_result' => $testResult,
-            ...$this->templateUserDefaults(),
+            ...$this->currentUserTemplateData(),
         ]);
     }
 
@@ -629,19 +630,68 @@ final class ExternalToolController extends AbstractController
             'has_token' => $tool?->getBearerToken() !== null && $tool->getBearerToken() !== '',
             'can_test' => $tool === null ? false : $this->canTestTool($tool),
             'form_token' => $this->externalToolTokenValue($isEdit && $tool instanceof ExternalTool ? 'external_tool_form_'.$tool->getId()->toRfc4122() : 'external_tool_form_create'),
-            ...$this->templateUserDefaults(),
+            ...$this->currentUserTemplateData(),
         ]);
+    }
+
+    private function currentUserLabel(): string
+    {
+        $user = $this->security->getUser();
+
+        return $user instanceof UserInterface ? $user->getUserIdentifier() : 'Invitado';
+    }
+
+    private function currentUserDisplayName(): string
+    {
+        $user = $this->currentUser();
+        if ($user instanceof User && $user->getName() !== '') {
+            return $user->getName();
+        }
+
+        $label = $this->currentUserLabel();
+        $localPart = strtolower(strstr($label, '@', true) ?: $label);
+
+        if (str_contains($localPart, 'federicomartin')) {
+            return 'Federico Martín';
+        }
+
+        $pretty = preg_replace('/[._-]+/', ' ', $localPart) ?? $localPart;
+        $pretty = preg_replace('/\d+/', '', $pretty) ?? $pretty;
+        $pretty = trim(preg_replace('/\s+/', ' ', $pretty) ?? $pretty);
+
+        return $pretty !== '' ? ucwords($pretty) : 'Usuario';
+    }
+
+    private function currentUserInitials(): string
+    {
+        $label = $this->currentUserDisplayName();
+        $parts = preg_split('/\s+/', trim($label)) ?: [];
+        $parts = array_values(array_filter($parts, static fn (string $part): bool => $part !== ''));
+        $seed = implode('', array_slice($parts, 0, 2));
+
+        if ($seed === '') {
+            $seed = 'SA';
+        }
+
+        return strtoupper(substr($seed, 0, 2));
     }
 
     /**
      * @return array{current_user_display_name: string, current_user_initials: string}
      */
-    private function templateUserDefaults(): array
+    private function currentUserTemplateData(): array
     {
         return [
-            'current_user_display_name' => 'Usuario',
-            'current_user_initials' => 'SA',
+            'current_user_display_name' => $this->currentUserDisplayName(),
+            'current_user_initials' => $this->currentUserInitials(),
         ];
+    }
+
+    private function currentUser(): ?User
+    {
+        $user = $this->security->getUser();
+
+        return $user instanceof User ? $user : null;
     }
 
     private function isValidHttpUrl(string $value): bool
