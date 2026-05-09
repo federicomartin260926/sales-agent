@@ -30,6 +30,17 @@ abstract class AbstractApiController extends AbstractController
         return [];
     }
 
+    protected function normalizeNullableString(mixed $value): ?string
+    {
+        if (!is_string($value)) {
+            return null;
+        }
+
+        $trimmed = trim($value);
+
+        return $trimmed !== '' ? $trimmed : null;
+    }
+
     protected function notFound(string $message = 'Not found'): JsonResponse
     {
         return $this->json(['message' => $message], JsonResponse::HTTP_NOT_FOUND);

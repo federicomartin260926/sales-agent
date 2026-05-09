@@ -78,6 +78,9 @@ Este directorio contiene el backend administrativo de `sales-agent`.
   - `GET /api/internal/routing/entrypoint-ref/{ref}`
   - `GET /api/internal/routing/whatsapp-phone/{phoneNumberId}`
   - `POST /api/internal/conversations/upsert`
+  - `GET /api/internal/ai-usage/{tenantId}/policy`
+  - `GET /api/internal/ai-usage/{tenantId}/usage`
+  - `POST /api/internal/ai-usage/events`
 
 ## Bootstrap inicial
 
@@ -198,8 +201,17 @@ La UI del backend usa esta terminología para usuarios no técnicos:
 - `EntryPoint` representa una campaña, botón, QR o enlace y apunta a un `Product`
 - `EntryPointUtm` conserva UTMs, `gclid`, `fbclid` y el `ref` generado por click
 - `Conversation` conserva el hilo mínimo operativo y copia la primera atribución
+- `Conversation.summary` queda disponible como resumen opcional persistido para futuras fases de compresión de contexto
 - `ConversationMessage` queda disponible para registrar mensajes futuros
+- `TenantAiUsagePolicy` define si la IA está habilitada por tenant y los límites de coste diarios/mensuales
+- `AiUsageEvent` es la fuente de reporting y de cálculo de límites por tenant
+- `ConversationMessage.metadata` conserva la telemetría de cada mensaje y mantiene la trazabilidad operativa
 - `Product.externalSource` y `Product.externalReference` permiten alinear catálogos importados con CRM sin usar UUIDs ajenos
+
+`AI_BILLING_MODE=byok|managed` se documenta como modo global de despliegue. En `managed` se recomienda una API key o proyecto OpenAI por instalación para aislar consumo y reporting; la limitación efectiva sigue siendo por tenant.
+
+La política IA por tenant se edita desde la ficha de `Negocio` en `/backend/tenants/{id}/edit`, dentro del bloque `Uso IA`.
+Ese bloque incluye métricas de consumo de solo lectura basadas en `AiUsageEvent`: coste hoy/mes, tokens hoy/mes y los 5 eventos más recientes.
 
 El backend no gestiona ramas CRM como entidad propia. Solo conserva `crmBranchRef` como texto opaco cuando viene desde un entrypoint o una atribución externa.
 

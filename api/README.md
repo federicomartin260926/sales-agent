@@ -67,6 +67,37 @@ El runtime también acepta el formato simple `message: "..."` para pruebas o int
 #### `conversation`
 
 `conversation.last_messages` es una lista de textos ya normalizados.
+El runtime recorta el contexto enviado al LLM a los últimos 8 mensajes y limita el tamaño total antes de serializarlo.
+Si llega `conversation.summary`, se envía antes de `last_messages` para reducir repetición de contexto.
+
+## Gestión de tokens y coste LLM
+
+La conversación completa se guarda en backend para auditoría, revisión humana y eventual envío al CRM.
+Ese historial no se recorta en persistencia: el límite solo aplica al contexto que se manda al LLM.
+
+`Conversation.summary` queda disponible como resumen opcional persistido. Si existe, se usa antes del historial reciente para comprimir contexto sin perder trazabilidad.
+
+La llamada al modelo debe registrar por turno:
+
+- `provider`
+- `model`
+- `input_tokens`
+- `output_tokens`
+- `cached_tokens`
+- `total_tokens`
+- `latency_ms`
+- `estimated_cost`
+
+El prompt debe ordenarse para favorecer prompt caching:
+
+- primero contexto estable: `tenant`, `product`, `playbook`, `rules`, `sales_runtime`
+- después contexto dinámico: `summary`, últimos mensajes y `current_message`
+
+`previous_response_id` de OpenAI Responses API no se usa en esta fase.
+
+Antes de activar RAG, ampliar el contexto CRM o sumar más tools, hay que mantener control de tamaño, medición de usage y límites por tenant.
+
+`AI_BILLING_MODE=byok|managed` es una configuración global/documental. En `managed` se recomienda una API key o proyecto OpenAI por instalación para aislar consumo y reporting.
 
 ### Routing
 

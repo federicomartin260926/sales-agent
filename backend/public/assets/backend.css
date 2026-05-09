@@ -233,13 +233,13 @@ body.login-page .footer code {
   line-height: 1.5;
 }
 
-.nav {
+.sidebar .nav {
   display: grid;
   gap: 8px;
   margin-top: 4px;
 }
 
-.nav a {
+.sidebar .nav a {
   display: flex;
   align-items: center;
   justify-content: flex-start;
@@ -252,15 +252,15 @@ body.login-page .footer code {
   background: transparent;
 }
 
-.nav a.active {
+.sidebar .nav a.active {
   background: #eef1f5;
   border-color: #e2e8f0;
   color: #0f172a;
   font-weight: 700;
 }
 
-.nav a:hover,
-.nav summary:hover {
+.sidebar .nav a:hover,
+.sidebar .nav summary:hover {
   background: #f6f8fb;
 }
 
@@ -869,6 +869,14 @@ body.login-page .footer code {
   color: var(--muted);
   line-height: 1.5;
   margin-bottom: 14px;
+}
+
+.tenant-ai-usage-heading {
+  margin-top: 22px;
+}
+
+.tenant-ai-events-card {
+  margin-top: 16px;
 }
 
 .policy-tabs {

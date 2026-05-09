@@ -145,6 +145,7 @@ El routing canónico se configura aparte con:
 - `EntryPoint` asociado a `Product`
 - `EntryPointUtm` generado por click
 - `Conversation` como hilo operativo
+- `Conversation.summary` como resumen opcional para recorte futuro de contexto
 
 ```bash
 make schema-update
@@ -201,6 +202,32 @@ Se mantiene el contrato conceptual del CRM:
 - CRM: lectura de contexto comercial y datos de cuenta
 - `ai-stack`: recuperación semántica y contexto documental
 - LLM: proveedor intercambiable entre OpenAI y Ollama
+
+## Gestión LLM
+
+La conversación completa se persiste en backend para auditoría, revisión humana y posible envío al CRM.
+El contexto enviado al LLM se limita de forma explícita: se usa `Conversation.summary` si existe y después solo los últimos mensajes relevantes, nunca todo el historial.
+
+El prompt se ordena para favorecer prompt caching: primero contexto estable (`tenant`, `product`, `playbook`, `rules`, `sales_runtime`) y después contexto dinámico (`summary`, últimos mensajes y `current_message`).
+Los límites aplican solo al contexto enviado al LLM, no al historial persistido.
+
+`previous_response_id` de OpenAI Responses API queda fuera de esta fase y se evaluará más adelante.
+
+Por llamada se debe medir y guardar, al menos: `provider`, `model`, `input_tokens`, `output_tokens`, `cached_tokens`, `total_tokens`, `latency_ms` y `estimated_cost`.
+
+Antes de activar RAG, un contexto CRM más amplio o más tools, debe existir control de tamaño, medición de usage y límites por tenant.
+
+## Límites de uso IA
+
+`sales-agent` soporta dos modos globales de facturación/configuración:
+
+- `AI_BILLING_MODE=byok`
+- `AI_BILLING_MODE=managed`
+
+En `managed` se recomienda una API key o proyecto OpenAI por instalación para aislar consumo y reporting. Los límites de uso se aplican siempre por tenant dentro de la instancia.
+
+`AiUsageEvent` es la fuente de reporting y de cálculo de límites. `ConversationMessage.metadata` mantiene la trazabilidad por mensaje y conserva la telemetría útil para auditoría.
+La ficha de `Negocio` muestra también un bloque de solo lectura con el consumo IA reciente del tenant: coste hoy/mes y últimos eventos.
 
 ## Routing de WhatsApp
 

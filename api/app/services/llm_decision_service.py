@@ -123,8 +123,9 @@ class LLMDecisionService:
 
             logger.info("LLM provider used=%s", result.provider)
             data_to_save = dict(draft.data_to_save)
-            if result.response_id is not None and result.response_id.strip() != "":
-                data_to_save.setdefault("mcp_response_id", result.response_id)
+            telemetry = self._telemetry_payload(result, int(round((time.perf_counter() - started_at) * 1000)))
+            for key, value in telemetry.items():
+                data_to_save.setdefault(key, value)
             if result.tool_traces != []:
                 data_to_save.setdefault(
                     "mcp_tool_traces",
@@ -158,7 +159,7 @@ class LLMDecisionService:
                 data_to_save=data_to_save,
                 provider=result.provider,
                 model=result.model,
-                latency_ms=int(round((time.perf_counter() - started_at) * 1000)),
+                latency_ms=telemetry["latency_ms"],
                 response_id=result.response_id,
                 tool_traces=result.tool_traces,
             )
@@ -184,6 +185,39 @@ class LLMDecisionService:
             return all(configuration.get(key, "").strip() != "" for key in ("ollama_base_url", "ollama_model"))
 
         return False
+
+    def _telemetry_payload(self, result, latency_ms: int) -> dict[str, Any]:
+        usage = result.usage
+        input_tokens = usage.input_tokens if usage is not None else None
+        output_tokens = usage.output_tokens if usage is not None else None
+        cached_tokens = usage.cached_tokens if usage is not None else None
+        total_tokens = usage.total_tokens if usage is not None else None
+        prompt_tokens = usage.prompt_tokens if usage is not None else None
+        completion_tokens = usage.completion_tokens if usage is not None else None
+
+        if total_tokens is None and input_tokens is not None and output_tokens is not None:
+            total_tokens = input_tokens + output_tokens
+
+        telemetry: dict[str, Any] = {
+            "provider": result.provider,
+            "model": result.model,
+            "response_id": result.response_id,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "cached_tokens": cached_tokens,
+            "total_tokens": total_tokens,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "latency_ms": latency_ms,
+            "estimated_cost": result.estimated_cost,
+        }
+        telemetry["llm_provider"] = result.provider
+        telemetry["llm_model"] = result.model
+        telemetry["llm_response_id"] = result.response_id
+        telemetry["llm_usage"] = usage.model_dump(exclude_none=True) if usage is not None else None
+        telemetry["llm_estimated_cost"] = result.estimated_cost
+        telemetry["llm_latency_ms"] = latency_ms
+        return telemetry
 
     def _parse_draft(self, content: str) -> LLMDecisionDraft | None:
         payload: Any = None

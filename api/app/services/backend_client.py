@@ -8,7 +8,12 @@ import httpx
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from app.config import Settings
-from app.schemas.llm import McpRemoteConfig
+from app.schemas.llm import (
+    BackendAiUsageEventPayload,
+    BackendAiUsagePolicy,
+    BackendAiUsageSnapshot,
+    McpRemoteConfig,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -242,6 +247,13 @@ class BackendConversationMessageResult(BaseModel):
     created: bool
     duplicate: bool
     message: BackendConversationMessage
+
+
+class BackendAiUsageEventResult(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    created: bool
+    event: dict[str, Any] | None = None
 
 
 class CommercialContext(BaseModel):
@@ -562,6 +574,110 @@ class BackendClient:
             config.error_code = config.error_code or "not_configured"
 
         return config
+
+    async def fetch_ai_usage_policy(self, tenant_id: str) -> BackendAiUsagePolicy | None:
+        base_url = self.settings.backend_base_url.strip().rstrip("/")
+        if base_url == "" or tenant_id.strip() == "":
+            return None
+
+        timeout = httpx.Timeout(5.0, connect=2.0)
+        try:
+            async with httpx.AsyncClient(base_url=base_url, timeout=timeout, transport=self.transport) as client:
+                response = await client.get(f"/api/internal/ai-usage/{tenant_id.strip()}/policy", headers=self._auth_headers())
+                if response.status_code == httpx.codes.NOT_FOUND:
+                    return None
+                if response.status_code >= 400:
+                    logger.warning(
+                        "Backend AI usage policy lookup failed for %s %s with status %s body=%s",
+                        response.request.method,
+                        response.request.url,
+                        response.status_code,
+                        self._response_snippet(response),
+                    )
+                    response.raise_for_status()
+
+                payload = response.json()
+        except (httpx.HTTPError, ValueError):
+            return None
+
+        if not isinstance(payload, dict):
+            return None
+
+        try:
+            return BackendAiUsagePolicy.model_validate(payload)
+        except ValidationError:
+            logger.warning("Backend AI usage policy payload validation failed for tenant=%s", tenant_id)
+            return None
+
+    async def fetch_ai_usage_snapshot(self, tenant_id: str) -> BackendAiUsageSnapshot | None:
+        base_url = self.settings.backend_base_url.strip().rstrip("/")
+        if base_url == "" or tenant_id.strip() == "":
+            return None
+
+        timeout = httpx.Timeout(5.0, connect=2.0)
+        try:
+            async with httpx.AsyncClient(base_url=base_url, timeout=timeout, transport=self.transport) as client:
+                response = await client.get(f"/api/internal/ai-usage/{tenant_id.strip()}/usage", headers=self._auth_headers())
+                if response.status_code == httpx.codes.NOT_FOUND:
+                    return None
+                if response.status_code >= 400:
+                    logger.warning(
+                        "Backend AI usage snapshot lookup failed for %s %s with status %s body=%s",
+                        response.request.method,
+                        response.request.url,
+                        response.status_code,
+                        self._response_snippet(response),
+                    )
+                    response.raise_for_status()
+
+                payload = response.json()
+        except (httpx.HTTPError, ValueError):
+            return None
+
+        if not isinstance(payload, dict):
+            return None
+
+        try:
+            return BackendAiUsageSnapshot.model_validate(payload)
+        except ValidationError:
+            logger.warning("Backend AI usage snapshot payload validation failed for tenant=%s", tenant_id)
+            return None
+
+    async def create_ai_usage_event(self, payload: BackendAiUsageEventPayload) -> BackendAiUsageEventResult | None:
+        base_url = self.settings.backend_base_url.strip().rstrip("/")
+        if base_url == "" or payload.tenant_id.strip() == "":
+            return None
+
+        timeout = httpx.Timeout(5.0, connect=2.0)
+        try:
+            async with httpx.AsyncClient(base_url=base_url, timeout=timeout, transport=self.transport) as client:
+                response = await client.post(
+                    "/api/internal/ai-usage/events",
+                    json=payload.model_dump(by_alias=True),
+                    headers=self._auth_headers(),
+                )
+                if response.status_code >= 400:
+                    logger.warning(
+                        "Backend AI usage event registration failed for %s %s status=%s body=%s",
+                        response.request.method,
+                        response.request.url,
+                        response.status_code,
+                        self._response_snippet(response),
+                    )
+                    response.raise_for_status()
+
+                payload_data = response.json()
+        except (httpx.HTTPError, ValueError):
+            return None
+
+        if not isinstance(payload_data, dict):
+            return None
+
+        try:
+            return BackendAiUsageEventResult.model_validate(payload_data)
+        except ValidationError:
+            logger.warning("Backend AI usage event payload validation failed for tenant=%s", payload.tenant_id)
+            return None
 
     async def upsert_conversation(self, payload: BackendConversationUpsertPayload) -> dict[str, Any] | None:
         base_url = self.settings.backend_base_url.strip().rstrip("/")

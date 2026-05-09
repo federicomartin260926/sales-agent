@@ -30,6 +30,7 @@ final class ConversationService
         ?string $externalConversationId = null,
         array $utm = [],
         ?string $crmBranchRef = null,
+        ?string $summary = null,
     ): array {
         $conversation = $this->conversations->findActiveByTenantPhone($tenant, $customerPhone);
         $created = false;
@@ -75,6 +76,10 @@ final class ConversationService
         if ($firstMessage !== null && trim($firstMessage) !== '') {
             $conversation->setFirstMessage($created ? trim($firstMessage) : ($conversation->getFirstMessage() ?? trim($firstMessage)));
             $conversation->setLastMessageAt(new \DateTimeImmutable());
+        }
+
+        if ($summary !== null && trim($summary) !== '') {
+            $conversation->setSummary(trim($summary));
         }
 
         if ($externalConversationId !== null && trim($externalConversationId) !== '') {

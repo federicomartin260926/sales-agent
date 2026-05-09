@@ -7,9 +7,13 @@ from app.schemas.agent import AgentRequest
 from app.services.backend_client import CommercialContext
 from app.schemas.llm import McpRemoteConfig
 from app.services.routing_resolver import RoutingContext
+from app.services.llm_context_helper import LLMContextHelper
 
 
 class LLMPromptBuilder:
+    def __init__(self, context_helper: LLMContextHelper | None = None) -> None:
+        self.context_helper = context_helper or LLMContextHelper()
+
     def build(
         self,
         payload: AgentRequest,
@@ -40,23 +44,23 @@ class LLMPromptBuilder:
             )
 
         user_payload = {
-            "current_message": payload.message.text,
-            "contact": {
-                "phone": payload.contact.phone,
-                "name": payload.contact.name,
-                "channel_type": payload.channel_type,
-                "external_channel_id": payload.external_channel_id,
-            },
-            "conversation": {
-                "external_id": payload.conversation.external_id,
-                "last_messages": payload.conversation.last_messages,
-            },
-            "routing": self._routing_payload(routing),
             "tenant": self._tenant_payload(backend_context),
             "product": self._product_payload(backend_context),
             "playbook": self._playbook_payload(backend_context),
             "entry_point": self._entry_point_payload(backend_context),
             "sales_runtime": self._sales_runtime_payload(backend_context),
+            "routing": self._routing_payload(routing),
+            "contact": {
+                "phone": self.context_helper.sanitize_text(payload.contact.phone, max_chars=64),
+                "name": self.context_helper.sanitize_text(payload.contact.name, max_chars=255),
+                "channel_type": self.context_helper.sanitize_text(payload.channel_type, max_chars=32),
+                "external_channel_id": self.context_helper.sanitize_text(payload.external_channel_id, max_chars=128),
+            },
+            "conversation": {
+                "external_id": self.context_helper.sanitize_text(payload.conversation.external_id, max_chars=128),
+                **self.context_helper.build_conversation_payload(payload.conversation.summary, payload.conversation.last_messages),
+            },
+            "current_message": self.context_helper.sanitize_text(payload.message.text, max_chars=2000),
         }
 
         return system_prompt, json.dumps(user_payload, ensure_ascii=False, indent=2)
@@ -96,13 +100,13 @@ class LLMPromptBuilder:
         tenant = backend_context.tenant
         return {
             "id": tenant.id,
-            "name": tenant.name,
-            "slug": tenant.slug,
-            "business_context": tenant.business_context,
-            "tone": tenant.tone,
-            "sales_policy": tenant.sales_policy,
-            "whatsapp_phone_number_id": tenant.whatsapp_phone_number_id,
-            "whatsapp_public_phone": tenant.whatsapp_public_phone,
+            "name": self.context_helper.sanitize_text(tenant.name, max_chars=255),
+            "slug": self.context_helper.sanitize_text(tenant.slug, max_chars=180),
+            "business_context": self.context_helper.sanitize_text(tenant.business_context, max_chars=2000),
+            "tone": self.context_helper.sanitize_text(tenant.tone, max_chars=120),
+            "sales_policy": self.context_helper.sanitize_jsonish(tenant.sales_policy, max_depth=2, max_items=10, max_string_chars=500),
+            "whatsapp_phone_number_id": self.context_helper.sanitize_text(tenant.whatsapp_phone_number_id, max_chars=255),
+            "whatsapp_public_phone": self.context_helper.sanitize_text(tenant.whatsapp_public_phone, max_chars=50),
         }
 
     def _product_payload(self, backend_context: CommercialContext | None) -> dict[str, Any] | None:
@@ -112,15 +116,15 @@ class LLMPromptBuilder:
         product = backend_context.selected_product
         return {
             "id": product.id,
-            "name": product.name,
-            "slug": product.slug,
-            "description": product.description,
-            "value_proposition": product.value_proposition,
+            "name": self.context_helper.sanitize_text(product.name, max_chars=255),
+            "slug": self.context_helper.sanitize_text(product.slug, max_chars=180),
+            "description": self.context_helper.sanitize_text(product.description, max_chars=1500),
+            "value_proposition": self.context_helper.sanitize_text(product.value_proposition, max_chars=1500),
             "base_price_cents": product.base_price_cents,
-            "currency": product.currency,
-            "external_source": product.external_source,
-            "external_reference": product.external_reference,
-            "sales_policy": product.sales_policy,
+            "currency": self.context_helper.sanitize_text(product.currency, max_chars=10),
+            "external_source": self.context_helper.sanitize_text(product.external_source, max_chars=100),
+            "external_reference": self.context_helper.sanitize_text(product.external_reference, max_chars=255),
+            "sales_policy": self.context_helper.sanitize_jsonish(product.sales_policy, max_depth=2, max_items=10, max_string_chars=500),
         }
 
     def _playbook_payload(self, backend_context: CommercialContext | None) -> dict[str, Any] | None:
@@ -130,9 +134,9 @@ class LLMPromptBuilder:
         playbook = backend_context.selected_playbook
         return {
             "id": playbook.id,
-            "name": playbook.name,
+            "name": self.context_helper.sanitize_text(playbook.name, max_chars=255),
             "product_id": playbook.product_id,
-            "config": playbook.config,
+            "config": self.context_helper.sanitize_jsonish(playbook.config, max_depth=2, max_items=10, max_string_chars=500),
         }
 
     def _entry_point_payload(self, backend_context: CommercialContext | None) -> dict[str, Any] | None:
@@ -142,11 +146,11 @@ class LLMPromptBuilder:
         entry_point = backend_context.entry_point
         return {
             "id": entry_point.id,
-            "code": entry_point.code,
-            "name": entry_point.name,
-            "description": entry_point.description,
-            "initial_message": entry_point.initial_message,
-            "crm_branch_ref": entry_point.crm_branch_ref,
+            "code": self.context_helper.sanitize_text(entry_point.code, max_chars=180),
+            "name": self.context_helper.sanitize_text(entry_point.name, max_chars=255),
+            "description": self.context_helper.sanitize_text(entry_point.description, max_chars=500),
+            "initial_message": self.context_helper.sanitize_text(entry_point.initial_message, max_chars=500),
+            "crm_branch_ref": self.context_helper.sanitize_text(entry_point.crm_branch_ref, max_chars=255),
             "is_active": entry_point.is_active,
         }
 

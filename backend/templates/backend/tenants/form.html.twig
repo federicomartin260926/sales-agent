@@ -21,88 +21,217 @@
   {{ error_html|raw }}
   <form method="post" action="{{ action_url }}" class="tenant-form">
     <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
-    <div class="form-grid">
-      <div class="field">
-        <label for="tenant-name">Nombre del negocio</label>
-        <input id="tenant-name" name="name" type="text" value="{{ values.name }}" maxlength="255" required>
-        <div class="field-note">Nombre visible para el equipo. Ejemplo: "Clínica Demo".</div>
-      </div>
-      <div class="field">
-        <label for="tenant-slug">Slug</label>
-        <input id="tenant-slug" name="slug" type="text" value="{{ values.slug }}" maxlength="180" required>
-        <div class="field-note">Identificador corto, en minúsculas y sin espacios. Ejemplo: "clinica-demo".</div>
-      </div>
-      <div class="field">
-        <label for="tenant-tone">Tono</label>
-        <input id="tenant-tone" name="tone" type="text" value="{{ values.tone }}" maxlength="120" placeholder="Cercano, profesional, directo...">
-        <div class="field-note">Cómo debe expresarse el agente en este negocio.</div>
-      </div>
-      <div class="field field-full">
-        <div class="section-label">WhatsApp Business</div>
-        <div class="section-note">Completa estos campos si este negocio enruta tráfico o genera enlaces wa.me desde WhatsApp.</div>
+    <ul class="nav nav-tabs mb-4" id="tenant-form-tabs" role="tablist">
+      <li class="nav-item" role="presentation">
+        <button class="nav-link active" id="tenant-business-tab" data-bs-toggle="tab" data-bs-target="#tenant-business-panel" type="button" role="tab" aria-controls="tenant-business-panel" aria-selected="true">Ficha negocio</button>
+      </li>
+      <li class="nav-item" role="presentation">
+        <button class="nav-link" id="tenant-ai-tab" data-bs-toggle="tab" data-bs-target="#tenant-ai-panel" type="button" role="tab" aria-controls="tenant-ai-panel" aria-selected="false">Uso IA</button>
+      </li>
+    </ul>
+
+    <div class="tab-content pt-4">
+      <div class="tab-pane fade show active" id="tenant-business-panel" role="tabpanel" aria-labelledby="tenant-business-tab" tabindex="0">
         <div class="form-grid">
           <div class="field">
-            <label for="tenant-whatsapp-phone-number-id">WhatsApp Phone Number ID</label>
-            <input id="tenant-whatsapp-phone-number-id" name="whatsappPhoneNumberId" type="text" value="{{ values.whatsappPhoneNumberId }}" maxlength="255" placeholder="123456789012345">
-            <div class="field-note">ID técnico de Meta WhatsApp Cloud API. Se usa para enrutar mensajes entrantes al negocio correcto.</div>
+            <label for="tenant-name">Nombre del negocio</label>
+            <input id="tenant-name" name="name" type="text" value="{{ values.name }}" maxlength="255" required>
+            <div class="field-note">Nombre visible para el equipo. Ejemplo: "Clínica Demo".</div>
           </div>
           <div class="field">
-            <label for="tenant-whatsapp-public-phone">WhatsApp público para wa.me</label>
-            <input id="tenant-whatsapp-public-phone" name="whatsappPublicPhone" type="text" value="{{ values.whatsappPublicPhone }}" maxlength="50" placeholder="34612345678">
-            <div class="field-note">Número internacional sin + ni espacios. Se usa para generar enlaces wa.me en puntos de entrada. Ejemplo: 34612345678.</div>
+            <label for="tenant-slug">Slug</label>
+            <input id="tenant-slug" name="slug" type="text" value="{{ values.slug }}" maxlength="180" required>
+            <div class="field-note">Identificador corto, en minúsculas y sin espacios. Ejemplo: "clinica-demo".</div>
+          </div>
+          <div class="field">
+            <label for="tenant-tone">Tono</label>
+            <input id="tenant-tone" name="tone" type="text" value="{{ values.tone }}" maxlength="120" placeholder="Cercano, profesional, directo...">
+            <div class="field-note">Cómo debe expresarse el agente en este negocio.</div>
+          </div>
+          <div class="field field-full">
+            <div class="section-label">WhatsApp Business</div>
+            <div class="section-note">Completa estos campos si este negocio enruta tráfico o genera enlaces wa.me desde WhatsApp.</div>
+            <div class="form-grid">
+              <div class="field">
+                <label for="tenant-whatsapp-phone-number-id">WhatsApp Phone Number ID</label>
+                <input id="tenant-whatsapp-phone-number-id" name="whatsappPhoneNumberId" type="text" value="{{ values.whatsappPhoneNumberId }}" maxlength="255" placeholder="123456789012345">
+                <div class="field-note">ID técnico de Meta WhatsApp Cloud API. Se usa para enrutar mensajes entrantes al negocio correcto.</div>
+              </div>
+              <div class="field">
+                <label for="tenant-whatsapp-public-phone">WhatsApp público para wa.me</label>
+                <input id="tenant-whatsapp-public-phone" name="whatsappPublicPhone" type="text" value="{{ values.whatsappPublicPhone }}" maxlength="50" placeholder="34612345678">
+                <div class="field-note">Número internacional sin + ni espacios. Se usa para generar enlaces wa.me en puntos de entrada. Ejemplo: 34612345678.</div>
+              </div>
+            </div>
+          </div>
+          <div class="field field-check">
+            <label for="tenant-active">Estado</label>
+            <label class="checkbox-inline" for="tenant-active">
+              <input id="tenant-active" name="isActive" type="checkbox" value="1"{% if values.isActive %} checked{% endif %}>
+              <span>Negocio activo</span>
+            </label>
+          </div>
+          <div class="field field-full">
+            <label for="tenant-context">Contexto del negocio</label>
+            <textarea id="tenant-context" name="businessContext" rows="7" maxlength="5000" placeholder="Qué vende, a quién y cómo trabaja.">{{ values.businessContext }}</textarea>
+            <div class="field-note">Describe el negocio de forma simple para que el agente entienda el escenario comercial.</div>
+          </div>
+          <div class="field field-full">
+            <div class="section-label">Política comercial</div>
+            <div class="section-note">Define aquí la forma de vender, de calificar y de derivar a una persona cuando haga falta. Puedes completar solo lo que necesites.</div>
+            <div class="policy-tabs" data-policy-tabs>
+              <div class="policy-tablist" role="tablist" aria-label="Política comercial">
+                <button class="policy-tab active" type="button" role="tab" aria-selected="true" data-policy-tab="positioning">Welcome</button>
+                <button class="policy-tab" type="button" role="tab" aria-selected="false" data-policy-tab="qualification">Qualification</button>
+                <button class="policy-tab" type="button" role="tab" aria-selected="false" data-policy-tab="handoff">Handoff</button>
+                <button class="policy-tab" type="button" role="tab" aria-selected="false" data-policy-tab="boundaries">Límites</button>
+                <button class="policy-tab" type="button" role="tab" aria-selected="false" data-policy-tab="notes">Notas</button>
+              </div>
+              <div class="policy-panels">
+                <div class="policy-panel active" role="tabpanel" data-policy-panel="positioning">
+                  <label for="tenant-policy-positioning">Welcome / posicionamiento</label>
+                  <textarea id="tenant-policy-positioning" name="positioning" rows="4" maxlength="2000" required placeholder="Cómo se presenta este negocio y cuál es su enfoque comercial.">{{ values.positioning }}</textarea>
+                  <div class="field-note">La idea principal de venta y cómo debe arrancar la conversación.</div>
+                </div>
+                <div class="policy-panel" role="tabpanel" data-policy-panel="qualification" hidden>
+                  <label for="tenant-policy-qualification">Qualification / cualificación</label>
+                  <textarea id="tenant-policy-qualification" name="qualificationFocus" rows="4" maxlength="2000" required placeholder="Qué datos o señales quiere descubrir el agente.">{{ values.qualificationFocus }}</textarea>
+                  <div class="field-note">Lo que el agente debe averiguar para saber si hay encaje real.</div>
+                </div>
+                <div class="policy-panel" role="tabpanel" data-policy-panel="handoff" hidden>
+                  <label for="tenant-policy-handoff">Handoff / derivación</label>
+                  <textarea id="tenant-policy-handoff" name="handoffRules" rows="4" maxlength="2000" required placeholder="Cuándo y cómo debe pasar el caso a una persona.">{{ values.handoffRules }}</textarea>
+                  <div class="field-note">Reglas para escalar a humano sin fricción.</div>
+                </div>
+                <div class="policy-panel" role="tabpanel" data-policy-panel="boundaries" hidden>
+                  <label for="tenant-policy-boundaries">Sales boundaries / límites</label>
+                  <textarea id="tenant-policy-boundaries" name="salesBoundaries" rows="4" maxlength="2000" placeholder="Una regla por línea.">{{ values.salesBoundaries }}</textarea>
+                  <div class="field-note">Límites de venta, promesas prohibidas o condiciones que no se pueden saltar.</div>
+                </div>
+                <div class="policy-panel" role="tabpanel" data-policy-panel="notes" hidden>
+                  <label for="tenant-policy-notes">Notas</label>
+                  <textarea id="tenant-policy-notes" name="notes" rows="4" maxlength="2000" placeholder="Cualquier matiz extra para el equipo.">{{ values.notes }}</textarea>
+                  <div class="field-note">Observaciones generales, ejemplos o aclaraciones adicionales.</div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
-      <div class="field field-check">
-        <label for="tenant-active">Estado</label>
-        <label class="checkbox-inline" for="tenant-active">
-          <input id="tenant-active" name="isActive" type="checkbox" value="1"{% if values.isActive %} checked{% endif %}>
-          <span>Negocio activo</span>
-        </label>
-      </div>
-      <div class="field field-full">
-        <label for="tenant-context">Contexto del negocio</label>
-        <textarea id="tenant-context" name="businessContext" rows="7" maxlength="5000" placeholder="Qué vende, a quién y cómo trabaja.">{{ values.businessContext }}</textarea>
-        <div class="field-note">Describe el negocio de forma simple para que el agente entienda el escenario comercial.</div>
-      </div>
-      <div class="field field-full">
-        <div class="section-label">Política comercial</div>
-        <div class="section-note">Define aquí la forma de vender, de calificar y de derivar a una persona cuando haga falta. Puedes completar solo lo que necesites.</div>
-        <div class="policy-tabs" data-policy-tabs>
-          <div class="policy-tablist" role="tablist" aria-label="Política comercial">
-            <button class="policy-tab active" type="button" role="tab" aria-selected="true" data-policy-tab="positioning">Welcome</button>
-            <button class="policy-tab" type="button" role="tab" aria-selected="false" data-policy-tab="qualification">Qualification</button>
-            <button class="policy-tab" type="button" role="tab" aria-selected="false" data-policy-tab="handoff">Handoff</button>
-            <button class="policy-tab" type="button" role="tab" aria-selected="false" data-policy-tab="boundaries">Límites</button>
-            <button class="policy-tab" type="button" role="tab" aria-selected="false" data-policy-tab="notes">Notas</button>
-          </div>
-          <div class="policy-panels">
-            <div class="policy-panel active" role="tabpanel" data-policy-panel="positioning">
-              <label for="tenant-policy-positioning">Welcome / posicionamiento</label>
-              <textarea id="tenant-policy-positioning" name="positioning" rows="4" maxlength="2000" required placeholder="Cómo se presenta este negocio y cuál es su enfoque comercial.">{{ values.positioning }}</textarea>
-              <div class="field-note">La idea principal de venta y cómo debe arrancar la conversación.</div>
+
+      <div class="tab-pane fade" id="tenant-ai-panel" role="tabpanel" aria-labelledby="tenant-ai-tab" tabindex="0">
+        <div class="field field-full">
+          <div class="section-label">Uso IA</div>
+          <div class="section-note">Configura límites básicos por tenant. La conversación sigue persistiéndose completa en backend.</div>
+          <div class="form-grid mb-5">
+            <div class="field field-check">
+              <label for="tenant-ai-enabled">IA habilitada</label>
+              <label class="checkbox-inline" for="tenant-ai-enabled">
+                <input id="tenant-ai-enabled" name="aiEnabled" type="checkbox" value="1"{% if values.aiEnabled %} checked{% endif %}>
+                <span>Permitir llamadas LLM para este tenant</span>
+              </label>
             </div>
-            <div class="policy-panel" role="tabpanel" data-policy-panel="qualification" hidden>
-              <label for="tenant-policy-qualification">Qualification / cualificación</label>
-              <textarea id="tenant-policy-qualification" name="qualificationFocus" rows="4" maxlength="2000" required placeholder="Qué datos o señales quiere descubrir el agente.">{{ values.qualificationFocus }}</textarea>
-              <div class="field-note">Lo que el agente debe averiguar para saber si hay encaje real.</div>
+            <div class="field">
+              <label for="tenant-daily-cost-limit">Límite diario estimado (€)</label>
+              <input id="tenant-daily-cost-limit" name="dailyCostLimitEur" type="number" min="0" step="0.000001" value="{{ values.dailyCostLimitEur }}" placeholder="0.000001">
+              <div class="field-note">Vacío = sin límite diario.</div>
             </div>
-            <div class="policy-panel" role="tabpanel" data-policy-panel="handoff" hidden>
-              <label for="tenant-policy-handoff">Handoff / derivación</label>
-              <textarea id="tenant-policy-handoff" name="handoffRules" rows="4" maxlength="2000" required placeholder="Cuándo y cómo debe pasar el caso a una persona.">{{ values.handoffRules }}</textarea>
-              <div class="field-note">Reglas para escalar a humano sin fricción.</div>
+            <div class="field">
+              <label for="tenant-monthly-cost-limit">Límite mensual estimado (€)</label>
+              <input id="tenant-monthly-cost-limit" name="monthlyCostLimitEur" type="number" min="0" step="0.000001" value="{{ values.monthlyCostLimitEur }}" placeholder="0.000001">
+              <div class="field-note">Vacío = sin límite mensual.</div>
             </div>
-            <div class="policy-panel" role="tabpanel" data-policy-panel="boundaries" hidden>
-              <label for="tenant-policy-boundaries">Sales boundaries / límites</label>
-              <textarea id="tenant-policy-boundaries" name="salesBoundaries" rows="4" maxlength="2000" placeholder="Una regla por línea.">{{ values.salesBoundaries }}</textarea>
-              <div class="field-note">Límites de venta, promesas prohibidas o condiciones que no se pueden saltar.</div>
+            <div class="field">
+              <label for="tenant-default-model">Modelo por defecto</label>
+              <input id="tenant-default-model" name="defaultModel" type="text" value="{{ values.defaultModel }}" maxlength="100" placeholder="gpt-4.1-mini">
+              <div class="field-note">Referencia operativa para este tenant. No fuerza el runtime todavía.</div>
             </div>
-            <div class="policy-panel" role="tabpanel" data-policy-panel="notes" hidden>
-              <label for="tenant-policy-notes">Notas</label>
-              <textarea id="tenant-policy-notes" name="notes" rows="4" maxlength="2000" placeholder="Cualquier matiz extra para el equipo.">{{ values.notes }}</textarea>
-              <div class="field-note">Observaciones generales, ejemplos o aclaraciones adicionales.</div>
+            <div class="field">
+              <label for="tenant-fallback-model">Modelo alternativo</label>
+              <input id="tenant-fallback-model" name="fallbackModel" type="text" value="{{ values.fallbackModel }}" maxlength="100" placeholder="gpt-4.1-nano">
+              <div class="field-note">Reserva si quieres dejar una opción de backup.</div>
+            </div>
+            <div class="field">
+              <label for="tenant-limit-action">Acción al llegar al límite</label>
+              <select id="tenant-limit-action" name="limitAction">
+                <option value="handoff_human"{% if values.limitAction == 'handoff_human' %} selected{% endif %}>handoff_human</option>
+                <option value="block"{% if values.limitAction == 'block' %} selected{% endif %}>block</option>
+              </select>
+              <div class="field-note">Por ahora solo derivar a humano o bloquear.</div>
             </div>
           </div>
+
+          <hr>
+          <div class="section-label tenant-ai-usage-heading">Consumo actual</div>
+          <div class="section-note">Lectura directa de `AiUsageEvent`. No modifica límites ni historial persistido.</div>
+
+          <div class="stats-grid">
+            <div class="metric">
+              <div class="metric-label">Coste estimado hoy</div>
+              <div class="metric-value">{{ ai_usage.today.estimatedCostEur|default('0,000000 €') }}</div>
+              <div class="metric-note">Total acumulado en el día actual.</div>
+            </div>
+            <div class="metric">
+              <div class="metric-label">Coste estimado este mes</div>
+              <div class="metric-value">{{ ai_usage.month.estimatedCostEur|default('0,000000 €') }}</div>
+              <div class="metric-note">Total acumulado desde el primer día del mes.</div>
+            </div>
+            <div class="metric">
+              <div class="metric-label">Tokens totales hoy</div>
+              <div class="metric-value">{{ ai_usage.today.totalTokens|default('0') }}</div>
+              <div class="metric-note">Suma de `total_tokens` registrada hoy.</div>
+            </div>
+            <div class="metric">
+              <div class="metric-label">Tokens totales este mes</div>
+              <div class="metric-value">{{ ai_usage.month.totalTokens|default('0') }}</div>
+              <div class="metric-note">Suma de `total_tokens` registrada este mes.</div>
+            </div>
+          </div>
+
+          <section class="table-card tenant-ai-events-card">
+            <div class="table-header">
+              <div>
+                <h3>Últimos 5 eventos IA</h3>
+                <p>Histórico de consumo reciente asociado a este tenant.</p>
+              </div>
+            </div>
+
+            {% if ai_usage.recentEvents is not empty %}
+              <table>
+                <thead>
+                  <tr>
+                    <th>Fecha</th>
+                    <th>Proveedor</th>
+                    <th>Modelo</th>
+                    <th>Tokens</th>
+                    <th>Coste</th>
+                    <th>Latency</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for event in ai_usage.recentEvents %}
+                    <tr>
+                      <td class="subtle">{{ event.createdAt }}</td>
+                      <td>{{ event.provider }}</td>
+                      <td>
+                        <strong>{{ event.model }}</strong>
+                        <div class="subtle">Input {{ event.inputTokens }} | Output {{ event.outputTokens }} | Cached {{ event.cachedTokens }}</div>
+                      </td>
+                      <td>
+                        <strong>{{ event.totalTokens }}</strong>
+                      </td>
+                      <td>{{ event.estimatedCostEur }}</td>
+                      <td>{{ event.latencyMs }}</td>
+                    </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+            {% else %}
+              <div style="padding: 18px;">
+                <div class="subtle">No hay eventos IA todavía para este negocio.</div>
+              </div>
+            {% endif %}
+          </section>
         </div>
       </div>
     </div>

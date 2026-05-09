@@ -3,7 +3,7 @@ import pytest
 from app.config import Settings
 from app.schemas.agent import AgentResponse
 from app.schemas.agent import AgentRequest, Contact
-from app.services.backend_client import BackendRoutingEntryPointUtmContext
+from app.services.backend_client import BackendAiUsagePolicy, BackendAiUsageSnapshot, BackendRoutingEntryPointUtmContext
 from app.schemas.llm import McpRemoteConfig
 from app.services.decision_engine import DecisionEngine
 from app.services.llm_decision_service import LLMDecisionService
@@ -39,6 +39,14 @@ class RecordingBackendClient:
         self.calls.append(("fetch_mcp_config", (tenant_id,)))
         return self.mcp_config or McpRemoteConfig(enabled=False)
 
+    async def fetch_ai_usage_policy(self, tenant_id: str):
+        self.calls.append(("fetch_ai_usage_policy", (tenant_id,)))
+        return BackendAiUsagePolicy(tenant_id=tenant_id, exists=False, ai_enabled=True)
+
+    async def fetch_ai_usage_snapshot(self, tenant_id: str):
+        self.calls.append(("fetch_ai_usage_snapshot", (tenant_id,)))
+        return BackendAiUsageSnapshot(tenant_id=tenant_id)
+
     async def upsert_conversation(self, payload):
         self.calls.append(("upsert_conversation", (payload.model_dump(by_alias=True),)))
         return {"created": True, "conversation": {"id": "conversation-1"}}
@@ -52,6 +60,17 @@ class RecordingBackendClient:
                 "created": True,
                 "duplicate": False,
                 "message": type("BackendConversationMessageStub", (), {"id": "message-1"})(),
+            },
+        )()
+
+    async def create_ai_usage_event(self, payload):
+        self.calls.append(("create_ai_usage_event", (payload.model_dump(by_alias=True),)))
+        return type(
+            "BackendAiUsageEventResultStub",
+            (),
+            {
+                "created": True,
+                "event": {"id": "usage-event-1"},
             },
         )()
 

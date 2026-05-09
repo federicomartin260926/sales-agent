@@ -10,10 +10,12 @@ use App\Entity\Playbook;
 use App\Entity\Product;
 use App\Entity\Tenant;
 use App\Repository\ConversationRepository;
+use App\Repository\ConversationMessageRepository;
 use App\Repository\EntryPointRepository;
 use App\Repository\EntryPointUtmRepository;
 use App\Repository\ProductRepository;
 use App\Repository\TenantRepository;
+use App\Security\InternalBearerTokenValidator;
 use App\Service\ConversationService;
 use App\Service\EntryPointUtmFactory;
 use App\Service\RoutingResolver;
@@ -81,6 +83,8 @@ final class RoutingControllerTest extends TestCase
         ?ProductRepository $products = null,
         ?ConversationService $conversationService = null,
         ?ConversationRepository $conversations = null,
+        ?ConversationMessageRepository $conversationMessages = null,
+        ?InternalBearerTokenValidator $validator = null,
     ): RoutingController {
         $entryPointUtms ??= $this->createStub(EntryPointUtmRepository::class);
         $controller = new RoutingController(
@@ -93,6 +97,8 @@ final class RoutingControllerTest extends TestCase
             $products ?? $this->createStub(ProductRepository::class),
             $conversationService ?? new ConversationService($this->createStub(ConversationRepository::class)),
             $conversations ?? $this->createStub(ConversationRepository::class),
+            $conversationMessages ?? $this->createStub(ConversationMessageRepository::class),
+            $validator ?? new InternalBearerTokenValidator('test-internal-token'),
         );
         $controller->setContainer(new Container());
 

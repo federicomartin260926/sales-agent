@@ -8,7 +8,8 @@ from typing import Any
 import httpx
 
 from app.config import Settings
-from app.schemas.llm import LLMResponseResult, LLMToolTrace, McpRemoteConfig
+from app.schemas.llm import LLMResponseResult, LLMToolTrace, LLMUsage, McpRemoteConfig
+from app.services.llm_cost_estimator import LLMCostEstimator
 from app.services.runtime_settings_client import RuntimeSettingsClient
 
 
@@ -20,6 +21,7 @@ class LLMClient:
         self.settings = settings
         self.runtime_settings_client = runtime_settings_client or RuntimeSettingsClient(settings)
         self.transport = transport
+        self.cost_estimator = LLMCostEstimator()
         self.last_mcp_error: str | None = None
 
     async def resolve_configuration(self) -> dict[str, str]:
@@ -102,8 +104,12 @@ class LLMClient:
         if content is None:
             raise ValueError("OpenAI response did not include message content")
 
+        response_id = self._extract_response_id(payload_json)
+        usage = self._extract_usage("openai", model, payload_json)
+        estimated_cost = self.cost_estimator.estimate("openai", model, usage)
+
         logger.debug("LLM openai generation completed model=%s", model)
-        return LLMResponseResult(provider="openai", model=model, content=content, raw_payload=payload_json)
+        return LLMResponseResult(provider="openai", model=model, content=content, response_id=response_id, usage=usage, estimated_cost=estimated_cost, raw_payload=payload_json)
 
     async def _generate_openai_responses(
         self,
@@ -158,7 +164,9 @@ class LLMClient:
             raise ValueError("OpenAI responses payload did not include message content")
 
         tool_traces = self._extract_tool_traces(payload_json)
-        response_id = payload_json.get("id") if isinstance(payload_json, dict) and isinstance(payload_json.get("id"), str) else None
+        response_id = self._extract_response_id(payload_json)
+        usage = self._extract_usage("openai", model, payload_json)
+        estimated_cost = self.cost_estimator.estimate("openai", model, usage)
 
         logger.debug("LLM openai responses generation completed model=%s tools=%d", model, len(tool_traces))
         return LLMResponseResult(
@@ -166,6 +174,8 @@ class LLMClient:
             model=model,
             content=content,
             response_id=response_id,
+            usage=usage,
+            estimated_cost=estimated_cost,
             raw_payload=payload_json,
             tool_traces=tool_traces,
         )
@@ -202,8 +212,20 @@ class LLMClient:
         if content is None:
             raise ValueError("Ollama response did not include message content")
 
+        response_id = self._extract_response_id(payload_json)
+        usage = self._extract_usage("ollama", model, payload_json)
+        estimated_cost = self.cost_estimator.estimate("ollama", model, usage)
+
         logger.debug("LLM ollama generation completed model=%s", model)
-        return LLMResponseResult(provider="ollama", model=model, content=content, raw_payload=payload_json)
+        return LLMResponseResult(
+            provider="ollama",
+            model=model,
+            content=content,
+            response_id=response_id,
+            usage=usage,
+            estimated_cost=estimated_cost,
+            raw_payload=payload_json,
+        )
 
     def _extract_openai_content(self, payload: Any) -> str | None:
         if not isinstance(payload, dict):
@@ -314,6 +336,76 @@ class LLMClient:
             )
 
         return traces
+
+    def _extract_response_id(self, payload: Any) -> str | None:
+        if not isinstance(payload, dict):
+            return None
+
+        response_id = payload.get("id")
+        if isinstance(response_id, str) and response_id.strip() != "":
+            return response_id.strip()
+
+        return None
+
+    def _extract_usage(self, provider: str, model: str | None, payload: Any) -> LLMUsage | None:
+        if not isinstance(payload, dict):
+            return None
+
+        if provider.strip().lower() == "ollama":
+            prompt_tokens = self._int_or_none(payload.get("prompt_eval_count"))
+            completion_tokens = self._int_or_none(payload.get("eval_count"))
+            if prompt_tokens is None and completion_tokens is None:
+                return None
+
+            usage = LLMUsage(
+                provider=provider,
+                model=model,
+                input_tokens=prompt_tokens,
+                output_tokens=completion_tokens,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=prompt_tokens + completion_tokens,
+            )
+            return usage
+
+        usage_payload = payload.get("usage")
+        if not isinstance(usage_payload, dict):
+            return None
+
+        input_tokens = self._int_or_none(usage_payload.get("input_tokens"))
+        if input_tokens is None:
+            input_tokens = self._int_or_none(usage_payload.get("prompt_tokens"))
+
+        output_tokens = self._int_or_none(usage_payload.get("output_tokens"))
+        if output_tokens is None:
+            output_tokens = self._int_or_none(usage_payload.get("completion_tokens"))
+
+        total_tokens = self._int_or_none(usage_payload.get("total_tokens"))
+
+        cached_tokens = self._int_or_none(usage_payload.get("cached_tokens"))
+        if cached_tokens is None and isinstance(usage_payload.get("input_tokens_details"), dict):
+            cached_tokens = self._int_or_none(usage_payload["input_tokens_details"].get("cached_tokens"))
+        if cached_tokens is None and isinstance(usage_payload.get("prompt_tokens_details"), dict):
+            cached_tokens = self._int_or_none(usage_payload["prompt_tokens_details"].get("cached_tokens"))
+
+        if input_tokens is None and total_tokens is not None and output_tokens is not None:
+            input_tokens = max(0, total_tokens - output_tokens)
+        if output_tokens is None and total_tokens is not None and input_tokens is not None:
+            output_tokens = max(0, total_tokens - input_tokens)
+
+        if input_tokens is None and output_tokens is None and total_tokens is None and cached_tokens is None:
+            return None
+
+        return LLMUsage(
+            provider=provider,
+            model=model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cached_tokens=cached_tokens,
+            total_tokens=total_tokens,
+            prompt_tokens=self._int_or_none(usage_payload.get("prompt_tokens")),
+            completion_tokens=self._int_or_none(usage_payload.get("completion_tokens")),
+        )
 
     def _build_openai_mcp_tools(self, mcp_config: McpRemoteConfig) -> list[dict[str, Any]]:
         server_url = (mcp_config.server_url or "").strip()
@@ -440,6 +532,18 @@ class LLMClient:
     def _string_or_none(self, value: Any) -> str | None:
         if isinstance(value, str) and value.strip() != "":
             return value.strip()
+
+        return None
+
+    def _int_or_none(self, value: Any) -> int | None:
+        if isinstance(value, bool):
+            return None
+
+        if isinstance(value, int):
+            return value
+
+        if isinstance(value, float):
+            return int(value)
 
         return None
 

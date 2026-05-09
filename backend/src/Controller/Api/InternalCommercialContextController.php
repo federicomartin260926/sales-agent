@@ -361,7 +361,7 @@ final class InternalCommercialContextController extends AbstractApiController
         return false;
     }
 
-    private function normalizeNullableString(mixed $value): ?string
+    protected function normalizeNullableString(mixed $value): ?string
     {
         if (!is_string($value)) {
             return null;

@@ -11,6 +11,7 @@ use App\Entity\Playbook;
 use App\Entity\Product;
 use App\Entity\Tenant;
 use App\Kernel;
+use App\Repository\ConversationMessageRepository;
 use App\Repository\ConversationRepository;
 use App\Repository\EntryPointRepository;
 use App\Repository\EntryPointUtmRepository;
@@ -49,6 +50,9 @@ final class InternalApiSecurityTest extends WebTestCase
     {
         yield 'runtime settings' => ['/api/internal/runtime-settings', 'GET'];
         yield 'mcp config' => ['/api/internal/mcp/tenant-1/config', 'GET'];
+        yield 'ai usage policy' => ['/api/internal/ai-usage/tenant-1/policy', 'GET'];
+        yield 'ai usage usage' => ['/api/internal/ai-usage/tenant-1/usage', 'GET'];
+        yield 'ai usage events' => ['/api/internal/ai-usage/events', 'POST'];
         yield 'entry point ref' => ['/api/internal/routing/entrypoint-ref/abc123', 'GET'];
         yield 'whatsapp phone' => ['/api/internal/routing/whatsapp-phone/phone-number-id-1', 'GET'];
         yield 'conversation upsert' => ['/api/internal/conversations/upsert', 'POST'];
@@ -239,6 +243,7 @@ final class InternalApiSecurityTest extends WebTestCase
         ?Product $product = null,
         ?EntryPoint $entryPoint = null,
         ?EntryPointUtm $entryPointUtm = null,
+        ?ConversationMessageRepository $conversationMessageRepository = null,
         ?Tenant $resolveTenantByPhone = null,
     ): RoutingController {
         $tenant ??= $this->createTenant();
@@ -344,6 +349,8 @@ final class InternalApiSecurityTest extends WebTestCase
             $productRepository,
             new ConversationService($conversationRepository),
             $conversationRepository,
+            $conversationMessageRepository ?? $this->createStub(ConversationMessageRepository::class),
+            new InternalBearerTokenValidator(self::TOKEN),
         );
         $controller->setContainer(static::getContainer());
 

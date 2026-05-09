@@ -26,6 +26,12 @@ def mcp_transport_handler(request: httpx.Request) -> httpx.Response:
         200,
         json={
             "id": "resp_1",
+            "usage": {
+                "input_tokens": 120,
+                "output_tokens": 32,
+                "cached_tokens": 40,
+                "total_tokens": 152,
+            },
             "output_text": json.dumps(
                 {
                     "reply": "Tu próxima cita es mañana a las 10:00.",
@@ -83,6 +89,10 @@ async def test_llm_client_uses_openai_responses_with_mcp_tools():
     payload = json.loads(result.content)
     assert "próxima cita" in payload["reply"]
     assert result.response_id == "resp_1"
+    assert result.usage is not None
+    assert result.usage.input_tokens == 120
+    assert result.usage.cached_tokens == 40
+    assert result.estimated_cost is not None
     assert len(result.tool_traces) == 1
     assert result.tool_traces[0].tool_name == "appointment_availability"
 

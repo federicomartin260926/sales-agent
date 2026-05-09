@@ -170,6 +170,7 @@ final class RoutingController extends AbstractApiController
                 'fbclid' => $data['fbclid'] ?? null,
             ],
             isset($data['crm_branch_ref']) ? (string) $data['crm_branch_ref'] : null,
+            isset($data['summary']) ? (string) $data['summary'] : null,
         );
 
         /** @var Conversation $conversation */
@@ -309,7 +310,7 @@ final class RoutingController extends AbstractApiController
         return null;
     }
 
-    private function normalizeNullableString(mixed $value): ?string
+    protected function normalizeNullableString(mixed $value): ?string
     {
         if (!is_string($value)) {
             return null;

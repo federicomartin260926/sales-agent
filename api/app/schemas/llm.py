@@ -33,6 +33,20 @@ class LLMToolTrace(BaseModel):
         return {}
 
 
+class LLMUsage(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    provider: str | None = None
+    model: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    cached_tokens: int | None = None
+    total_tokens: int | None = None
+    prompt_tokens: int | None = None
+    completion_tokens: int | None = None
+    estimated_cost: float | None = None
+
+
 class McpToolTrace(LLMToolTrace):
     pass
 
@@ -78,6 +92,56 @@ class McpRemoteConfig(BaseModel):
         return {}
 
 
+class BackendAiUsagePolicy(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    tenant_id: str | None = Field(default=None, validation_alias=AliasChoices("tenant_id", "tenantId"))
+    exists: bool = False
+    ai_enabled: bool = Field(default=True, validation_alias=AliasChoices("ai_enabled", "aiEnabled"))
+    monthly_cost_limit_eur: float | None = Field(default=None, validation_alias=AliasChoices("monthly_cost_limit_eur", "monthlyCostLimitEur"))
+    daily_cost_limit_eur: float | None = Field(default=None, validation_alias=AliasChoices("daily_cost_limit_eur", "dailyCostLimitEur"))
+    default_model: str | None = Field(default=None, validation_alias=AliasChoices("default_model", "defaultModel"))
+    fallback_model: str | None = Field(default=None, validation_alias=AliasChoices("fallback_model", "fallbackModel"))
+    limit_action: str = Field(default="handoff_human", validation_alias=AliasChoices("limit_action", "limitAction"))
+    created_at: str | None = Field(default=None, validation_alias=AliasChoices("created_at", "createdAt"))
+    updated_at: str | None = Field(default=None, validation_alias=AliasChoices("updated_at", "updatedAt"))
+
+
+class BackendAiUsageWindow(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    estimated_cost_eur: float = 0.0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cached_tokens: int = 0
+    total_tokens: int = 0
+
+
+class BackendAiUsageSnapshot(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    tenant_id: str | None = Field(default=None, validation_alias=AliasChoices("tenant_id", "tenantId"))
+    daily: BackendAiUsageWindow = Field(default_factory=BackendAiUsageWindow)
+    monthly: BackendAiUsageWindow = Field(default_factory=BackendAiUsageWindow)
+
+
+class BackendAiUsageEventPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+
+    tenant_id: str = Field(alias="tenant_id")
+    conversation_id: str | None = Field(default=None, alias="conversation_id")
+    conversation_message_id: str | None = Field(default=None, alias="conversation_message_id")
+    provider: str | None = Field(default=None, alias="provider")
+    model: str | None = Field(default=None, alias="model")
+    response_id: str | None = Field(default=None, alias="response_id")
+    input_tokens: int | None = Field(default=None, alias="input_tokens")
+    output_tokens: int | None = Field(default=None, alias="output_tokens")
+    cached_tokens: int | None = Field(default=None, alias="cached_tokens")
+    total_tokens: int | None = Field(default=None, alias="total_tokens")
+    estimated_cost: float | None = Field(default=None, alias="estimated_cost")
+    latency_ms: int | None = Field(default=None, alias="latency_ms")
+
+
 class LLMResponseResult(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -85,5 +149,7 @@ class LLMResponseResult(BaseModel):
     model: str | None = None
     content: str
     response_id: str | None = None
+    usage: LLMUsage | None = None
+    estimated_cost: float | None = None
     raw_payload: Any | None = None
     tool_traces: list[LLMToolTrace] = Field(default_factory=list)

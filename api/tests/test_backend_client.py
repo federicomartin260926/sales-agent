@@ -1,8 +1,10 @@
+import json
+
 import httpx
 import pytest
 
 from app.config import Settings
-from app.services.backend_client import BackendClient, BackendConversationUpsertPayload
+from app.services.backend_client import BackendAiUsageEventPayload, BackendClient, BackendConversationUpsertPayload
 
 
 def transport_handler(request: httpx.Request) -> httpx.Response:
@@ -122,6 +124,54 @@ def transport_handler(request: httpx.Request) -> httpx.Response:
             },
         )
 
+    if request.method == "GET" and request.url.path == "/api/internal/ai-usage/tenant-1/policy":
+        assert request.headers.get("Authorization") == "Bearer test-internal-token"
+        return httpx.Response(
+            200,
+            json={
+                "tenant_id": "tenant-1",
+                "exists": True,
+                "ai_enabled": True,
+                "monthly_cost_limit_eur": 10.0,
+                "daily_cost_limit_eur": 1.0,
+                "default_model": "gpt-4.1-mini",
+                "fallback_model": "gpt-4.1-nano",
+                "limit_action": "handoff_human",
+                "created_at": "2026-04-28T12:00:00+00:00",
+                "updated_at": "2026-04-28T12:00:00+00:00",
+            },
+        )
+
+    if request.method == "GET" and request.url.path == "/api/internal/ai-usage/tenant-1/usage":
+        assert request.headers.get("Authorization") == "Bearer test-internal-token"
+        return httpx.Response(
+            200,
+            json={
+                "tenant_id": "tenant-1",
+                "daily": {
+                    "estimated_cost_eur": 0.25,
+                    "input_tokens": 100,
+                    "output_tokens": 50,
+                    "cached_tokens": 10,
+                    "total_tokens": 160,
+                },
+                "monthly": {
+                    "estimated_cost_eur": 2.5,
+                    "input_tokens": 1000,
+                    "output_tokens": 500,
+                    "cached_tokens": 100,
+                    "total_tokens": 1600,
+                },
+            },
+        )
+
+    if request.method == "POST" and request.url.path == "/api/internal/ai-usage/events":
+        assert request.headers.get("Authorization") == "Bearer test-internal-token"
+        payload = json.loads(request.content.decode("utf-8"))
+        assert payload["tenant_id"] == "tenant-1"
+        assert payload["provider"] == "openai"
+        return httpx.Response(201, json={"created": True, "event": {"id": "event-1"}})
+
     if request.method == "GET" and request.url.path == "/api/internal/mcp/tenant-1/config":
         assert request.headers.get("Authorization") == "Bearer test-internal-token"
         return httpx.Response(
@@ -234,6 +284,39 @@ async def test_backend_client_fetches_mcp_config():
     assert config.auth_type == "bearer"
     assert config.bearer_token == "mcp-token"
     assert config.allowed_tools == ["search_properties"]
+
+
+@pytest.mark.asyncio
+async def test_backend_client_fetches_ai_usage_policy_usage_and_reports_event():
+    client = BackendClient(
+        Settings(BACKEND_BASE_URL="http://sales-agent-nginx", SALES_AGENT_BEARER_TOKEN="test-internal-token"),
+        transport=httpx.MockTransport(transport_handler),
+    )
+
+    policy = await client.fetch_ai_usage_policy("tenant-1")
+    snapshot = await client.fetch_ai_usage_snapshot("tenant-1")
+    result = await client.create_ai_usage_event(
+        BackendAiUsageEventPayload(
+            tenant_id="tenant-1",
+            provider="openai",
+            model="gpt-4.1-mini",
+            response_id="resp_1",
+            input_tokens=120,
+            output_tokens=32,
+            cached_tokens=40,
+            total_tokens=152,
+            estimated_cost=0.000123,
+            latency_ms=200,
+        )
+    )
+
+    assert policy is not None
+    assert policy.ai_enabled is True
+    assert policy.daily_cost_limit_eur == 1.0
+    assert snapshot is not None
+    assert snapshot.daily.estimated_cost_eur == 0.25
+    assert result is not None
+    assert result.created is True
 
 
 @pytest.mark.asyncio

@@ -4,13 +4,17 @@ namespace App\Controller\Web;
 
 use App\Domain\CommercialDomainSchema;
 use App\Entity\EntryPoint;
+use App\Entity\AiUsageEvent;
 use App\Entity\Playbook;
 use App\Entity\Product;
 use App\Entity\Tenant;
+use App\Entity\TenantAiUsagePolicy;
 use App\Entity\User;
+use App\Repository\AiUsageEventRepository;
 use App\Repository\PlaybookRepository;
 use App\Repository\ProductRepository;
 use App\Repository\EntryPointRepository;
+use App\Repository\TenantAiUsagePolicyRepository;
 use App\Repository\TenantRepository;
 use App\Repository\UserRepository;
 use App\Service\RuntimeConfigurationService;
@@ -37,6 +41,7 @@ final class BackendUiController
         private readonly UserPasswordHasherInterface $passwordHasher,
         private readonly RuntimeConfigurationService $runtimeConfigurationService,
         private readonly Environment $twig,
+        private readonly ?AiUsageEventRepository $aiUsageEvents = null,
         private readonly ?ProductCatalogImportService $productCatalogImportService = null,
         private readonly ?CsrfTokenManagerInterface $csrfTokenManager = null,
     ) {
@@ -589,7 +594,11 @@ final class BackendUiController
     }
 
     #[Route('/tenants/new', methods: ['GET', 'POST'])]
-    public function tenantCreate(Request $request, ?TenantRepository $tenants = null): Response
+    public function tenantCreate(
+        Request $request,
+        ?TenantRepository $tenants = null,
+        ?TenantAiUsagePolicyRepository $aiUsagePolicies = null,
+    ): Response
     {
         if (!$this->security->isGranted('ROLE_MANAGER')) {
             return new RedirectResponse('/backend/login');
@@ -609,6 +618,7 @@ final class BackendUiController
                     $tenant = new Tenant();
                     $this->hydrateTenantFromForm($tenant, $values);
                     $this->entityManager->persist($tenant);
+                    $this->persistTenantAiUsagePolicy($tenant, $values, $aiUsagePolicies, false);
                     $this->entityManager->flush();
 
                     return new RedirectResponse('/backend/tenants');
@@ -628,7 +638,13 @@ final class BackendUiController
     }
 
     #[Route('/tenants/{id}/edit', methods: ['GET', 'POST'])]
-    public function tenantEdit(string $id, Request $request, ?TenantRepository $tenants = null): Response
+    public function tenantEdit(
+        string $id,
+        Request $request,
+        ?TenantRepository $tenants = null,
+        ?TenantAiUsagePolicyRepository $aiUsagePolicies = null,
+        ?AiUsageEventRepository $aiUsageEvents = null,
+    ): Response
     {
         if (!$this->security->isGranted('ROLE_MANAGER')) {
             return new RedirectResponse('/backend/login');
@@ -643,7 +659,9 @@ final class BackendUiController
             return new RedirectResponse('/backend/tenants');
         }
 
-        $values = $this->tenantFormDefaults($tenant);
+        $aiUsagePolicy = $this->loadTenantAiUsagePolicy($tenant, $aiUsagePolicies);
+        $aiUsageData = $this->tenantAiUsageDisplayData($tenant, $aiUsageEvents ?? $this->aiUsageEvents);
+        $values = $this->tenantFormDefaults($tenant, $aiUsagePolicy);
         $error = null;
 
         if ($request->isMethod('POST')) {
@@ -652,9 +670,13 @@ final class BackendUiController
             } else {
                 $values = $this->tenantFormValuesFromRequest($request);
                 $error = $this->validateTenantForm($values, $tenant, $tenants);
+                if ($error === null) {
+                    $error = $this->validateTenantAiUsagePolicyForm($values);
+                }
 
                 if ($error === null) {
                     $this->hydrateTenantFromForm($tenant, $values);
+                    $this->persistTenantAiUsagePolicy($tenant, $values, $aiUsagePolicies, false, $aiUsagePolicy);
                     $this->entityManager->persist($tenant);
                     $this->entityManager->flush();
 
@@ -665,12 +687,13 @@ final class BackendUiController
 
         return $this->renderTenantForm(
             'Editar negocio',
-            'Ajusta el contexto comercial, el tono y la política de venta del negocio seleccionado.',
+            'Ajusta el contexto comercial, el tono, la política de venta y los límites de uso IA del negocio seleccionado.',
             'Editar negocio',
             'Guardar cambios',
             '/backend/tenants/'.$tenant->getId()->toRfc4122().'/edit',
             $values,
-            $error
+            $error,
+            $aiUsageData
         );
     }
 
@@ -1668,9 +1691,10 @@ final class BackendUiController
     /**
      * @return array{name: string, slug: string, businessContext: string, tone: string, whatsappPhoneNumberId: string, whatsappPublicPhone: string, positioning: string, qualificationFocus: string, handoffRules: string, salesBoundaries: string, notes: string, isActive: bool}
      */
-    private function tenantFormDefaults(?Tenant $tenant = null): array
+    private function tenantFormDefaults(?Tenant $tenant = null, ?TenantAiUsagePolicy $aiUsagePolicy = null): array
     {
         $salesPolicy = $tenant?->getSalesPolicy() ?? [];
+        $aiPolicy = $this->tenantAiUsagePolicyValues($aiUsagePolicy);
 
         return [
             'name' => $tenant?->getName() ?? '',
@@ -1685,11 +1709,17 @@ final class BackendUiController
             'salesBoundaries' => $this->tenantPolicyLines($salesPolicy, 'salesBoundaries'),
             'notes' => $this->tenantPolicyValue($salesPolicy, 'notes'),
             'isActive' => $tenant?->isActive() ?? true,
+            'aiEnabled' => $aiPolicy['aiEnabled'],
+            'dailyCostLimitEur' => $aiPolicy['dailyCostLimitEur'],
+            'monthlyCostLimitEur' => $aiPolicy['monthlyCostLimitEur'],
+            'defaultModel' => $aiPolicy['defaultModel'],
+            'fallbackModel' => $aiPolicy['fallbackModel'],
+            'limitAction' => $aiPolicy['limitAction'],
         ];
     }
 
     /**
-     * @return array{name: string, slug: string, businessContext: string, tone: string, whatsappPhoneNumberId: string, whatsappPublicPhone: string, positioning: string, qualificationFocus: string, handoffRules: string, salesBoundaries: string, notes: string, isActive: bool}
+     * @return array{name: string, slug: string, businessContext: string, tone: string, whatsappPhoneNumberId: string, whatsappPublicPhone: string, positioning: string, qualificationFocus: string, handoffRules: string, salesBoundaries: string, notes: string, isActive: bool, aiEnabled: bool, dailyCostLimitEur: string, monthlyCostLimitEur: string, defaultModel: string, fallbackModel: string, limitAction: string}
      */
     private function tenantFormValuesFromRequest(Request $request): array
     {
@@ -1706,6 +1736,12 @@ final class BackendUiController
             'salesBoundaries' => trim((string) $request->request->get('salesBoundaries', '')),
             'notes' => trim((string) $request->request->get('notes', '')),
             'isActive' => $request->request->has('isActive'),
+            'aiEnabled' => $request->request->has('aiEnabled'),
+            'dailyCostLimitEur' => trim((string) $request->request->get('dailyCostLimitEur', '')),
+            'monthlyCostLimitEur' => trim((string) $request->request->get('monthlyCostLimitEur', '')),
+            'defaultModel' => trim((string) $request->request->get('defaultModel', '')),
+            'fallbackModel' => trim((string) $request->request->get('fallbackModel', '')),
+            'limitAction' => trim((string) $request->request->get('limitAction', 'handoff_human')),
         ];
     }
 
@@ -1717,6 +1753,7 @@ final class BackendUiController
         string $actionUrl,
         array $values,
         ?string $error = null,
+        array $aiUsage = [],
     ): Response {
         $errorHtml = $error !== null ? sprintf(
             '<div class="form-alert form-alert-error">%s</div>',
@@ -1730,6 +1767,7 @@ final class BackendUiController
             'csrf_token' => $this->tenantTokenValue($actionUrl),
             'values' => $values,
             'submit_label' => $submitLabel,
+            'ai_usage' => $aiUsage,
         ]);
 
         return $this->renderBackendShell($pageTitle, $pageSubtitle, 'tenants', $content);
@@ -1787,6 +1825,38 @@ final class BackendUiController
         return null;
     }
 
+    private function validateTenantAiUsagePolicyForm(array $values): ?string
+    {
+        foreach (['dailyCostLimitEur', 'monthlyCostLimitEur'] as $field) {
+            $value = $values[$field] ?? '';
+            if ($value === '') {
+                continue;
+            }
+
+            if (!is_numeric($value)) {
+                return sprintf('El campo %s debe ser numérico o vacío.', $field);
+            }
+
+            if ((float) $value < 0) {
+                return sprintf('El campo %s no puede ser negativo.', $field);
+            }
+        }
+
+        if ($values['defaultModel'] !== '' && mb_strlen($values['defaultModel']) > 100) {
+            return 'El modelo por defecto no puede superar 100 caracteres.';
+        }
+
+        if ($values['fallbackModel'] !== '' && mb_strlen($values['fallbackModel']) > 100) {
+            return 'El modelo alternativo no puede superar 100 caracteres.';
+        }
+
+        if (!in_array($values['limitAction'], ['handoff_human', 'block'], true)) {
+            return 'La acción de límite no es válida.';
+        }
+
+        return null;
+    }
+
     private function hydrateTenantFromForm(Tenant $tenant, array $values): void
     {
         $tenant->setName($values['name']);
@@ -1797,6 +1867,174 @@ final class BackendUiController
         $tenant->setWhatsappPublicPhone($values['whatsappPublicPhone'] !== '' ? $values['whatsappPublicPhone'] : null);
         $tenant->setSalesPolicy($this->tenantSalesPolicyFromForm($values));
         $tenant->setActive($values['isActive']);
+    }
+
+    private function loadTenantAiUsagePolicy(Tenant $tenant, ?TenantAiUsagePolicyRepository $aiUsagePolicies): TenantAiUsagePolicy
+    {
+        if ($aiUsagePolicies instanceof TenantAiUsagePolicyRepository) {
+            return $aiUsagePolicies->findOrCreateByTenant($tenant);
+        }
+
+        return new TenantAiUsagePolicy($tenant);
+    }
+
+    private function persistTenantAiUsagePolicy(
+        Tenant $tenant,
+        array $values,
+        ?TenantAiUsagePolicyRepository $aiUsagePolicies,
+        bool $flush = false,
+        ?TenantAiUsagePolicy $policy = null,
+    ): TenantAiUsagePolicy {
+        $policy ??= $this->loadTenantAiUsagePolicy($tenant, $aiUsagePolicies);
+        $this->hydrateTenantAiUsagePolicyFromForm($policy, $values);
+
+        if ($aiUsagePolicies instanceof TenantAiUsagePolicyRepository) {
+            $aiUsagePolicies->save($policy, $flush);
+        } else {
+            $this->entityManager->persist($policy);
+            if ($flush) {
+                $this->entityManager->flush();
+            }
+        }
+
+        return $policy;
+    }
+
+    /**
+     * @return array{aiEnabled: bool, dailyCostLimitEur: string, monthlyCostLimitEur: string, defaultModel: string, fallbackModel: string, limitAction: string}
+     */
+    private function tenantAiUsagePolicyValues(?TenantAiUsagePolicy $policy = null): array
+    {
+        return [
+            'aiEnabled' => $policy?->isAiEnabled() ?? true,
+            'dailyCostLimitEur' => $this->formatNullableFloat($policy?->getDailyCostLimitEur()),
+            'monthlyCostLimitEur' => $this->formatNullableFloat($policy?->getMonthlyCostLimitEur()),
+            'defaultModel' => $policy?->getDefaultModel() ?? '',
+            'fallbackModel' => $policy?->getFallbackModel() ?? '',
+            'limitAction' => $policy?->getLimitAction() ?? 'handoff_human',
+        ];
+    }
+
+    /**
+     * @return array{
+     *   today: array{estimatedCostEur: string, totalTokens: string},
+     *   month: array{estimatedCostEur: string, totalTokens: string},
+     *   recentEvents: array<int, array{
+     *     createdAt: string,
+     *     provider: string,
+     *     model: string,
+     *     inputTokens: string,
+     *     outputTokens: string,
+     *     cachedTokens: string,
+     *     totalTokens: string,
+     *     estimatedCostEur: string,
+     *     latencyMs: string
+     *   }>
+     * }
+     */
+    private function tenantAiUsageDisplayData(Tenant $tenant, ?AiUsageEventRepository $aiUsageEvents): array
+    {
+        $empty = [
+            'today' => ['estimatedCostEur' => '0,00 €', 'totalTokens' => '0'],
+            'month' => ['estimatedCostEur' => '0,00 €', 'totalTokens' => '0'],
+            'recentEvents' => [],
+        ];
+
+        if (!$aiUsageEvents instanceof AiUsageEventRepository) {
+            return $empty;
+        }
+
+        $timezone = new \DateTimeZone(date_default_timezone_get() ?: 'UTC');
+        $today = new \DateTimeImmutable('today', $timezone);
+        $month = new \DateTimeImmutable('first day of this month', $timezone);
+
+        $todaySummary = $aiUsageEvents->summarizeSince($tenant, $today);
+        $monthSummary = $aiUsageEvents->summarizeSince($tenant, $month);
+
+        return [
+            'today' => [
+                'estimatedCostEur' => $this->formatMoneyEur($todaySummary['estimated_cost_eur'] ?? 0.0),
+                'totalTokens' => $this->formatIntegerDisplay($todaySummary['total_tokens'] ?? 0),
+            ],
+            'month' => [
+                'estimatedCostEur' => $this->formatMoneyEur($monthSummary['estimated_cost_eur'] ?? 0.0),
+                'totalTokens' => $this->formatIntegerDisplay($monthSummary['total_tokens'] ?? 0),
+            ],
+            'recentEvents' => array_map(
+                fn (AiUsageEvent $event): array => $this->tenantAiUsageEventView($event),
+                $aiUsageEvents->findRecentByTenant($tenant, 5)
+            ),
+        ];
+    }
+
+    /**
+     * @return array{createdAt: string, provider: string, model: string, inputTokens: string, outputTokens: string, cachedTokens: string, totalTokens: string, estimatedCostEur: string, latencyMs: string}
+     */
+    private function tenantAiUsageEventView(AiUsageEvent $event): array
+    {
+        return [
+            'createdAt' => $event->getCreatedAt()->format('Y-m-d H:i'),
+            'provider' => $event->getProvider() !== null && $event->getProvider() !== '' ? $event->getProvider() : '—',
+            'model' => $event->getModel() !== null && $event->getModel() !== '' ? $this->shortenListText($event->getModel(), 24, '—') : '—',
+            'inputTokens' => $this->formatIntegerDisplay($event->getInputTokens()),
+            'outputTokens' => $this->formatIntegerDisplay($event->getOutputTokens()),
+            'cachedTokens' => $this->formatIntegerDisplay($event->getCachedTokens()),
+            'totalTokens' => $this->formatIntegerDisplay($event->getTotalTokens()),
+            'estimatedCostEur' => $this->formatMoneyEur($event->getEstimatedCost()),
+            'latencyMs' => $event->getLatencyMs() !== null ? $this->formatIntegerDisplay($event->getLatencyMs()).' ms' : '—',
+        ];
+    }
+
+    private function hydrateTenantAiUsagePolicyFromForm(TenantAiUsagePolicy $policy, array $values): void
+    {
+        $policy->setAiEnabled($values['aiEnabled']);
+        $policy->setDailyCostLimitEur($this->parseNullableFloat($values['dailyCostLimitEur']));
+        $policy->setMonthlyCostLimitEur($this->parseNullableFloat($values['monthlyCostLimitEur']));
+        $policy->setDefaultModel($values['defaultModel'] !== '' ? $values['defaultModel'] : null);
+        $policy->setFallbackModel($values['fallbackModel'] !== '' ? $values['fallbackModel'] : null);
+        $policy->setLimitAction($values['limitAction']);
+    }
+
+    private function parseNullableFloat(mixed $value): ?float
+    {
+        if (!is_string($value)) {
+            return null;
+        }
+
+        $trimmed = trim($value);
+        if ($trimmed === '') {
+            return null;
+        }
+
+        return is_numeric($trimmed) ? (float) $trimmed : null;
+    }
+
+    private function formatNullableFloat(?float $value): string
+    {
+        if ($value === null) {
+            return '';
+        }
+
+        $formatted = rtrim(rtrim(number_format($value, 2, '.', ''), '0'), '.');
+
+        return $formatted === '0' ? '0' : $formatted;
+    }
+
+    private function formatMoneyEur(?float $value): string
+    {
+        return sprintf('%s €', $this->formatMoneyValue($value));
+    }
+
+    private function formatIntegerDisplay(?int $value): string
+    {
+        return number_format($value ?? 0, 0, ',', '.');
+    }
+
+    private function formatMoneyValue(?float $value): string
+    {
+        $formatted = rtrim(rtrim(number_format($value ?? 0.0, 6, ',', '.'), '0'), ',');
+
+        return $formatted === '' ? '0' : $formatted;
     }
 
     /**

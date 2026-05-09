@@ -4,13 +4,17 @@ namespace App\Tests\Unit;
 
 use App\Controller\Web\BackendUiController;
 use App\Entity\EntryPoint;
+use App\Entity\AiUsageEvent;
 use App\Entity\Playbook;
 use App\Entity\Product;
 use App\Entity\Tenant;
+use App\Entity\TenantAiUsagePolicy;
 use App\Entity\User;
+use App\Repository\AiUsageEventRepository;
 use App\Repository\EntryPointRepository;
 use App\Repository\PlaybookRepository;
 use App\Repository\ProductRepository;
+use App\Repository\TenantAiUsagePolicyRepository;
 use App\Repository\TenantRepository;
 use App\Service\RuntimeConfigurationService;
 use App\Service\ProductCatalogImportService;
@@ -46,7 +50,7 @@ final class BackendUiControllerTest extends TestCase
         $runtimeConfigurationService ??= $this->createStub(RuntimeConfigurationService::class);
         $twig ??= $this->createTwigEnvironment();
 
-        return new BackendUiController($security, $entityManager, $passwordHasher, $runtimeConfigurationService, $twig, $productCatalogImportService, $csrfTokenManager);
+        return new BackendUiController($security, $entityManager, $passwordHasher, $runtimeConfigurationService, $twig, null, $productCatalogImportService, $csrfTokenManager);
     }
 
     private function createTwigEnvironment(): Environment
@@ -150,6 +154,87 @@ final class BackendUiControllerTest extends TestCase
                 }
 
                 return null;
+            }
+        };
+    }
+
+    private function createTenantAiUsagePolicyRepositoryFake(?TenantAiUsagePolicy $foundPolicy = null): TenantAiUsagePolicyRepository
+    {
+        return new class($foundPolicy) extends TenantAiUsagePolicyRepository {
+            public array $savedPolicies = [];
+
+            public function __construct(private ?TenantAiUsagePolicy $foundPolicy)
+            {
+            }
+
+            public function findOneByTenant(Tenant $tenant): ?TenantAiUsagePolicy
+            {
+                return $this->foundPolicy;
+            }
+
+            public function save(TenantAiUsagePolicy $policy, bool $flush = true): void
+            {
+                $this->savedPolicies[] = $policy;
+                $this->foundPolicy = $policy;
+            }
+        };
+    }
+
+    /**
+     * @param AiUsageEvent[] $recentEvents
+     */
+    private function createAiUsageEventRepositoryFake(array $recentEvents = [], array $todaySummary = [], array $monthSummary = []): AiUsageEventRepository
+    {
+        return new class($recentEvents, $todaySummary, $monthSummary) extends AiUsageEventRepository {
+            /**
+             * @param AiUsageEvent[] $recentEvents
+             * @param array{estimated_cost_eur?: float, input_tokens?: int, output_tokens?: int, cached_tokens?: int, total_tokens?: int} $todaySummary
+             * @param array{estimated_cost_eur?: float, input_tokens?: int, output_tokens?: int, cached_tokens?: int, total_tokens?: int} $monthSummary
+             */
+            public function __construct(
+                private array $recentEvents,
+                private array $todaySummary,
+                private array $monthSummary,
+            ) {
+            }
+
+            public function summarizeSince(Tenant $tenant, \DateTimeImmutable $since): array
+            {
+                $today = new \DateTimeImmutable('today');
+                $month = new \DateTimeImmutable('first day of this month');
+
+                if ($since->format('Y-m-d') === $today->format('Y-m-d')) {
+                    return array_merge([
+                        'estimated_cost_eur' => 0.0,
+                        'input_tokens' => 0,
+                        'output_tokens' => 0,
+                        'cached_tokens' => 0,
+                        'total_tokens' => 0,
+                    ], $this->todaySummary);
+                }
+
+                if ($since->format('Y-m-d') === $month->format('Y-m-d')) {
+                    return array_merge([
+                        'estimated_cost_eur' => 0.0,
+                        'input_tokens' => 0,
+                        'output_tokens' => 0,
+                        'cached_tokens' => 0,
+                        'total_tokens' => 0,
+                    ], $this->monthSummary);
+                }
+
+                return [
+                    'estimated_cost_eur' => 0.0,
+                    'input_tokens' => 0,
+                    'output_tokens' => 0,
+                    'cached_tokens' => 0,
+                    'total_tokens' => 0,
+                ];
+            }
+
+            public function findRecentByTenant(Tenant $tenant, int $limit = 5): array
+            {
+                return array_slice($this->recentEvents, 0, max(1, $limit));
             }
         };
     }
@@ -569,24 +654,7 @@ final class BackendUiControllerTest extends TestCase
         $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => in_array($role, ['ROLE_MANAGER', 'ROLE_ADMIN'], true));
 
         $entityManager = $this->createMock(EntityManagerInterface::class);
-        $entityManager->expects(self::once())
-            ->method('persist')
-            ->with(self::callback(static function (Tenant $tenant): bool {
-                return $tenant->getName() === 'Academia Nova'
-                    && $tenant->getSlug() === 'academia-nova'
-                    && $tenant->getBusinessContext() === 'Negocio demo'
-                    && $tenant->getTone() === 'Cercano'
-                    && $tenant->getWhatsappPhoneNumberId() === '123456789012345'
-                    && $tenant->getWhatsappPublicPhone() === '34612345678'
-                    && $tenant->getSalesPolicy() === [
-                        'positioning' => 'Demo comercial',
-                        'qualificationFocus' => 'Identificar tipo de negocio',
-                        'handoffRules' => 'Derivar cuando el lead pida demo',
-                        'salesBoundaries' => ['No prometer cierres automáticos', 'No inventar precios'],
-                        'notes' => 'Plantilla de pruebas',
-                    ]
-                    && $tenant->isActive();
-            }));
+        $entityManager->expects(self::exactly(2))->method('persist');
         $entityManager->expects(self::once())->method('flush');
 
         $tenants = $this->createTenantRepositoryFake();
@@ -630,6 +698,21 @@ final class BackendUiControllerTest extends TestCase
             'notes' => 'Demo',
         ]);
         $tenant->setActive(true);
+        $aiUsagePolicyRepository = $this->createTenantAiUsagePolicyRepositoryFake(null);
+        $recentEvent = new AiUsageEvent($tenant);
+        $recentEvent->setProvider('openai');
+        $recentEvent->setModel('gpt-4.1-mini');
+        $recentEvent->setInputTokens(120);
+        $recentEvent->setOutputTokens(30);
+        $recentEvent->setCachedTokens(20);
+        $recentEvent->setTotalTokens(150);
+        $recentEvent->setEstimatedCost(0.0005);
+        $recentEvent->setLatencyMs(123);
+        $aiUsageEventsRepository = $this->createAiUsageEventRepositoryFake(
+            [$recentEvent],
+            ['estimated_cost_eur' => 0.004321, 'total_tokens' => 100],
+            ['estimated_cost_eur' => 0.012345, 'total_tokens' => 500]
+        );
 
         $security = $this->createStub(Security::class);
         $security->method('getUser')->willReturn($this->createAuthenticatedUser('manager@example.com', ['manager'], 'María Manager'));
@@ -643,18 +726,75 @@ final class BackendUiControllerTest extends TestCase
         );
 
         $controller = $this->createController($security, null, null, $csrfTokenManager);
-        $response = $controller->tenantEdit($tenant->getId()->toRfc4122(), Request::create('/backend/tenants/'.$tenant->getId()->toRfc4122().'/edit', 'GET'), $tenants);
+        $response = $controller->tenantEdit(
+            $tenant->getId()->toRfc4122(),
+            Request::create('/backend/tenants/'.$tenant->getId()->toRfc4122().'/edit', 'GET'),
+            $tenants,
+            $aiUsagePolicyRepository,
+            $aiUsageEventsRepository
+        );
 
         self::assertSame(Response::HTTP_OK, $response->getStatusCode());
         self::assertStringContainsString('Editar negocio', $response->getContent());
         self::assertStringContainsString('Federico Martin Demo', $response->getContent());
         self::assertStringContainsString('federico-martin-demo', $response->getContent());
         self::assertStringContainsString('Profesional', $response->getContent());
+        self::assertStringContainsString('Ficha negocio', $response->getContent());
+        self::assertStringContainsString('Uso IA', $response->getContent());
+        self::assertStringContainsString('data-bs-target="#tenant-business-panel"', $response->getContent());
+        self::assertStringContainsString('data-bs-target="#tenant-ai-panel"', $response->getContent());
+        self::assertStringContainsString('name="aiEnabled"', $response->getContent());
+        self::assertStringContainsString('name="dailyCostLimitEur"', $response->getContent());
+        self::assertStringContainsString('name="monthlyCostLimitEur"', $response->getContent());
+        self::assertStringContainsString('step="0.000001"', $response->getContent());
+        self::assertStringContainsString('Coste estimado hoy', $response->getContent());
+        self::assertStringContainsString('0,004321 €', $response->getContent());
+        self::assertStringContainsString('0,012345 €', $response->getContent());
+        self::assertStringContainsString('Tokens totales hoy', $response->getContent());
+        self::assertStringContainsString('500', $response->getContent());
+        self::assertStringContainsString('Últimos 5 eventos IA', $response->getContent());
+        self::assertStringContainsString('openai', $response->getContent());
+        self::assertStringContainsString('gpt-4.1-mini', $response->getContent());
+        self::assertStringContainsString('Input 120 | Output 30 | Cached 20', $response->getContent());
+        self::assertStringContainsString('0,0005 €', $response->getContent());
+        self::assertStringContainsString('123 ms', $response->getContent());
         self::assertStringContainsString('name="whatsappPhoneNumberId"', $response->getContent());
         self::assertStringContainsString('name="whatsappPublicPhone"', $response->getContent());
         self::assertStringContainsString('value="123456789012345"', $response->getContent());
         self::assertStringContainsString('value="34612345678"', $response->getContent());
         self::assertStringContainsString('action="/backend/tenants/'.$tenant->getId()->toRfc4122().'/edit"', $response->getContent());
+        self::assertCount(1, $aiUsagePolicyRepository->savedPolicies);
+    }
+
+    public function testTenantEditFormShowsEmptyAiUsageStateWhenNoEvents(): void
+    {
+        $tenant = new Tenant('Federico Martin Demo', 'federico-martin-demo');
+        $tenant->setActive(true);
+        $aiUsagePolicyRepository = $this->createTenantAiUsagePolicyRepositoryFake(null);
+        $aiUsageEventsRepository = $this->createAiUsageEventRepositoryFake();
+
+        $security = $this->createStub(Security::class);
+        $security->method('getUser')->willReturn($this->createAuthenticatedUser('manager@example.com', ['manager'], 'María Manager'));
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => in_array($role, ['ROLE_MANAGER', 'ROLE_ADMIN'], true));
+
+        $tenants = $this->createTenantRepositoryFake([], $tenant);
+
+        $csrfTokenManager = $this->createStub(CsrfTokenManagerInterface::class);
+        $csrfTokenManager->method('getToken')->willReturnCallback(
+            static fn (string $id): CsrfToken => new CsrfToken($id, 'token-'.$id)
+        );
+
+        $controller = $this->createController($security, null, null, $csrfTokenManager);
+        $response = $controller->tenantEdit(
+            $tenant->getId()->toRfc4122(),
+            Request::create('/backend/tenants/'.$tenant->getId()->toRfc4122().'/edit', 'GET'),
+            $tenants,
+            $aiUsagePolicyRepository,
+            $aiUsageEventsRepository
+        );
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        self::assertStringContainsString('No hay eventos IA todavía para este negocio.', $response->getContent());
     }
 
     public function testTenantEditSubmissionUpdatesExistingTenant(): void
@@ -670,6 +810,7 @@ final class BackendUiControllerTest extends TestCase
             'notes' => 'Demo',
         ]);
         $tenant->setActive(true);
+        $aiUsagePolicyRepository = $this->createTenantAiUsagePolicyRepositoryFake(null);
 
         $security = $this->createStub(Security::class);
         $security->method('getUser')->willReturn($this->createAuthenticatedUser('manager@example.com', ['manager'], 'María Manager'));
@@ -685,20 +826,31 @@ final class BackendUiControllerTest extends TestCase
         $csrfTokenManager->method('isTokenValid')->willReturn(true);
 
         $controller = $this->createController($security, $entityManager, null, $csrfTokenManager);
-        $response = $controller->tenantEdit($tenant->getId()->toRfc4122(), Request::create('/backend/tenants/'.$tenant->getId()->toRfc4122().'/edit', 'POST', [
-            '_csrf_token' => 'token',
-            'name' => 'Federico Martin Demo 2',
-            'slug' => 'federico-martin-demo-2',
-            'businessContext' => 'Contexto actualizado',
-            'tone' => 'Cercano',
-            'whatsappPhoneNumberId' => '123456789012345',
-            'whatsappPublicPhone' => '34612345678',
-            'positioning' => 'Nueva propuesta',
-            'qualificationFocus' => 'Recoger necesidad',
-            'handoffRules' => 'Handoff ante oportunidad',
-            'salesBoundaries' => "Sin garantías\nSin promesas",
-            'notes' => 'Actualización',
-        ]), $tenants);
+        $response = $controller->tenantEdit(
+            $tenant->getId()->toRfc4122(),
+            Request::create('/backend/tenants/'.$tenant->getId()->toRfc4122().'/edit', 'POST', [
+                '_csrf_token' => 'token',
+                'name' => 'Federico Martin Demo 2',
+                'slug' => 'federico-martin-demo-2',
+                'businessContext' => 'Contexto actualizado',
+                'tone' => 'Cercano',
+                'whatsappPhoneNumberId' => '123456789012345',
+                'whatsappPublicPhone' => '34612345678',
+                'positioning' => 'Nueva propuesta',
+                'qualificationFocus' => 'Recoger necesidad',
+                'handoffRules' => 'Handoff ante oportunidad',
+                'salesBoundaries' => "Sin garantías\nSin promesas",
+                'notes' => 'Actualización',
+                'aiEnabled' => '1',
+                'dailyCostLimitEur' => '1.5',
+                'monthlyCostLimitEur' => '15.25',
+                'defaultModel' => 'gpt-4.1-mini',
+                'fallbackModel' => 'gpt-4.1-nano',
+                'limitAction' => 'block',
+            ]),
+            $tenants,
+            $aiUsagePolicyRepository
+        );
 
         self::assertSame(Response::HTTP_FOUND, $response->getStatusCode());
         self::assertSame('/backend/tenants', $response->headers->get('Location'));
@@ -716,6 +868,13 @@ final class BackendUiControllerTest extends TestCase
             'notes' => 'Actualización',
         ], $tenant->getSalesPolicy());
         self::assertFalse($tenant->isActive());
+        self::assertCount(2, $aiUsagePolicyRepository->savedPolicies);
+        $policy = $aiUsagePolicyRepository->savedPolicies[1];
+        self::assertSame(1.5, $policy->getDailyCostLimitEur());
+        self::assertSame(15.25, $policy->getMonthlyCostLimitEur());
+        self::assertSame('gpt-4.1-mini', $policy->getDefaultModel());
+        self::assertSame('gpt-4.1-nano', $policy->getFallbackModel());
+        self::assertSame('block', $policy->getLimitAction());
     }
 
     public function testPlaybooksPageRendersCreateAndEditActions(): void

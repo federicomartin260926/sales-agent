@@ -76,6 +76,7 @@ class Conversation(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     external_id: str | None = Field(default=None, validation_alias=AliasChoices("external_id", "externalId"))
+    summary: str | None = None
     last_messages: list[str] = Field(default_factory=list)
 
     @model_validator(mode="before")
@@ -91,12 +92,18 @@ class Conversation(BaseModel):
         elif isinstance(normalized.get("externalId"), str):
             normalized["externalId"] = normalized["externalId"].strip()
 
+        summary = normalized.get("summary")
+        if isinstance(summary, str):
+            normalized["summary"] = summary.strip()
+
         return normalized
 
     @model_validator(mode="after")
     def normalize_conversation_values(self) -> "Conversation":
         if self.external_id is not None:
             self.external_id = self.external_id.strip() or None
+        if self.summary is not None:
+            self.summary = self.summary.strip() or None
         self.last_messages = [message.strip() for message in self.last_messages if isinstance(message, str) and message.strip() != ""]
         return self
 

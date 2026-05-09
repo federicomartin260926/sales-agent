@@ -55,6 +55,9 @@ class Conversation
     #[ORM\Column(type: 'text', nullable: true)]
     private ?string $firstMessage = null;
 
+    #[ORM\Column(type: 'text', nullable: true)]
+    private ?string $summary = null;
+
     #[ORM\Column(type: 'datetime_immutable', nullable: true)]
     private ?\DateTimeImmutable $lastMessageAt = null;
 
@@ -200,6 +203,17 @@ class Conversation
         $this->updatedAt = new \DateTimeImmutable();
     }
 
+    public function getSummary(): ?string
+    {
+        return $this->summary;
+    }
+
+    public function setSummary(?string $summary): void
+    {
+        $this->summary = $summary;
+        $this->updatedAt = new \DateTimeImmutable();
+    }
+
     public function getLastMessageAt(): ?\DateTimeImmutable
     {
         return $this->lastMessageAt;
@@ -322,6 +336,7 @@ class Conversation
             'customerName' => $this->customerName,
             'status' => $this->status,
             'firstMessage' => $this->firstMessage,
+            'summary' => $this->summary,
             'lastMessageAt' => $this->lastMessageAt?->format(\DateTimeInterface::ATOM),
             'createdAt' => $this->createdAt->format(\DateTimeInterface::ATOM),
             'updatedAt' => $this->updatedAt?->format(\DateTimeInterface::ATOM),
