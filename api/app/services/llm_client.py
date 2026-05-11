@@ -62,8 +62,9 @@ class LLMClient:
         except Exception as exc:
             self.last_mcp_error = f"responses_mcp_path_failed:{exc.__class__.__name__}"
             logger.warning(
-                "OpenAI Responses MCP path failed, falling back to legacy chat completions: %s",
-                exc.__class__.__name__,
+                "OpenAI Responses MCP path failed, falling back to legacy chat completions: %r",
+                exc,
+                exc_info=True,
             )
             return await self._generate_openai(system_prompt, user_prompt, config)
 
@@ -150,12 +151,19 @@ class LLMClient:
                 response.raise_for_status()
                 payload_json = response.json()
         except httpx.HTTPStatusError as exc:
+            status_code = exc.response.status_code if exc.response is not None else None
+            response_body = self._response_body_text(exc.response)
+
             self._log_openai_responses_error(
-                exc.response.status_code if exc.response is not None else None,
-                self._response_body_text(exc.response),
+                status_code,
+                response_body,
                 self._sanitize_openai_responses_payload(payload),
             )
-            raise RuntimeError(f"OpenAI responses request failed: {exc}") from exc
+
+            raise RuntimeError(
+                f"OpenAI responses request failed: {exc}; "
+                f"status_code={status_code}; response_body={response_body}"
+            ) from exc
         except (httpx.HTTPError, ValueError) as exc:
             raise RuntimeError(f"OpenAI responses request failed: {exc}") from exc
 

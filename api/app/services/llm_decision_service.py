@@ -25,7 +25,7 @@ class LLMDecisionDraft(BaseModel):
     reply: str = Field(min_length=1)
     intent: str = Field(min_length=1)
     score: float = Field(ge=0, le=1)
-    action: str = Field(min_length=1)
+    action: str | None = None
     needs_human: bool
     data_to_save: dict[str, Any] = Field(default_factory=dict)
     provider: str | None = None
@@ -100,7 +100,7 @@ class LLMDecisionService:
             draft = self._parse_draft(result.content)
             if draft is None:
                 reason = f"{provider} returned invalid JSON payload"
-                logger.warning("LLM fallback reason=%s", reason)
+                logger.warning("LLM fallback reason=%s content=%r", reason, result.content[:2000])
                 if provider_profile != "auto":
                     return None
                 continue
@@ -302,8 +302,13 @@ class LLMDecisionService:
         }
         return mapping.get(normalized, "open_question")
 
-    def _normalize_action(self, action: str) -> str:
+    def _normalize_action(self, action: str | None) -> str:
+        if action is None:
+            return "ask_question"
+
         normalized = action.strip().lower()
+        if normalized == "":
+            return "ask_question"
         mapping = {
             "greet": "greet",
             "ask_question": "ask_question",
