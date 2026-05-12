@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from app.schemas.agent import AgentRequest
 from app.services.backend_client import CommercialContext
@@ -34,13 +36,32 @@ class LLMPromptBuilder:
             "No inventes datos ni cites sistemas internos, CRM, n8n, webhooks, IDs internos, UTM, refs, tokens o detalles técnicos. "
             "Mantén el tono breve, útil y orientado a conversación."
         )
+        current_madrid_time = self._current_madrid_time()
+        system_prompt += (
+            f" Contexto temporal explícito: fecha y hora actual {current_madrid_time.isoformat()} "
+            "en timezone Europe/Madrid. "
+            "Si el usuario menciona un mes sin año, usa el año actual salvo que el contexto indique otro año. "
+            "Para consultas de agenda o citas, envía date_from/date_to en formato ISO YYYY-MM-DD "
+            "o ISO datetime coherente con la fecha actual. "
+            "No uses años pasados salvo que el usuario lo pida explícitamente."
+        )
 
         if mcp_config is not None and mcp_config.enabled and (mcp_config.server_label or "").strip() != "":
             allowed_tools = ", ".join(mcp_config.allowed_tools) if mcp_config.allowed_tools else "las herramientas autorizadas"
             system_prompt += (
                 f" Tienes acceso a un MCP remoto nativo del tenant llamado {mcp_config.server_label.strip()}. "
                 f"Úsalo cuando necesites datos o acciones cubiertas por {allowed_tools}. "
-                "Si el MCP no está disponible, sigue con el flujo normal y no inventes resultados."
+                "Si el MCP no está disponible, sigue con el flujo normal y no inventes resultados. "
+                "Si el usuario pregunta por productos, servicios, catálogo, opciones disponibles, "
+                "servicios por categoría, precios orientativos, servicios contratables o alternativas "
+                "al producto actual, usa services_search cuando esté disponible y el contexto local "
+                "no contenga una lista explícita y suficiente de servicios. "
+                "Cuando uses services_search, limita por defecto la búsqueda a 5 resultados salvo que "
+                "el usuario pida explícitamente ver más opciones. Usa 3-5 resultados para respuestas "
+                "conversacionales normales y máximo 6 para comparativas breves. "
+                "No inventes productos, precios ni disponibilidad. Si services_search devuelve resultados, "
+                "responde usando esos resultados de forma breve, clara y comercial. "
+                "Si no devuelve resultados o falla, orienta de forma general y pide una aclaración breve."
             )
 
         user_payload = {
@@ -64,6 +85,9 @@ class LLMPromptBuilder:
         }
 
         return system_prompt, json.dumps(user_payload, ensure_ascii=False, indent=2)
+
+    def _current_madrid_time(self) -> datetime:
+        return datetime.now(ZoneInfo("Europe/Madrid"))
 
     def _routing_payload(self, routing: RoutingContext | None) -> dict[str, Any] | None:
         if routing is None:

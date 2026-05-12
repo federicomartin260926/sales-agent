@@ -1,4 +1,6 @@
 import json
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from app.schemas.agent import AgentRequest, Contact
 from app.services.backend_client import CommercialContext, BackendEntryPoint, BackendPlaybook, BackendProduct, BackendSalesRuntime, BackendTenant
@@ -104,3 +106,22 @@ def test_prompt_builder_sanitizes_long_commercial_fields():
     assert LLMContextHelper.TRUNCATION_MARKER in parsed["tenant"]["business_context"]
     assert LLMContextHelper.TRUNCATION_MARKER in parsed["product"]["description"]
     assert LLMContextHelper.TRUNCATION_MARKER in parsed["playbook"]["config"]["notes"]
+
+
+def test_prompt_builder_includes_temporal_context(monkeypatch):
+    payload = AgentRequest(
+        tenant_id="tenant-1",
+        message="Tengo citas programadas para mayo?",
+        contact=Contact(phone="+34600000000"),
+        conversation={"last_messages": []},
+    )
+
+    fixed_now = datetime(2026, 5, 12, 14, 30, 0, tzinfo=ZoneInfo("Europe/Madrid"))
+    monkeypatch.setattr(LLMPromptBuilder, "_current_madrid_time", lambda self: fixed_now)
+
+    system_prompt, _ = LLMPromptBuilder().build(payload, None, build_backend_context(), None, None)
+
+    assert "2026-05-12T14:30:00+02:00" in system_prompt
+    assert "timezone Europe/Madrid" in system_prompt
+    assert "Si el usuario menciona un mes sin año, usa el año actual" in system_prompt
+    assert "No uses años pasados salvo que el usuario lo pida explícitamente." in system_prompt

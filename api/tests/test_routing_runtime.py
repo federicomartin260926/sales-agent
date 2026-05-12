@@ -293,6 +293,89 @@ async def test_runtime_persists_mcp_metadata_for_openai_response(monkeypatch: py
 
 
 @pytest.mark.asyncio
+async def test_runtime_does_not_short_circuit_agenda_lookup_messages(monkeypatch: pytest.MonkeyPatch):
+    backend = RecordingBackendClient(
+        ref_context=BackendRoutingEntryPointUtmContext.model_validate(
+            {
+                "entry_point_utm_id": "utm-1",
+                "ref": "abc123",
+                "entry_point_id": "entrypoint-1",
+                "entry_point_code": "crm-demo",
+                "tenant_id": "tenant-1",
+                "tenant_slug": "negocio-demo",
+                "product_id": "product-1",
+                "product_name": "CRM Automation",
+                "playbook_id": "playbook-1",
+                "crm_branch_ref": "branch-1",
+                "utm_source": "google",
+                "utm_medium": "cpc",
+                "utm_campaign": "crm_pymes",
+                "status": "matched",
+            }
+        ),
+        mcp_config=McpRemoteConfig(
+            enabled=True,
+            server_label="tech_investments_mcp",
+            server_url="https://mcp.tech-investments.net/mcp",
+            allowed_tools=["appointment_events", "contact_context_mock"],
+            timeout_seconds=15,
+        ),
+    )
+
+    async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None):
+        assert mcp_config is not None and mcp_config.enabled is True
+        return AgentResponse(
+            reply="Sí, tienes citas programadas en mayo.",
+            intent="agenda",
+            score=0.94,
+            action="answer_question",
+            needs_human=False,
+            data_to_save={
+                "topic": "agenda",
+                "mcp_enabled": True,
+                "mcp_server_label": "tech_investments_mcp",
+                "mcp_response_id": "resp_lookup_123",
+                "mcp_tool_traces": [
+                    {
+                        "type": "mcp_call",
+                        "server_label": "tech_investments_mcp",
+                        "tool_name": "appointment_events",
+                        "arguments": {"phone": "+34600000000"},
+                        "output": {"found": True},
+                        "status": "completed",
+                    }
+                ],
+            },
+            provider="openai",
+            model="gpt-4.1-mini",
+            latency_ms=91,
+        )
+
+    monkeypatch.setattr(DecisionEngine, "decide", fake_decide)
+
+    runtime = AgentRuntime(backend, RuntimeRoutingResolver(backend), DecisionEngine(backend))  # type: ignore[arg-type]
+    payload = AgentRequest(
+        tenant_id="tenant-ignored",
+        entrypoint_ref="abc123",
+        message="Tengo citas programadas para mayo? Consulta mi agenda.",
+        contact=Contact(phone="+34999999999"),
+    )
+
+    response = await runtime.respond(payload)
+
+    assert response.provider == "openai"
+    assert response.model == "gpt-4.1-mini"
+    assert response.action == "answer_question"
+    assert response.data_to_save["mcp_tool_traces"][0]["tool_name"] == "appointment_events"
+    create_calls = [call for call in backend.calls if call[0] == "create_conversation_message"]
+    assert len(create_calls) == 2
+    outbound_payload = create_calls[-1][1][0]
+    assert outbound_payload["metadata"]["mcp_enabled"] is True
+    assert outbound_payload["metadata"]["mcp_server_label"] == "tech_investments_mcp"
+    assert outbound_payload["metadata"]["mcp_tool_traces"][0]["tool_name"] == "appointment_events"
+
+
+@pytest.mark.asyncio
 async def test_runtime_skips_mcp_for_ollama_and_records_reason(monkeypatch: pytest.MonkeyPatch):
     backend = RecordingBackendClient(
         ref_context=BackendRoutingEntryPointUtmContext.model_validate(

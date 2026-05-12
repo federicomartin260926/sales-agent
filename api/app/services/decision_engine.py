@@ -58,7 +58,7 @@ class DecisionEngine:
         contact_context: dict | None,
     ) -> AgentResponse | None:
         message = payload.message.text.lower().strip()
-        if not self._is_agenda_message(message):
+        if self._agenda_message_kind(message) != "booking":
             return None
 
         state = self._agenda_context_state(contact_context)
@@ -208,6 +208,16 @@ class DecisionEngine:
                 data_to_save=self._base_fallback_save(payload, routing, "greeting", contact_context),
             )
 
+        if self._agenda_message_kind(message) == "lookup":
+            return AgentResponse(
+                reply="Cuéntame qué citas o reuniones quieres revisar y te ayudo con eso.",
+                intent="open_question",
+                score=0.45,
+                action="ask_question",
+                needs_human=False,
+                data_to_save=self._base_fallback_save(payload, routing, "agenda_lookup", contact_context),
+            )
+
         if any(keyword in message for keyword in ("demo", "agenda", "agendar", "reunión", "reunion", "cita")):
             return AgentResponse(
                 reply="Puedo ayudarte con eso. ¿Qué día te viene mejor para verlo?",
@@ -321,6 +331,17 @@ class DecisionEngine:
                 action="greet",
                 needs_human=False,
                 data_to_save=self._base_context_save(payload, context, routing, "greeting", contact_context),
+            )
+
+        if self._agenda_message_kind(message) == "lookup":
+            reply = "Cuéntame qué citas o reuniones quieres revisar y te ayudo con eso."
+            return AgentResponse(
+                reply=reply,
+                intent="open_question",
+                score=0.52,
+                action="answer_question",
+                needs_human=False,
+                data_to_save=self._base_context_save(payload, context, routing, "agenda_lookup", contact_context),
             )
 
         if any(keyword in message for keyword in ("demo", "agenda", "agendar", "reunión", "reunion", "cita")):
@@ -465,26 +486,50 @@ class DecisionEngine:
         }
         return mapping.get(intent.strip().lower(), "unknown")
 
-    def _is_agenda_message(self, message: str) -> bool:
-        return any(
-            keyword in message
-            for keyword in (
-                "próxima cita",
-                "proxima cita",
-                "mi cita",
-                "cuándo era mi cita",
-                "cuando era mi cita",
-                "qué día tengo cita",
-                "que dia tengo cita",
-                "hora de la cita",
-                "tengo cita",
-                "reunión",
-                "reunion",
-                "reserva",
-                "agenda",
-                "cita",
-            )
+    def _agenda_message_kind(self, message: str) -> str | None:
+        normalized = message.lower().strip()
+
+        lookup_keywords = (
+            "consulta mi agenda",
+            "consulta la agenda",
+            "consultar mi agenda",
+            "ver mi agenda",
+            "ver agenda",
+            "mis citas",
+            "mis reuniones",
+            "tengo citas",
+            "tengo cita",
+            "citas programadas",
+            "reuniones programadas",
+            "próximas citas",
+            "proximas citas",
+            "qué citas tengo",
+            "que citas tengo",
+            "agenda de",
         )
+        if any(keyword in normalized for keyword in lookup_keywords):
+            return "lookup"
+
+        booking_keywords = (
+            "agendar",
+            "reservar",
+            "reserva",
+            "booking",
+            "appointment",
+            "disponibilidad",
+            "huecos",
+            "horarios",
+            "demo",
+            "agenda",
+            "cita",
+            "citas",
+            "reunión",
+            "reunion",
+        )
+        if any(keyword in normalized for keyword in booking_keywords):
+            return "booking"
+
+        return None
 
     def _agenda_context_state(self, contact_context: dict | None) -> str:
         if not isinstance(contact_context, dict):
