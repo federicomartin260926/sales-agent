@@ -7,6 +7,7 @@ use App\Entity\Tenant;
 use App\Repository\ExternalToolRepository;
 use App\Repository\TenantRepository;
 use App\Service\RuntimeSettingCipher;
+use App\Service\RuntimeConfigurationService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
@@ -43,6 +44,7 @@ final class ExternalToolController extends AbstractController
         private readonly HttpClientInterface $httpClient,
         #[Autowire('%env(string:SALES_AGENT_BEARER_TOKEN)%')]
         private readonly string $salesAgentBearerToken,
+        private readonly RuntimeConfigurationService $runtimeConfigurationService,
         private readonly ?CsrfTokenManagerInterface $csrfTokenManager = null,
     ) {
     }
@@ -795,6 +797,7 @@ final class ExternalToolController extends AbstractController
      */
     private function runMcpTest(ExternalTool $tool): array
     {
+        $runtimeResolution = $this->resolveRuntimeLlmProviderAndModel();
         $payload = [
             'tenant_id' => $tool->getTenant()->getId()->toRfc4122(),
             'channel_type' => 'whatsapp',
@@ -867,18 +870,20 @@ final class ExternalToolController extends AbstractController
             }
 
             $dataToSave = is_array($decoded['data_to_save'] ?? null) ? $decoded['data_to_save'] : [];
-            $mcpSkippedReason = is_string($dataToSave['mcp_skipped_reason'] ?? null) ? trim((string) $dataToSave['mcp_skipped_reason']) : null;
-            if (($decoded['provider'] ?? null) !== 'openai' || $mcpSkippedReason === 'provider_not_supported') {
+            $provider = $runtimeResolution['provider'] ?? $this->normalizeRuntimeProvider($decoded['provider'] ?? null);
+            $model = $runtimeResolution['model'] ?? $this->cleanString($decoded['model'] ?? null);
+
+            if ($provider !== 'openai') {
                 return [
                     'ok' => false,
                     'found' => false,
-                    'provider' => is_string($decoded['provider'] ?? null) ? $decoded['provider'] : $tool->getProvider(),
+                    'provider' => $provider,
                     'status_code' => $statusCode,
                     'latency_ms' => $latencyMs,
                     'error_code' => 'provider_not_supported',
                     'summary' => 'MCP remoto requiere OpenAI Responses API. Con Ollama se omite.',
                     'reply' => is_string($decoded['reply'] ?? null) ? $decoded['reply'] : '',
-                    'model' => is_string($decoded['model'] ?? null) ? $decoded['model'] : null,
+                    'model' => $model,
                     'mcp_response_id' => is_string($dataToSave['mcp_response_id'] ?? null) ? $dataToSave['mcp_response_id'] : null,
                     'mcp_tool_traces' => $this->normalizeToolTraces($dataToSave['mcp_tool_traces'] ?? []),
                     'mcp_errors' => $this->normalizeList($dataToSave['mcp_errors'] ?? []),
@@ -888,13 +893,13 @@ final class ExternalToolController extends AbstractController
             return [
                 'ok' => true,
                 'found' => (bool) ($decoded['found'] ?? false),
-                'provider' => is_string($decoded['provider'] ?? null) ? $decoded['provider'] : 'openai',
+                'provider' => $provider,
                 'status_code' => $statusCode,
                 'latency_ms' => $latencyMs,
                 'error_code' => null,
                 'summary' => 'La prueba MCP se ejecutó correctamente.',
                 'reply' => is_string($decoded['reply'] ?? null) ? $decoded['reply'] : '',
-                'model' => is_string($decoded['model'] ?? null) ? $decoded['model'] : null,
+                'model' => $model,
                 'mcp_response_id' => is_string($dataToSave['mcp_response_id'] ?? null) ? $dataToSave['mcp_response_id'] : null,
                 'mcp_tool_traces' => $this->normalizeToolTraces($dataToSave['mcp_tool_traces'] ?? []),
                 'mcp_errors' => $this->normalizeList($dataToSave['mcp_errors'] ?? []),
@@ -917,5 +922,72 @@ final class ExternalToolController extends AbstractController
                 'mcp_errors' => [self::cleanString($exception->getMessage())],
             ];
         }
+    }
+
+    /**
+     * @return array{provider: ?string, model: ?string}
+     */
+    private function resolveRuntimeLlmProviderAndModel(): array
+    {
+        $snapshot = $this->runtimeConfigurationService->snapshot();
+        $values = is_array($snapshot['values'] ?? null) ? $snapshot['values'] : [];
+        $defaultProfile = self::cleanString($values['llm_default_profile'] ?? null);
+        $openaiModel = self::cleanString($values['openai_model'] ?? null);
+        $ollamaModel = self::cleanString($values['ollama_model'] ?? null);
+        $openaiReady = $this->hasRuntimeValues($values, ['openai_base_url', 'openai_model', 'openai_api_key']);
+        $ollamaReady = $this->hasRuntimeValues($values, ['ollama_base_url', 'ollama_model']);
+
+        if ($defaultProfile === 'openai') {
+            return $openaiReady ? ['provider' => 'openai', 'model' => $openaiModel] : ['provider' => null, 'model' => null];
+        }
+
+        if ($defaultProfile === 'ollama') {
+            return $ollamaReady ? ['provider' => 'ollama', 'model' => $ollamaModel] : ['provider' => null, 'model' => null];
+        }
+
+        if ($defaultProfile === 'heuristic' || $defaultProfile === '') {
+            return ['provider' => 'heuristic', 'model' => null];
+        }
+
+        if ($defaultProfile === 'auto') {
+            if ($openaiReady) {
+                return ['provider' => 'openai', 'model' => $openaiModel];
+            }
+
+            if ($ollamaReady) {
+                return ['provider' => 'ollama', 'model' => $ollamaModel];
+            }
+        }
+
+        return ['provider' => null, 'model' => null];
+    }
+
+    /**
+     * @param array<string, mixed> $values
+     * @param list<string> $requiredKeys
+     */
+    private function hasRuntimeValues(array $values, array $requiredKeys): bool
+    {
+        foreach ($requiredKeys as $key) {
+            if (!is_string($values[$key] ?? null) || trim((string) $values[$key]) === '') {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private function normalizeRuntimeProvider(mixed $provider): ?string
+    {
+        if (!is_string($provider)) {
+            return null;
+        }
+
+        $normalized = trim($provider);
+        if (!in_array($normalized, ['openai', 'ollama', 'heuristic'], true)) {
+            return null;
+        }
+
+        return $normalized;
     }
 }
