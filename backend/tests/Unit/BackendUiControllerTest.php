@@ -1042,6 +1042,52 @@ final class BackendUiControllerTest extends TestCase
         self::assertSame('/backend/playbooks', $response->headers->get('Location'));
     }
 
+    public function testPlaybookCreateSubmissionAllowsMinimalOptionalConfig(): void
+    {
+        $tenant = new Tenant('Federico Martin Demo', 'federico-martin-demo');
+
+        $security = $this->createStub(Security::class);
+        $security->method('getUser')->willReturn($this->createAuthenticatedUser('manager@example.com', ['manager'], 'María Manager'));
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => in_array($role, ['ROLE_MANAGER', 'ROLE_ADMIN'], true));
+
+        $entityManager = $this->createMock(EntityManagerInterface::class);
+        $entityManager->expects(self::once())->method('persist')->with(self::callback(static function (Playbook $playbook) use ($tenant): bool {
+            return $playbook->getTenant()->getId()->toRfc4122() === $tenant->getId()->toRfc4122()
+                && $playbook->getProduct() === null
+                && $playbook->getName() === 'Guía comercial campaña'
+                && $playbook->getConfig() === [];
+        }));
+        $entityManager->expects(self::once())->method('flush');
+
+        $tenants = $this->createTenantRepositoryFake([$tenant], $tenant);
+        $playbooks = $this->createPlaybookRepositoryFake();
+
+        $csrfTokenManager = $this->createStub(CsrfTokenManagerInterface::class);
+        $csrfTokenManager->method('isTokenValid')->willReturn(true);
+
+        $controller = $this->createController($security, $entityManager, null, $csrfTokenManager);
+        $response = $controller->playbookCreate(Request::create('/backend/playbooks/new', 'POST', [
+            '_csrf_token' => 'token',
+            'tenantId' => $tenant->getId()->toRfc4122(),
+            'productId' => '',
+            'name' => 'Guía comercial campaña',
+            'objective' => '',
+            'qualificationQuestions' => '',
+            'maxScore' => '',
+            'handoffThreshold' => '',
+            'positiveSignals' => '',
+            'negativeSignals' => '',
+            'agendaRules' => '',
+            'handoffRules' => '',
+            'allowedActions' => '',
+            'notes' => '',
+            'isActive' => '1',
+        ]), $tenants, null, $playbooks);
+
+        self::assertSame(Response::HTTP_FOUND, $response->getStatusCode());
+        self::assertSame('/backend/playbooks', $response->headers->get('Location'));
+    }
+
     public function testProductsPageRendersCreateEditAndDeleteActions(): void
     {
         $tenant = new Tenant('Federico Martin Demo', 'federico-martin-demo');

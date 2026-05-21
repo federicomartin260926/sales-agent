@@ -39,7 +39,7 @@ final class CommercialDomainSchemaTest extends TestCase
         );
     }
 
-    public function testPlaybookConfigValidationRequiresStructuredScoring(): void
+    public function testPlaybookConfigValidationAcceptsStructuredScoringWhenProvided(): void
     {
         $config = [
             'objective' => 'Calificar leads entrantes.',
@@ -76,28 +76,19 @@ final class CommercialDomainSchemaTest extends TestCase
         );
     }
 
-    public function testPlaybookConfigValidationRejectsEmptyQualificationQuestions(): void
+    public function testPlaybookConfigValidationAcceptsEmptyConfig(): void
+    {
+        self::assertNull(CommercialDomainSchema::validatePlaybookConfig([]));
+        self::assertSame('Sin resumen', CommercialDomainSchema::summarizePlaybookConfig([]));
+    }
+
+    public function testPlaybookConfigValidationAcceptsPartialConfig(): void
     {
         $config = [
-            'objective' => 'Calificar leads entrantes.',
-            'qualificationQuestions' => [],
-            'scoring' => [
-                'maxScore' => 10,
-                'handoffThreshold' => 7,
-                'positiveSignals' => [],
-                'negativeSignals' => [],
-            ],
-            'handoffRules' => [
-                'Derivar a humano si piden cierre manual.',
-            ],
-            'allowedActions' => [
-                'askQuestion',
-            ],
+            'objective' => 'Complementar la política general para esta campaña.',
+            'handoffRules' => ['Derivar si el lead pide trato personalizado.'],
         ];
 
-        self::assertSame(
-            'qualificationQuestions must not be empty',
-            CommercialDomainSchema::validatePlaybookConfig($config)
-        );
+        self::assertNull(CommercialDomainSchema::validatePlaybookConfig($config));
     }
 }

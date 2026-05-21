@@ -6,35 +6,38 @@
   </div>
   <div class="hero-aside">
     <div class="badge-live">Manager</div>
-    <div class="hero-aside-title">Playbook</div>
-    <p>Organiza la estrategia comercial por negocio o por producto, con scoring, reglas y derivación a humano.</p>
+    <div class="hero-aside-title">Complemento</div>
+    <p>Estas reglas complementan la política general del negocio y solo se aplican cuando necesitas ajustar un caso concreto.</p>
   </div>
 </section>
 <section class="table-card">
   <div class="table-header">
     <div>
       <h3>Ficha de la guía comercial</h3>
-      <p>Selecciona el negocio y completa el playbook con un enfoque humano.</p>
+      <p>Define reglas específicas para un producto, campaña o situación comercial. Completa solo lo que cambie respecto a la política general del negocio.</p>
     </div>
   </div>
   {{ error_html|raw }}
+  <div class="form-alert form-alert-info">
+    Esta guía es opcional. Si no hay una guía activa aplicable, el agente usará la configuración general del negocio.
+  </div>
   <form method="post" action="{{ action_url }}" class="tenant-form">
     <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
     <div class="form-grid">
       <div class="field">
         <label for="playbook-tenant">Negocio</label>
         <select id="playbook-tenant" name="tenantId" required>{{ tenant_options_html|raw }}</select>
-        <div class="field-note">El playbook vive dentro de un negocio concreto.</div>
+        <div class="field-note">El negocio es obligatorio porque la guía complementa su política general.</div>
       </div>
       <div class="field">
         <label for="playbook-product">Producto / servicio</label>
         <select id="playbook-product" name="productId">{{ product_options_html|raw }}</select>
-        <div class="field-note">Opcional: vincúlalo a un producto específico si aplica.</div>
+        <div class="field-note">Opcional: vincúlala a un producto, campaña o situación concreta si aplica.</div>
       </div>
       <div class="field field-full">
         <label for="playbook-name">Nombre de la guía comercial</label>
         <input id="playbook-name" name="name" type="text" value="{{ values.name }}" maxlength="255" required>
-        <div class="field-note">Nombre visible para distinguir la estrategia comercial.</div>
+        <div class="field-note">Nombre visible para distinguir el override o complemento comercial.</div>
       </div>
       <div class="field field-check">
         <label for="playbook-active">Estado</label>
@@ -44,10 +47,10 @@
         </label>
       </div>
       <div class="field field-full">
-        <div class="section-label">Contenido de la guía</div>
-        <div class="section-note">Trabaja por pestañas para dejar clara la intención comercial, la cualificación y las reglas de handoff.</div>
+        <div class="section-label">Reglas específicas de esta guía</div>
+        <div class="section-note">Estos campos complementan al negocio. Déjalos vacíos si la política general ya cubre este caso.</div>
         <div class="policy-tabs" data-policy-tabs>
-          <div class="policy-tablist" role="tablist" aria-label="Guía comercial">
+          <div class="policy-tablist" role="tablist" aria-label="Reglas específicas de la guía">
             <button class="policy-tab active" type="button" role="tab" aria-selected="true" data-policy-tab="objective">Objetivo</button>
             <button class="policy-tab" type="button" role="tab" aria-selected="false" data-policy-tab="qualification">Cualificación</button>
             <button class="policy-tab" type="button" role="tab" aria-selected="false" data-policy-tab="scoring">Scoring</button>
@@ -59,23 +62,23 @@
           <div class="policy-panels">
             <div class="policy-panel active" role="tabpanel" data-policy-panel="objective">
               <label for="playbook-objective">Objetivo</label>
-              <textarea id="playbook-objective" name="objective" rows="4" maxlength="2000" required placeholder="Qué persigue la guía comercial.">{{ values.objective }}</textarea>
-              <div class="field-note">Qué debe conseguir el agente cuando este playbook está activo.</div>
+              <textarea id="playbook-objective" name="objective" rows="4" maxlength="2000" placeholder="Qué persigue la guía comercial.">{{ values.objective }}</textarea>
+              <div class="field-note">Qué debe conseguir el agente en esta guía concreta. Si se deja vacío, usará el objetivo general del negocio.</div>
             </div>
             <div class="policy-panel" role="tabpanel" data-policy-panel="qualification" hidden>
               <label for="playbook-qualification-questions">Preguntas de cualificación</label>
-              <textarea id="playbook-qualification-questions" name="qualificationQuestions" rows="4" maxlength="4000" required placeholder="Una pregunta por línea.">{{ values.qualificationQuestions }}</textarea>
-              <div class="field-note">Escribe las preguntas que el agente debe usar para cualificar.</div>
+              <textarea id="playbook-qualification-questions" name="qualificationQuestions" rows="4" maxlength="4000" placeholder="Una pregunta por línea.">{{ values.qualificationQuestions }}</textarea>
+              <div class="field-note">Preguntas adicionales o específicas para este caso. No repitas las preguntas generales del negocio.</div>
             </div>
             <div class="policy-panel" role="tabpanel" data-policy-panel="scoring" hidden>
               <div class="form-grid">
                 <div class="field">
                   <label for="playbook-max-score">Puntuación máxima</label>
-                  <input id="playbook-max-score" name="maxScore" type="number" min="1" step="1" value="{{ values.maxScore }}" required>
+                  <input id="playbook-max-score" name="maxScore" type="number" min="1" step="1" value="{{ values.maxScore }}">
                 </div>
                 <div class="field">
                   <label for="playbook-handoff-threshold">Umbral de handoff</label>
-                  <input id="playbook-handoff-threshold" name="handoffThreshold" type="number" min="0" step="1" value="{{ values.handoffThreshold }}" required>
+                  <input id="playbook-handoff-threshold" name="handoffThreshold" type="number" min="0" step="1" value="{{ values.handoffThreshold }}">
                 </div>
                 <div class="field">
                   <label for="playbook-positive-signals">Señales positivas</label>
@@ -86,27 +89,27 @@
                   <textarea id="playbook-negative-signals" name="negativeSignals" rows="4" maxlength="4000" placeholder="Una señal por línea.">{{ values.negativeSignals }}</textarea>
                 </div>
               </div>
-              <div class="field-note">Scoring y señales para decidir cuándo avanzar y cuándo derivar.</div>
+              <div class="field-note">Criterios específicos de prioridad para esta guía. Opcional.</div>
             </div>
             <div class="policy-panel" role="tabpanel" data-policy-panel="agenda" hidden>
               <label for="playbook-agenda-rules">Reglas de agenda</label>
               <textarea id="playbook-agenda-rules" name="agendaRules" rows="4" maxlength="4000" placeholder="Una regla por línea.">{{ values.agendaRules }}</textarea>
-              <div class="field-note">Define cuándo el agente debe proponer agenda, llamada o siguiente paso.</div>
+              <div class="field-note">Reglas especiales de agenda para este caso. Opcional.</div>
             </div>
             <div class="policy-panel" role="tabpanel" data-policy-panel="handoff" hidden>
               <label for="playbook-handoff-rules">Reglas de handoff</label>
-              <textarea id="playbook-handoff-rules" name="handoffRules" rows="4" maxlength="4000" required placeholder="Una regla por línea.">{{ values.handoffRules }}</textarea>
-              <div class="field-note">Cuándo el caso pasa a una persona y qué debe indicar el agente.</div>
+              <textarea id="playbook-handoff-rules" name="handoffRules" rows="4" maxlength="4000" placeholder="Una regla por línea.">{{ values.handoffRules }}</textarea>
+              <div class="field-note">Cuándo derivar a humano en esta guía si difiere de la política general.</div>
             </div>
             <div class="policy-panel" role="tabpanel" data-policy-panel="actions" hidden>
               <label for="playbook-allowed-actions">Acciones permitidas</label>
-              <textarea id="playbook-allowed-actions" name="allowedActions" rows="4" maxlength="4000" required placeholder="Una acción por línea.">{{ values.allowedActions }}</textarea>
-              <div class="field-note">Acciones que este playbook permite al runtime comercial.</div>
+              <textarea id="playbook-allowed-actions" name="allowedActions" rows="4" maxlength="4000" placeholder="Una acción por línea.">{{ values.allowedActions }}</textarea>
+              <div class="field-note">Acciones permitidas específicamente en esta guía. Opcional.</div>
             </div>
             <div class="policy-panel" role="tabpanel" data-policy-panel="notes" hidden>
               <label for="playbook-notes">Notas</label>
               <textarea id="playbook-notes" name="notes" rows="4" maxlength="4000" placeholder="Aclaraciones adicionales.">{{ values.notes }}</textarea>
-              <div class="field-note">Aterriza matices o excepciones que el equipo deba conocer.</div>
+              <div class="field-note">Notas adicionales que complementan la política general.</div>
             </div>
           </div>
         </div>

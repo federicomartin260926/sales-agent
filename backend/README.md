@@ -4,10 +4,10 @@ Este directorio contiene el backend administrativo de `sales-agent`.
 
 ## Qué hace
 
-- expone la API REST administrativa para negocios, productos/servicios, guías comerciales y routing de WhatsApp
+- expone la API REST administrativa para negocios, productos/servicios, guías comerciales opcionales y routing de WhatsApp
 - ofrece un formulario de login en navegador para operar el backend como panel humano
 - incluye `Mi perfil` para actualizar nombre visible y clave de acceso
-- permite crear y editar `negocios`, `guías comerciales`, `productos / servicios` y `puntos de entrada` desde la vista humana con formularios guiados
+- permite crear y editar `negocios`, `guías comerciales` opcionales, `productos / servicios` y `puntos de entrada` desde la vista humana con formularios guiados
 - permite editar la configuración operativa de LLM y audio desde `/backend/configuration`
 - usa Twig como base de render para el layout común y la primera pantalla migrada de configuración
 - sirve los estilos del panel desde `public/assets/backend.css` para evitar CSS embebido en Twig y en el login
@@ -18,7 +18,7 @@ Este directorio contiene el backend administrativo de `sales-agent`.
 - presenta un layout tipo CRM para navegación operativa por módulos
 - mantiene el modelo de usuarios y roles compatible conceptualmente con el CRM
 - prepara la autenticación basada en JWT con `json_login`
-- incluye un bootstrap idempotente para crear el primer administrador y datos semilla mínimos de negocio, producto y guía comercial
+- incluye un bootstrap idempotente para crear el primer administrador y datos semilla mínimos de negocio, producto y una guía comercial de ejemplo
 - expone routing y atribución explícitos para WhatsApp mediante `EntryPoint`, `EntryPointUtm` y `Conversation`
 
 ## Stack
@@ -84,7 +84,7 @@ Este directorio contiene el backend administrativo de `sales-agent`.
 
 ## Bootstrap inicial
 
-Para crear el primer usuario administrador, el negocio de prueba, el producto de prueba y las guías comerciales de prueba:
+Para crear el primer usuario administrador, el negocio de prueba, el producto de prueba y las guías comerciales de ejemplo:
 
 ```bash
 make schema-update
@@ -191,7 +191,7 @@ El backend humano está pensado como un CRM clásico:
 La UI del backend usa esta terminología para usuarios no técnicos:
 
 - `negocio` para el `tenant`
-- `guía comercial` para el `playbook`
+- `guía comercial` para el `playbook` opcional
 - `producto / servicio` para el `product`
 
 ## Routing y atribución

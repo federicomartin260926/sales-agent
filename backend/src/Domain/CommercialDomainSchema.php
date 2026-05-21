@@ -64,18 +64,36 @@ final class CommercialDomainSchema
 
     public static function validatePlaybookConfig(array $config): ?string
     {
-        $error = self::validateTopLevelPolicy(
-            $config,
-            self::PLAYBOOK_CONFIG_KEYS,
-            ['objective'],
-            ['qualificationQuestions', 'handoffRules', 'allowedActions'],
-            ['agendaRules']
-        );
-        if ($error !== null) {
-            return $error;
+        $unknownKeys = self::unknownKeys($config, self::PLAYBOOK_CONFIG_KEYS);
+        if ($unknownKeys !== []) {
+            return sprintf('contains unsupported keys: %s', implode(', ', $unknownKeys));
         }
 
-        if (!isset($config['scoring']) || !is_array($config['scoring'])) {
+        foreach (['objective', 'notes'] as $key) {
+            if (!array_key_exists($key, $config)) {
+                continue;
+            }
+
+            if (!is_string($config[$key])) {
+                return sprintf('%s must be a string', $key);
+            }
+        }
+
+        foreach (['qualificationQuestions', 'agendaRules', 'handoffRules', 'allowedActions'] as $key) {
+            if (!array_key_exists($key, $config)) {
+                continue;
+            }
+
+            if (($error = self::validateStringList($config[$key], false, $key)) !== null) {
+                return $error;
+            }
+        }
+
+        if (!array_key_exists('scoring', $config) || $config['scoring'] === null) {
+            return null;
+        }
+
+        if (!is_array($config['scoring'])) {
             return 'playbook config.scoring must be an object';
         }
 
@@ -85,15 +103,21 @@ final class CommercialDomainSchema
             return sprintf('playbook config.scoring contains unsupported keys: %s', implode(', ', $unknownKeys));
         }
 
-        if (!isset($scoring['maxScore']) || !is_int($scoring['maxScore']) || $scoring['maxScore'] < 1) {
+        if (array_key_exists('maxScore', $scoring) && (!is_int($scoring['maxScore']) || $scoring['maxScore'] < 1)) {
             return 'playbook config.scoring.maxScore must be an integer greater than or equal to 1';
         }
 
-        if (!isset($scoring['handoffThreshold']) || !is_int($scoring['handoffThreshold']) || $scoring['handoffThreshold'] < 0) {
+        if (array_key_exists('handoffThreshold', $scoring) && (!is_int($scoring['handoffThreshold']) || $scoring['handoffThreshold'] < 0)) {
             return 'playbook config.scoring.handoffThreshold must be a non-negative integer';
         }
 
-        if ($scoring['handoffThreshold'] > $scoring['maxScore']) {
+        if (
+            array_key_exists('handoffThreshold', $scoring)
+            && array_key_exists('maxScore', $scoring)
+            && is_int($scoring['handoffThreshold'])
+            && is_int($scoring['maxScore'])
+            && $scoring['handoffThreshold'] > $scoring['maxScore']
+        ) {
             return 'playbook config.scoring.handoffThreshold cannot be greater than maxScore';
         }
 

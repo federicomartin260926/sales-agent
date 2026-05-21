@@ -990,6 +990,12 @@ body.login-page .footer code {
   color: #a61b1b;
 }
 
+.form-alert-info {
+  background: rgba(15, 110, 199, 0.08);
+  border: 1px solid rgba(15, 110, 199, 0.18);
+  color: #134fbf;
+}
+
 .tenant-draft-assistant-trigger {
   white-space: nowrap;
 }

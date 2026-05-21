@@ -351,7 +351,7 @@ final class BackendUiController
             'rows_html' => $rows !== [] ? implode('', $rows) : '<tr><td colspan="5" class="empty-row">No hay guías comerciales todavía.</td></tr>',
         ]);
 
-        return $this->renderBackendShell('Guías comerciales', 'Ajustes del agente por negocio o producto.', 'playbooks', $content);
+        return $this->renderBackendShell('Guías comerciales', 'Estrategias opcionales que complementan la política general del negocio.', 'playbooks', $content);
     }
 
     #[Route('/playbooks/new', methods: ['GET', 'POST'])]
@@ -385,7 +385,7 @@ final class BackendUiController
 
         return $this->renderPlaybookForm(
             'Crear guía comercial',
-            'Define la estrategia conversacional, el scoring y las reglas de handoff del negocio.',
+            'Define reglas específicas opcionales para un producto, campaña o situación concreta.',
             'Crear guía comercial',
             'Crear guía comercial',
             '/backend/playbooks/new',
@@ -435,7 +435,7 @@ final class BackendUiController
 
         return $this->renderPlaybookForm(
             'Editar guía comercial',
-            'Ajusta el playbook para que el agente siga la estrategia correcta del negocio.',
+            'Ajusta esta estrategia opcional para complementar la política general del negocio.',
             'Editar guía comercial',
             'Guardar cambios',
             '/backend/playbooks/'.$playbook->getId()->toRfc4122().'/edit',
@@ -2155,8 +2155,8 @@ final class BackendUiController
             'name' => $playbook?->getName() ?? '',
             'objective' => $this->playbookConfigValue($config, 'objective'),
             'qualificationQuestions' => $this->playbookConfigLines($config, 'qualificationQuestions'),
-            'maxScore' => isset($scoring['maxScore']) && is_int($scoring['maxScore']) ? (string) $scoring['maxScore'] : '10',
-            'handoffThreshold' => isset($scoring['handoffThreshold']) && is_int($scoring['handoffThreshold']) ? (string) $scoring['handoffThreshold'] : '7',
+            'maxScore' => isset($scoring['maxScore']) && is_int($scoring['maxScore']) ? (string) $scoring['maxScore'] : '',
+            'handoffThreshold' => isset($scoring['handoffThreshold']) && is_int($scoring['handoffThreshold']) ? (string) $scoring['handoffThreshold'] : '',
             'positiveSignals' => $this->playbookConfigLines($scoring, 'positiveSignals'),
             'negativeSignals' => $this->playbookConfigLines($scoring, 'negativeSignals'),
             'agendaRules' => $this->playbookConfigLines($config, 'agendaRules'),
@@ -2232,14 +2232,14 @@ final class BackendUiController
             return 'El negocio seleccionado no existe.';
         }
 
+        if ($values['name'] === '') {
+            return 'El nombre de la guía comercial es obligatorio.';
+        }
+
         if ($values['productId'] !== '') {
             if (!$products instanceof ProductRepository || !$products->find($values['productId']) instanceof Product) {
                 return 'El producto seleccionado no existe.';
             }
-        }
-
-        if ($values['name'] === '') {
-            return 'El nombre de la guía comercial es obligatorio.';
         }
 
         $config = $this->playbookConfigFromForm($values);
@@ -2277,20 +2277,56 @@ final class BackendUiController
      */
     private function playbookConfigFromForm(array $values): array
     {
-        return CommercialDomainSchema::normalizePlaybookConfig([
-            'objective' => $values['objective'],
-            'qualificationQuestions' => $this->linesFromTextarea($values['qualificationQuestions'], true),
-            'scoring' => [
-                'maxScore' => (int) $values['maxScore'],
-                'handoffThreshold' => (int) $values['handoffThreshold'],
-                'positiveSignals' => $this->linesFromTextarea($values['positiveSignals']),
-                'negativeSignals' => $this->linesFromTextarea($values['negativeSignals']),
-            ],
-            'agendaRules' => $this->linesFromTextarea($values['agendaRules']),
-            'handoffRules' => $this->linesFromTextarea($values['handoffRules'], true),
-            'allowedActions' => $this->linesFromTextarea($values['allowedActions'], true),
-            'notes' => $values['notes'],
-        ]);
+        $config = [];
+
+        if (trim($values['objective']) !== '') {
+            $config['objective'] = $values['objective'];
+        }
+
+        $qualificationQuestions = $this->linesFromTextarea($values['qualificationQuestions']);
+        if ($qualificationQuestions !== []) {
+            $config['qualificationQuestions'] = $qualificationQuestions;
+        }
+
+        $scoring = [];
+        if (trim($values['maxScore']) !== '') {
+            $scoring['maxScore'] = (int) $values['maxScore'];
+        }
+        if (trim($values['handoffThreshold']) !== '') {
+            $scoring['handoffThreshold'] = (int) $values['handoffThreshold'];
+        }
+        $positiveSignals = $this->linesFromTextarea($values['positiveSignals']);
+        if ($positiveSignals !== []) {
+            $scoring['positiveSignals'] = $positiveSignals;
+        }
+        $negativeSignals = $this->linesFromTextarea($values['negativeSignals']);
+        if ($negativeSignals !== []) {
+            $scoring['negativeSignals'] = $negativeSignals;
+        }
+        if ($scoring !== []) {
+            $config['scoring'] = $scoring;
+        }
+
+        $agendaRules = $this->linesFromTextarea($values['agendaRules']);
+        if ($agendaRules !== []) {
+            $config['agendaRules'] = $agendaRules;
+        }
+
+        $handoffRules = $this->linesFromTextarea($values['handoffRules']);
+        if ($handoffRules !== []) {
+            $config['handoffRules'] = $handoffRules;
+        }
+
+        $allowedActions = $this->linesFromTextarea($values['allowedActions']);
+        if ($allowedActions !== []) {
+            $config['allowedActions'] = $allowedActions;
+        }
+
+        if (trim($values['notes']) !== '') {
+            $config['notes'] = $values['notes'];
+        }
+
+        return CommercialDomainSchema::normalizePlaybookConfig($config);
     }
 
     private function playbookConfigValue(array $config, string $key): string

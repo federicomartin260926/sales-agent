@@ -116,7 +116,7 @@ Rutas públicas a través de Nginx:
 - CRUD REST básico:
   - `/backend/api/tenants` para negocios
   - `/backend/api/products`
-  - `/backend/api/playbooks` para guías comerciales
+  - `/backend/api/playbooks` para guías comerciales opcionales
 - Routing y atribución:
   - `/backend/api/r/wa/{entrypointCode}`
   - `/backend/api/internal/routing/entrypoint-ref/{ref}`
@@ -137,7 +137,7 @@ Todas las rutas `/api/internal/*` usan `Authorization: Bearer <SALES_AGENT_BEARE
 ## Bootstrap inicial del backend
 
 El backend Symfony incluye un bootstrap idempotente para crear el primer usuario administrador y datos semilla mínimos del dominio comercial.
-Hoy ese seed cubre el núcleo operativo de `tenant`, `product` y `playbook`.
+Hoy ese seed cubre `tenant`, `product` y una guía comercial de ejemplo para casos opcionales o complementarios.
 El routing canónico se configura aparte con:
 
 - `Tenant.whatsappPhoneNumberId`
@@ -186,7 +186,7 @@ La misma variable `SALES_AGENT_BEARER_TOKEN` también se publica en el backend p
 - `User`
 - `Negocio` (`Tenant`)
 - `Producto / servicio` (`Product`)
-- `Guía comercial` (`Playbook`)
+- `Guía comercial` (`Playbook`, opcional)
 
 ### Roles
 
@@ -208,7 +208,7 @@ Se mantiene el contrato conceptual del CRM:
 La conversación completa se persiste en backend para auditoría, revisión humana y posible envío al CRM.
 El contexto enviado al LLM se limita de forma explícita: se usa `Conversation.summary` si existe y después solo los últimos mensajes relevantes, nunca todo el historial.
 
-El prompt se ordena para favorecer prompt caching: primero contexto estable (`tenant`, `product`, `playbook`, `rules`, `sales_runtime`) y después contexto dinámico (`summary`, últimos mensajes y `current_message`).
+El prompt se ordena para favorecer prompt caching: primero contexto estable (`tenant`, `product`, `playbook` opcional, `rules`, `sales_runtime`) y después contexto dinámico (`summary`, últimos mensajes y `current_message`).
 Los límites aplican solo al contexto enviado al LLM, no al historial persistido.
 
 `previous_response_id` de OpenAI Responses API queda fuera de esta fase y se evaluará más adelante.
