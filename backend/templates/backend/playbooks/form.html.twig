@@ -33,10 +33,10 @@
   <form method="post" action="{{ action_url }}" class="playbook-form">
     <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
     <div class="form-grid">
-      <div class="field">
+      <div class="field field-full">
         <label for="playbook-tenant">Negocio</label>
-        <select id="playbook-tenant" name="tenantId" required>{{ tenant_options_html|raw }}</select>
-        <div class="field-note">El negocio es obligatorio porque la guía complementa su política general.</div>
+        <input id="playbook-tenant" type="text" value="{{ active_tenant_name ?: 'Sin negocio seleccionado' }}" readonly>
+        <div class="field-note">La guía comercial se guardará en el negocio activo.</div>
       </div>
       <div class="field">
         <label for="playbook-product">Producto / servicio</label>

@@ -17,10 +17,10 @@
     <form method="post" action="{{ action_url }}" class="tenant-form" enctype="multipart/form-data">
       <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
       <div class="form-grid">
-        <div class="field">
+        <div class="field field-full">
           <label for="product-import-tenant">Negocio</label>
-          <select id="product-import-tenant" name="tenantId" required>{{ tenant_options_html|raw }}</select>
-          <div class="field-note">La importación queda asociada al negocio seleccionado.</div>
+          <input id="product-import-tenant" type="text" value="{{ active_tenant ? active_tenant.name : 'Sin negocio seleccionado' }}" readonly>
+          <div class="field-note">La importación queda asociada al negocio activo.</div>
         </div>
         <div class="field">
           <label for="product-import-format">Formato</label>

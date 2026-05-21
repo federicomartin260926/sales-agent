@@ -50,6 +50,23 @@ class PlaybookRepository extends ServiceEntityRepository
             ->getResult();
     }
 
+    /**
+     * @return Playbook[]
+     */
+    public function findByTenantOrdered(Tenant $tenant): array
+    {
+        return $this->createQueryBuilder('p')
+            ->join('p.tenant', 't')
+            ->addSelect('t')
+            ->leftJoin('p.product', 'pr')
+            ->addSelect('pr')
+            ->andWhere('p.tenant = :tenant')
+            ->setParameter('tenant', $tenant)
+            ->orderBy('p.name', 'ASC')
+            ->getQuery()
+            ->getResult();
+    }
+
     public function findActiveGeneralByTenant(Tenant $tenant): ?Playbook
     {
         $playbooks = $this->createQueryBuilder('p')

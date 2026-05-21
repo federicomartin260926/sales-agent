@@ -48,6 +48,21 @@ class ProductRepository extends ServiceEntityRepository
             ->getResult();
     }
 
+    /**
+     * @return Product[]
+     */
+    public function findByTenantOrdered(Tenant $tenant): array
+    {
+        return $this->createQueryBuilder('p')
+            ->join('p.tenant', 't')
+            ->addSelect('t')
+            ->andWhere('p.tenant = :tenant')
+            ->setParameter('tenant', $tenant)
+            ->orderBy('p.name', 'ASC')
+            ->getQuery()
+            ->getResult();
+    }
+
     public function findOneByTenantAndSlug(Tenant $tenant, string $slug): ?Product
     {
         return $this->createQueryBuilder('p')

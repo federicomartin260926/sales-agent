@@ -16,10 +16,15 @@
   <form method="post" action="{{ action_url }}" class="tenant-form">
     <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
     <div class="form-grid">
+      <div class="field field-full">
+        <label for="entrypoint-tenant">Negocio</label>
+        <input id="entrypoint-tenant" type="text" value="{{ active_tenant_name ?: 'Sin negocio seleccionado' }}" readonly>
+        <div class="field-note">El punto de entrada se guardará en el negocio activo.</div>
+      </div>
       <div class="field">
         <label for="entrypoint-product">Producto</label>
         <select id="entrypoint-product" name="productId" required>{{ product_options_html|raw }}</select>
-        <div class="field-note">El negocio se infiere desde el producto.</div>
+        <div class="field-note">Se listan sólo productos del negocio activo.</div>
       </div>
       <div class="field">
         <label for="entrypoint-playbook">Playbook</label>

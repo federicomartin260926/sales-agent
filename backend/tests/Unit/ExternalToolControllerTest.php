@@ -69,6 +69,11 @@ final class ExternalToolControllerTest extends TestCase
             {
                 return [];
             }
+
+            public function findByTenantOrdered(\App\Entity\Tenant $tenant): array
+            {
+                return [];
+            }
         };
 
         $runtimeConfigurationService ??= $this->createRuntimeConfigurationService([]);
@@ -244,7 +249,7 @@ final class ExternalToolControllerTest extends TestCase
                 return [$this->tool];
             }
 
-            public function findByTenantOrdered(Tenant $tenant): array
+            public function findByTenantOrdered(\App\Entity\Tenant $tenant): array
             {
                 return [$this->tool];
             }
@@ -256,6 +261,7 @@ final class ExternalToolControllerTest extends TestCase
             $runtimeConfigurationService,
             $tenantRepository,
             $externalToolRepository,
+            $this->createActiveTenantContext($tenant),
         );
         $container = new Container();
         $container->set('twig', $this->createTwigEnvironment());
@@ -345,7 +351,7 @@ final class ExternalToolControllerTest extends TestCase
                 return [$this->tool];
             }
 
-            public function findByTenantOrdered(Tenant $tenant): array
+            public function findByTenantOrdered(\App\Entity\Tenant $tenant): array
             {
                 return [$this->tool];
             }
@@ -357,6 +363,7 @@ final class ExternalToolControllerTest extends TestCase
             $runtimeConfigurationService,
             $tenantRepository,
             $externalToolRepository,
+            $this->createActiveTenantContext($tenant),
         );
         $container = new Container();
         $container->set('twig', $this->createTwigEnvironment());

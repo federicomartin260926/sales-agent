@@ -7,9 +7,9 @@
   <section class="hero-panel">
     <div class="hero-copy">
       <div class="eyebrow-dark">Servidores MCP</div>
-      <h2>MCP remoto por tenant</h2>
+      <h2>Servidores MCP de {{ active_tenant_name }}</h2>
       <p>
-        Configura por tenant el servidor MCP remoto que OpenAI Responses API puede usar como tool nativa.
+        Configura para el negocio activo el servidor MCP remoto que OpenAI Responses API puede usar como tool nativa.
         En local con Docker, la URL pública visible desde el navegador puede diferir de la que resuelve el contenedor.
       </p>
     </div>
@@ -64,36 +64,11 @@
     </div>
   {% endif %}
 
-  <section class="table-card external-tools-filter-card">
-    <div class="table-header">
-      <div>
-        <h3>Filtrar por tenant</h3>
-        <p>Selecciona un negocio para revisar sus herramientas externas.</p>
-      </div>
-    </div>
-    <form method="get" action="/backend/external-tools" class="tenant-form tenant-form-compact">
-      <div class="form-grid">
-        <div class="field">
-          <label for="tenant-filter">Tenant</label>
-          <select id="tenant-filter" name="tenant_id">
-            <option value="">Todos los tenants</option>
-            {% for tenant in tenants %}
-              <option value="{{ tenant.id }}"{{ tenant_filter == tenant.id ? ' selected' : '' }}>{{ tenant.name }}</option>
-            {% endfor %}
-          </select>
-        </div>
-      </div>
-      <div class="form-actions form-actions-end">
-        <button class="secondary-action" type="submit">Aplicar filtro</button>
-      </div>
-    </form>
-  </section>
-
   <section class="table-card">
     <div class="table-header">
       <div>
-        <h3>Servidores MCP configurados</h3>
-        <p>Se listan los servidores remotos activos e inactivos registrados por tenant.</p>
+        <h3>Servidores MCP de {{ active_tenant_name }}</h3>
+        <p>Se listan los servidores remotos activos e inactivos del negocio activo.</p>
       </div>
       <a class="primary-action" href="/backend/external-tools/new">Nuevo servidor MCP</a>
     </div>

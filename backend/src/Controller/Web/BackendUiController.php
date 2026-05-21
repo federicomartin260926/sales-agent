@@ -248,7 +248,8 @@ final class BackendUiController
         }
 
         $feedbackHtml = $this->renderProfileFeedback($request);
-        if (!$this->activeTenantContext->hasActiveTenant()) {
+        $activeTenant = $this->activeTenantContext->getActiveTenant();
+        if (!$activeTenant instanceof Tenant) {
             return $this->renderTenantSelectionRequiredPage(
                 'Guías comerciales',
                 'Estrategias opcionales que complementan la política general del negocio.',
@@ -292,51 +293,15 @@ final class BackendUiController
                 htmlspecialchars($this->playbookTokenValue($deleteUrl), ENT_QUOTES, 'UTF-8'),
                 self::iconDeleteSvg()
             );
-        }, $playbooks ? $playbooks->findAllOrdered() : []);
-
-        $content = sprintf(
-            '
-            <section class="hero-panel">
-              <div class="hero-copy">
-                <div class="eyebrow-dark">Configuración comercial</div>
-                <h2>Guías comerciales</h2>
-                <p>Ajustes del comportamiento del agente por negocio o producto. Aquí defines el enfoque, el tono, el scoring y las reglas de respuesta.</p>
-              </div>
-              <div class="hero-aside">
-                <div class="badge-live">Manager</div>
-                <div class="hero-aside-title">Reglas</div>
-                <p>Los ajustes se activan y mantienen desde este panel, por negocio y sin mezclar la API técnica.</p>
-              </div>
-            </section>
-            %s
-            <section class="table-card">
-              <div class="table-header">
-                <div>
-                  <h3>Guías comerciales activas e inactivas</h3>
-                  <p>Vista rápida del catálogo y su contexto.</p>
-                </div>
-                <a class="primary-action" href="/backend/playbooks/new">Crear guía comercial</a>
-              </div>
-              <div class="table-responsive">
-                <table>
-                  <thead>
-                    <tr><th>Guía comercial</th><th>Negocio</th><th>Producto / servicio</th><th>Estado</th><th class="text-right">Acciones</th></tr>
-                  </thead>
-                  <tbody>%s</tbody>
-                </table>
-              </div>
-            </section>
-            ',
-            $feedbackHtml,
-            $rows !== [] ? implode('', $rows) : '<tr><td colspan="5" class="empty-row">No hay guías comerciales todavía.</td></tr>'
-        );
+        }, $playbooks ? $playbooks->findByTenantOrdered($activeTenant) : []);
 
         $content = $this->twig->render('backend/playbooks/index.html.twig', [
             'feedback_html' => $feedbackHtml,
             'rows_html' => $rows !== [] ? implode('', $rows) : '<tr><td colspan="5" class="empty-row">No hay guías comerciales todavía.</td></tr>',
+            'active_tenant_name' => $activeTenant->getName(),
         ]);
 
-        return $this->renderBackendShell('Guías comerciales', 'Estrategias opcionales que complementan la política general del negocio.', 'playbooks', $content);
+        return $this->renderBackendShell(sprintf('Guías comerciales de %s', $activeTenant->getName()), 'Estrategias opcionales del negocio activo.', 'playbooks', $content);
     }
 
     #[Route('/playbooks/new', methods: ['GET', 'POST'])]
@@ -346,7 +311,8 @@ final class BackendUiController
             return new RedirectResponse('/backend/login');
         }
 
-        if (!$this->activeTenantContext->hasActiveTenant()) {
+        $activeTenant = $this->activeTenantContext->getActiveTenant();
+        if (!$activeTenant instanceof Tenant) {
             return $this->renderTenantSelectionRequiredPage(
                 'Crear guía comercial',
                 'Selecciona un negocio antes de crear una estrategia específica.',
@@ -355,7 +321,7 @@ final class BackendUiController
             );
         }
 
-        $values = $this->playbookFormDefaults();
+        $values = $this->playbookFormDefaults(null, $activeTenant);
         $error = null;
 
         if ($request->isMethod('POST')) {
@@ -363,12 +329,11 @@ final class BackendUiController
                 $error = 'La sesión del formulario ha expirado. Vuelve a intentarlo.';
             } else {
                 $values = $this->playbookFormValuesFromRequest($request);
-                $error = $this->validatePlaybookForm($values, null, $tenants, $products, $playbooks);
+                $error = $this->validatePlaybookForm($values, null, $activeTenant, $products, $playbooks);
 
                 if ($error === null) {
-                    $tenant = $tenants instanceof TenantRepository ? $tenants->find($values['tenantId']) : null;
-                    $playbook = new Playbook($tenant, $values['name']);
-                    $this->hydratePlaybookFromForm($playbook, $values, $tenant, $products);
+                    $playbook = new Playbook($activeTenant, $values['name']);
+                    $this->hydratePlaybookFromForm($playbook, $values, $activeTenant, $products);
                     $this->entityManager->persist($playbook);
                     $this->entityManager->flush();
 
@@ -379,12 +344,11 @@ final class BackendUiController
 
         return $this->renderPlaybookForm(
             'Crear guía comercial',
-            'Define reglas específicas opcionales para un producto, campaña o situación concreta.',
+            sprintf('Define reglas específicas opcionales para un producto, campaña o situación concreta de %s.', $activeTenant->getName()),
             'Crear guía comercial',
             'Crear guía comercial',
             '/backend/playbooks/new',
             $values,
-            $tenants,
             $products,
             $error
         );
@@ -397,7 +361,8 @@ final class BackendUiController
             return new RedirectResponse('/backend/login');
         }
 
-        if (!$this->activeTenantContext->hasActiveTenant()) {
+        $activeTenant = $this->activeTenantContext->getActiveTenant();
+        if (!$activeTenant instanceof Tenant) {
             return $this->renderTenantSelectionRequiredPage(
                 'Editar guía comercial',
                 'Selecciona un negocio antes de editar esta estrategia específica.',
@@ -411,11 +376,11 @@ final class BackendUiController
         }
 
         $playbook = $playbooks->find($id);
-        if (!$playbook instanceof Playbook) {
-            return new RedirectResponse('/backend/playbooks');
+        if (!$playbook instanceof Playbook || $playbook->getTenant()->getId()->toRfc4122() !== $activeTenant->getId()->toRfc4122()) {
+            return new Response('', Response::HTTP_NOT_FOUND);
         }
 
-        $values = $this->playbookFormDefaults($playbook);
+        $values = $this->playbookFormDefaults($playbook, $activeTenant);
         $error = null;
 
         if ($request->isMethod('POST')) {
@@ -423,11 +388,10 @@ final class BackendUiController
                 $error = 'La sesión del formulario ha expirado. Vuelve a intentarlo.';
             } else {
                 $values = $this->playbookFormValuesFromRequest($request);
-                $error = $this->validatePlaybookForm($values, $playbook, $tenants, $products, $playbooks);
+                $error = $this->validatePlaybookForm($values, $playbook, $activeTenant, $products, $playbooks);
 
                 if ($error === null) {
-                    $tenant = $tenants instanceof TenantRepository ? $tenants->find($values['tenantId']) : $playbook->getTenant();
-                    $this->hydratePlaybookFromForm($playbook, $values, $tenant, $products);
+                    $this->hydratePlaybookFromForm($playbook, $values, $activeTenant, $products);
                     $this->entityManager->persist($playbook);
                     $this->entityManager->flush();
 
@@ -438,12 +402,11 @@ final class BackendUiController
 
         return $this->renderPlaybookForm(
             'Editar guía comercial',
-            'Ajusta esta estrategia opcional para complementar la política general del negocio.',
+            sprintf('Ajusta esta estrategia opcional para complementar la política general de %s.', $activeTenant->getName()),
             'Editar guía comercial',
             'Guardar cambios',
             '/backend/playbooks/'.$playbook->getId()->toRfc4122().'/edit',
             $values,
-            $tenants,
             $products,
             $error
         );
@@ -461,8 +424,9 @@ final class BackendUiController
         }
 
         $playbook = $playbooks->find($id);
-        if (!$playbook instanceof Playbook) {
-            return new RedirectResponse('/backend/playbooks');
+        $activeTenant = $this->activeTenantContext->getActiveTenant();
+        if (!$playbook instanceof Playbook || !$activeTenant instanceof Tenant || $playbook->getTenant()->getId()->toRfc4122() !== $activeTenant->getId()->toRfc4122()) {
+            return new Response('', Response::HTTP_NOT_FOUND);
         }
 
         $deleteUrl = '/backend/playbooks/'.$playbook->getId()->toRfc4122().'/delete';
@@ -788,7 +752,8 @@ final class BackendUiController
             return new RedirectResponse('/backend/login');
         }
 
-        if (!$this->activeTenantContext->hasActiveTenant()) {
+        $activeTenant = $this->activeTenantContext->getActiveTenant();
+        if (!$activeTenant instanceof Tenant) {
             return $this->renderTenantSelectionRequiredPage(
                 'Productos / servicios',
                 'Selecciona un negocio antes de gestionar el catálogo comercial.',
@@ -798,7 +763,6 @@ final class BackendUiController
         }
 
         $feedbackHtml = $this->renderProfileFeedback($request);
-        $tenantFilter = trim((string) $request->query->get('tenantId', ''));
         $productFilter = trim((string) $request->query->get('product', ''));
         $rows = array_map(function (Product $product): string {
             $status = $product->isActive() ? '<span class="status-ok">Activo</span>' : '<span class="status-off">Inactivo</span>';
@@ -839,11 +803,7 @@ final class BackendUiController
                 htmlspecialchars($this->productTokenValue($deleteUrl), ENT_QUOTES, 'UTF-8'),
                 self::iconDeleteSvg()
             );
-        }, array_values(array_filter($products ? $products->findAllOrdered() : [], function (Product $product) use ($tenantFilter, $productFilter): bool {
-            if ($tenantFilter !== '' && $product->getTenant()->getId()->toRfc4122() !== $tenantFilter) {
-                return false;
-            }
-
+        }, array_values(array_filter($products ? $products->findByTenantOrdered($activeTenant) : [], function (Product $product) use ($productFilter): bool {
             if ($productFilter === '') {
                 return true;
             }
@@ -859,84 +819,14 @@ final class BackendUiController
             return mb_stripos($haystack, mb_strtolower($productFilter)) !== false;
         })));
 
-        $tenantOptions = $this->renderTenantOptions($tenants, $tenantFilter);
-
-        $content = sprintf(
-            '
-            <section class="hero-panel">
-              <div class="hero-copy">
-                <div class="eyebrow-dark">Catálogo comercial</div>
-                <h2>Productos / servicios</h2>
-                <p>Catálogo de productos y servicios asociados a cada negocio. Esto alimenta la lógica comercial del backend.</p>
-              </div>
-              <div class="hero-aside">
-                <div class="badge-live">Manager</div>
-                <div class="hero-aside-title">Oferta</div>
-                <p>Los productos y servicios agrupan descripción, propuesta de valor y política de venta para el runtime.</p>
-              </div>
-            </section>
-            %s
-            <section class="table-card filters-card">
-              <div class="table-header">
-                <div>
-                  <h3>Filtros</h3>
-                  <p>Filtra el catálogo por negocio o por producto / servicio.</p>
-                </div>
-              </div>
-              <form method="get" action="/backend/products" class="tenant-form">
-                <div class="form-grid">
-                  <div class="field">
-                    <label for="product-filter-tenant">Negocio</label>
-                    <select id="product-filter-tenant" name="tenantId">%s</select>
-                    <div class="field-note">Filtra el catálogo por negocio asociado.</div>
-                  </div>
-                  <div class="field">
-                    <label for="product-filter-product">Producto / servicio</label>
-                    <input id="product-filter-product" name="product" type="text" value="%s" placeholder="Nombre, slug o referencia externa">
-                    <div class="field-note">Busca por nombre, slug, origen o referencia externa.</div>
-                  </div>
-                </div>
-                <div class="form-actions" style="justify-content:flex-start;gap:12px;flex-wrap:wrap;">
-                  <button class="primary-action" type="submit">Filtrar</button>
-                  <a class="secondary-action" href="/backend/products">Limpiar</a>
-                </div>
-              </form>
-            </section>
-            <section class="table-card">
-              <div class="table-header">
-                <div>
-                  <h3>Productos / servicios registrados</h3>
-                  <p>Negocio, slug, referencia externa y estado.</p>
-                </div>
-                <div style="display:flex;gap:12px;flex-wrap:wrap;justify-content:flex-end">
-                  <a class="secondary-action" href="/backend/products/import">Importar catálogo</a>
-                  <a class="primary-action" href="/backend/products/new">Crear producto / servicio</a>
-                </div>
-              </div>
-              <div class="table-responsive">
-                <table>
-                  <thead>
-                    <tr><th>Producto / servicio</th><th>Negocio</th><th>Identidad</th><th>Estado</th><th class="text-right">Acciones</th></tr>
-                  </thead>
-                  <tbody>%s</tbody>
-                </table>
-              </div>
-            </section>
-            ',
-            $feedbackHtml,
-            $tenantOptions,
-            htmlspecialchars($productFilter, ENT_QUOTES, 'UTF-8'),
-            $rows !== [] ? implode('', $rows) : '<tr><td colspan="5" class="empty-row">No hay productos o servicios todavía.</td></tr>'
-        );
-
         $content = $this->twig->render('backend/products/index.html.twig', [
             'feedback_html' => $feedbackHtml,
-            'tenant_options_html' => $tenantOptions,
             'product_filter' => $productFilter,
             'rows_html' => $rows !== [] ? implode('', $rows) : '<tr><td colspan="5" class="empty-row">No hay productos o servicios todavía.</td></tr>',
+            'active_tenant_name' => $activeTenant->getName(),
         ]);
 
-        return $this->renderBackendShell('Productos / servicios', 'Catálogo comercial por negocio.', 'products', $content);
+        return $this->renderBackendShell(sprintf('Productos / servicios de %s', $activeTenant->getName()), 'Catálogo comercial del negocio activo.', 'products', $content);
     }
 
     #[Route('/products/import', methods: ['GET', 'POST'])]
@@ -946,7 +836,8 @@ final class BackendUiController
             return new RedirectResponse('/backend/login');
         }
 
-        if (!$this->activeTenantContext->hasActiveTenant()) {
+        $activeTenant = $this->activeTenantContext->getActiveTenant();
+        if (!$activeTenant instanceof Tenant) {
             return $this->renderTenantSelectionRequiredPage(
                 'Importar catálogo',
                 'Selecciona un negocio antes de importar productos o servicios.',
@@ -955,7 +846,7 @@ final class BackendUiController
             );
         }
 
-        $values = $this->productImportFormDefaults();
+        $values = $this->productImportFormDefaults($activeTenant);
         $error = null;
         $result = null;
 
@@ -964,20 +855,17 @@ final class BackendUiController
                 $error = 'La sesión del formulario ha expirado. Vuelve a intentarlo.';
             } else {
                 $values = $this->productImportFormValuesFromRequest($request);
-                $error = $this->validateProductImportForm($values, $tenants);
+                $error = $this->validateProductImportForm($values, $activeTenant);
 
                 if ($error === null) {
-                    $tenant = $tenants instanceof TenantRepository ? $tenants->find($values['tenantId']) : null;
                     $payload = $this->productImportPayloadFromRequest($request);
 
-                    if (!$tenant instanceof Tenant) {
-                        $error = 'El negocio seleccionado no existe.';
-                    } elseif ($payload === null || trim($payload) === '') {
+                    if ($payload === null || trim($payload) === '') {
                         $error = 'Debes pegar un CSV/JSON o subir un archivo con el catálogo.';
                     } elseif (!$this->productCatalogImportService instanceof ProductCatalogImportService) {
                         $error = 'El servicio de importación no está disponible.';
                     } else {
-                        $result = $this->productCatalogImportService->import($tenant, $payload, $values['format']);
+                        $result = $this->productCatalogImportService->import($activeTenant, $payload, $values['format']);
                     }
                 }
             }
@@ -990,7 +878,6 @@ final class BackendUiController
             'Importar productos / servicios',
             '/backend/products/import',
             $values,
-            $tenants,
             $result,
             $error
         );
@@ -1003,7 +890,8 @@ final class BackendUiController
             return new RedirectResponse('/backend/login');
         }
 
-        if (!$this->activeTenantContext->hasActiveTenant()) {
+        $activeTenant = $this->activeTenantContext->getActiveTenant();
+        if (!$activeTenant instanceof Tenant) {
             return $this->renderTenantSelectionRequiredPage(
                 'Crear producto / servicio',
                 'Selecciona un negocio antes de crear una nueva propuesta comercial.',
@@ -1012,7 +900,7 @@ final class BackendUiController
             );
         }
 
-        $values = $this->productFormDefaults();
+        $values = $this->productFormDefaults(null, $activeTenant);
         $error = null;
 
         if ($request->isMethod('POST')) {
@@ -1020,12 +908,11 @@ final class BackendUiController
                 $error = 'La sesión del formulario ha expirado. Vuelve a intentarlo.';
             } else {
                 $values = $this->productFormValuesFromRequest($request);
-                $error = $this->validateProductForm($values, null, $tenants, $products);
+                $error = $this->validateProductForm($values, null, $activeTenant, $products);
 
                 if ($error === null) {
-                    $tenant = $tenants instanceof TenantRepository ? $tenants->find($values['tenantId']) : null;
-                    $product = new Product($tenant, $values['name']);
-                    $this->hydrateProductFromForm($product, $values, $tenant);
+                    $product = new Product($activeTenant, $values['name']);
+                    $this->hydrateProductFromForm($product, $values, $activeTenant);
                     $this->entityManager->persist($product);
                     $this->entityManager->flush();
 
@@ -1036,12 +923,11 @@ final class BackendUiController
 
         return $this->renderProductForm(
             'Crear producto / servicio',
-            'Define la oferta, la propuesta de valor y la política comercial específica de este negocio.',
+            sprintf('Define la oferta, la propuesta de valor y la política comercial específica de %s.', $activeTenant->getName()),
             'Crear producto / servicio',
             'Crear producto / servicio',
             '/backend/products/new',
             $values,
-            $tenants,
             null,
             $error
         );
@@ -1054,7 +940,8 @@ final class BackendUiController
             return new RedirectResponse('/backend/login');
         }
 
-        if (!$this->activeTenantContext->hasActiveTenant()) {
+        $activeTenant = $this->activeTenantContext->getActiveTenant();
+        if (!$activeTenant instanceof Tenant) {
             return $this->renderTenantSelectionRequiredPage(
                 'Editar producto / servicio',
                 'Selecciona un negocio antes de editar el catálogo comercial.',
@@ -1068,11 +955,11 @@ final class BackendUiController
         }
 
         $product = $products->find($id);
-        if (!$product instanceof Product) {
-            return new RedirectResponse('/backend/products');
+        if (!$product instanceof Product || $product->getTenant()->getId()->toRfc4122() !== $activeTenant->getId()->toRfc4122()) {
+            return new Response('', Response::HTTP_NOT_FOUND);
         }
 
-        $values = $this->productFormDefaults($product);
+        $values = $this->productFormDefaults($product, $activeTenant);
         $error = null;
 
         if ($request->isMethod('POST')) {
@@ -1080,11 +967,10 @@ final class BackendUiController
                 $error = 'La sesión del formulario ha expirado. Vuelve a intentarlo.';
             } else {
                 $values = $this->productFormValuesFromRequest($request);
-                $error = $this->validateProductForm($values, $product, $tenants, $products);
+                $error = $this->validateProductForm($values, $product, $activeTenant, $products);
 
                 if ($error === null) {
-                    $tenant = $tenants instanceof TenantRepository ? $tenants->find($values['tenantId']) : $product->getTenant();
-                    $this->hydrateProductFromForm($product, $values, $tenant);
+                    $this->hydrateProductFromForm($product, $values, $activeTenant);
                     $this->entityManager->persist($product);
                     $this->entityManager->flush();
 
@@ -1095,12 +981,11 @@ final class BackendUiController
 
         return $this->renderProductForm(
             'Editar producto / servicio',
-            'Ajusta el producto, su propuesta de valor y la política comercial que lo acompaña.',
+            sprintf('Ajusta el producto, su propuesta de valor y la política comercial que lo acompaña en %s.', $activeTenant->getName()),
             'Editar producto / servicio',
             'Guardar cambios',
             '/backend/products/'.$product->getId()->toRfc4122().'/edit',
             $values,
-            $tenants,
             $error
         );
     }
@@ -1117,8 +1002,9 @@ final class BackendUiController
         }
 
         $product = $products->find($id);
-        if (!$product instanceof Product) {
-            return new RedirectResponse('/backend/products');
+        $activeTenant = $this->activeTenantContext->getActiveTenant();
+        if (!$product instanceof Product || !$activeTenant instanceof Tenant || $product->getTenant()->getId()->toRfc4122() !== $activeTenant->getId()->toRfc4122()) {
+            return new Response('', Response::HTTP_NOT_FOUND);
         }
 
         if (!$this->isValidProductToken('/backend/products/'.$product->getId()->toRfc4122().'/delete', (string) $request->request->get('_csrf_token'))) {
@@ -1139,7 +1025,8 @@ final class BackendUiController
             return new RedirectResponse('/backend/login');
         }
 
-        if (!$this->activeTenantContext->hasActiveTenant()) {
+        $activeTenant = $this->activeTenantContext->getActiveTenant();
+        if (!$activeTenant instanceof Tenant) {
             return $this->renderTenantSelectionRequiredPage(
                 'Puntos de entrada',
                 'Selecciona un negocio antes de gestionar campañas y rutas públicas.',
@@ -1173,48 +1060,14 @@ final class BackendUiController
                 htmlspecialchars($editUrl, ENT_QUOTES, 'UTF-8'),
                 self::iconEditSvg()
             );
-        }, $entryPoints ? $entryPoints->findAllOrdered() : []);
-
-        $content = sprintf(
-            '
-            <section class="hero-panel">
-              <div class="hero-copy">
-                <div class="eyebrow-dark">Routing comercial</div>
-                <h2>Puntos de entrada</h2>
-                <p>Define campañas, botones y QR que crean contexto comercial antes de abrir WhatsApp.</p>
-              </div>
-              <div class="hero-aside">
-                <div class="badge-live">Campaigns</div>
-                <div class="hero-aside-title">Contexto</div>
-                <p>Un punto de entrada enlaza producto, playbook y atribución técnica con una URL pública estable.</p>
-              </div>
-            </section>
-            <section class="table-card">
-              <div class="table-header">
-                <div>
-                  <h3>Puntos de entrada registrados</h3>
-                  <p>Usa estos códigos para campañas, landings y botones de contacto.</p>
-                </div>
-                <a class="primary-action" href="/backend/entry-points/new">Crear punto de entrada</a>
-              </div>
-              <div class="table-responsive">
-                <table>
-                  <thead>
-                    <tr><th>Punto de entrada</th><th>Código</th><th>Negocio</th><th>Producto</th><th>Estado</th><th class="text-right">Acciones</th></tr>
-                  </thead>
-                  <tbody>%s</tbody>
-                </table>
-              </div>
-            </section>
-            ',
-            $rows !== [] ? implode('', $rows) : '<tr><td colspan="6" class="empty-row">No hay puntos de entrada todavía.</td></tr>'
-        );
+        }, $entryPoints ? $entryPoints->findByTenantOrdered($activeTenant) : []);
 
         $content = $this->twig->render('backend/entry_points/index.html.twig', [
             'rows_html' => $rows !== [] ? implode('', $rows) : '<tr><td colspan="6" class="empty-row">No hay puntos de entrada todavía.</td></tr>',
+            'active_tenant_name' => $activeTenant->getName(),
         ]);
 
-        return $this->renderBackendShell('Puntos de entrada', 'Códigos de campaña y enlaces públicos hacia WhatsApp.', 'entry-points', $content);
+        return $this->renderBackendShell(sprintf('Puntos de entrada de %s', $activeTenant->getName()), 'Códigos de campaña y enlaces públicos del negocio activo.', 'entry-points', $content);
     }
 
     #[Route('/entry-points/new', methods: ['GET', 'POST'])]
@@ -1224,7 +1077,8 @@ final class BackendUiController
             return new RedirectResponse('/backend/login');
         }
 
-        if (!$this->activeTenantContext->hasActiveTenant()) {
+        $activeTenant = $this->activeTenantContext->getActiveTenant();
+        if (!$activeTenant instanceof Tenant) {
             return $this->renderTenantSelectionRequiredPage(
                 'Crear punto de entrada',
                 'Selecciona un negocio antes de definir una campaña o enlace público.',
@@ -1234,6 +1088,7 @@ final class BackendUiController
         }
 
         $values = $this->entryPointFormDefaults();
+        $values['tenantName'] = $activeTenant->getName();
         $error = null;
 
         if ($request->isMethod('POST')) {
@@ -1241,23 +1096,27 @@ final class BackendUiController
                 $error = 'La sesión del formulario ha expirado. Vuelve a intentarlo.';
             } else {
                 $values = $this->entryPointFormValuesFromRequest($request);
-                $error = $this->validateEntryPointForm($values, null, $products, $playbooks, $entryPoints);
+                $error = $this->validateEntryPointForm($values, null, $activeTenant, $products, $playbooks, $entryPoints);
 
                 if ($error === null) {
                     $product = $products instanceof ProductRepository ? $products->find($values['productId']) : null;
-                    $entryPoint = new EntryPoint($product, $values['code'], $values['name']);
-                    $this->hydrateEntryPointFromForm($entryPoint, $values, $product, $playbooks);
-                    $this->entityManager->persist($entryPoint);
-                    $this->entityManager->flush();
+                    if (!$product instanceof Product || $product->getTenant()->getId()->toRfc4122() !== $activeTenant->getId()->toRfc4122()) {
+                        $error = 'El producto seleccionado no pertenece al negocio activo.';
+                    } else {
+                        $entryPoint = new EntryPoint($product, $values['code'], $values['name']);
+                        $this->hydrateEntryPointFromForm($entryPoint, $values, $product, $playbooks);
+                        $this->entityManager->persist($entryPoint);
+                        $this->entityManager->flush();
 
-                    return new RedirectResponse('/backend/entry-points');
+                        return new RedirectResponse('/backend/entry-points');
+                    }
                 }
             }
         }
 
         return $this->renderEntryPointForm(
             'Crear punto de entrada',
-            'Define el código público y su contexto comercial antes de crear tráfico.',
+            sprintf('Define el código público y su contexto comercial antes de crear tráfico en %s.', $activeTenant->getName()),
             'Crear punto de entrada',
             'Crear punto de entrada',
             '/backend/entry-points/new',
@@ -1275,7 +1134,8 @@ final class BackendUiController
             return new RedirectResponse('/backend/login');
         }
 
-        if (!$this->activeTenantContext->hasActiveTenant()) {
+        $activeTenant = $this->activeTenantContext->getActiveTenant();
+        if (!$activeTenant instanceof Tenant) {
             return $this->renderTenantSelectionRequiredPage(
                 'Editar punto de entrada',
                 'Selecciona un negocio antes de editar este punto de entrada.',
@@ -1289,8 +1149,8 @@ final class BackendUiController
         }
 
         $entryPoint = $entryPoints->find($id);
-        if (!$entryPoint instanceof EntryPoint) {
-            return new RedirectResponse('/backend/entry-points');
+        if (!$entryPoint instanceof EntryPoint || $entryPoint->getTenant()->getId()->toRfc4122() !== $activeTenant->getId()->toRfc4122()) {
+            return new Response('', Response::HTTP_NOT_FOUND);
         }
 
         $values = $this->entryPointFormDefaults($entryPoint);
@@ -1301,22 +1161,26 @@ final class BackendUiController
                 $error = 'La sesión del formulario ha expirado. Vuelve a intentarlo.';
             } else {
                 $values = $this->entryPointFormValuesFromRequest($request);
-                $error = $this->validateEntryPointForm($values, $entryPoint, $products, $playbooks, $entryPoints);
+                $error = $this->validateEntryPointForm($values, $entryPoint, $activeTenant, $products, $playbooks, $entryPoints);
 
                 if ($error === null) {
                     $product = $products instanceof ProductRepository ? $products->find($values['productId']) : $entryPoint->getProduct();
-                    $this->hydrateEntryPointFromForm($entryPoint, $values, $product, $playbooks);
-                    $this->entityManager->persist($entryPoint);
-                    $this->entityManager->flush();
+                    if (!$product instanceof Product || $product->getTenant()->getId()->toRfc4122() !== $activeTenant->getId()->toRfc4122()) {
+                        $error = 'El producto seleccionado no pertenece al negocio activo.';
+                    } else {
+                        $this->hydrateEntryPointFromForm($entryPoint, $values, $product, $playbooks);
+                        $this->entityManager->persist($entryPoint);
+                        $this->entityManager->flush();
 
-                    return new RedirectResponse('/backend/entry-points/'.$entryPoint->getId()->toRfc4122());
+                        return new RedirectResponse('/backend/entry-points/'.$entryPoint->getId()->toRfc4122());
+                    }
                 }
             }
         }
 
         return $this->renderEntryPointForm(
             'Editar punto de entrada',
-            'Ajusta el código, las UTM por defecto y la relación con canal, producto o playbook.',
+            sprintf('Ajusta el código, las UTM por defecto y la relación con canal, producto o playbook en %s.', $activeTenant->getName()),
             'Editar punto de entrada',
             'Guardar cambios',
             '/backend/entry-points/'.$entryPoint->getId()->toRfc4122().'/edit',
@@ -1334,7 +1198,8 @@ final class BackendUiController
             return new RedirectResponse('/backend/login');
         }
 
-        if (!$this->activeTenantContext->hasActiveTenant()) {
+        $activeTenant = $this->activeTenantContext->getActiveTenant();
+        if (!$activeTenant instanceof Tenant) {
             return $this->renderTenantSelectionRequiredPage(
                 'Punto de entrada',
                 'Selecciona un negocio antes de revisar el detalle de la ruta pública.',
@@ -1348,8 +1213,8 @@ final class BackendUiController
         }
 
         $entryPoint = $entryPoints->find($id);
-        if (!$entryPoint instanceof EntryPoint) {
-            return new RedirectResponse('/backend/entry-points');
+        if (!$entryPoint instanceof EntryPoint || $entryPoint->getTenant()->getId()->toRfc4122() !== $activeTenant->getId()->toRfc4122()) {
+            return new Response('', Response::HTTP_NOT_FOUND);
         }
 
         $redirectUrl = '/api/r/wa/'.$entryPoint->getCode();
@@ -2374,13 +2239,13 @@ final class BackendUiController
     /**
      * @return array{tenantId: string, productId: string, name: string, objective: string, qualificationQuestions: string, maxScore: string, handoffThreshold: string, positiveSignals: string, negativeSignals: string, agendaRules: string, handoffRules: string, allowedActions: string, notes: string, isActive: bool}
      */
-    private function playbookFormDefaults(?Playbook $playbook = null): array
+    private function playbookFormDefaults(?Playbook $playbook = null, ?Tenant $tenant = null): array
     {
         $config = $playbook?->getConfig() ?? [];
         $scoring = is_array($config['scoring'] ?? null) ? $config['scoring'] : [];
 
         return [
-            'tenantId' => $playbook?->getTenant()->getId()->toRfc4122() ?? '',
+            'tenantId' => $tenant?->getId()->toRfc4122() ?? $playbook?->getTenant()?->getId()->toRfc4122() ?? '',
             'productId' => $playbook?->getProduct()?->getId()->toRfc4122() ?? '',
             'name' => $playbook?->getName() ?? '',
             'objective' => $this->playbookConfigValue($config, 'objective'),
@@ -2427,12 +2292,11 @@ final class BackendUiController
         string $submitLabel,
         string $actionUrl,
         array $values,
-        ?TenantRepository $tenants,
         ?ProductRepository $products,
         ?string $error = null,
     ): Response {
-        $tenantOptions = $this->renderTenantOptions($tenants, $values['tenantId'] ?? '');
-        $productOptions = $this->renderProductOptions($products, $values['productId'] ?? '');
+        $activeTenant = $this->activeTenantContext->getActiveTenant();
+        $productOptions = $this->renderProductOptions($products, $values['productId'] ?? '', $activeTenant instanceof Tenant ? $activeTenant : null);
         $errorHtml = $error !== null ? sprintf(
             '<div class="form-alert form-alert-error">%s</div>',
             htmlspecialchars($error, ENT_QUOTES, 'UTF-8')
@@ -2446,25 +2310,17 @@ final class BackendUiController
             'playbook_ai_assistant_endpoint' => '/backend/ai/playbook-draft-assistant',
             'playbook_ai_assistant_token' => $this->playbookDraftAssistantTokenValue(),
             'playbook_ai_assistant_initial_message' => 'Hola. Te ayudaré a definir una estrategia específica para esta guía comercial. Te haré preguntas breves y, cuando tenga suficiente información, te prepararé un borrador para rellenar los campos. Yo no guardo nada: tú revisarás y pulsarás "Crear guía comercial" al final.',
-            'tenant_options_html' => $tenantOptions,
             'product_options_html' => $productOptions,
             'values' => $values,
             'submit_label' => $submitLabel,
+            'active_tenant_name' => $activeTenant instanceof Tenant ? $activeTenant->getName() : null,
         ]);
 
         return $this->renderBackendShell($pageTitle, $pageSubtitle, 'playbooks', $content);
     }
 
-    private function validatePlaybookForm(array $values, ?Playbook $playbook, ?TenantRepository $tenants, ?ProductRepository $products, ?PlaybookRepository $playbooks): ?string
+    private function validatePlaybookForm(array $values, ?Playbook $playbook, Tenant $tenant, ?ProductRepository $products, ?PlaybookRepository $playbooks): ?string
     {
-        if ($values['tenantId'] === '') {
-            return 'Debes seleccionar un negocio.';
-        }
-
-        if (!$tenants instanceof TenantRepository || !$tenants->find($values['tenantId']) instanceof Tenant) {
-            return 'El negocio seleccionado no existe.';
-        }
-
         if ($values['name'] === '') {
             return 'El nombre de la guía comercial es obligatorio.';
         }
@@ -2472,6 +2328,11 @@ final class BackendUiController
         if ($values['productId'] !== '') {
             if (!$products instanceof ProductRepository || !$products->find($values['productId']) instanceof Product) {
                 return 'El producto seleccionado no existe.';
+            }
+
+            $product = $products->find($values['productId']);
+            if ($product instanceof Product && $product->getTenant()->getId()->toRfc4122() !== $tenant->getId()->toRfc4122()) {
+                return 'El producto seleccionado no pertenece al negocio activo.';
             }
         }
 
@@ -2484,15 +2345,18 @@ final class BackendUiController
         return null;
     }
 
-    private function hydratePlaybookFromForm(Playbook $playbook, array $values, ?Tenant $tenant, ?ProductRepository $products): void
+    private function hydratePlaybookFromForm(Playbook $playbook, array $values, Tenant $tenant, ?ProductRepository $products): void
     {
-        if ($tenant instanceof Tenant) {
-            $playbook->setTenant($tenant);
-        }
+        $playbook->setTenant($tenant);
 
         $product = null;
         if ($values['productId'] !== '' && $products instanceof ProductRepository) {
             $candidate = $products->find($values['productId']);
+            if ($candidate instanceof Product) {
+                if ($candidate->getTenant()->getId()->toRfc4122() !== $tenant->getId()->toRfc4122()) {
+                    $candidate = null;
+                }
+            }
             if ($candidate instanceof Product) {
                 $product = $candidate;
             }
@@ -2607,13 +2471,13 @@ final class BackendUiController
     /**
      * @return array{tenantId: string, slug: string, externalSource: string, externalReference: string, name: string, description: string, valueProposition: string, basePriceCents: string, currency: string, positioning: string, pricingNotes: string, objections: string, handoffRules: string, notes: string, isActive: bool}
      */
-    private function productFormDefaults(?Product $product = null): array
+    private function productFormDefaults(?Product $product = null, ?Tenant $tenant = null): array
     {
         $salesPolicy = $product?->getSalesPolicy() ?? [];
 
         return [
             'id' => $product?->getId()->toRfc4122() ?? '',
-            'tenantId' => $product?->getTenant()->getId()->toRfc4122() ?? '',
+            'tenantId' => $tenant?->getId()->toRfc4122() ?? $product?->getTenant()?->getId()->toRfc4122() ?? '',
             'slug' => $product?->getSlug() ?? '',
             'externalSource' => $product?->getExternalSource() ?? '',
             'externalReference' => $product?->getExternalReference() ?? '',
@@ -2662,10 +2526,8 @@ final class BackendUiController
         string $submitLabel,
         string $actionUrl,
         array $values,
-        ?TenantRepository $tenants,
         ?string $error = null,
     ): Response {
-        $tenantOptions = $this->renderTenantOptions($tenants, $values['tenantId'] ?? '');
         $errorHtml = $error !== null ? sprintf(
             '<div class="form-alert form-alert-error">%s</div>',
             htmlspecialchars($error, ENT_QUOTES, 'UTF-8')
@@ -2676,24 +2538,16 @@ final class BackendUiController
             'error_html' => $errorHtml,
             'action_url' => $actionUrl,
             'csrf_token' => $this->productTokenValue($actionUrl),
-            'tenant_options_html' => $tenantOptions,
             'values' => $values,
             'submit_label' => $submitLabel,
+            ...$this->currentUserTemplateData(),
         ]);
 
         return $this->renderBackendShell($pageTitle, $pageSubtitle, 'products', $content);
     }
 
-    private function validateProductForm(array $values, ?Product $product, ?TenantRepository $tenants, ?ProductRepository $products): ?string
+    private function validateProductForm(array $values, ?Product $product, Tenant $tenant, ?ProductRepository $products): ?string
     {
-        if ($values['tenantId'] === '') {
-            return 'Debes seleccionar un negocio.';
-        }
-
-        if (!$tenants instanceof TenantRepository || !$tenants->find($values['tenantId']) instanceof Tenant) {
-            return 'El negocio seleccionado no existe.';
-        }
-
         if ($values['name'] === '') {
             return 'El nombre del producto o servicio es obligatorio.';
         }
@@ -2718,13 +2572,12 @@ final class BackendUiController
             return 'La moneda no puede superar 10 caracteres.';
         }
 
-        $tenant = $tenants->find($values['tenantId']);
         $slugToValidate = $values['slug'];
         if ($slugToValidate === '' && $product === null && $tenant instanceof Tenant) {
             $slugToValidate = (new Product($tenant, $values['name']))->getSlug();
         }
 
-        if ($slugToValidate !== '' && $products instanceof ProductRepository && $tenant instanceof Tenant) {
+        if ($slugToValidate !== '' && $products instanceof ProductRepository) {
             $slugProduct = $products->findOneByTenantAndSlug($tenant, $slugToValidate);
             if ($slugProduct instanceof Product && ($product === null || $slugProduct->getId()->toRfc4122() !== $product->getId()->toRfc4122())) {
                 return 'Ya existe otro producto o servicio con ese slug en el negocio seleccionado.';
@@ -2732,12 +2585,9 @@ final class BackendUiController
         }
 
         if ($values['externalSource'] !== '' && $values['externalReference'] !== '' && $products instanceof ProductRepository) {
-            $tenant = $tenants->find($values['tenantId']);
-            if ($tenant instanceof Tenant) {
-                $externalProduct = $products->findOneByExternalIdentity($tenant, $values['externalSource'], $values['externalReference']);
-                if ($externalProduct instanceof Product && ($product === null || $externalProduct->getId()->toRfc4122() !== $product->getId()->toRfc4122())) {
-                    return 'Ya existe otro producto o servicio con esa referencia externa en el negocio seleccionado.';
-                }
+            $externalProduct = $products->findOneByExternalIdentity($tenant, $values['externalSource'], $values['externalReference']);
+            if ($externalProduct instanceof Product && ($product === null || $externalProduct->getId()->toRfc4122() !== $product->getId()->toRfc4122())) {
+                return 'Ya existe otro producto o servicio con esa referencia externa en el negocio seleccionado.';
             }
         }
 
@@ -2750,11 +2600,9 @@ final class BackendUiController
         return null;
     }
 
-    private function hydrateProductFromForm(Product $product, array $values, ?Tenant $tenant): void
+    private function hydrateProductFromForm(Product $product, array $values, Tenant $tenant): void
     {
-        if ($tenant instanceof Tenant) {
-            $product->setTenant($tenant);
-        }
+        $product->setTenant($tenant);
 
         $product->setName($values['name']);
         if ($values['slug'] !== '') {
@@ -2807,10 +2655,10 @@ final class BackendUiController
     /**
      * @return array{tenantId: string, format: string, payload: string}
      */
-    private function productImportFormDefaults(): array
+    private function productImportFormDefaults(Tenant $tenant): array
     {
         return [
-            'tenantId' => '',
+            'tenantId' => $tenant->getId()->toRfc4122(),
             'format' => 'auto',
             'payload' => '',
         ];
@@ -2831,16 +2679,8 @@ final class BackendUiController
     /**
      * @param array{tenantId: string, format: string, payload: string} $values
      */
-    private function validateProductImportForm(array $values, ?TenantRepository $tenants): ?string
+    private function validateProductImportForm(array $values, Tenant $tenant): ?string
     {
-        if ($values['tenantId'] === '') {
-            return 'Debes seleccionar un negocio.';
-        }
-
-        if (!$tenants instanceof TenantRepository || !$tenants->find($values['tenantId']) instanceof Tenant) {
-            return 'El negocio seleccionado no existe.';
-        }
-
         if (!in_array($values['format'], ['auto', 'json', 'csv'], true)) {
             return 'El formato de importación no es válido.';
         }
@@ -2871,11 +2711,9 @@ final class BackendUiController
         string $submitLabel,
         string $actionUrl,
         array $values,
-        ?TenantRepository $tenants,
         ?ProductCatalogImportResult $result = null,
         ?string $error = null,
     ): Response {
-        $tenantOptions = $this->renderTenantOptions($tenants, $values['tenantId'] ?? '');
         $errorHtml = $error !== null ? sprintf(
             '<div class="form-alert form-alert-error">%s</div>',
             htmlspecialchars($error, ENT_QUOTES, 'UTF-8')
@@ -2919,10 +2757,10 @@ final class BackendUiController
             'error_html' => $errorHtml,
             'action_url' => $actionUrl,
             'csrf_token' => $this->productTokenValue($actionUrl),
-            'tenant_options_html' => $tenantOptions,
             'values' => $values,
             'submit_label' => $submitLabel,
             'result_html' => $resultHtml,
+            ...$this->currentUserTemplateData(),
         ]);
 
         return $this->renderBackendShell($pageTitle, $pageSubtitle, 'products', $content);
@@ -2997,11 +2835,12 @@ final class BackendUiController
     /**
      * @return string
      */
-    private function renderProductOptions(?ProductRepository $products, string $selectedId): string
+    private function renderProductOptions(?ProductRepository $products, string $selectedId, ?Tenant $tenant = null): string
     {
         $options = ['<option value="">Sin producto</option>'];
         if ($products instanceof ProductRepository) {
-            foreach ($products->findAllOrdered() as $product) {
+            $items = $tenant instanceof Tenant ? $products->findByTenantOrdered($tenant) : $products->findAllOrdered();
+            foreach ($items as $product) {
                 $label = sprintf('%s · %s', $product->getTenant()->getName(), $product->getName());
                 if ($product->getSlug() !== '') {
                     $label .= sprintf(' (%s)', $product->getSlug());
@@ -3025,11 +2864,12 @@ final class BackendUiController
     /**
      * @return string
      */
-    private function renderPlaybookOptions(?PlaybookRepository $playbooks, string $selectedId): string
+    private function renderPlaybookOptions(?PlaybookRepository $playbooks, string $selectedId, ?Tenant $tenant = null): string
     {
         $options = ['<option value="">Sin playbook</option>'];
         if ($playbooks instanceof PlaybookRepository) {
-            foreach ($playbooks->findAllOrdered() as $playbook) {
+            $items = $tenant instanceof Tenant ? $playbooks->findByTenantOrdered($tenant) : $playbooks->findAllOrdered();
+            foreach ($items as $playbook) {
                 $options[] = sprintf(
                     '<option value="%s"%s>%s · %s</option>',
                     htmlspecialchars($playbook->getId()->toRfc4122(), ENT_QUOTES, 'UTF-8'),
@@ -3088,7 +2928,7 @@ final class BackendUiController
     /**
      * @param array{productId: string, playbookId: string, code: string, name: string, source: string, medium: string, campaign: string, content: string, term: string, crmBranchRef: string, defaultMessage: string, isActive: bool} $values
      */
-    private function validateEntryPointForm(array $values, ?EntryPoint $entryPoint, ?ProductRepository $products, ?PlaybookRepository $playbooks, ?EntryPointRepository $entryPoints): ?string
+    private function validateEntryPointForm(array $values, ?EntryPoint $entryPoint, Tenant $tenant, ?ProductRepository $products, ?PlaybookRepository $playbooks, ?EntryPointRepository $entryPoints): ?string
     {
         if ($values['code'] === '') {
             return 'El código del punto de entrada es obligatorio.';
@@ -3096,6 +2936,11 @@ final class BackendUiController
 
         if ($values['productId'] === '' || !$products instanceof ProductRepository || !$products->find($values['productId']) instanceof Product) {
             return 'Debes seleccionar un producto válido.';
+        }
+
+        $product = $products->find($values['productId']);
+        if (!$product instanceof Product || $product->getTenant()->getId()->toRfc4122() !== $tenant->getId()->toRfc4122()) {
+            return 'El producto seleccionado no pertenece al negocio activo.';
         }
 
         if ($values['name'] === '') {
@@ -3130,8 +2975,7 @@ final class BackendUiController
             }
 
             $playbook = $playbooks->find($values['playbookId']);
-            $product = $products->find($values['productId']);
-            if (!$playbook instanceof Playbook || !$product instanceof Product || $playbook->getTenant()->getId()->toRfc4122() !== $product->getTenant()->getId()->toRfc4122()) {
+            if (!$playbook instanceof Playbook || $playbook->getTenant()->getId()->toRfc4122() !== $tenant->getId()->toRfc4122()) {
                 return 'La guía comercial seleccionada no pertenece al negocio.';
             }
         }
@@ -3151,11 +2995,9 @@ final class BackendUiController
     /**
      * @param array{productId: string, playbookId: string, code: string, name: string, source: string, medium: string, campaign: string, content: string, term: string, crmBranchRef: string, defaultMessage: string, isActive: bool} $values
      */
-    private function hydrateEntryPointFromForm(EntryPoint $entryPoint, array $values, ?Product $product, ?PlaybookRepository $playbooks): void
+    private function hydrateEntryPointFromForm(EntryPoint $entryPoint, array $values, Product $product, ?PlaybookRepository $playbooks): void
     {
-        if ($product instanceof Product) {
-            $entryPoint->setProduct($product);
-        }
+        $entryPoint->setProduct($product);
 
         $entryPoint->setCode($values['code']);
         $entryPoint->setName($values['name']);
@@ -3175,6 +3017,7 @@ final class BackendUiController
      */
     private function renderEntryPointForm(string $pageTitle, string $pageSubtitle, string $heroTitle, string $submitLabel, string $actionUrl, array $values, ?ProductRepository $products, ?PlaybookRepository $playbooks, ?string $error = null): Response
     {
+        $activeTenant = $this->activeTenantContext->getActiveTenant();
         $errorHtml = $error !== null ? sprintf('<div class="form-alert form-alert-error">%s</div>', htmlspecialchars($error, ENT_QUOTES, 'UTF-8')) : '';
         $content = $this->twig->render('backend/entry_points/form.html.twig', [
             'hero_title' => $heroTitle,
@@ -3182,10 +3025,11 @@ final class BackendUiController
             'error_html' => $errorHtml,
             'action_url' => $actionUrl,
             'csrf_token' => $this->entryPointTokenValue($actionUrl),
-            'product_options_html' => $this->renderProductOptions($products, $values['productId'] ?? ''),
-            'playbook_options_html' => $this->renderPlaybookOptions($playbooks, $values['playbookId'] ?? ''),
+            'product_options_html' => $this->renderProductOptions($products, $values['productId'] ?? '', $activeTenant instanceof Tenant ? $activeTenant : null),
+            'playbook_options_html' => $this->renderPlaybookOptions($playbooks, $values['playbookId'] ?? '', $activeTenant instanceof Tenant ? $activeTenant : null),
             'values' => $values,
             'submit_label' => $submitLabel,
+            'active_tenant_name' => $activeTenant instanceof Tenant ? $activeTenant->getName() : null,
         ]);
 
         return $this->renderBackendShell($pageTitle, $pageSubtitle, 'entry-points', $content);

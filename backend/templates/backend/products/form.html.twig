@@ -21,10 +21,10 @@
   <form method="post" action="{{ action_url }}" class="tenant-form">
     <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
     <div class="form-grid">
-      <div class="field">
+      <div class="field field-full">
         <label for="product-tenant">Negocio</label>
-        <select id="product-tenant" name="tenantId" required>{{ tenant_options_html|raw }}</select>
-        <div class="field-note">Cada producto pertenece a un negocio concreto.</div>
+        <input id="product-tenant" type="text" value="{{ active_tenant ? active_tenant.name : 'Sin negocio seleccionado' }}" readonly>
+        <div class="field-note">El producto / servicio se guardará en el negocio activo.</div>
       </div>
       <div class="field">
         <label for="product-name">Nombre del producto / servicio</label>

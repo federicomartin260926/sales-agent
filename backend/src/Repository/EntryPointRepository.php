@@ -3,6 +3,7 @@
 namespace App\Repository;
 
 use App\Entity\EntryPoint;
+use App\Entity\Tenant;
 use Doctrine\Bundle\DoctrineBundle\Repository\ServiceEntityRepository;
 use Doctrine\Persistence\ManagerRegistry;
 
@@ -46,6 +47,25 @@ class EntryPointRepository extends ServiceEntityRepository
             ->addSelect('t')
             ->leftJoin('ep.playbook', 'pb')
             ->addSelect('pb')
+            ->orderBy('ep.createdAt', 'DESC')
+            ->getQuery()
+            ->getResult();
+    }
+
+    /**
+     * @return EntryPoint[]
+     */
+    public function findByTenantOrdered(Tenant $tenant): array
+    {
+        return $this->createQueryBuilder('ep')
+            ->join('ep.product', 'p')
+            ->addSelect('p')
+            ->join('p.tenant', 't')
+            ->addSelect('t')
+            ->leftJoin('ep.playbook', 'pb')
+            ->addSelect('pb')
+            ->andWhere('p.tenant = :tenant')
+            ->setParameter('tenant', $tenant)
             ->orderBy('ep.createdAt', 'DESC')
             ->getQuery()
             ->getResult();

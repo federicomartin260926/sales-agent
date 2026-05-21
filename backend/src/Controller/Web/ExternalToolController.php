@@ -58,7 +58,8 @@ final class ExternalToolController extends AbstractController
             return $this->redirect('/backend/login');
         }
 
-        if (!$this->activeTenantContext->hasActiveTenant()) {
+        $activeTenant = $this->activeTenantContext->getActiveTenant();
+        if (!$activeTenant instanceof Tenant) {
             return $this->renderTenantSelectionRequiredPage(
                 'Servidores MCP',
                 'Selecciona un negocio antes de gestionar servidores MCP.',
@@ -67,25 +68,14 @@ final class ExternalToolController extends AbstractController
             );
         }
 
-        $tenantFilter = trim((string) $request->query->get('tenant_id', ''));
-        $selectedTenant = $tenantFilter !== '' ? $this->tenants->find($tenantFilter) : null;
-        $filterError = null;
-        if ($tenantFilter !== '' && !$selectedTenant instanceof Tenant) {
-            $filterError = 'El tenant seleccionado no existe.';
-        }
-
-        $tools = $selectedTenant instanceof Tenant
-            ? $this->externalTools->findByTenantOrdered($selectedTenant)
-            : $this->externalTools->findAllOrdered();
+        $tools = $this->externalTools->findByTenantOrdered($activeTenant);
 
         return $this->render('backend/external_tools/index.html.twig', [
-            'page_title' => 'Servidores MCP',
-            'page_subtitle' => 'Configuración de servidores MCP remotos por tenant.',
+            'page_title' => sprintf('Servidores MCP de %s', $activeTenant->getName()),
+            'page_subtitle' => 'Configuración de servidores MCP remotos del negocio activo.',
             'active_nav' => 'admin-external-tools',
-            'tenants' => $this->tenantOptions(),
-            'tenant_filter' => $tenantFilter,
-            'filter_error' => $filterError,
             'tools' => array_map([$this, 'toolRow'], $tools),
+            'active_tenant_name' => $activeTenant->getName(),
             ...$this->currentUserTemplateData(),
         ]);
     }
@@ -97,7 +87,8 @@ final class ExternalToolController extends AbstractController
             return $this->redirect('/backend/login');
         }
 
-        if (!$this->activeTenantContext->hasActiveTenant()) {
+        $activeTenant = $this->activeTenantContext->getActiveTenant();
+        if (!$activeTenant instanceof Tenant) {
             return $this->renderTenantSelectionRequiredPage(
                 'Crear servidor MCP',
                 'Selecciona un negocio antes de crear un servidor MCP remoto.',
@@ -106,7 +97,7 @@ final class ExternalToolController extends AbstractController
             );
         }
 
-        $values = $this->toolFormDefaults();
+        $values = $this->toolFormDefaults(null, $activeTenant);
         $errors = [];
 
         if ($request->isMethod('POST')) {
@@ -117,16 +108,12 @@ final class ExternalToolController extends AbstractController
             } else {
                 $errors = $this->validateToolForm($values);
                 if ($errors === []) {
-                    $tenant = $this->tenants->find($values['tenantId']);
-                    if ($tenant instanceof Tenant) {
-                        $tool = new ExternalTool($tenant, $values['name'], $values['type'], $values['provider']);
-                        $this->applyToolFormValues($tool, $values, true);
-                        $this->entityManager->persist($tool);
-                        $this->entityManager->flush();
+                    $tool = new ExternalTool($activeTenant, $values['name'], $values['type'], $values['provider']);
+                    $this->applyToolFormValues($tool, $values, true, $activeTenant);
+                    $this->entityManager->persist($tool);
+                    $this->entityManager->flush();
 
-                        return new RedirectResponse($this->backendExternalToolsIndexUrl($tenant->getId()->toRfc4122()));
-                    }
-                    $errors[] = 'El tenant seleccionado no existe.';
+                    return new RedirectResponse($this->backendExternalToolsIndexUrl($activeTenant->getId()->toRfc4122()));
                 }
             }
         }
@@ -140,7 +127,8 @@ final class ExternalToolController extends AbstractController
             $values,
             $errors,
             false,
-            null
+            null,
+            $activeTenant
         );
     }
 
@@ -151,7 +139,8 @@ final class ExternalToolController extends AbstractController
             return $this->redirect('/backend/login');
         }
 
-        if (!$this->activeTenantContext->hasActiveTenant()) {
+        $activeTenant = $this->activeTenantContext->getActiveTenant();
+        if (!$activeTenant instanceof Tenant) {
             return $this->renderTenantSelectionRequiredPage(
                 'Editar servidor MCP',
                 'Selecciona un negocio antes de editar un servidor MCP remoto.',
@@ -161,11 +150,11 @@ final class ExternalToolController extends AbstractController
         }
 
         $tool = $this->externalTools->find($id);
-        if (!$tool instanceof ExternalTool) {
-            return new RedirectResponse($this->backendExternalToolsIndexUrl());
+        if (!$tool instanceof ExternalTool || $tool->getTenant()->getId()->toRfc4122() !== $activeTenant->getId()->toRfc4122()) {
+            return new Response('', Response::HTTP_NOT_FOUND);
         }
 
-        $values = $this->toolFormDefaults($tool);
+        $values = $this->toolFormDefaults($tool, $activeTenant);
         $errors = [];
 
         if ($request->isMethod('POST')) {
@@ -176,15 +165,11 @@ final class ExternalToolController extends AbstractController
             } else {
                 $errors = $this->validateToolForm($values, $tool);
                 if ($errors === []) {
-                    $tenant = $this->tenants->find($values['tenantId']);
-                    if ($tenant instanceof Tenant) {
-                        $this->applyToolFormValues($tool, $values, false, $tenant);
-                        $this->entityManager->persist($tool);
-                        $this->entityManager->flush();
+                    $this->applyToolFormValues($tool, $values, false, $activeTenant);
+                    $this->entityManager->persist($tool);
+                    $this->entityManager->flush();
 
-                        return new RedirectResponse($this->backendExternalToolsIndexUrl($tenant->getId()->toRfc4122()));
-                    }
-                    $errors[] = 'El tenant seleccionado no existe.';
+                    return new RedirectResponse($this->backendExternalToolsIndexUrl($activeTenant->getId()->toRfc4122()));
                 }
             }
         }
@@ -198,7 +183,8 @@ final class ExternalToolController extends AbstractController
             $values,
             $errors,
             true,
-            $tool
+            $tool,
+            $activeTenant
         );
     }
 
@@ -209,9 +195,10 @@ final class ExternalToolController extends AbstractController
             return $this->redirect('/backend/login');
         }
 
+        $activeTenant = $this->activeTenantContext->getActiveTenant();
         $tool = $this->externalTools->find($id);
-        if (!$tool instanceof ExternalTool) {
-            return $this->redirectToRoute('backend_external_tools_index');
+        if (!$tool instanceof ExternalTool || !$activeTenant instanceof Tenant || $tool->getTenant()->getId()->toRfc4122() !== $activeTenant->getId()->toRfc4122()) {
+            return new Response('', Response::HTTP_NOT_FOUND);
         }
 
         if (!$this->isValidExternalToolToken('external_tool_toggle_'.$tool->getId()->toRfc4122(), (string) $request->request->get('_csrf_token'))) {
@@ -234,9 +221,10 @@ final class ExternalToolController extends AbstractController
             return $this->redirect('/backend/login');
         }
 
+        $activeTenant = $this->activeTenantContext->getActiveTenant();
         $tool = $this->externalTools->find($id);
-        if (!$tool instanceof ExternalTool) {
-            return new RedirectResponse($this->backendExternalToolsIndexUrl());
+        if (!$tool instanceof ExternalTool || !$activeTenant instanceof Tenant || $tool->getTenant()->getId()->toRfc4122() !== $activeTenant->getId()->toRfc4122()) {
+            return new Response('', Response::HTTP_NOT_FOUND);
         }
 
         if (!$this->isValidExternalToolToken('external_tool_delete_'.$tool->getId()->toRfc4122(), (string) $request->request->get('_csrf_token'))) {
@@ -258,9 +246,10 @@ final class ExternalToolController extends AbstractController
             return $this->redirect('/backend/login');
         }
 
+        $activeTenant = $this->activeTenantContext->getActiveTenant();
         $tool = $this->externalTools->find($id);
-        if (!$tool instanceof ExternalTool) {
-            return new RedirectResponse($this->backendExternalToolsIndexUrl());
+        if (!$tool instanceof ExternalTool || !$activeTenant instanceof Tenant || $tool->getTenant()->getId()->toRfc4122() !== $activeTenant->getId()->toRfc4122()) {
+            return new Response('', Response::HTTP_NOT_FOUND);
         }
 
         if (!$this->isValidExternalToolToken('external_tool_test_'.$tool->getId()->toRfc4122(), (string) $request->request->get('_csrf_token'))) {
@@ -270,14 +259,12 @@ final class ExternalToolController extends AbstractController
         $testResult = $this->runMcpTest($tool);
 
         return $this->render('backend/external_tools/index.html.twig', [
-            'page_title' => 'Servidores MCP',
-            'page_subtitle' => 'Configuración de servidores MCP remotos por tenant.',
+            'page_title' => sprintf('Servidores MCP de %s', $activeTenant->getName()),
+            'page_subtitle' => 'Configuración de servidores MCP remotos del negocio activo.',
             'active_nav' => 'admin-external-tools',
-            'tenants' => $this->tenantOptions(),
-            'tenant_filter' => $tool->getTenant()->getId()->toRfc4122(),
-            'filter_error' => null,
-            'tools' => array_map([$this, 'toolRow'], $this->externalTools->findByTenantOrdered($tool->getTenant())),
+            'tools' => array_map([$this, 'toolRow'], $this->externalTools->findByTenantOrdered($activeTenant)),
             'test_result' => $testResult,
+            'active_tenant_name' => $activeTenant->getName(),
             ...$this->currentUserTemplateData(),
         ]);
     }
@@ -326,12 +313,12 @@ final class ExternalToolController extends AbstractController
     /**
      * @return array{name: string, tenantId: string, type: string, provider: string, webhookUrl: string, authType: string, bearerToken: string, timeoutSeconds: string, isActive: bool, config: string, serverLabel: string, allowedTools: string, requireApproval: string, enabledForLlm: bool, notes: string}
      */
-    private function toolFormDefaults(?ExternalTool $tool = null): array
+    private function toolFormDefaults(?ExternalTool $tool = null, ?Tenant $tenant = null): array
     {
         $config = $tool?->getConfig() ?? [];
         return [
             'name' => $tool?->getName() ?? '',
-            'tenantId' => $tool?->getTenant()?->getId()->toRfc4122() ?? '',
+            'tenantId' => $tenant?->getId()->toRfc4122() ?? $tool?->getTenant()?->getId()->toRfc4122() ?? '',
             'type' => $tool?->getType() ?? self::TEST_TOOL_TYPE,
             'provider' => $tool?->getProvider() ?? self::PROVIDERS[0],
             'webhookUrl' => $tool?->getWebhookUrl() ?? '',
@@ -380,12 +367,6 @@ final class ExternalToolController extends AbstractController
     private function validateToolForm(array $values, ?ExternalTool $tool = null): array
     {
         $errors = [];
-
-        if ($values['tenantId'] === '') {
-            $errors[] = 'El tenant es obligatorio.';
-        } elseif (!$this->tenants->find($values['tenantId']) instanceof Tenant) {
-            $errors[] = 'El tenant seleccionado no existe.';
-        }
 
         if ($values['name'] === '') {
             $errors[] = 'El nombre es obligatorio.';
@@ -455,11 +436,9 @@ final class ExternalToolController extends AbstractController
     /**
      * @param array{name: string, tenantId: string, type: string, provider: string, webhookUrl: string, authType: string, bearerToken: string, timeoutSeconds: string, isActive: bool, config: string} $values
      */
-    private function applyToolFormValues(ExternalTool $tool, array $values, bool $isNew, ?Tenant $tenant = null): void
+    private function applyToolFormValues(ExternalTool $tool, array $values, bool $isNew, Tenant $tenant): void
     {
-        if ($tenant instanceof Tenant) {
-            $tool->setTenant($tenant);
-        }
+        $tool->setTenant($tenant);
 
         $tool->setName($values['name']);
         $tool->setType($values['type']);
@@ -644,13 +623,13 @@ final class ExternalToolController extends AbstractController
         array $values,
         array $errors,
         bool $isEdit,
-        ?ExternalTool $tool
+        ?ExternalTool $tool,
+        ?Tenant $activeTenant = null
     ): Response {
         return $this->render('backend/external_tools/form.html.twig', [
             'page_title' => $pageTitle,
             'page_subtitle' => $pageSubtitle,
             'active_nav' => 'admin-external-tools',
-            'tenants' => $this->tenantOptions(),
             'values' => $values,
             'errors' => $errors,
             'hero_title' => $heroTitle,
@@ -661,6 +640,7 @@ final class ExternalToolController extends AbstractController
             'has_token' => $tool?->getBearerToken() !== null && $tool->getBearerToken() !== '',
             'can_test' => $tool === null ? false : $this->canTestTool($tool),
             'form_token' => $this->externalToolTokenValue($isEdit && $tool instanceof ExternalTool ? 'external_tool_form_'.$tool->getId()->toRfc4122() : 'external_tool_form_create'),
+            'active_tenant_name' => $activeTenant instanceof Tenant ? $activeTenant->getName() : null,
             ...$this->currentUserTemplateData(),
         ]);
     }
@@ -686,10 +666,8 @@ final class ExternalToolController extends AbstractController
                 ',
                 htmlspecialchars($sectionLabel, ENT_QUOTES, 'UTF-8')
             ),
-            'tenants' => $this->tenantOptions(),
-            'tenant_filter' => '',
-            'filter_error' => null,
             'tools' => [],
+            'active_tenant_name' => null,
             ...$this->currentUserTemplateData(),
         ]);
     }

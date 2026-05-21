@@ -42,14 +42,10 @@
       <input type="hidden" name="type" value="mcp_remote">
       <input type="hidden" name="provider" value="openai_remote_mcp">
       <div class="form-grid">
-        <div class="field">
-          <label for="tool-tenant">Tenant</label>
-          <select id="tool-tenant" name="tenantId" required>
-            <option value="">Selecciona un tenant</option>
-            {% for tenant in tenants %}
-              <option value="{{ tenant.id }}"{{ values.tenantId == tenant.id ? ' selected' : '' }}>{{ tenant.name }}</option>
-            {% endfor %}
-          </select>
+        <div class="field field-full">
+          <label for="tool-tenant">Negocio</label>
+          <input id="tool-tenant" type="text" value="{{ active_tenant_name ?: 'Sin negocio seleccionado' }}" readonly>
+          <div class="field-note">El servidor MCP se guardará en el negocio activo.</div>
         </div>
 
         <div class="field">

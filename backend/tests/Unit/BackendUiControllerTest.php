@@ -180,6 +180,14 @@ final class BackendUiControllerTest extends TestCase
                 return $this->orderedProducts;
             }
 
+            public function findByTenantOrdered(\App\Entity\Tenant $tenant): array
+            {
+                return array_values(array_filter(
+                    $this->orderedProducts,
+                    static fn (Product $product): bool => $product->getTenant()->getId()->toRfc4122() === $tenant->getId()->toRfc4122()
+                ));
+            }
+
             public function find($id, $lockMode = null, $lockVersion = null): ?object
             {
                 return $this->foundProduct;
@@ -228,7 +236,7 @@ final class BackendUiControllerTest extends TestCase
             /**
              * @return ExternalTool[]
              */
-            public function findByTenantOrdered(Tenant $tenant): array
+            public function findByTenantOrdered(\App\Entity\Tenant $tenant): array
             {
                 return array_values(array_filter(
                     $this->orderedTools,
@@ -347,6 +355,14 @@ final class BackendUiControllerTest extends TestCase
                 return $this->orderedPlaybooks;
             }
 
+            public function findByTenantOrdered(\App\Entity\Tenant $tenant): array
+            {
+                return array_values(array_filter(
+                    $this->orderedPlaybooks,
+                    static fn (Playbook $playbook): bool => $playbook->getTenant()->getId()->toRfc4122() === $tenant->getId()->toRfc4122()
+                ));
+            }
+
             public function find($id, $lockMode = null, $lockVersion = null): ?object
             {
                 return $this->foundPlaybook;
@@ -376,6 +392,14 @@ final class BackendUiControllerTest extends TestCase
             public function findAllOrdered(): array
             {
                 return $this->orderedEntryPoints;
+            }
+
+            public function findByTenantOrdered(\App\Entity\Tenant $tenant): array
+            {
+                return array_values(array_filter(
+                    $this->orderedEntryPoints,
+                    static fn (EntryPoint $entryPoint): bool => $entryPoint->getTenant()->getId()->toRfc4122() === $tenant->getId()->toRfc4122()
+                ));
             }
 
             public function findOneBy(array $criteria, ?array $orderBy = null): ?object
@@ -1129,12 +1153,13 @@ final class BackendUiControllerTest extends TestCase
         $response = $controller->playbooks(Request::create('/backend/playbooks', 'GET'), $playbooks);
 
         self::assertSame(Response::HTTP_OK, $response->getStatusCode());
-        self::assertStringContainsString('Crear guía comercial', $response->getContent());
+        self::assertStringContainsString('Guías comerciales de Federico Martin Demo', $response->getContent());
         self::assertStringContainsString('icon-action', $response->getContent());
         self::assertStringContainsString('Editar guía comercial', $response->getContent());
         self::assertStringContainsString('Eliminar guía comercial', $response->getContent());
         self::assertStringContainsString('Guía comercial demo', $response->getContent());
         self::assertStringContainsString('Resumen:', $response->getContent());
+        self::assertStringNotContainsString('Todos los tenants', $response->getContent());
     }
 
     public function testPlaybookDeleteRemovesPlaybookAndShowsFlashOnListing(): void
@@ -1198,7 +1223,7 @@ final class BackendUiControllerTest extends TestCase
 
         self::assertSame(Response::HTTP_OK, $response->getStatusCode());
         self::assertStringContainsString('Crear guía comercial', $response->getContent());
-        self::assertStringContainsString('name="tenantId"', $response->getContent());
+        self::assertStringContainsString('value="Federico Martin Demo"', $response->getContent());
         self::assertStringContainsString('name="productId"', $response->getContent());
         self::assertStringContainsString('name="name"', $response->getContent());
         self::assertStringContainsString('name="objective"', $response->getContent());
@@ -1246,7 +1271,6 @@ final class BackendUiControllerTest extends TestCase
         $controller = $this->createControllerForActiveTenant($security, $tenant, $entityManager, null, $csrfTokenManager);
         $response = $controller->playbookCreate(Request::create('/backend/playbooks/new', 'POST', [
             '_csrf_token' => 'token',
-            'tenantId' => $tenant->getId()->toRfc4122(),
             'productId' => $product->getId()->toRfc4122(),
             'name' => 'Guía comercial demo',
             'objective' => 'Calificar el lead',
@@ -1292,7 +1316,6 @@ final class BackendUiControllerTest extends TestCase
         $controller = $this->createControllerForActiveTenant($security, $tenant, $entityManager, null, $csrfTokenManager);
         $response = $controller->playbookCreate(Request::create('/backend/playbooks/new', 'POST', [
             '_csrf_token' => 'token',
-            'tenantId' => $tenant->getId()->toRfc4122(),
             'productId' => '',
             'name' => 'Guía comercial campaña',
             'objective' => '',
@@ -1337,16 +1360,16 @@ final class BackendUiControllerTest extends TestCase
         $response = $controller->products(Request::create('/backend/products', 'GET'), $products, $tenants);
 
         self::assertSame(Response::HTTP_OK, $response->getStatusCode());
-        self::assertStringContainsString('Importar catálogo', $response->getContent());
+        self::assertStringContainsString('Productos / servicios de Federico Martin Demo', $response->getContent());
         self::assertStringContainsString('Crear producto / servicio', $response->getContent());
         self::assertStringContainsString('icon-action', $response->getContent());
         self::assertStringContainsString('Editar producto / servicio', $response->getContent());
         self::assertStringContainsString('Eliminar producto / servicio', $response->getContent());
         self::assertStringContainsString('/backend/products/'.$product->getId()->toRfc4122().'/delete', $response->getContent());
-        self::assertStringContainsString('name="tenantId"', $response->getContent());
         self::assertStringContainsString('name="product"', $response->getContent());
         self::assertStringContainsString('WhatsApp Automation', $response->getContent());
         self::assertStringContainsString('Slug:', $response->getContent());
+        self::assertStringNotContainsString('Todos los tenants', $response->getContent());
     }
 
     public function testProductsPageFiltersByTenantAndProductQuery(): void
@@ -1365,7 +1388,6 @@ final class BackendUiControllerTest extends TestCase
 
         $controller = $this->createControllerForActiveTenant($security, $tenantA);
         $request = Request::create('/backend/products', 'GET', [
-            'tenantId' => $tenantA->getId()->toRfc4122(),
             'product' => 'whatsapp',
         ]);
 
@@ -1375,7 +1397,7 @@ final class BackendUiControllerTest extends TestCase
         self::assertStringContainsString('WhatsApp Automation', $response->getContent());
         self::assertStringNotContainsString('RAG Knowledge System', $response->getContent());
         self::assertStringContainsString('value="whatsapp"', $response->getContent());
-        self::assertStringContainsString('selected', $response->getContent());
+        self::assertStringNotContainsString('name="tenantId"', $response->getContent());
     }
 
     public function testProductCreateFormRendersTheExpectedFields(): void
@@ -1398,7 +1420,7 @@ final class BackendUiControllerTest extends TestCase
 
         self::assertSame(Response::HTTP_OK, $response->getStatusCode());
         self::assertStringContainsString('Crear producto / servicio', $response->getContent());
-        self::assertStringContainsString('name="tenantId"', $response->getContent());
+        self::assertStringContainsString('value="Federico Martin Demo"', $response->getContent());
         self::assertStringContainsString('name="slug"', $response->getContent());
         self::assertStringContainsString('name="externalSource"', $response->getContent());
         self::assertStringContainsString('name="externalReference"', $response->getContent());
@@ -1430,7 +1452,7 @@ final class BackendUiControllerTest extends TestCase
         self::assertSame(Response::HTTP_OK, $response->getStatusCode());
         self::assertStringContainsString('Importar catálogo de productos / servicios', $response->getContent());
         self::assertStringContainsString('Catálogo independiente', $response->getContent());
-        self::assertStringContainsString('name="tenantId"', $response->getContent());
+        self::assertStringContainsString('value="Federico Martin Demo"', $response->getContent());
         self::assertStringContainsString('name="format"', $response->getContent());
         self::assertStringContainsString('name="file"', $response->getContent());
         self::assertStringContainsString('name="payload"', $response->getContent());
@@ -1531,7 +1553,6 @@ final class BackendUiControllerTest extends TestCase
         $controller = $this->createControllerForActiveTenant($security, $tenant, $entityManager, null, $csrfTokenManager);
         $response = $controller->productCreate(Request::create('/backend/products/new', 'POST', [
             '_csrf_token' => 'token',
-            'tenantId' => $tenant->getId()->toRfc4122(),
             'slug' => 'whatsapp-automation',
             'externalSource' => 'crm',
             'externalReference' => 'pack-starter',
