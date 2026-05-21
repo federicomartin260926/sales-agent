@@ -6,7 +6,6 @@
 
   const endpoint = root.dataset.endpoint || '';
   const csrfToken = root.dataset.csrfToken || '';
-  const initialMessage = root.dataset.initialMessage || 'Hola. Te ayudaré a completar la ficha del negocio.';
   const chatLog = root.querySelector('[data-chat-log]');
   const statusBox = root.querySelector('[data-chat-status]');
   const autoApplyNote = root.querySelector('[data-auto-apply-note]');
@@ -22,6 +21,7 @@
     conversation: [],
     currentDraft: null,
     initialized: false,
+    userMessages: 0,
     loading: false,
   };
   const bodyScrollClass = 'ai-assistant-modal-open';
@@ -89,13 +89,39 @@
   }
 
   function ensureInitialMessage() {
-    if (state.initialized) {
+    if (state.initialized && state.userMessages > 0) {
       return;
+    }
+
+    const initialMessage = buildInitialMessage();
+    if (state.initialized && state.userMessages === 0) {
+      state.conversation = [];
+      if (chatLog) {
+        chatLog.innerHTML = '';
+      }
     }
 
     state.initialized = true;
     state.conversation.push({ role: 'assistant', content: initialMessage });
     appendMessage('assistant', initialMessage);
+  }
+
+  function buildInitialMessage() {
+    const name = readValue('name');
+    const tone = readValue('tone');
+    const intro = name !== ''
+      ? `Hola. Te ayudaré a completar la ficha de ${name}.`
+      : 'Hola. Te ayudaré a completar la ficha del negocio.';
+    const toneHint = tone !== '' ? ` Veo que ya tienes un tono definido como "${tone}".` : '';
+
+    return `${intro}${toneHint} Para empezar:
+1. ¿Cuál es el nombre comercial del negocio?
+2. ¿Qué vende u ofrece?
+3. ¿En qué ciudad o zona atiende?
+4. ¿Qué tipo de cliente quieres captar?
+5. ¿Cuál es el WhatsApp público para clientes, si quieres configurarlo ahora?
+
+Yo no guardo nada: tú revisarás y pulsarás "Crear negocio" al final.`;
   }
 
   function readCheckbox(name) {
@@ -246,6 +272,7 @@
     }
 
     ensureInitialMessage();
+    state.userMessages += 1;
     state.conversation.push({ role: 'user', content: message });
     appendMessage('user', message);
 

@@ -645,6 +645,8 @@ final class BackendUiControllerTest extends TestCase
         self::assertStringContainsString('name="notes"', $response->getContent());
         self::assertStringContainsString('name="isActive"', $response->getContent());
         self::assertStringContainsString('Crear negocio', $response->getContent());
+        self::assertStringContainsString('data-tenant-draft-assistant', $response->getContent());
+        self::assertStringNotContainsString('Modo borrador', $response->getContent());
     }
 
     public function testTenantCreateSubmissionPersistsNewTenant(): void
@@ -994,6 +996,7 @@ final class BackendUiControllerTest extends TestCase
         self::assertStringContainsString('Guía IA', $response->getContent());
         self::assertStringContainsString('data-playbook-draft-assistant', $response->getContent());
         self::assertStringContainsString('playbook-draft-assistant-modal', $response->getContent());
+        self::assertStringNotContainsString('Modo borrador', $response->getContent());
     }
 
     public function testPlaybookCreateSubmissionPersistsNewPlaybook(): void

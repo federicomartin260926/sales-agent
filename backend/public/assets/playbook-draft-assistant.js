@@ -6,7 +6,6 @@
 
   const endpoint = root.dataset.endpoint || '';
   const csrfToken = root.dataset.csrfToken || '';
-  const initialMessage = root.dataset.initialMessage || 'Hola. Te ayudaré a definir una estrategia específica para esta guía comercial.';
   const chatLog = root.querySelector('[data-chat-log]');
   const statusBox = root.querySelector('[data-chat-status]');
   const autoApplyNote = root.querySelector('[data-auto-apply-note]');
@@ -22,6 +21,7 @@
     conversation: [],
     currentDraft: null,
     initialized: false,
+    userMessages: 0,
     loading: false,
   };
   const bodyScrollClass = 'ai-assistant-modal-open';
@@ -90,13 +90,70 @@
   }
 
   function ensureInitialMessage() {
-    if (state.initialized) {
+    if (state.initialized && state.userMessages > 0) {
       return;
+    }
+
+    const initialMessage = buildInitialMessage();
+    if (state.initialized && state.userMessages === 0) {
+      state.conversation = [];
+      if (chatLog) {
+        chatLog.innerHTML = '';
+      }
     }
 
     state.initialized = true;
     state.conversation.push({ role: 'assistant', content: initialMessage });
     appendMessage('assistant', initialMessage);
+  }
+
+  function buildInitialMessage() {
+    const tenantName = readTenantName();
+    const productName = readProductName();
+
+    if (tenantName === '') {
+      return 'Primero selecciona un negocio para que pueda usar su contexto general. Después te ayudaré a definir una estrategia específica.';
+    }
+
+    const intro = productName !== ''
+      ? `Veo que hay un producto seleccionado: ${productName}. Enfocaré la guía en ese producto.`
+      : `Hola. Te ayudaré a definir una estrategia específica para ${tenantName}.`;
+
+    return `${intro} Para empezar:
+1. ¿Esta guía es para un producto, campaña, canal o situación concreta?
+2. ¿Qué objetivo debe conseguir el agente en este caso?
+3. ¿Qué debe preguntar distinto a la política general del negocio?
+4. ¿Cuándo debe derivar a una persona en este caso?
+
+Yo no guardo nada: tú revisarás y pulsarás "Crear guía comercial" al final.`;
+  }
+
+  function readTenantName() {
+    const select = playbookForm?.querySelector('[name="tenantId"]');
+    if (!(select instanceof HTMLSelectElement)) {
+      return '';
+    }
+
+    if (select.value.trim() === '') {
+      return '';
+    }
+
+    const option = select.selectedOptions?.[0];
+    return option ? String(option.textContent || '').trim() : '';
+  }
+
+  function readProductName() {
+    const select = playbookForm?.querySelector('[name="productId"]');
+    if (!(select instanceof HTMLSelectElement)) {
+      return '';
+    }
+
+    if (select.value.trim() === '') {
+      return '';
+    }
+
+    const option = select.selectedOptions?.[0];
+    return option ? String(option.textContent || '').trim() : '';
   }
 
   function readCheckbox(name) {
@@ -282,6 +339,7 @@
     }
 
     ensureInitialMessage();
+    state.userMessages += 1;
     state.conversation.push({ role: 'user', content: message });
     appendMessage('user', message);
 
