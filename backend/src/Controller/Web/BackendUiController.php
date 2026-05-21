@@ -1755,6 +1755,21 @@ final class BackendUiController
         ?string $error = null,
         array $aiUsage = [],
     ): Response {
+        $aiUsage = array_replace(
+            [
+                'today' => [
+                    'estimatedCostEur' => '0,00 €',
+                    'totalTokens' => '0',
+                ],
+                'month' => [
+                    'estimatedCostEur' => '0,00 €',
+                    'totalTokens' => '0',
+                ],
+                'recentEvents' => [],
+            ],
+            $aiUsage
+        );
+
         $errorHtml = $error !== null ? sprintf(
             '<div class="form-alert form-alert-error">%s</div>',
             htmlspecialchars($error, ENT_QUOTES, 'UTF-8')
