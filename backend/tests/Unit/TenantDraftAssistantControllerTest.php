@@ -59,6 +59,12 @@ final class TenantDraftAssistantControllerTest extends TestCase
         self::assertArrayHasKey('answer', $payload);
         self::assertSame('asking', $payload['status']);
         self::assertSame('clinica-dental-demo', $payload['draft']['slug']);
+        self::assertNotSame('', $payload['draft']['salesPolicyWelcome']);
+        self::assertNotSame('', $payload['draft']['salesPolicyQualification']);
+        self::assertNotSame('', $payload['draft']['salesPolicyHandoff']);
+        self::assertNotSame('', $payload['draft']['salesPolicyLimits']);
+        self::assertNotSame('', $payload['draft']['salesPolicyNotes']);
+        self::assertNotEmpty($payload['questions']);
     }
 
     private function createSecurity(): Security

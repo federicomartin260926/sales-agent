@@ -11,7 +11,7 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
 
 final class TenantDraftAssistantServiceTest extends TestCase
 {
-    public function testHeuristicFallbackBuildsDraftWithoutCallingOpenAi(): void
+    public function testHeuristicFallbackKeepsAskingUntilCommercialDataIsEnough(): void
     {
         $requests = [];
         $httpClient = new MockHttpClient(function () use (&$requests): MockResponse {
@@ -45,7 +45,13 @@ final class TenantDraftAssistantServiceTest extends TestCase
         self::assertIsArray($response['questions']);
         self::assertSame('clinica-demo', $response['draft']['slug']);
         self::assertSame('cercano, profesional y directo', $response['draft']['tone']);
-        self::assertSame('¿Qué vende, a quién y en qué zona o mercado opera?', $response['answer']);
+        self::assertNotSame('', $response['draft']['salesPolicyWelcome']);
+        self::assertNotSame('', $response['draft']['salesPolicyQualification']);
+        self::assertNotSame('', $response['draft']['salesPolicyHandoff']);
+        self::assertNotSame('', $response['draft']['salesPolicyLimits']);
+        self::assertNotSame('', $response['draft']['salesPolicyNotes']);
+        self::assertStringContainsString('¿Qué servicios o productos principales ofrece?', $response['answer']);
+        self::assertStringContainsString('¿Qué tipo de cliente quieres captar principalmente?', $response['answer']);
     }
 
     public function testOpenAiResponseIsNormalizedIntoDraftPayload(): void
@@ -98,16 +104,16 @@ final class TenantDraftAssistantServiceTest extends TestCase
         $response = $service->buildResponse(
             [
                 ['role' => 'assistant', 'content' => 'Hola'],
-                ['role' => 'user', 'content' => 'Necesito una ficha para un estudio de diseño.'],
+                ['role' => 'user', 'content' => 'Mary esteticista. Villanueva de la Cañada. Mujeres que buscan tratamientos de belleza, depilación láser o con cera, masajes e indiba. Mary trabaja sola de lunes a viernes de 10 a 20:30. No dar precios cerrados ni diagnósticos.'],
             ],
-            'Necesito una ficha para un estudio de diseño.',
+            'Mary esteticista. Villanueva de la Cañada. Mujeres que buscan tratamientos de belleza, depilación láser o con cera, masajes e indiba. Mary trabaja sola de lunes a viernes de 10 a 20:30. No dar precios cerrados ni diagnósticos.',
             [
                 'name' => 'Demo Studio',
                 'slug' => '',
                 'businessContext' => '',
                 'tone' => '',
                 'whatsappPhoneNumberId' => '',
-                'whatsappPublicPhone' => '',
+                'whatsappPublicPhone' => '34612345678',
                 'positioning' => '',
                 'qualificationFocus' => '',
                 'handoffRules' => '',
@@ -127,6 +133,37 @@ final class TenantDraftAssistantServiceTest extends TestCase
         self::assertSame('demo-studio', $response['draft']['slug']);
         self::assertSame('Estudio que vende servicios de diseño a pymes.', $response['draft']['businessContext']);
         self::assertSame('Saluda con tono cercano y profesional.', $response['draft']['salesPolicyWelcome']);
+        self::assertNotSame('', $response['draft']['salesPolicyQualification']);
+        self::assertNotSame('', $response['draft']['salesPolicyHandoff']);
+        self::assertNotSame('', $response['draft']['salesPolicyLimits']);
+        self::assertNotSame('', $response['draft']['salesPolicyNotes']);
+        self::assertSame('34612345678', $response['draft']['whatsappPublicPhone']);
+    }
+
+    public function testCompleteDraftDoesNotInventTechnicalWhatsAppIdentifiers(): void
+    {
+        $service = new TenantDraftAssistantService(
+            $this->runtimeConfigurationService([]),
+            $this->createStub(HttpClientInterface::class),
+        );
+
+        $response = $service->buildResponse([], 'Centro de estética especializado en depilación láser, tratamientos faciales y masajes.', [
+            'name' => 'Mary esteticista',
+            'slug' => '',
+            'businessContext' => '',
+            'tone' => '',
+            'whatsappPhoneNumberId' => '',
+            'whatsappPublicPhone' => '',
+            'positioning' => '',
+            'qualificationFocus' => '',
+            'handoffRules' => '',
+            'salesBoundaries' => '',
+            'notes' => '',
+            'isActive' => true,
+        ]);
+
+        self::assertSame('', $response['draft']['whatsappPhoneNumberId']);
+        self::assertSame('', $response['draft']['whatsappPublicPhone']);
     }
 
     private function runtimeConfigurationService(array $values): RuntimeConfigurationService

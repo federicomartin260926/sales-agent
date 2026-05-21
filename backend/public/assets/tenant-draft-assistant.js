@@ -9,10 +9,10 @@
   const initialMessage = root.dataset.initialMessage || 'Hola. Te ayudaré a completar la ficha del negocio.';
   const chatLog = root.querySelector('[data-chat-log]');
   const statusBox = root.querySelector('[data-chat-status]');
+  const autoApplyNote = root.querySelector('[data-auto-apply-note]');
   const chatForm = root.querySelector('[data-chat-form]');
   const chatInput = root.querySelector('[data-chat-input]');
   const sendButton = root.querySelector('[data-send-button]');
-  const applyButton = root.querySelector('[data-apply-button]');
   const tenantForm = document.querySelector('form.tenant-form');
   const modal = window.bootstrap?.Modal?.getOrCreateInstance
     ? window.bootstrap.Modal.getOrCreateInstance(root)
@@ -24,6 +24,7 @@
     initialized: false,
     loading: false,
   };
+  const bodyScrollClass = 'ai-assistant-modal-open';
 
   const formFieldMap = {
     name: 'name',
@@ -73,13 +74,18 @@
     if (sendButton) {
       sendButton.disabled = loading;
     }
-    if (applyButton && !applyButton.hidden) {
-      applyButton.disabled = loading;
-    }
     if (chatInput) {
       chatInput.disabled = loading;
     }
     root.setAttribute('aria-busy', loading ? 'true' : 'false');
+  }
+
+  function lockBodyScroll() {
+    document.body.classList.add(bodyScrollClass);
+  }
+
+  function unlockBodyScroll() {
+    document.body.classList.remove(bodyScrollClass);
   }
 
   function ensureInitialMessage() {
@@ -152,9 +158,10 @@
 
   function applyDraft(draft) {
     if (!draft || typeof draft !== 'object') {
-      return;
+      return 0;
     }
 
+    let updates = 0;
     Object.entries(formFieldMap).forEach(([draftKey, fieldName]) => {
       if (!Object.prototype.hasOwnProperty.call(draft, draftKey)) {
         return;
@@ -163,28 +170,41 @@
       const value = draft[draftKey];
       if (typeof value === 'string') {
         if (value.trim() !== '') {
+          updates += 1;
           setFieldValue(fieldName, value);
         }
         return;
       }
 
       if (typeof value === 'boolean') {
+        updates += 1;
         setFieldValue(fieldName, value);
       }
     });
 
     if (Object.prototype.hasOwnProperty.call(draft, 'isActive') && typeof draft.isActive === 'boolean') {
       setFieldValue('isActive', draft.isActive);
+      updates += 1;
     }
+
+    return updates;
   }
 
-  function updateApplyButton(canApply) {
-    if (!applyButton) {
+  function setAutoApplyNote(message, isError = false) {
+    if (!autoApplyNote) {
       return;
     }
 
-    applyButton.hidden = !canApply;
-    applyButton.disabled = state.loading || !canApply;
+    if (!message) {
+      autoApplyNote.hidden = true;
+      autoApplyNote.textContent = '';
+      autoApplyNote.classList.remove('tenant-draft-assistant-auto-note-error');
+      return;
+    }
+
+    autoApplyNote.hidden = false;
+    autoApplyNote.textContent = message;
+    autoApplyNote.classList.toggle('tenant-draft-assistant-auto-note-error', isError);
   }
 
   function renderResponse(response) {
@@ -203,9 +223,19 @@
     }
 
     state.currentDraft = draft;
-    updateApplyButton(status === 'ready' && draft !== null);
+    if (draft !== null) {
+      const updates = applyDraft(draft);
+      setAutoApplyNote(
+        updates > 0
+          ? 'He actualizado la ficha con la información disponible. Puedes seguir ajustando o guardar cuando la revises.'
+          : 'Ya he revisado la ficha con la información disponible. Puedes seguir ajustando o guardar cuando la revises.'
+      );
+    } else {
+      setAutoApplyNote('');
+    }
+
     setStatus(status === 'ready'
-      ? 'Borrador listo. Revisa los campos y pulsa "Aplicar a la ficha" si quieres llevarlo al formulario.'
+      ? 'Ya he completado una propuesta inicial en la ficha. Revísala y dime si quieres ajustar tono, límites, cualificación o derivación a humano.'
       : '');
   }
 
@@ -223,8 +253,8 @@
       chatInput.value = '';
     }
 
-    setStatus('');
-    updateApplyButton(false);
+    setStatus('Pensando...');
+    setAutoApplyNote('');
     setLoading(true);
 
     try {
@@ -257,7 +287,6 @@
       renderResponse(payload);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : 'No se ha podido contactar con la guía IA.', true);
-      appendMessage('assistant', 'No he podido procesar tu petición en este momento. Inténtalo de nuevo.');
     } finally {
       setLoading(false);
       if (chatInput) {
@@ -266,43 +295,48 @@
     }
   }
 
-  if (chatForm) {
-    chatForm.addEventListener('submit', (event) => {
+  if (chatInput) {
+    chatInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter' && !event.shiftKey) {
+        event.preventDefault();
+        sendButton?.click();
+      }
+    });
+  }
+
+  if (sendButton) {
+    sendButton.addEventListener('click', (event) => {
       event.preventDefault();
       sendMessage(chatInput ? chatInput.value : '');
     });
   }
 
-  if (chatInput) {
-    chatInput.addEventListener('keydown', (event) => {
-      if (event.key === 'Enter' && !event.shiftKey) {
-        event.preventDefault();
-        sendMessage(chatInput.value);
-      }
-    });
-  }
-
-  if (applyButton) {
-    applyButton.addEventListener('click', () => {
-      if (!state.currentDraft) {
-        return;
-      }
-
-      applyDraft(state.currentDraft);
-      setStatus('Borrador aplicado al formulario. Revisa y guarda manualmente.');
+  if (chatForm) {
+    chatForm.addEventListener('submit', (event) => {
+      event.preventDefault();
+      sendButton?.click();
     });
   }
 
   root.addEventListener('shown.bs.modal', () => {
+    lockBodyScroll();
     ensureInitialMessage();
-    updateApplyButton(state.currentDraft !== null);
     if (chatInput) {
       chatInput.focus();
     }
   });
 
+  root.addEventListener('show.bs.modal', () => {
+    lockBodyScroll();
+  });
+
   root.addEventListener('hidden.bs.modal', () => {
     setStatus('');
+    unlockBodyScroll();
+  });
+
+  root.addEventListener('hide.bs.modal', () => {
+    unlockBodyScroll();
   });
 
   if (modal) {
@@ -310,7 +344,6 @@
     if (trigger) {
       trigger.addEventListener('click', () => {
         ensureInitialMessage();
-        updateApplyButton(state.currentDraft !== null);
       });
     }
   }

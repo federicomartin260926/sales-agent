@@ -994,16 +994,47 @@ body.login-page .footer code {
   white-space: nowrap;
 }
 
+body.ai-assistant-modal-open {
+  overflow: hidden;
+}
+
 .tenant-draft-assistant-modal .modal-content {
   border: 1px solid var(--border);
   border-radius: 20px;
   box-shadow: var(--shadow);
 }
 
+.tenant-draft-assistant-dialog {
+  width: min(760px, calc(100vw - 24px));
+  max-width: 760px;
+  max-height: calc(100vh - 24px);
+}
+
+.tenant-draft-assistant-modal .modal-content {
+  display: flex;
+  flex-direction: column;
+  max-height: min(88vh, 880px);
+  overflow: hidden;
+}
+
+.tenant-draft-assistant-shell {
+  min-height: 0;
+}
+
 .tenant-draft-assistant-shell .modal-header {
+  flex: 0 0 auto;
   align-items: flex-start;
   gap: 18px;
   border-bottom: 1px solid var(--border);
+}
+
+.tenant-draft-assistant-shell .modal-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: hidden;
 }
 
 .tenant-draft-assistant-note {
@@ -1035,12 +1066,13 @@ body.login-page .footer code {
 }
 
 .tenant-draft-assistant-chat {
-  min-height: 260px;
-  max-height: 42vh;
+  flex: 1 1 auto;
+  min-height: 280px;
   overflow-y: auto;
   display: grid;
   gap: 10px;
   padding: 4px 2px 8px;
+  align-content: start;
 }
 
 .tenant-draft-assistant-message {
@@ -1051,6 +1083,7 @@ body.login-page .footer code {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   word-break: break-word;
+  font-size: 14px;
 }
 
 .tenant-draft-assistant-message-user {
@@ -1067,8 +1100,16 @@ body.login-page .footer code {
   color: #1e293b;
 }
 
+.tenant-draft-assistant-message-system {
+  justify-self: center;
+  max-width: 100%;
+  background: #eef5ff;
+  border: 1px solid #d4e2f6;
+  color: #24415f;
+  text-align: center;
+}
+
 .tenant-draft-assistant-status {
-  margin-top: 12px;
   border-radius: 14px;
   padding: 12px 14px;
   background: rgba(15, 110, 199, 0.08);
@@ -1084,14 +1125,39 @@ body.login-page .footer code {
   color: #a61b1b;
 }
 
+.tenant-draft-assistant-auto-note {
+  border-radius: 14px;
+  padding: 12px 14px;
+  background: rgba(15, 110, 199, 0.06);
+  border: 1px solid rgba(15, 110, 199, 0.12);
+  color: #24415f;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.tenant-draft-assistant-auto-note-error {
+  background: rgba(195, 52, 52, 0.08);
+  border-color: rgba(195, 52, 52, 0.18);
+  color: #a61b1b;
+}
+
 .tenant-draft-assistant-footer {
   border-top: 1px solid var(--border);
+  display: block;
+  padding: 16px 20px 20px;
 }
 
 .tenant-draft-assistant-form {
   display: grid;
   gap: 12px;
   width: 100%;
+}
+
+.tenant-draft-assistant-composer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: end;
 }
 
 .tenant-draft-assistant-input {
@@ -1117,11 +1183,45 @@ body.login-page .footer code {
   gap: 10px;
   justify-content: flex-end;
   flex-wrap: wrap;
+  align-items: center;
 }
 
 .tenant-draft-assistant-actions .primary-action,
 .tenant-draft-assistant-actions .secondary-action {
   min-width: 170px;
+}
+
+.tenant-draft-assistant-compose-note {
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+@media (max-width: 640px) {
+  .tenant-draft-assistant-dialog {
+    width: calc(100vw - 16px);
+    max-width: calc(100vw - 16px);
+    margin: 0.5rem auto;
+  }
+
+  .tenant-draft-assistant-composer {
+    grid-template-columns: 1fr;
+  }
+
+  .tenant-draft-assistant-actions {
+    justify-content: stretch;
+  }
+
+  .tenant-draft-assistant-actions .primary-action,
+  .tenant-draft-assistant-actions .secondary-action {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .tenant-draft-assistant-message {
+    max-width: 96%;
+  }
 }
 
 .info-card {

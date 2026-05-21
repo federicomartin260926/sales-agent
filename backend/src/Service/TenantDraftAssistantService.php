@@ -109,20 +109,22 @@ final class TenantDraftAssistantService
      */
     private function heuristicResponse(array $form, array $history, string $message): array
     {
-        $draft = $this->buildBaseDraft($form);
-        $missingQuestion = $this->nextQuestion($draft);
+        $draft = $this->completeDraft($this->buildBaseDraft($form), $history, $message);
+        $isReady = $this->isReadyToFinalize($draft, $history, $message);
 
-        if ($missingQuestion !== null) {
+        if (!$isReady) {
+            $questions = $this->buildFollowUpQuestions($draft, $history, $message);
+
             return [
-                'answer' => $missingQuestion,
+                'answer' => $this->buildFollowUpAnswer($questions),
                 'status' => 'asking',
-                'questions' => [$missingQuestion],
+                'questions' => $questions,
                 'draft' => $draft,
             ];
         }
 
         return [
-            'answer' => 'Ya tengo un borrador inicial. Revísalo en la ficha y pulsa "Aplicar a la ficha" si quieres usarlo.',
+            'answer' => 'Ya he completado una propuesta inicial en la ficha. Revísala y dime si quieres ajustar tono, límites, cualificación o derivación a humano.',
             'status' => 'ready',
             'questions' => [],
             'draft' => $draft,
@@ -146,7 +148,7 @@ final class TenantDraftAssistantService
         $answer = $this->cleanText((string) ($payload['answer'] ?? ''), 2000);
         if ($answer === '') {
             $answer = $status === 'ready'
-                ? 'Ya tengo un borrador inicial. Revísalo en la ficha y pulsa "Aplicar a la ficha" si quieres usarlo.'
+                ? 'Ya he completado una propuesta inicial en la ficha. Revísala y dime si quieres ajustar tono, límites, cualificación o derivación a humano.'
                 : 'Necesito un dato más para completar la ficha.';
         }
 
@@ -162,22 +164,29 @@ final class TenantDraftAssistantService
         }
         $questions = array_values(array_unique(array_slice($questions, 0, 3)));
 
-        $draft = $this->buildBaseDraft($form);
+        $draft = $this->completeDraft($this->buildBaseDraft($form), $history, $message);
         if (isset($payload['draft']) && is_array($payload['draft'])) {
             $draft = $this->mergeDraft($draft, $payload['draft']);
         }
 
-        if ($status === 'ready' && $this->nextQuestion($draft) !== null) {
+        $draft = $this->completeDraft($draft, $history, $message);
+        $isReady = $this->isReadyToFinalize($draft, $history, $message);
+
+        if (!$isReady) {
             $status = 'asking';
         }
 
-        if ($status === 'ready') {
-            $questions = [];
-        } elseif ($questions === []) {
-            $nextQuestion = $this->nextQuestion($draft);
-            if ($nextQuestion !== null) {
-                $questions = [$nextQuestion];
+        if (!$isReady) {
+            $questions = $this->buildFollowUpQuestions($draft, $history, $message);
+            if ($answer === '' || $status !== 'ready') {
+                $answer = $this->buildFollowUpAnswer($questions);
             }
+        } else {
+            $questions = [];
+        }
+
+        if ($isReady && $answer === '') {
+            $answer = 'Ya he completado una propuesta inicial en la ficha. Revísala y dime si quieres ajustar tono, límites, cualificación o derivación a humano.';
         }
 
         return [
@@ -209,12 +218,12 @@ final class TenantDraftAssistantService
             'whatsappPhoneNumberId' => $form['whatsappPhoneNumberId'] ?? '',
             'whatsappPublicPhone' => $form['whatsappPublicPhone'] ?? '',
             'isActive' => (bool) ($form['isActive'] ?? true),
-            'businessContext' => $form['businessContext'] ?? '',
-            'salesPolicyWelcome' => $form['positioning'] ?? '',
-            'salesPolicyQualification' => $form['qualificationFocus'] ?? '',
-            'salesPolicyHandoff' => $form['handoffRules'] ?? '',
-            'salesPolicyLimits' => $form['salesBoundaries'] ?? '',
-            'salesPolicyNotes' => $form['notes'] ?? '',
+            'businessContext' => $this->buildBusinessContext($form, '', []),
+            'salesPolicyWelcome' => '',
+            'salesPolicyQualification' => '',
+            'salesPolicyHandoff' => '',
+            'salesPolicyLimits' => '',
+            'salesPolicyNotes' => '',
         ];
     }
 
@@ -284,34 +293,43 @@ final class TenantDraftAssistantService
 
     /**
      * @param array<string, mixed> $draft
+     * @param list<array{role: string, content: string}> $history
+     *
+     * @return array<string, mixed>
      */
-    private function nextQuestion(array $draft): ?string
+    private function completeDraft(array $draft, array $history, string $message): array
     {
-        if ($draft['name'] === '') {
-            return '¿Qué nombre quieres darle al negocio?';
+        $context = $this->buildBusinessContext($draft, $message, $history);
+        if ($context !== '') {
+            $draft['businessContext'] = $context;
         }
 
-        if ($draft['businessContext'] === '') {
-            return '¿Qué vende, a quién y en qué zona o mercado opera?';
+        $tone = $this->buildTone($draft, $context);
+        if ($tone !== '') {
+            $draft['tone'] = $tone;
         }
 
-        if ($draft['salesPolicyWelcome'] === '') {
-            return '¿Cómo quieres que se presente el negocio y cuál es su enfoque comercial?';
+        if (($draft['salesPolicyWelcome'] ?? '') === '') {
+            $draft['salesPolicyWelcome'] = $this->buildWelcomePolicy($draft, $context);
         }
 
-        if ($draft['salesPolicyQualification'] === '') {
-            return '¿Qué datos debe pedir el agente para cualificar bien la oportunidad?';
+        if (($draft['salesPolicyQualification'] ?? '') === '') {
+            $draft['salesPolicyQualification'] = $this->buildQualificationPolicy($draft, $context);
         }
 
-        if ($draft['salesPolicyHandoff'] === '') {
-            return '¿Cuándo debe derivar el caso a una persona del equipo?';
+        if (($draft['salesPolicyHandoff'] ?? '') === '') {
+            $draft['salesPolicyHandoff'] = $this->buildHandoffPolicy($draft, $context);
         }
 
-        if ($draft['salesPolicyLimits'] === '') {
-            return '¿Qué no debe prometer, cerrar o confirmar el agente?';
+        if (($draft['salesPolicyLimits'] ?? '') === '') {
+            $draft['salesPolicyLimits'] = $this->buildLimitsPolicy($draft, $context);
         }
 
-        return null;
+        if (($draft['salesPolicyNotes'] ?? '') === '') {
+            $draft['salesPolicyNotes'] = $this->buildNotesPolicy($draft, $context);
+        }
+
+        return $draft;
     }
 
     /**
@@ -379,7 +397,7 @@ final class TenantDraftAssistantService
 
     private function systemPrompt(): string
     {
-        return 'Eres un asistente de configuración de Sales Agent. Tu objetivo es ayudar al usuario a completar la ficha de un nuevo negocio. Haz preguntas breves y prácticas. No inventes datos técnicos. Cuando tengas suficiente información, devuelve un borrador estructurado para rellenar el formulario. El borrador debe ser claro, comercial y útil para que un agente IA pueda representar correctamente el negocio. Nunca inventes phoneNumberId ni números de WhatsApp. Si faltan datos, déjalos vacíos. Devuelve solo JSON válido con las claves answer, status, questions y draft.';
+        return 'Eres un asistente de configuración de Sales Agent. Tu objetivo es ayudar al usuario a completar la ficha de un nuevo negocio. Haz preguntas breves, pero agrupa de 3 a 5 cuando falte información. No inventes datos técnicos. No finalices con status ready cuando solo tengas nombre o actividad; espera a tener información suficiente para una ficha comercial útil. El borrador debe ser claro, comercial, práctico y completo. Intenta completar siempre name, slug, tone, businessContext, salesPolicyWelcome, salesPolicyQualification, salesPolicyHandoff, salesPolicyLimits y salesPolicyNotes con texto útil y prudente a partir de la información disponible. Nunca inventes phoneNumberId ni números de WhatsApp. Si faltan datos técnicos, déjalos vacíos. Devuelve solo JSON válido con las claves answer, status, questions y draft.';
     }
 
     private function extractOpenAiContent(array $payload): string
@@ -434,5 +452,332 @@ final class TenantDraftAssistantService
         $slug = trim($slug, '-');
 
         return $slug !== '' ? $slug : 'negocio';
+    }
+
+    /**
+     * @param array<string, mixed> $draft
+     * @param list<array{role: string, content: string}> $history
+     */
+    private function buildBusinessContext(array $draft, string $message, array $history): string
+    {
+        $current = $this->cleanText((string) ($draft['businessContext'] ?? ''), 5000);
+        if ($current !== '') {
+            return $current;
+        }
+
+        $candidate = $this->bestContextCandidate($message, $history);
+        if ($candidate !== '') {
+            return $this->cleanText($candidate, 5000);
+        }
+
+        $name = $this->cleanText((string) ($draft['name'] ?? ''), 255);
+        if ($name !== '') {
+            return sprintf('Negocio llamado %s. Falta detallar la actividad, el cliente ideal y la zona de trabajo.', $name);
+        }
+
+        return '';
+    }
+
+    private function buildTone(array $draft, string $context): string
+    {
+        $tone = $this->cleanText((string) ($draft['tone'] ?? ''), 120);
+        if ($tone !== '') {
+            return $tone;
+        }
+
+        if (stripos($context, 'estética') !== false || stripos($context, 'belleza') !== false) {
+            return 'cercano, profesional y de confianza';
+        }
+
+        if (stripos($context, 'salud') !== false || stripos($context, 'clínica') !== false) {
+            return 'cercano, profesional y prudente';
+        }
+
+        return 'cercano, profesional y directo';
+    }
+
+    /**
+     * @param array<string, mixed> $draft
+     */
+    private function buildWelcomePolicy(array $draft, string $context): string
+    {
+        $name = $this->cleanText((string) ($draft['name'] ?? ''), 255);
+        $tone = $this->buildTone($draft, $context);
+        $nameFragment = $name !== '' ? sprintf('presentando el negocio como %s', $name) : 'presentando el negocio de forma clara';
+        $contextFragment = $context !== '' ? sprintf('y usando el contexto del negocio: %s', $context) : 'y adaptando el mensaje al servicio principal';
+
+        return sprintf(
+            'Con un tono %s, saludar %s %s. El agente debe transmitir confianza, cercanía y una orientación práctica a la cita o siguiente paso.',
+            $tone,
+            $nameFragment,
+            $contextFragment
+        );
+    }
+
+    /**
+     * @param array<string, mixed> $draft
+     */
+    private function buildQualificationPolicy(array $draft, string $context): string
+    {
+        $questions = [
+            'qué servicio o tratamiento le interesa',
+            'si ya es clienta o viene por primera vez',
+            'qué resultado o necesidad busca',
+            'disponibilidad horaria aproximada',
+        ];
+
+        if ($context !== '') {
+            $questions[] = 'si hay alguna preferencia o matiz importante sobre el servicio';
+        }
+
+        return 'Preguntar '.implode(', ', array_slice($questions, 0, 4)).'. Registrar los matices útiles para orientar mejor la conversación y preparar la siguiente acción sin saturar al usuario.';
+    }
+
+    /**
+     * @param array<string, mixed> $draft
+     */
+    private function buildHandoffPolicy(array $draft, string $context): string
+    {
+        $name = $this->cleanText((string) ($draft['name'] ?? ''), 255);
+        $fallback = $name !== '' ? $name : 'una persona responsable';
+
+        return sprintf(
+            'Derivar a %s cuando haya dudas médicas o técnicas, petición de presupuesto especial, cambios complejos, urgencia fuera de la agenda habitual o cualquier caso que requiera validación humana antes de confirmar.',
+            $fallback
+        );
+    }
+
+    /**
+     * @param array<string, mixed> $draft
+     */
+    private function buildLimitsPolicy(array $draft, string $context): string
+    {
+        return 'No prometer resultados garantizados, no diagnosticar problemas de salud o piel, no inventar precios ni promociones, no confirmar huecos de agenda no verificados y no comprometer servicios fuera de la oferta habitual sin validación humana.';
+    }
+
+    /**
+     * @param array<string, mixed> $draft
+     */
+    private function buildNotesPolicy(array $draft, string $context): string
+    {
+        $name = $this->cleanText((string) ($draft['name'] ?? ''), 255);
+        $pieces = [];
+
+        if ($name !== '') {
+            $pieces[] = $name.' debe seguir un tono consistente y cercano.';
+        }
+
+        if ($context !== '') {
+            $pieces[] = 'Contexto útil para el agente: '.$context;
+        }
+
+        $pieces[] = 'Mantener respuestas breves, amables y orientadas a cita o siguiente paso.';
+
+        return implode(' ', $pieces);
+    }
+
+    /**
+     * @param list<array{role: string, content: string}> $history
+     */
+    private function bestContextCandidate(string $message, array $history): string
+    {
+        $candidates = [];
+        $message = $this->cleanText($message, 1200);
+        if ($message !== '') {
+            $candidates[] = $message;
+        }
+
+        foreach (array_reverse($history) as $item) {
+            if (($item['role'] ?? '') !== 'user') {
+                continue;
+            }
+
+            $content = $this->cleanText((string) ($item['content'] ?? ''), 1200);
+            if ($content !== '') {
+                $candidates[] = $content;
+            }
+        }
+
+        foreach ($candidates as $candidate) {
+            if (mb_strlen($candidate) >= 30) {
+                return $candidate;
+            }
+        }
+
+        return '';
+    }
+
+    /**
+     * @param array<string, mixed> $draft
+     * @param list<array{role: string, content: string}> $history
+     *
+     * @return list<string>
+     */
+    private function buildFollowUpQuestions(array $draft, array $history, string $message): array
+    {
+        $signals = $this->assessCommercialSignals($draft, $history, $message);
+        $questions = [];
+
+        if (($draft['name'] ?? '') === '') {
+            $questions[] = '¿Cuál es el nombre comercial?';
+        }
+
+        if (!$signals['services']) {
+            $questions[] = '¿Qué servicios o productos principales ofrece?';
+        }
+
+        if (!$signals['audience']) {
+            $questions[] = '¿Qué tipo de cliente quieres captar principalmente?';
+        }
+
+        if (!$signals['location']) {
+            $questions[] = '¿En qué ciudad o zona atiende?';
+        }
+
+        if (!$signals['whatsapp_public']) {
+            $questions[] = '¿Cuál es el WhatsApp público para clientes, si quieres configurarlo ahora?';
+        }
+
+        if (!$signals['qualification']) {
+            $questions[] = '¿Qué debe preguntar el agente antes de proponer cita o siguiente paso?';
+        }
+
+        if (!$signals['handoff']) {
+            $questions[] = '¿Cuándo debe derivar el agente a Mary o a una persona?';
+        }
+
+        if (!$signals['limits']) {
+            $questions[] = '¿Hay límites importantes? Por ejemplo precios, diagnósticos, disponibilidad o promesas de resultados.';
+        }
+
+        if (!$signals['schedule']) {
+            $questions[] = '¿Quieres añadir horarios, zona de atención, promociones, precios o alguna regla especial?';
+        }
+
+        if (!$signals['notes']) {
+            $questions[] = '¿Hay alguna nota diferencial del negocio que deba quedar reflejada?';
+        }
+
+        return array_values(array_slice(array_unique($questions), 0, 5));
+    }
+
+    /**
+     * @param list<string> $questions
+     */
+    private function buildFollowUpAnswer(array $questions): string
+    {
+        if ($questions === []) {
+            return 'Perfecto. Dime un poco más y te preparo una propuesta útil para la ficha.';
+        }
+
+        $parts = ['Perfecto. Para completar bien la ficha necesito algunos datos:'];
+        foreach ($questions as $index => $question) {
+            $parts[] = sprintf('%d. %s', $index + 1, $question);
+        }
+
+        return implode("\n", $parts);
+    }
+
+    /**
+     * @param array<string, mixed> $draft
+     * @param list<array{role: string, content: string}> $history
+     *
+     * @return array{services: bool, audience: bool, location: bool, whatsapp_public: bool, qualification: bool, handoff: bool, limits: bool, schedule: bool, notes: bool}
+     */
+    private function assessCommercialSignals(array $draft, array $history, string $message): array
+    {
+        $text = $this->conversationText($draft, $history, $message);
+        $normalized = mb_strtolower($text);
+
+        return [
+            'services' => $this->containsAny($normalized, ['especializ', 'tratamient', 'depil', 'masaj', 'indiba', 'facial', 'servici', 'ofrece', 'belleza', 'estética', 'clinica', 'clínica', 'centro']),
+            'audience' => $this->containsAny($normalized, ['mujer', 'hombre', 'empresa', 'pyme', 'famil', 'niñ', 'cliente', 'paciente', 'recurrent', 'nuevo']),
+            'location' => $this->containsAny($normalized, ['madrid', 'barcelona', 'valencia', 'sevilla', 'villanueva', 'zona', 'barrio', 'local', 'ciudad', 'atiende en', 'ubicad', 'sede']),
+            'whatsapp_public' => trim((string) ($draft['whatsappPublicPhone'] ?? '')) !== '',
+            'qualification' => $this->containsAny($normalized, ['qué debe pedir', 'pedir', 'cualif', 'cualificar', 'cita', 'siguiente paso', 'nuevo', 'recurrent', 'tratamiento', 'servicio', 'presupuesto', 'disponibilidad']),
+            'handoff' => $this->containsAny($normalized, ['derivar', 'humano', 'mary', 'persona', 'responsable', 'validación', 'confirmar', 'escalar', 'seguimiento']),
+            'limits' => $this->containsAny($normalized, ['precio', 'precios', 'diagnos', 'diagnóst', 'prometer', 'resultad', 'disponibilidad', 'agenda', 'sensib', 'salud', 'piel', 'contraindic', 'no dar']),
+            'schedule' => $this->containsAny($normalized, ['lunes', 'martes', 'miércoles', 'miercoles', 'jueves', 'viernes', 'sábado', 'sabado', 'domingo', 'agenda', 'horario', '10:', '20:', 'mañana', 'tarde', 'comer']),
+            'notes' => $this->containsAny($normalized, ['trabaja sola', 'clientela', 'fiel', 'trato', 'simpatía', 'simpatia', 'agenda única', 'agenda unica', 'personal', 'diferencial']),
+        ];
+    }
+
+    /**
+     * @param array<string, mixed> $draft
+     * @param list<array{role: string, content: string}> $history
+     */
+    private function conversationText(array $draft, array $history, string $message): string
+    {
+        $parts = [];
+
+        $current = $this->cleanText($message, 1200);
+        if ($current !== '') {
+            $parts[] = $current;
+        }
+
+        foreach ($history as $item) {
+            if (($item['role'] ?? '') !== 'user') {
+                continue;
+            }
+
+            $content = $this->cleanText((string) ($item['content'] ?? ''), 1200);
+            if ($content !== '') {
+                $parts[] = $content;
+            }
+        }
+
+        foreach (['businessContext'] as $key) {
+            $value = $this->cleanText((string) ($draft[$key] ?? ''), 1200);
+            if ($value !== '' && !str_starts_with($value, 'Negocio llamado ')) {
+                $parts[] = $value;
+            }
+        }
+
+        return implode(' ', $parts);
+    }
+
+    /**
+     * @param list<string> $patterns
+     */
+    private function containsAny(string $text, array $patterns): bool
+    {
+        foreach ($patterns as $pattern) {
+            if ($pattern !== '' && str_contains($text, $pattern)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param array<string, mixed> $draft
+     * @param list<array{role: string, content: string}> $history
+     */
+    private function isReadyToFinalize(array $draft, array $history, string $message): bool
+    {
+        $signals = $this->assessCommercialSignals($draft, $history, $message);
+
+        if (($draft['name'] ?? '') === '') {
+            return false;
+        }
+
+        if (!$signals['services']) {
+            return false;
+        }
+
+        if (!$signals['audience']) {
+            return false;
+        }
+
+        if (!($signals['location'] || $signals['schedule'])) {
+            return false;
+        }
+
+        if (!($signals['qualification'] || $signals['handoff'] || $signals['limits'])) {
+            return false;
+        }
+
+        return true;
     }
 }
