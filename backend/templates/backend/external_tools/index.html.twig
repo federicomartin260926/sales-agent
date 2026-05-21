@@ -29,7 +29,7 @@
     <div class="alert alert-error">{{ message }}</div>
   {% endfor %}
 
-  {% if filter_error is not null %}
+  {% if filter_error is defined and filter_error is not null %}
     <div class="alert alert-error">{{ filter_error }}</div>
   {% endif %}
 

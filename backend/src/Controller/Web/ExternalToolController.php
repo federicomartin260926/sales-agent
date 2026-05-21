@@ -75,6 +75,7 @@ final class ExternalToolController extends AbstractController
             'page_subtitle' => 'Configuración de servidores MCP remotos del negocio activo.',
             'active_nav' => 'admin-external-tools',
             'tools' => array_map([$this, 'toolRow'], $tools),
+            'filter_error' => null,
             'active_tenant_name' => $activeTenant->getName(),
             ...$this->currentUserTemplateData(),
         ]);
@@ -667,6 +668,7 @@ final class ExternalToolController extends AbstractController
                 htmlspecialchars($sectionLabel, ENT_QUOTES, 'UTF-8')
             ),
             'tools' => [],
+            'filter_error' => null,
             'active_tenant_name' => null,
             ...$this->currentUserTemplateData(),
         ]);
