@@ -8,6 +8,7 @@ use App\Entity\Tenant;
 use App\Entity\User;
 use App\Repository\ExternalToolRepository;
 use App\Repository\TenantRepository;
+use App\Service\ActiveTenantContext;
 use App\Service\RuntimeConfigurationService;
 use App\Service\RuntimeSettingCipher;
 use Doctrine\ORM\EntityManagerInterface;
@@ -18,6 +19,8 @@ use Symfony\Component\HttpClient\MockHttpClient;
 use Symfony\Component\HttpClient\Response\MockResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
+use Symfony\Component\HttpFoundation\RequestStack;
+use Symfony\Component\HttpFoundation\Session\Session;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 use Twig\Environment;
 use Twig\Loader\FilesystemLoader;
@@ -44,6 +47,7 @@ final class ExternalToolControllerTest extends TestCase
         ?RuntimeConfigurationService $runtimeConfigurationService = null,
         ?TenantRepository $tenantRepository = null,
         ?ExternalToolRepository $externalToolRepository = null,
+        ?ActiveTenantContext $activeTenantContext = null,
     ): ExternalToolController {
         $tenantRepository ??= new class extends TenantRepository {
             public function __construct()
@@ -68,6 +72,7 @@ final class ExternalToolControllerTest extends TestCase
         };
 
         $runtimeConfigurationService ??= $this->createRuntimeConfigurationService([]);
+        $activeTenantContext ??= new ActiveTenantContext(new RequestStack(), $tenantRepository);
 
         return new ExternalToolController(
             $security,
@@ -78,7 +83,37 @@ final class ExternalToolControllerTest extends TestCase
             $httpClient ?? $this->createStub(HttpClientInterface::class),
             'test-bearer-token',
             $runtimeConfigurationService,
+            $activeTenantContext,
         );
+    }
+
+    private function createActiveTenantContext(Tenant $tenant): ActiveTenantContext
+    {
+        $requestStack = new RequestStack();
+        $request = Request::create('/backend');
+        $request->setSession(new Session());
+        $requestStack->push($request);
+
+        $repository = new class($tenant) extends TenantRepository {
+            public function __construct(private readonly Tenant $tenant)
+            {
+            }
+
+            public function find($id, $lockMode = null, $lockVersion = null): ?object
+            {
+                return $this->tenant;
+            }
+
+            public function findAllOrdered(): array
+            {
+                return [$this->tenant];
+            }
+        };
+
+        $context = new ActiveTenantContext($requestStack, $repository);
+        $context->setActiveTenant($tenant);
+
+        return $context;
     }
 
     private function createTwigEnvironment(): Environment
@@ -93,11 +128,12 @@ final class ExternalToolControllerTest extends TestCase
 
     public function testIndexRendersRealUserNameInHeader(): void
     {
+        $tenant = new Tenant('Tech Investments', 'tech-investments');
         $security = $this->createStub(Security::class);
         $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role === 'ROLE_ADMIN');
         $security->method('getUser')->willReturn(new User('federicomartin2609@gmail.com', ['admin']));
 
-        $controller = $this->createController($security);
+        $controller = $this->createController($security, null, null, null, null, $this->createActiveTenantContext($tenant));
         $container = new Container();
         $container->set('twig', $this->createTwigEnvironment());
         $controller->setContainer($container);
@@ -107,6 +143,24 @@ final class ExternalToolControllerTest extends TestCase
         self::assertSame(Response::HTTP_OK, $response->getStatusCode());
         self::assertStringContainsString('Federico Martín', $response->getContent());
         self::assertStringNotContainsString('<strong>Usuario</strong>', $response->getContent());
+    }
+
+    public function testIndexPromptsForActiveTenantWhenNoneIsSelected(): void
+    {
+        $security = $this->createStub(Security::class);
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role === 'ROLE_ADMIN');
+        $security->method('getUser')->willReturn(new User('admin@example.com', ['admin']));
+
+        $controller = $this->createController($security);
+        $container = new Container();
+        $container->set('twig', $this->createTwigEnvironment());
+        $controller->setContainer($container);
+
+        $response = $controller->index(new Request());
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        self::assertStringContainsString('Selecciona un negocio para continuar', $response->getContent());
+        self::assertStringContainsString('/backend/tenants', $response->getContent());
     }
 
     public function testMcpTestUsesOpenAiRuntimeProviderAndDoesNotConfuseToolProvider(): void

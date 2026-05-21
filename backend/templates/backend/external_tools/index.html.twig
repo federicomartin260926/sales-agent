@@ -1,6 +1,9 @@
 {% extends 'backend/layout.html.twig' %}
 
 {% block content %}
+  {% if tenant_required_html is defined and tenant_required_html is not null %}
+    {{ tenant_required_html|raw }}
+  {% else %}
   <section class="hero-panel">
     <div class="hero-copy">
       <div class="eyebrow-dark">Servidores MCP</div>
@@ -163,4 +166,5 @@
       </table>
     </div>
   </section>
+  {% endif %}
 {% endblock %}

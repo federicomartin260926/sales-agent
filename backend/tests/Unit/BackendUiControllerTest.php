@@ -5,6 +5,7 @@ namespace App\Tests\Unit;
 use App\Controller\Web\BackendUiController;
 use App\Entity\EntryPoint;
 use App\Entity\AiUsageEvent;
+use App\Entity\ExternalTool;
 use App\Entity\Playbook;
 use App\Entity\Product;
 use App\Entity\Tenant;
@@ -14,15 +15,18 @@ use App\Repository\AiUsageEventRepository;
 use App\Repository\EntryPointRepository;
 use App\Repository\PlaybookRepository;
 use App\Repository\ProductRepository;
+use App\Repository\ExternalToolRepository;
 use App\Repository\TenantAiUsagePolicyRepository;
 use App\Repository\TenantRepository;
 use App\Service\RuntimeConfigurationService;
 use App\Service\ProductCatalogImportService;
+use App\Service\ActiveTenantContext;
 use PHPUnit\Framework\TestCase;
 use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\ORM\EntityRepository;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Session\Session;
+use Symfony\Component\HttpFoundation\RequestStack;
 use Symfony\Component\PasswordHasher\Hasher\UserPasswordHasherInterface;
 use Symfony\Bundle\SecurityBundle\Security;
 use Symfony\Component\Security\Csrf\CsrfToken;
@@ -43,14 +47,64 @@ final class BackendUiControllerTest extends TestCase
         ?ProductCatalogImportService $productCatalogImportService = null,
         ?RuntimeConfigurationService $runtimeConfigurationService = null,
         ?Environment $twig = null,
+        ?ActiveTenantContext $activeTenantContext = null,
     ): BackendUiController {
         $entityManager ??= $this->createStub(EntityManagerInterface::class);
         $passwordHasher ??= $this->createStub(UserPasswordHasherInterface::class);
         $csrfTokenManager ??= $this->createStub(CsrfTokenManagerInterface::class);
         $runtimeConfigurationService ??= $this->createStub(RuntimeConfigurationService::class);
         $twig ??= $this->createTwigEnvironment();
+        $activeTenantContext ??= new ActiveTenantContext(new RequestStack(), $this->createTenantRepositoryFake());
 
-        return new BackendUiController($security, $entityManager, $passwordHasher, $runtimeConfigurationService, $twig, null, $productCatalogImportService, $csrfTokenManager);
+        return new BackendUiController($security, $entityManager, $passwordHasher, $runtimeConfigurationService, $activeTenantContext, $twig, null, $productCatalogImportService, $csrfTokenManager);
+    }
+
+    private function createActiveTenantContext(?Tenant $tenant = null): ActiveTenantContext
+    {
+        $requestStack = new RequestStack();
+        $request = Request::create('/backend');
+        $request->setSession(new Session());
+        $requestStack->push($request);
+
+        $repository = $this->createTenantRepositoryFake($tenant instanceof Tenant ? [$tenant] : [], $tenant);
+        $context = new ActiveTenantContext($requestStack, $repository);
+
+        if ($tenant instanceof Tenant) {
+            $context->setActiveTenant($tenant);
+        }
+
+        return $context;
+    }
+
+    private function createActiveTenantContextForRequest(Tenant $tenant, Request $request): ActiveTenantContext
+    {
+        $requestStack = new RequestStack();
+        $requestStack->push($request);
+
+        $repository = $this->createTenantRepositoryFake([$tenant], $tenant);
+        return new ActiveTenantContext($requestStack, $repository);
+    }
+
+    private function createControllerForActiveTenant(
+        Security $security,
+        Tenant $tenant,
+        ?EntityManagerInterface $entityManager = null,
+        ?UserPasswordHasherInterface $passwordHasher = null,
+        ?CsrfTokenManagerInterface $csrfTokenManager = null,
+        ?ProductCatalogImportService $productCatalogImportService = null,
+        ?RuntimeConfigurationService $runtimeConfigurationService = null,
+        ?Environment $twig = null,
+    ): BackendUiController {
+        return $this->createController(
+            $security,
+            $entityManager,
+            $passwordHasher,
+            $csrfTokenManager,
+            $productCatalogImportService,
+            $runtimeConfigurationService,
+            $twig,
+            $this->createActiveTenantContext($tenant)
+        );
     }
 
     private function createTwigEnvironment(): Environment
@@ -154,6 +208,37 @@ final class BackendUiControllerTest extends TestCase
                 }
 
                 return null;
+            }
+        };
+    }
+
+    /**
+     * @param ExternalTool[] $orderedTools
+     */
+    private function createExternalToolRepositoryFake(array $orderedTools = []): ExternalToolRepository
+    {
+        return new class($orderedTools) extends ExternalToolRepository {
+            /**
+             * @param ExternalTool[] $orderedTools
+             */
+            public function __construct(private array $orderedTools)
+            {
+            }
+
+            /**
+             * @return ExternalTool[]
+             */
+            public function findByTenantOrdered(Tenant $tenant): array
+            {
+                return array_values(array_filter(
+                    $this->orderedTools,
+                    static fn (ExternalTool $tool) => $tool->getTenant()->getId()->toRfc4122() === $tenant->getId()->toRfc4122()
+                ));
+            }
+
+            public function findAllOrdered(): array
+            {
+                return $this->orderedTools;
             }
         };
     }
@@ -322,7 +407,7 @@ final class BackendUiControllerTest extends TestCase
         self::assertStringContainsString('name="email"', $response->getContent());
         self::assertStringContainsString('name="password"', $response->getContent());
         self::assertStringContainsString('/backend/login-check', $response->getContent());
-        self::assertStringContainsString('federicomartin2609@gmail.com', $response->getContent());
+        self::assertStringContainsString('federicomartin2609&#x40;gmail.com', $response->getContent());
         self::assertStringNotContainsString('Credenciales iniciales', $response->getContent());
     }
 
@@ -424,7 +509,7 @@ final class BackendUiControllerTest extends TestCase
         self::assertSame('/backend/dashboard', $response->headers->get('Location'));
     }
 
-    public function testDashboardRendersAdminLandingForAuthenticatedUser(): void
+    public function testDashboardRendersSelectorWhenNoTenantIsActive(): void
     {
         $security = $this->createStub(Security::class);
         $security->method('getUser')->willReturn(new class implements UserInterface {
@@ -448,15 +533,95 @@ final class BackendUiControllerTest extends TestCase
         $response = $controller->dashboard();
 
         self::assertSame(Response::HTTP_OK, $response->getStatusCode());
-        self::assertStringContainsString('Dashboard comercial de negocios', $response->getContent());
-        self::assertStringContainsString('/logout', $response->getContent());
-        self::assertStringContainsString('/backend/profile', $response->getContent());
+        self::assertStringContainsString('Selecciona un negocio para empezar', $response->getContent());
+        self::assertStringContainsString('Ir al selector', $response->getContent());
+        self::assertStringContainsString('Crear negocio', $response->getContent());
+        self::assertStringContainsString('nav-tenant-link', $response->getContent());
+        self::assertStringContainsString('href="/backend/tenants">Negocio</a>', $response->getContent());
+        self::assertStringContainsString('Sin negocio seleccionado', $response->getContent());
+        self::assertStringContainsString('Seleccionar negocio', $response->getContent());
+        self::assertStringContainsString('/backend/tenants', $response->getContent());
+        self::assertStringNotContainsString('metric-value', $response->getContent());
+    }
+
+    public function testDashboardRendersTenantSpecificSummaryWhenTenantIsActive(): void
+    {
+        $tenant = new Tenant('Tech Investments', 'tech-investments');
+        $tenant->setBusinessContext('Contexto operativo del negocio activo.');
+        $tenant->setTone('Profesional');
+
+        $otherTenant = new Tenant('Another Brand', 'another-brand');
+        $product = new Product($tenant, 'WhatsApp Automation');
+        $productTwo = new Product($tenant, 'CRM Assistant');
+        $otherProduct = new Product($otherTenant, 'RAG Knowledge System');
+        $playbook = new Playbook($tenant, 'Guía comercial demo', $product);
+        $playbookTwo = new Playbook($tenant, 'Guía comercial upsell', $productTwo);
+        $otherPlaybook = new Playbook($otherTenant, 'Guía comercial otra', $otherProduct);
+        $entryPoint = new EntryPoint($product, 'crm-demo', 'CRM Demo');
+        $entryPoint->setPlaybook($playbook);
+        $entryPointTwo = new EntryPoint($productTwo, 'upsell-demo', 'Upsell Demo');
+        $entryPointTwo->setPlaybook($playbookTwo);
+        $entryPointThree = new EntryPoint($product, 'support-demo', 'Support Demo');
+        $entryPointThree->setPlaybook($playbook);
+        $otherEntryPoint = new EntryPoint($otherProduct, 'other-demo', 'Other Demo');
+        $otherEntryPoint->setPlaybook($otherPlaybook);
+        $tool = new \App\Entity\ExternalTool($tenant, 'MCP del negocio', 'mcp_remote', 'openai_remote_mcp');
+        $toolTwo = new \App\Entity\ExternalTool($tenant, 'MCP secundario', 'mcp_remote', 'openai_remote_mcp');
+        $toolThree = new \App\Entity\ExternalTool($tenant, 'MCP analytics', 'mcp_remote', 'openai_remote_mcp');
+        $toolFour = new \App\Entity\ExternalTool($tenant, 'MCP booking', 'mcp_remote', 'openai_remote_mcp');
+        $otherTool = new \App\Entity\ExternalTool($otherTenant, 'MCP ajeno', 'mcp_remote', 'openai_remote_mcp');
+
+        $security = $this->createStub(Security::class);
+        $security->method('getUser')->willReturn(new class implements UserInterface {
+            public function getUserIdentifier(): string
+            {
+                return 'manager@example.com';
+            }
+
+            public function getRoles(): array
+            {
+                return ['ROLE_MANAGER'];
+            }
+
+            public function eraseCredentials(): void
+            {
+            }
+        });
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => in_array($role, ['ROLE_AGENT', 'ROLE_MANAGER', 'ROLE_ADMIN'], true));
+
+        $controller = $this->createController($security, null, null, null, null, null, null, $this->createActiveTenantContext($tenant));
+        $response = $controller->dashboard(
+            null,
+            null,
+            $this->createPlaybookRepositoryFake([$playbook, $playbookTwo, $otherPlaybook]),
+            $this->createProductRepositoryFake([$product, $productTwo, $otherProduct]),
+            $this->createEntryPointRepositoryFake([$entryPoint, $entryPointTwo, $entryPointThree, $otherEntryPoint]),
+            $this->createExternalToolRepositoryFake([$tool, $toolTwo, $toolThree, $toolFour, $otherTool])
+        );
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        self::assertStringContainsString('Dashboard comercial — Tech Investments', $response->getContent());
+        self::assertStringContainsString('Aquí configuras el contexto, productos, guías y herramientas del agente para este negocio.', $response->getContent());
+        self::assertStringContainsString('nav-tenant-link', $response->getContent());
+        self::assertStringContainsString('href="/backend/tenants/'.$tenant->getId()->toRfc4122().'/edit">Negocio</a>', $response->getContent());
+        self::assertStringContainsString('tenant-chip-name">Tech Investments', $response->getContent());
+        self::assertStringContainsString('Cambiar</a>', $response->getContent());
+        self::assertStringContainsString('Productos / servicios</div><div class="metric-value">2</div>', $response->getContent());
+        self::assertStringContainsString('Guías comerciales</div><div class="metric-value">2</div>', $response->getContent());
+        self::assertStringContainsString('Puntos de entrada</div><div class="metric-value">3</div>', $response->getContent());
+        self::assertStringContainsString('Servidores MCP</div><div class="metric-value">4</div>', $response->getContent());
+        self::assertStringContainsString('/backend/tenants/'.$tenant->getId()->toRfc4122().'/edit', $response->getContent());
+        self::assertStringContainsString('/backend/products', $response->getContent());
         self::assertStringContainsString('/backend/playbooks', $response->getContent());
         self::assertStringContainsString('/backend/entry-points', $response->getContent());
-        self::assertStringContainsString('Admin', $response->getContent());
-        self::assertStringContainsString('Usuarios', $response->getContent());
-        self::assertStringContainsString('Salir', $response->getContent());
-        self::assertStringContainsString('Negocios', $response->getContent());
+        self::assertStringContainsString('/backend/external-tools', $response->getContent());
+        self::assertStringContainsString('Editar negocio', $response->getContent());
+        self::assertStringContainsString('Ver productos / servicios', $response->getContent());
+        self::assertStringContainsString('Ver guías comerciales', $response->getContent());
+        self::assertStringContainsString('Ver puntos de entrada', $response->getContent());
+        self::assertStringContainsString('Ver servidores MCP', $response->getContent());
+        self::assertStringNotContainsString('Selecciona un negocio para empezar', $response->getContent());
+        self::assertStringNotContainsString('Usuarios registrados', $response->getContent());
     }
 
     public function testUsersRendersTwigListForAdmins(): void
@@ -535,10 +700,11 @@ final class BackendUiControllerTest extends TestCase
 
         $tenants = $this->createTenantRepositoryFake([$tenant]);
 
-        $controller = $this->createController($security);
+        $controller = $this->createControllerForActiveTenant($security, $tenant);
         $response = $controller->tenants(Request::create('/backend/tenants', 'GET'), $tenants);
 
         self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        self::assertStringContainsString('Selector de negocios', $response->getContent());
         self::assertStringContainsString('Crear negocio', $response->getContent());
         self::assertStringContainsString('icon-action', $response->getContent());
         self::assertStringContainsString('aria-label="Editar negocio"', $response->getContent());
@@ -569,7 +735,7 @@ final class BackendUiControllerTest extends TestCase
             static fn (string $id): CsrfToken => new CsrfToken($id, 'token-'.$id)
         );
 
-        $controller = $this->createController($security, $entityManager, null, $csrfTokenManager);
+        $controller = $this->createControllerForActiveTenant($security, $tenant, $entityManager, null, $csrfTokenManager);
         $request = Request::create('/backend/tenants/'.$tenant->getId()->toRfc4122().'/delete', 'POST', [
             '_csrf_token' => 'token',
         ]);
@@ -585,6 +751,48 @@ final class BackendUiControllerTest extends TestCase
         $listResponse = $controller->tenants($listRequest, $tenants);
 
         self::assertStringContainsString('Negocio eliminado.', $listResponse->getContent());
+    }
+
+    public function testTenantEnterStoresActiveTenantAndRedirectsToTenantEdit(): void
+    {
+        $tenant = new Tenant('Tech Investments', 'tech-investments');
+
+        $security = $this->createStub(Security::class);
+        $security->method('getUser')->willReturn($this->createAuthenticatedUser('manager@example.com', ['manager'], 'María Manager'));
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => in_array($role, ['ROLE_MANAGER', 'ROLE_ADMIN'], true));
+
+        $tenants = $this->createTenantRepositoryFake([$tenant], $tenant);
+        $request = Request::create('/backend/tenants/'.$tenant->getId()->toRfc4122().'/enter', 'POST', [
+            '_csrf_token' => 'token',
+        ]);
+        $request->setSession(new Session());
+
+        $csrfTokenManager = $this->createStub(CsrfTokenManagerInterface::class);
+        $csrfTokenManager->method('isTokenValid')->willReturn(true);
+
+        $activeTenantContext = $this->createActiveTenantContextForRequest($tenant, $request);
+        $controller = $this->createController($security, null, null, $csrfTokenManager, null, null, null, $activeTenantContext);
+        $response = $controller->tenantEnter($tenant->getId()->toRfc4122(), $request, $tenants);
+
+        self::assertSame(Response::HTTP_FOUND, $response->getStatusCode());
+        self::assertSame('/backend/tenants/'.$tenant->getId()->toRfc4122().'/edit', $response->headers->get('Location'));
+        self::assertTrue($activeTenantContext->hasActiveTenant());
+        self::assertSame($tenant->getId()->toRfc4122(), $activeTenantContext->getActiveTenantId());
+    }
+
+    public function testProductsPageRequiresActiveTenant(): void
+    {
+        $security = $this->createStub(Security::class);
+        $security->method('getUser')->willReturn($this->createAuthenticatedUser('manager@example.com', ['manager'], 'María Manager'));
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => in_array($role, ['ROLE_MANAGER', 'ROLE_ADMIN'], true));
+
+        $controller = $this->createController($security);
+        $response = $controller->products(Request::create('/backend/products', 'GET'));
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        self::assertStringContainsString('Selecciona un negocio para continuar', $response->getContent());
+        self::assertStringContainsString('/backend/tenants', $response->getContent());
+        self::assertStringNotContainsString('Crear producto / servicio', $response->getContent());
     }
 
     public function testTenantCreateRouteExistsForGetAndPost(): void
@@ -651,12 +859,21 @@ final class BackendUiControllerTest extends TestCase
 
     public function testTenantCreateSubmissionPersistsNewTenant(): void
     {
+        $tenant = new Tenant('Academia Nova', 'academia-nova');
+
         $security = $this->createStub(Security::class);
         $security->method('getUser')->willReturn($this->createAuthenticatedUser('manager@example.com', ['manager'], 'María Manager'));
         $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => in_array($role, ['ROLE_MANAGER', 'ROLE_ADMIN'], true));
 
         $entityManager = $this->createMock(EntityManagerInterface::class);
-        $entityManager->expects(self::exactly(2))->method('persist');
+        $createdTenant = null;
+        $entityManager->expects(self::exactly(2))->method('persist')->with(self::callback(static function (object $entity) use (&$createdTenant): bool {
+            if ($entity instanceof Tenant) {
+                $createdTenant = $entity;
+            }
+
+            return true;
+        }));
         $entityManager->expects(self::once())->method('flush');
 
         $tenants = $this->createTenantRepositoryFake();
@@ -664,7 +881,7 @@ final class BackendUiControllerTest extends TestCase
         $csrfTokenManager = $this->createStub(CsrfTokenManagerInterface::class);
         $csrfTokenManager->method('isTokenValid')->willReturn(true);
 
-        $controller = $this->createController($security, $entityManager, null, $csrfTokenManager);
+        $controller = $this->createControllerForActiveTenant($security, $tenant, $entityManager, null, $csrfTokenManager);
         $response = $controller->tenantCreate(Request::create('/backend/tenants/new', 'POST', [
             '_csrf_token' => 'token',
             'name' => 'Academia Nova',
@@ -682,7 +899,8 @@ final class BackendUiControllerTest extends TestCase
         ]), $tenants);
 
         self::assertSame(Response::HTTP_FOUND, $response->getStatusCode());
-        self::assertSame('/backend/tenants', $response->headers->get('Location'));
+        self::assertInstanceOf(Tenant::class, $createdTenant);
+        self::assertSame('/backend/tenants/'.$createdTenant->getId()->toRfc4122().'/edit', $response->headers->get('Location'));
     }
 
     public function testTenantEditFormRendersCurrentValues(): void
@@ -737,7 +955,7 @@ final class BackendUiControllerTest extends TestCase
         );
 
         self::assertSame(Response::HTTP_OK, $response->getStatusCode());
-        self::assertStringContainsString('Editar negocio', $response->getContent());
+        self::assertStringContainsString('Ficha del negocio', $response->getContent());
         self::assertStringContainsString('Federico Martin Demo', $response->getContent());
         self::assertStringContainsString('federico-martin-demo', $response->getContent());
         self::assertStringContainsString('Profesional', $response->getContent());
@@ -827,7 +1045,7 @@ final class BackendUiControllerTest extends TestCase
         $csrfTokenManager = $this->createStub(CsrfTokenManagerInterface::class);
         $csrfTokenManager->method('isTokenValid')->willReturn(true);
 
-        $controller = $this->createController($security, $entityManager, null, $csrfTokenManager);
+        $controller = $this->createControllerForActiveTenant($security, $tenant, $entityManager, null, $csrfTokenManager);
         $response = $controller->tenantEdit(
             $tenant->getId()->toRfc4122(),
             Request::create('/backend/tenants/'.$tenant->getId()->toRfc4122().'/edit', 'POST', [
@@ -855,7 +1073,7 @@ final class BackendUiControllerTest extends TestCase
         );
 
         self::assertSame(Response::HTTP_FOUND, $response->getStatusCode());
-        self::assertSame('/backend/tenants', $response->headers->get('Location'));
+        self::assertSame('/backend/tenants/'.$tenant->getId()->toRfc4122().'/edit', $response->headers->get('Location'));
         self::assertSame('Federico Martin Demo 2', $tenant->getName());
         self::assertSame('federico-martin-demo-2', $tenant->getSlug());
         self::assertSame('Contexto actualizado', $tenant->getBusinessContext());
@@ -907,7 +1125,7 @@ final class BackendUiControllerTest extends TestCase
         $products = $this->createProductRepositoryFake([$product]);
         $playbooks = $this->createPlaybookRepositoryFake([$playbook]);
 
-        $controller = $this->createController($security);
+        $controller = $this->createControllerForActiveTenant($security, $tenant);
         $response = $controller->playbooks(Request::create('/backend/playbooks', 'GET'), $playbooks);
 
         self::assertSame(Response::HTTP_OK, $response->getStatusCode());
@@ -940,7 +1158,7 @@ final class BackendUiControllerTest extends TestCase
             static fn (string $id): CsrfToken => new CsrfToken($id, 'token-'.$id)
         );
 
-        $controller = $this->createController($security, $entityManager, null, $csrfTokenManager);
+        $controller = $this->createControllerForActiveTenant($security, $tenant, $entityManager, null, $csrfTokenManager);
         $request = Request::create('/backend/playbooks/'.$playbook->getId()->toRfc4122().'/delete', 'POST', [
             '_csrf_token' => 'token',
         ]);
@@ -975,7 +1193,7 @@ final class BackendUiControllerTest extends TestCase
             static fn (string $id): CsrfToken => new CsrfToken($id, 'token-'.$id)
         );
 
-        $controller = $this->createController($security, null, null, $csrfTokenManager);
+        $controller = $this->createControllerForActiveTenant($security, $tenant, null, null, $csrfTokenManager);
         $response = $controller->playbookCreate(Request::create('/backend/playbooks/new', 'GET'), $tenants, $products);
 
         self::assertSame(Response::HTTP_OK, $response->getStatusCode());
@@ -1025,7 +1243,7 @@ final class BackendUiControllerTest extends TestCase
         $csrfTokenManager = $this->createStub(CsrfTokenManagerInterface::class);
         $csrfTokenManager->method('isTokenValid')->willReturn(true);
 
-        $controller = $this->createController($security, $entityManager, null, $csrfTokenManager);
+        $controller = $this->createControllerForActiveTenant($security, $tenant, $entityManager, null, $csrfTokenManager);
         $response = $controller->playbookCreate(Request::create('/backend/playbooks/new', 'POST', [
             '_csrf_token' => 'token',
             'tenantId' => $tenant->getId()->toRfc4122(),
@@ -1071,7 +1289,7 @@ final class BackendUiControllerTest extends TestCase
         $csrfTokenManager = $this->createStub(CsrfTokenManagerInterface::class);
         $csrfTokenManager->method('isTokenValid')->willReturn(true);
 
-        $controller = $this->createController($security, $entityManager, null, $csrfTokenManager);
+        $controller = $this->createControllerForActiveTenant($security, $tenant, $entityManager, null, $csrfTokenManager);
         $response = $controller->playbookCreate(Request::create('/backend/playbooks/new', 'POST', [
             '_csrf_token' => 'token',
             'tenantId' => $tenant->getId()->toRfc4122(),
@@ -1115,7 +1333,7 @@ final class BackendUiControllerTest extends TestCase
         $products = $this->createProductRepositoryFake([$product]);
         $tenants = $this->createTenantRepositoryFake([$tenant]);
 
-        $controller = $this->createController($security);
+        $controller = $this->createControllerForActiveTenant($security, $tenant);
         $response = $controller->products(Request::create('/backend/products', 'GET'), $products, $tenants);
 
         self::assertSame(Response::HTTP_OK, $response->getStatusCode());
@@ -1145,7 +1363,7 @@ final class BackendUiControllerTest extends TestCase
         $products = $this->createProductRepositoryFake([$productA, $productB]);
         $tenants = $this->createTenantRepositoryFake([$tenantA, $tenantB]);
 
-        $controller = $this->createController($security);
+        $controller = $this->createControllerForActiveTenant($security, $tenantA);
         $request = Request::create('/backend/products', 'GET', [
             'tenantId' => $tenantA->getId()->toRfc4122(),
             'product' => 'whatsapp',
@@ -1175,7 +1393,7 @@ final class BackendUiControllerTest extends TestCase
             static fn (string $id): CsrfToken => new CsrfToken($id, 'token-'.$id)
         );
 
-        $controller = $this->createController($security, null, null, $csrfTokenManager);
+        $controller = $this->createControllerForActiveTenant($security, $tenant, null, null, $csrfTokenManager);
         $response = $controller->productCreate(Request::create('/backend/products/new', 'GET'), $tenants);
 
         self::assertSame(Response::HTTP_OK, $response->getStatusCode());
@@ -1206,7 +1424,7 @@ final class BackendUiControllerTest extends TestCase
 
         $tenants = $this->createTenantRepositoryFake([$tenant]);
 
-        $controller = $this->createController($security);
+        $controller = $this->createControllerForActiveTenant($security, $tenant);
         $response = $controller->productImport(Request::create('/backend/products/import', 'GET'), $tenants);
 
         self::assertSame(Response::HTTP_OK, $response->getStatusCode());
@@ -1236,7 +1454,7 @@ final class BackendUiControllerTest extends TestCase
             static fn (string $id): CsrfToken => new CsrfToken($id, 'token-'.$id)
         );
 
-        $controller = $this->createController($security, null, null, $csrfTokenManager);
+        $controller = $this->createControllerForActiveTenant($security, $tenant, null, null, $csrfTokenManager);
         $response = $controller->productEdit($product->getId()->toRfc4122(), Request::create('/backend/products/'.$product->getId()->toRfc4122().'/edit', 'GET'), $tenants, $products);
 
         self::assertSame(Response::HTTP_OK, $response->getStatusCode());
@@ -1262,7 +1480,7 @@ final class BackendUiControllerTest extends TestCase
         $csrfTokenManager = $this->createStub(CsrfTokenManagerInterface::class);
         $csrfTokenManager->method('isTokenValid')->willReturn(true);
 
-        $controller = $this->createController($security, $entityManager, null, $csrfTokenManager);
+        $controller = $this->createControllerForActiveTenant($security, $tenant, $entityManager, null, $csrfTokenManager);
         $request = Request::create('/backend/products/'.$product->getId()->toRfc4122().'/delete', 'POST', [
             '_csrf_token' => 'token',
         ]);
@@ -1310,7 +1528,7 @@ final class BackendUiControllerTest extends TestCase
         $csrfTokenManager = $this->createStub(CsrfTokenManagerInterface::class);
         $csrfTokenManager->method('isTokenValid')->willReturn(true);
 
-        $controller = $this->createController($security, $entityManager, null, $csrfTokenManager);
+        $controller = $this->createControllerForActiveTenant($security, $tenant, $entityManager, null, $csrfTokenManager);
         $response = $controller->productCreate(Request::create('/backend/products/new', 'POST', [
             '_csrf_token' => 'token',
             'tenantId' => $tenant->getId()->toRfc4122(),
@@ -1349,7 +1567,7 @@ final class BackendUiControllerTest extends TestCase
 
         $entryPoints = $this->createEntryPointRepositoryFake([$entryPoint]);
 
-        $controller = $this->createController($security);
+        $controller = $this->createControllerForActiveTenant($security, $tenant);
         $response = $controller->entryPoints($entryPoints);
 
         self::assertSame(Response::HTTP_OK, $response->getStatusCode());
@@ -1376,7 +1594,7 @@ final class BackendUiControllerTest extends TestCase
 
         $entryPoints = $this->createEntryPointRepositoryFake([], $entryPoint);
 
-        $controller = $this->createController($security);
+        $controller = $this->createControllerForActiveTenant($security, $tenant);
         $response = $controller->entryPointDetail($entryPoint->getId()->toRfc4122(), $entryPoints);
 
         self::assertSame(Response::HTTP_OK, $response->getStatusCode());
@@ -1418,7 +1636,7 @@ final class BackendUiControllerTest extends TestCase
         $csrfTokenManager = $this->createStub(CsrfTokenManagerInterface::class);
         $csrfTokenManager->method('isTokenValid')->willReturn(true);
 
-        $controller = $this->createController($security, $entityManager, null, $csrfTokenManager);
+        $controller = $this->createControllerForActiveTenant($security, $tenant, $entityManager, null, $csrfTokenManager);
         $response = $controller->entryPointCreate(Request::create('/backend/entry-points/new', 'POST', [
             '_csrf_token' => 'token',
             'productId' => $product->getId()->toRfc4122(),
@@ -1573,9 +1791,8 @@ final class BackendUiControllerTest extends TestCase
         $response = $controller->dashboard();
 
         self::assertSame(Response::HTTP_OK, $response->getStatusCode());
-        self::assertStringContainsString('Dashboard comercial de negocios', $response->getContent());
+        self::assertStringContainsString('Selecciona un negocio para empezar', $response->getContent());
         self::assertStringContainsString('Mi perfil', $response->getContent());
-        self::assertStringNotContainsString('/backend/users', $response->getContent());
         self::assertStringNotContainsString('Revisar usuarios', $response->getContent());
     }
 

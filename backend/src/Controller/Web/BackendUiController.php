@@ -4,6 +4,7 @@ namespace App\Controller\Web;
 
 use App\Domain\CommercialDomainSchema;
 use App\Entity\EntryPoint;
+use App\Entity\ExternalTool;
 use App\Entity\AiUsageEvent;
 use App\Entity\Playbook;
 use App\Entity\Product;
@@ -14,9 +15,11 @@ use App\Repository\AiUsageEventRepository;
 use App\Repository\PlaybookRepository;
 use App\Repository\ProductRepository;
 use App\Repository\EntryPointRepository;
+use App\Repository\ExternalToolRepository;
 use App\Repository\TenantAiUsagePolicyRepository;
 use App\Repository\TenantRepository;
 use App\Repository\UserRepository;
+use App\Service\ActiveTenantContext;
 use App\Service\RuntimeConfigurationService;
 use App\Service\ProductCatalogImportResult;
 use App\Service\ProductCatalogImportService;
@@ -40,6 +43,7 @@ final class BackendUiController
         private readonly EntityManagerInterface $entityManager,
         private readonly UserPasswordHasherInterface $passwordHasher,
         private readonly RuntimeConfigurationService $runtimeConfigurationService,
+        private readonly ActiveTenantContext $activeTenantContext,
         private readonly Environment $twig,
         private readonly ?AiUsageEventRepository $aiUsageEvents = null,
         private readonly ?ProductCatalogImportService $productCatalogImportService = null,
@@ -158,107 +162,79 @@ final class BackendUiController
         ?UserRepository $users = null,
         ?PlaybookRepository $playbooks = null,
         ?ProductRepository $products = null,
+        ?EntryPointRepository $entryPoints = null,
+        ?ExternalToolRepository $externalTools = null,
     ): Response {
         if (!$this->security->isGranted('ROLE_AGENT')) {
             return new RedirectResponse('/backend/login');
         }
 
-        $tenantCount = $tenants ? count($tenants->findAllOrdered()) : 0;
-        $userCount = $users ? count($users->findBy([], ['createdAt' => 'DESC'])) : 0;
-        $playbookCount = $playbooks ? count($playbooks->findAllOrdered()) : 0;
-        $productCount = $products ? count($products->findAllOrdered()) : 0;
+        $activeTenant = $this->activeTenantContext->getActiveTenant();
         $canManageUsers = $this->security->isGranted('ROLE_ADMIN');
-        $heroActions = sprintf(
-            '<a class="primary-action" href="/backend/tenants">Ver negocios</a>%s',
-            $canManageUsers ? '<a class="secondary-action" href="/backend/users">Revisar usuarios</a>' : ''
-        );
 
-        $content = sprintf(
-            '
-            <section class="hero-panel hero-panel-single">
-              <div class="hero-copy">
-                <div class="eyebrow-dark">Operación comercial</div>
-                <h2>Dashboard comercial de negocios</h2>
-                <p>
-                  Consulta el estado operativo de tus negocios y, si tienes permisos de gestión, accede a productos/servicios,
-                  guías comerciales y usuarios. Aquí defines cómo se comporta el agente IA por negocio o producto: su conocimiento,
-                  su tono y el enfoque comercial que aplica.
-                </p>
-                <div class="hero-actions">
-                  %s
-                </div>
-              </div>
-            </section>
+        if (!$activeTenant instanceof Tenant) {
+            $heroActions = sprintf(
+                '<a class="primary-action" href="/backend/tenants">Ir al selector</a>%s',
+                $this->security->isGranted('ROLE_MANAGER') ? '<a class="secondary-action" href="/backend/tenants/new">Crear negocio</a>' : ''
+            );
 
-            <section class="stats-grid">
-              %s
-              %s
-              %s
-              %s
-            </section>
+            $content = $this->twig->render('backend/dashboard.html.twig', [
+                'dashboard_title' => 'Selecciona un negocio para empezar',
+                'dashboard_eyebrow' => 'Selector de negocios',
+                'dashboard_subtitle' => 'Activa un negocio para ver su ficha, productos, guías, puntos de entrada y herramientas.',
+                'hero_actions_html' => $heroActions,
+                'metric_cards_html' => '',
+                'info_cards_html' => implode('', [
+                    $this->infoCard('Selector de negocios', 'Abre el listado y entra en el negocio con el que quieras trabajar.', '/backend/tenants', 'Abrir'),
+                    $this->infoCard('Crear negocio', 'Alta de un nuevo contexto comercial cuando no exista todavía.', '/backend/tenants/new', 'Crear'),
+                    $canManageUsers ? $this->infoCard('Usuarios', 'La administración transversal sigue disponible sin seleccionar negocio.', '/backend/users', 'Gestionar') : $this->infoCard('Perfil', 'Tu perfil sigue disponible aunque no haya negocio activo.', '/backend/profile', 'Abrir'),
+                ]),
+            ]);
 
-            <section class="cards-grid">
-              %s
-              %s
-              %s
-              %s
-            </section>
-            ',
-            $heroActions,
-            $this->metricCard('Negocios', (string) $tenantCount, 'Contextos comerciales listos'),
-            $this->metricCard('Guías comerciales', (string) $playbookCount, 'Cualificación, scoring y handoff'),
-            $this->metricCard('Productos / servicios', (string) $productCount, 'Catálogo comercial base'),
-            $this->metricCard('Usuarios', (string) $userCount, 'Cuentas de administración'),
-            $this->infoCard(
-                'Negocios',
-                'Cada negocio agrupa su contexto, usuarios y reglas del agente.',
-                '/backend/tenants',
-                'Abrir'
-            ),
-            $this->infoCard(
-                'Guías comerciales',
-                'Ajustes del agente para cada negocio o producto: enfoque, tono, scoring y reglas.',
-                '/backend/playbooks',
-                'Abrir'
-            ),
-            $this->infoCard(
-                'Productos / servicios',
-                'Propuestas comerciales asociadas al trabajo de cada negocio.',
-                '/backend/products',
-                'Abrir'
-            ),
-            $canManageUsers ? $this->infoCard(
-                'Usuarios',
-                'Cuentas que administran negocios, productos/servicios y acceso interno.',
-                '/backend/users',
-                'Gestionar'
-            ) : $this->infoCard(
-                'Usuarios',
-                'La gestión de usuarios está reservada al rol admin.',
-                '/backend/profile',
-                'Mi perfil'
-            ),
-        );
+            return $this->renderBackendShell(
+                'Panel comercial',
+                'Selecciona un negocio para empezar.',
+                'dashboard',
+                $content
+            );
+        }
+
+        $productCount = $this->countTenantProducts($products, $activeTenant);
+        $playbookCount = $this->countTenantPlaybooks($playbooks, $activeTenant);
+        $entryPointCount = $this->countTenantEntryPoints($entryPoints, $activeTenant);
+        $externalToolCount = $this->countTenantExternalTools($externalTools, $activeTenant);
+
+        $heroActions = implode('', [
+            sprintf('<a class="primary-action" href="/backend/tenants/%s/edit">Editar negocio</a>', rawurlencode($activeTenant->getId()->toRfc4122())),
+            '<a class="secondary-action" href="/backend/products">Ver productos / servicios</a>',
+            '<a class="secondary-action" href="/backend/playbooks">Ver guías comerciales</a>',
+            '<a class="secondary-action" href="/backend/entry-points">Ver puntos de entrada</a>',
+            '<a class="secondary-action" href="/backend/external-tools">Ver servidores MCP</a>',
+        ]);
 
         $content = $this->twig->render('backend/dashboard.html.twig', [
+            'dashboard_title' => sprintf('Dashboard comercial — %s', $activeTenant->getName()),
+            'dashboard_eyebrow' => 'Negocio activo',
+            'dashboard_subtitle' => 'Aquí configuras el contexto, productos, guías y herramientas del agente para este negocio.',
             'hero_actions_html' => $heroActions,
             'metric_cards_html' => implode('', [
-                $this->metricCard('Negocios', (string) $tenantCount, 'Contextos comerciales listos'),
-                $this->metricCard('Guías comerciales', (string) $playbookCount, 'Cualificación, scoring y handoff'),
-                $this->metricCard('Productos / servicios', (string) $productCount, 'Catálogo comercial base'),
-                $this->metricCard('Usuarios', (string) $userCount, 'Cuentas de administración'),
+                $this->metricCard('Productos / servicios', (string) $productCount, 'Del negocio activo'),
+                $this->metricCard('Guías comerciales', (string) $playbookCount, 'Estrategias opcionales del negocio'),
+                $this->metricCard('Puntos de entrada', (string) $entryPointCount, 'Rutas y campañas activas'),
+                $this->metricCard('Servidores MCP', (string) $externalToolCount, 'Herramientas técnicas del negocio'),
             ]),
             'info_cards_html' => implode('', [
-                $this->infoCard('Negocios', 'Cada negocio agrupa su contexto, usuarios y reglas del agente.', '/backend/tenants', 'Abrir'),
-                $this->infoCard('Guías comerciales', 'Ajustes del agente para cada negocio o producto: enfoque, tono, scoring y reglas.', '/backend/playbooks', 'Abrir'),
-                $this->infoCard('Productos / servicios', 'Propuestas comerciales asociadas al trabajo de cada negocio.', '/backend/products', 'Abrir'),
-                $canManageUsers ? $this->infoCard('Usuarios', 'Cuentas que administran negocios, productos/servicios y acceso interno.', '/backend/users', 'Gestionar') : $this->infoCard('Usuarios', 'La gestión de usuarios está reservada al rol admin.', '/backend/profile', 'Mi perfil'),
+                $this->infoCard('Ficha del negocio', 'Edita contexto, tono y política comercial del tenant activo.', sprintf('/backend/tenants/%s/edit', rawurlencode($activeTenant->getId()->toRfc4122())), 'Editar'),
+                $this->infoCard('Productos / servicios', 'Gestiona el catálogo comercial de este negocio.', '/backend/products', 'Abrir'),
+                $this->infoCard('Guías comerciales', 'Ajusta estrategias específicas opcionales.', '/backend/playbooks', 'Abrir'),
+                $this->infoCard('Puntos de entrada', 'Revisa rutas públicas y campañas del negocio activo.', '/backend/entry-points', 'Abrir'),
+                $this->infoCard('Servidores MCP', 'Configura herramientas externas del negocio.', '/backend/external-tools', 'Abrir'),
             ]),
         ]);
 
         return $this->renderBackendShell(
-            'Panel comercial',
-            'Resumen de negocios, usuarios y configuración comercial del agente.',
+            sprintf('Dashboard comercial — %s', $activeTenant->getName()),
+            'Aquí configuras el contexto, productos, guías y herramientas del agente para este negocio.',
             'dashboard',
             $content
         );
@@ -272,6 +248,15 @@ final class BackendUiController
         }
 
         $feedbackHtml = $this->renderProfileFeedback($request);
+        if (!$this->activeTenantContext->hasActiveTenant()) {
+            return $this->renderTenantSelectionRequiredPage(
+                'Guías comerciales',
+                'Estrategias opcionales que complementan la política general del negocio.',
+                'playbooks',
+                'Guías comerciales'
+            );
+        }
+
         $rows = array_map(function (Playbook $playbook): string {
             $tenant = $playbook->getTenant();
             $product = $playbook->getProduct();
@@ -361,6 +346,15 @@ final class BackendUiController
             return new RedirectResponse('/backend/login');
         }
 
+        if (!$this->activeTenantContext->hasActiveTenant()) {
+            return $this->renderTenantSelectionRequiredPage(
+                'Crear guía comercial',
+                'Selecciona un negocio antes de crear una estrategia específica.',
+                'playbooks',
+                'Guías comerciales'
+            );
+        }
+
         $values = $this->playbookFormDefaults();
         $error = null;
 
@@ -401,6 +395,15 @@ final class BackendUiController
     {
         if (!$this->security->isGranted('ROLE_MANAGER')) {
             return new RedirectResponse('/backend/login');
+        }
+
+        if (!$this->activeTenantContext->hasActiveTenant()) {
+            return $this->renderTenantSelectionRequiredPage(
+                'Editar guía comercial',
+                'Selecciona un negocio antes de editar esta estrategia específica.',
+                'playbooks',
+                'Guías comerciales'
+            );
         }
 
         if (!$playbooks instanceof PlaybookRepository) {
@@ -482,22 +485,29 @@ final class BackendUiController
         }
 
         $feedbackHtml = $this->renderProfileFeedback($request);
-        $rows = array_map(function (Tenant $tenant): string {
+        $activeTenantId = $this->activeTenantContext->getActiveTenantId();
+        $rows = array_map(function (Tenant $tenant) use ($activeTenantId): string {
             $contextSummary = $this->shortenListText($tenant->getBusinessContext(), 110, 'Sin contexto');
             $toneSummary = $this->shortenListText($tenant->getTone() ?? '', 36, 'Sin tono');
             $policySummary = $this->shortenListText($tenant->getSalesPolicySummary(), 130, 'Sin política comercial');
             $status = $tenant->isActive() ? '<span class="status-ok">Activo</span>' : '<span class="status-off">Inactivo</span>';
             $editUrl = sprintf('/backend/tenants/%s/edit', rawurlencode($tenant->getId()->toRfc4122()));
             $deleteUrl = sprintf('/backend/tenants/%s/delete', rawurlencode($tenant->getId()->toRfc4122()));
+            $enterUrl = sprintf('/backend/tenants/%s/enter', rawurlencode($tenant->getId()->toRfc4122()));
+            $isCurrentActive = $activeTenantId === $tenant->getId()->toRfc4122();
 
             return sprintf(
                 '<tr>
                     <td><strong>%s</strong><div class="subtle">Contexto: %s</div><div class="subtle">Tono: %s</div></td>
                     <td><code>%s</code></td>
                     <td>Política: %s</td>
-                    <td>%s</td>
+                    <td>%s%s</td>
                     <td class="text-right">
                       <div style="display:inline-flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end">
+                        <form method="post" action="%s" style="display:inline-flex;">
+                          <input type="hidden" name="_csrf_token" value="%s">
+                          <button class="secondary-action" type="submit" title="Entrar en el negocio" aria-label="Entrar en el negocio">%s</button>
+                        </form>
                         <a class="icon-action" href="%s" title="Editar negocio" aria-label="Editar negocio">%s</a>
                         <form method="post" action="%s" onsubmit="return confirm(\'¿Eliminar este negocio?\');" style="display:inline-flex;">
                           <input type="hidden" name="_csrf_token" value="%s">
@@ -512,6 +522,10 @@ final class BackendUiController
                 htmlspecialchars($tenant->getSlug(), ENT_QUOTES, 'UTF-8'),
                 htmlspecialchars($policySummary, ENT_QUOTES, 'UTF-8'),
                 $status,
+                $isCurrentActive ? '<div class="subtle">Activo en sesión</div>' : '',
+                htmlspecialchars($enterUrl, ENT_QUOTES, 'UTF-8'),
+                htmlspecialchars($this->tenantTokenValue($enterUrl), ENT_QUOTES, 'UTF-8'),
+                $isCurrentActive ? 'En sesión' : 'Entrar',
                 htmlspecialchars($editUrl, ENT_QUOTES, 'UTF-8'),
                 self::iconEditSvg(),
                 htmlspecialchars($deleteUrl, ENT_QUOTES, 'UTF-8'),
@@ -524,22 +538,22 @@ final class BackendUiController
             '
             <section class="hero-panel">
               <div class="hero-copy">
-                <div class="eyebrow-dark">Negocios y contexto</div>
-                <h2>Negocios</h2>
-                <p>Cada negocio agrupa usuarios, reglas y contexto comercial del agente IA. Así mantienes separada la relación con cada cliente.</p>
+                <div class="eyebrow-dark">Selector de negocio</div>
+                <h2>Selecciona un negocio</h2>
+                <p>Elige el negocio con el que vas a trabajar. Desde aquí entras a su ficha y cambias de contexto cuando lo necesites.</p>
               </div>
               <div class="hero-aside">
                 <div class="badge-live">Admin</div>
-                <div class="hero-aside-title">Contexto</div>
-                <p>Cada negocio agrupa contexto, usuarios y reglas comerciales de forma aislada.</p>
+                <div class="hero-aside-title">Entrada</div>
+                <p>Este listado funciona como selector inicial y de cambio de negocio activo.</p>
               </div>
             </section>
             %s
             <section class="table-card">
               <div class="table-header">
                 <div>
-                  <h3>Negocios registrados</h3>
-                  <p>Nombre, slug y política comercial de arranque.</p>
+                  <h3>Negocios disponibles</h3>
+                  <p>Selecciona un negocio para abrir su ficha activa.</p>
                 </div>
                 <a class="primary-action" href="/backend/tenants/new">Crear negocio</a>
               </div>
@@ -562,7 +576,38 @@ final class BackendUiController
             'rows_html' => $rows !== [] ? implode('', $rows) : '<tr><td colspan="5" class="empty-row">No hay negocios todavía.</td></tr>',
         ]);
 
-        return $this->renderBackendShell('Negocios', 'Negocios y contextos operativos.', 'tenants', $content);
+        return $this->renderBackendShell('Selector de negocios', 'Elige un negocio activo para abrir su ficha.', 'tenants', $content);
+    }
+
+    #[Route('/tenants/{id}/enter', methods: ['POST'])]
+    public function tenantEnter(string $id, Request $request, ?TenantRepository $tenants = null): Response
+    {
+        if (!$this->security->isGranted('ROLE_MANAGER')) {
+            return new RedirectResponse('/backend/login');
+        }
+
+        if (!$tenants instanceof TenantRepository) {
+            return new RedirectResponse('/backend/tenants');
+        }
+
+        $tenant = $tenants->find($id);
+        if (!$tenant instanceof Tenant || !$tenant->isActive()) {
+            $this->activeTenantContext->clear();
+            $this->addFlashMessage($request, 'error', 'Selecciona un negocio activo para continuar.');
+
+            return new RedirectResponse('/backend/tenants');
+        }
+
+        if (!$this->isValidTenantToken('/backend/tenants/'.$tenant->getId()->toRfc4122().'/enter', (string) $request->request->get('_csrf_token'))) {
+            $this->addFlashMessage($request, 'error', 'La sesión del formulario ha expirado. Vuelve a intentarlo.');
+
+            return new RedirectResponse('/backend/tenants');
+        }
+
+        $this->activeTenantContext->setActiveTenant($tenant);
+        $this->addFlashMessage($request, 'success', sprintf('Negocio activo: %s.', $tenant->getName()));
+
+        return new RedirectResponse('/backend/tenants/'.$tenant->getId()->toRfc4122().'/edit');
     }
 
     #[Route('/tenants/{id}/delete', methods: ['POST'])]
@@ -588,6 +633,9 @@ final class BackendUiController
 
         $this->entityManager->remove($tenant);
         $this->entityManager->flush();
+        if ($this->activeTenantContext->getActiveTenantId() === $tenant->getId()->toRfc4122()) {
+            $this->activeTenantContext->clear();
+        }
         $this->addFlashMessage($request, 'success', 'Negocio eliminado.');
 
         return new RedirectResponse('/backend/tenants');
@@ -621,7 +669,11 @@ final class BackendUiController
                     $this->persistTenantAiUsagePolicy($tenant, $values, $aiUsagePolicies, false);
                     $this->entityManager->flush();
 
-                    return new RedirectResponse('/backend/tenants');
+                    if ($tenant->isActive()) {
+                        $this->activeTenantContext->setActiveTenant($tenant);
+                    }
+
+                    return new RedirectResponse('/backend/tenants/'.$tenant->getId()->toRfc4122().'/edit');
                 }
             }
         }
@@ -680,15 +732,21 @@ final class BackendUiController
                     $this->entityManager->persist($tenant);
                     $this->entityManager->flush();
 
-                    return new RedirectResponse('/backend/tenants');
+                    if ($tenant->isActive()) {
+                        $this->activeTenantContext->setActiveTenant($tenant);
+                    } elseif ($this->activeTenantContext->getActiveTenantId() === $tenant->getId()->toRfc4122()) {
+                        $this->activeTenantContext->clear();
+                    }
+
+                    return new RedirectResponse('/backend/tenants/'.$tenant->getId()->toRfc4122().'/edit');
                 }
             }
         }
 
         return $this->renderTenantForm(
-            'Editar negocio',
-            'Ajusta el contexto comercial, el tono, la política de venta y los límites de uso IA del negocio seleccionado.',
-            'Editar negocio',
+            'Ficha del negocio',
+            'Ajusta el contexto comercial, el tono, la política de venta y los límites de uso IA del negocio activo.',
+            'Ficha del negocio',
             'Guardar cambios',
             '/backend/tenants/'.$tenant->getId()->toRfc4122().'/edit',
             $values,
@@ -728,6 +786,15 @@ final class BackendUiController
     {
         if (!$this->security->isGranted('ROLE_MANAGER')) {
             return new RedirectResponse('/backend/login');
+        }
+
+        if (!$this->activeTenantContext->hasActiveTenant()) {
+            return $this->renderTenantSelectionRequiredPage(
+                'Productos / servicios',
+                'Selecciona un negocio antes de gestionar el catálogo comercial.',
+                'products',
+                'Productos / servicios'
+            );
         }
 
         $feedbackHtml = $this->renderProfileFeedback($request);
@@ -879,6 +946,15 @@ final class BackendUiController
             return new RedirectResponse('/backend/login');
         }
 
+        if (!$this->activeTenantContext->hasActiveTenant()) {
+            return $this->renderTenantSelectionRequiredPage(
+                'Importar catálogo',
+                'Selecciona un negocio antes de importar productos o servicios.',
+                'products',
+                'Productos / servicios'
+            );
+        }
+
         $values = $this->productImportFormDefaults();
         $error = null;
         $result = null;
@@ -927,6 +1003,15 @@ final class BackendUiController
             return new RedirectResponse('/backend/login');
         }
 
+        if (!$this->activeTenantContext->hasActiveTenant()) {
+            return $this->renderTenantSelectionRequiredPage(
+                'Crear producto / servicio',
+                'Selecciona un negocio antes de crear una nueva propuesta comercial.',
+                'products',
+                'Productos / servicios'
+            );
+        }
+
         $values = $this->productFormDefaults();
         $error = null;
 
@@ -967,6 +1052,15 @@ final class BackendUiController
     {
         if (!$this->security->isGranted('ROLE_MANAGER')) {
             return new RedirectResponse('/backend/login');
+        }
+
+        if (!$this->activeTenantContext->hasActiveTenant()) {
+            return $this->renderTenantSelectionRequiredPage(
+                'Editar producto / servicio',
+                'Selecciona un negocio antes de editar el catálogo comercial.',
+                'products',
+                'Productos / servicios'
+            );
         }
 
         if (!$products instanceof ProductRepository) {
@@ -1045,6 +1139,15 @@ final class BackendUiController
             return new RedirectResponse('/backend/login');
         }
 
+        if (!$this->activeTenantContext->hasActiveTenant()) {
+            return $this->renderTenantSelectionRequiredPage(
+                'Puntos de entrada',
+                'Selecciona un negocio antes de gestionar campañas y rutas públicas.',
+                'entry-points',
+                'Puntos de entrada'
+            );
+        }
+
         $rows = array_map(static function (EntryPoint $entryPoint): string {
             $status = $entryPoint->isActive() ? '<span class="status-ok">Activo</span>' : '<span class="status-off">Inactivo</span>';
             $detailUrl = sprintf('/backend/entry-points/%s', rawurlencode($entryPoint->getId()->toRfc4122()));
@@ -1121,6 +1224,15 @@ final class BackendUiController
             return new RedirectResponse('/backend/login');
         }
 
+        if (!$this->activeTenantContext->hasActiveTenant()) {
+            return $this->renderTenantSelectionRequiredPage(
+                'Crear punto de entrada',
+                'Selecciona un negocio antes de definir una campaña o enlace público.',
+                'entry-points',
+                'Puntos de entrada'
+            );
+        }
+
         $values = $this->entryPointFormDefaults();
         $error = null;
 
@@ -1161,6 +1273,15 @@ final class BackendUiController
     {
         if (!$this->security->isGranted('ROLE_MANAGER')) {
             return new RedirectResponse('/backend/login');
+        }
+
+        if (!$this->activeTenantContext->hasActiveTenant()) {
+            return $this->renderTenantSelectionRequiredPage(
+                'Editar punto de entrada',
+                'Selecciona un negocio antes de editar este punto de entrada.',
+                'entry-points',
+                'Puntos de entrada'
+            );
         }
 
         if (!$entryPoints instanceof EntryPointRepository) {
@@ -1211,6 +1332,15 @@ final class BackendUiController
     {
         if (!$this->security->isGranted('ROLE_MANAGER')) {
             return new RedirectResponse('/backend/login');
+        }
+
+        if (!$this->activeTenantContext->hasActiveTenant()) {
+            return $this->renderTenantSelectionRequiredPage(
+                'Punto de entrada',
+                'Selecciona un negocio antes de revisar el detalle de la ruta pública.',
+                'entry-points',
+                'Puntos de entrada'
+            );
         }
 
         if (!$entryPoints instanceof EntryPointRepository) {
@@ -1533,6 +1663,27 @@ final class BackendUiController
         ]));
     }
 
+    private function renderTenantSelectionRequiredPage(string $pageTitle, string $pageSubtitle, string $activeNav, string $sectionLabel): Response
+    {
+        $content = sprintf(
+            '
+            <section class="hero-panel hero-panel-single">
+              <div class="hero-copy">
+                <div class="eyebrow-dark">%s</div>
+                <h2>Selecciona un negocio para continuar</h2>
+                <p>Esta sección funciona dentro de un negocio activo. Abre la lista de negocios y pulsa “Gestionar” sobre el contexto que quieras usar.</p>
+                <div class="hero-actions">
+                  <a class="primary-action" href="/backend/tenants">Ir a negocios</a>
+                </div>
+              </div>
+            </section>
+            ',
+            htmlspecialchars($sectionLabel, ENT_QUOTES, 'UTF-8')
+        );
+
+        return $this->renderBackendShell($pageTitle, $pageSubtitle, $activeNav, $content);
+    }
+
     /**
      * @param array<int, array{email: string, roles: string, status_label: string, status_class: string, created_at: string, login_label: string}> $users
      */
@@ -1657,14 +1808,84 @@ final class BackendUiController
     }
 
     /**
-     * @return array{current_user_display_name: string, current_user_initials: string}
+     * @return array{current_user_display_name: string, current_user_initials: string, active_tenant: array{id: string, name: string, slug: string, edit_url: string}|null}
      */
     private function currentUserTemplateData(): array
     {
         return [
             'current_user_display_name' => $this->currentUserDisplayName(),
             'current_user_initials' => $this->currentUserInitials(),
+            'active_tenant' => $this->activeTenantTemplateData(),
         ];
+    }
+
+    /**
+     * @return array{id: string, name: string, slug: string, edit_url: string}|null
+     */
+    private function activeTenantTemplateData(): ?array
+    {
+        $tenant = $this->activeTenantContext->getActiveTenant();
+        if (!$tenant instanceof Tenant) {
+            return null;
+        }
+
+        return [
+            'id' => $tenant->getId()->toRfc4122(),
+            'name' => $tenant->getName(),
+            'slug' => $tenant->getSlug(),
+            'edit_url' => sprintf('/backend/tenants/%s/edit', rawurlencode($tenant->getId()->toRfc4122())),
+        ];
+    }
+
+    private function countTenantProducts(?ProductRepository $products, Tenant $tenant): int
+    {
+        if (!$products instanceof ProductRepository) {
+            return 0;
+        }
+
+        $tenantId = $tenant->getId()->toRfc4122();
+
+        return count(array_filter(
+            $products->findAllOrdered(),
+            static fn (Product $product): bool => $product->getTenant()->getId()->toRfc4122() === $tenantId
+        ));
+    }
+
+    private function countTenantPlaybooks(?PlaybookRepository $playbooks, Tenant $tenant): int
+    {
+        if (!$playbooks instanceof PlaybookRepository) {
+            return 0;
+        }
+
+        $tenantId = $tenant->getId()->toRfc4122();
+
+        return count(array_filter(
+            $playbooks->findAllOrdered(),
+            static fn (Playbook $playbook): bool => $playbook->getTenant()->getId()->toRfc4122() === $tenantId
+        ));
+    }
+
+    private function countTenantEntryPoints(?EntryPointRepository $entryPoints, Tenant $tenant): int
+    {
+        if (!$entryPoints instanceof EntryPointRepository) {
+            return 0;
+        }
+
+        $tenantId = $tenant->getId()->toRfc4122();
+
+        return count(array_filter(
+            $entryPoints->findAllOrdered(),
+            static fn (EntryPoint $entryPoint): bool => $entryPoint->getTenant()->getId()->toRfc4122() === $tenantId
+        ));
+    }
+
+    private function countTenantExternalTools(?ExternalToolRepository $externalTools, Tenant $tenant): int
+    {
+        if (!$externalTools instanceof ExternalToolRepository) {
+            return 0;
+        }
+
+        return count($externalTools->findByTenantOrdered($tenant));
     }
 
     private function currentUser(): ?User

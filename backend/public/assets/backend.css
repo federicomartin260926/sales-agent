@@ -252,6 +252,10 @@ body.login-page .footer code {
   background: transparent;
 }
 
+.sidebar .nav a.nav-tenant-link {
+  font-weight: 800;
+}
+
 .sidebar .nav a.active {
   background: #eef1f5;
   border-color: #e2e8f0;
@@ -333,6 +337,14 @@ body.login-page .footer code {
   box-shadow: 0 4px 24px rgba(15, 23, 42, 0.2);
 }
 
+.topbar-meta {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .page-title {
   margin: 0;
   font-size: 18px;
@@ -354,6 +366,60 @@ body.login-page .footer code {
   color: #fff;
   flex-wrap: wrap;
   justify-content: flex-end;
+}
+
+.tenant-chip {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 8px 12px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.07);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #fff;
+  text-decoration: none;
+  min-width: 170px;
+  max-width: 220px;
+}
+
+.tenant-chip-empty {
+  cursor: pointer;
+}
+
+.tenant-chip-active {
+  align-items: flex-start;
+}
+
+.tenant-chip-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: rgba(255, 255, 255, 0.62);
+  font-weight: 800;
+}
+
+.tenant-chip-name {
+  font-size: 14px;
+  line-height: 1.25;
+  font-weight: 800;
+}
+
+.tenant-chip-link {
+  margin-top: 2px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.82);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.tenant-chip-empty .tenant-chip-link {
+  margin-top: 0;
+  text-decoration: none;
+}
+
+.tenant-chip-empty:hover,
+.tenant-chip-link:hover {
+  color: #fff;
 }
 
 .user-dropdown {

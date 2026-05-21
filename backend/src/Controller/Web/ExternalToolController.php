@@ -6,6 +6,7 @@ use App\Entity\ExternalTool;
 use App\Entity\Tenant;
 use App\Repository\ExternalToolRepository;
 use App\Repository\TenantRepository;
+use App\Service\ActiveTenantContext;
 use App\Service\RuntimeSettingCipher;
 use App\Service\RuntimeConfigurationService;
 use Doctrine\ORM\EntityManagerInterface;
@@ -45,6 +46,7 @@ final class ExternalToolController extends AbstractController
         #[Autowire('%env(string:SALES_AGENT_BEARER_TOKEN)%')]
         private readonly string $salesAgentBearerToken,
         private readonly RuntimeConfigurationService $runtimeConfigurationService,
+        private readonly ActiveTenantContext $activeTenantContext,
         private readonly ?CsrfTokenManagerInterface $csrfTokenManager = null,
     ) {
     }
@@ -54,6 +56,15 @@ final class ExternalToolController extends AbstractController
     {
         if (!$this->security->isGranted('ROLE_ADMIN')) {
             return $this->redirect('/backend/login');
+        }
+
+        if (!$this->activeTenantContext->hasActiveTenant()) {
+            return $this->renderTenantSelectionRequiredPage(
+                'Servidores MCP',
+                'Selecciona un negocio antes de gestionar servidores MCP.',
+                'admin-external-tools',
+                'Servidores MCP'
+            );
         }
 
         $tenantFilter = trim((string) $request->query->get('tenant_id', ''));
@@ -84,6 +95,15 @@ final class ExternalToolController extends AbstractController
     {
         if (!$this->security->isGranted('ROLE_ADMIN')) {
             return $this->redirect('/backend/login');
+        }
+
+        if (!$this->activeTenantContext->hasActiveTenant()) {
+            return $this->renderTenantSelectionRequiredPage(
+                'Crear servidor MCP',
+                'Selecciona un negocio antes de crear un servidor MCP remoto.',
+                'admin-external-tools',
+                'Servidores MCP'
+            );
         }
 
         $values = $this->toolFormDefaults();
@@ -129,6 +149,15 @@ final class ExternalToolController extends AbstractController
     {
         if (!$this->security->isGranted('ROLE_ADMIN')) {
             return $this->redirect('/backend/login');
+        }
+
+        if (!$this->activeTenantContext->hasActiveTenant()) {
+            return $this->renderTenantSelectionRequiredPage(
+                'Editar servidor MCP',
+                'Selecciona un negocio antes de editar un servidor MCP remoto.',
+                'admin-external-tools',
+                'Servidores MCP'
+            );
         }
 
         $tool = $this->externalTools->find($id);
@@ -636,6 +665,35 @@ final class ExternalToolController extends AbstractController
         ]);
     }
 
+    private function renderTenantSelectionRequiredPage(string $pageTitle, string $pageSubtitle, string $activeNav, string $sectionLabel): Response
+    {
+        return $this->render('backend/external_tools/index.html.twig', [
+            'page_title' => $pageTitle,
+            'page_subtitle' => $pageSubtitle,
+            'active_nav' => $activeNav,
+            'tenant_required_html' => sprintf(
+                '
+                <section class="hero-panel hero-panel-single">
+                  <div class="hero-copy">
+                    <div class="eyebrow-dark">%s</div>
+                    <h2>Selecciona un negocio para continuar</h2>
+                    <p>Esta sección funciona dentro de un negocio activo. Abre la lista de negocios y pulsa “Gestionar” sobre el contexto que quieras usar.</p>
+                    <div class="hero-actions">
+                      <a class="primary-action" href="/backend/tenants">Ir a negocios</a>
+                    </div>
+                  </div>
+                </section>
+                ',
+                htmlspecialchars($sectionLabel, ENT_QUOTES, 'UTF-8')
+            ),
+            'tenants' => $this->tenantOptions(),
+            'tenant_filter' => '',
+            'filter_error' => null,
+            'tools' => [],
+            ...$this->currentUserTemplateData(),
+        ]);
+    }
+
     private function currentUserLabel(): string
     {
         $user = $this->security->getUser();
@@ -679,13 +737,32 @@ final class ExternalToolController extends AbstractController
     }
 
     /**
-     * @return array{current_user_display_name: string, current_user_initials: string}
+     * @return array{current_user_display_name: string, current_user_initials: string, active_tenant: array{id: string, name: string, slug: string, edit_url: string}|null}
      */
     private function currentUserTemplateData(): array
     {
         return [
             'current_user_display_name' => $this->currentUserDisplayName(),
             'current_user_initials' => $this->currentUserInitials(),
+            'active_tenant' => $this->activeTenantTemplateData(),
+        ];
+    }
+
+    /**
+     * @return array{id: string, name: string, slug: string, edit_url: string}|null
+     */
+    private function activeTenantTemplateData(): ?array
+    {
+        $tenant = $this->activeTenantContext->getActiveTenant();
+        if (!$tenant instanceof Tenant) {
+            return null;
+        }
+
+        return [
+            'id' => $tenant->getId()->toRfc4122(),
+            'name' => $tenant->getName(),
+            'slug' => $tenant->getSlug(),
+            'edit_url' => sprintf('/backend/tenants/%s/edit', rawurlencode($tenant->getId()->toRfc4122())),
         ];
     }
 

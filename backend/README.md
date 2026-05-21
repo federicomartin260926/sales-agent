@@ -9,6 +9,7 @@ Este directorio contiene el backend administrativo de `sales-agent`.
 - incluye `Mi perfil` para actualizar nombre visible y clave de acceso
 - permite crear y editar `negocios`, `guías comerciales` opcionales, `productos / servicios` y `puntos de entrada` desde la vista humana con formularios guiados
 - permite usar asistentes IA de borrador en la creación/edición de `negocios` y `guías comerciales` para rellenar formularios sin guardar automáticamente
+- mantiene un selector de negocios en sesión y una ficha del negocio activo para trabajar por contexto
 - permite editar la configuración operativa de LLM y audio desde `/backend/configuration`
 - usa Twig como base de render para el layout común y la primera pantalla migrada de configuración
 - sirve los estilos del panel desde `public/assets/backend.css` para evitar CSS embebido en Twig y en el login
@@ -170,6 +171,7 @@ El backend humano está pensado como un CRM clásico:
 - sidebar con navegación por módulos
 - estado activo con fondo gris claro en el módulo seleccionado
 - menú superior con dropdown de usuario, `Mi perfil` y `Salir`
+- `negocio activo` en sesión para orientar productos, guías comerciales, puntos de entrada y servidores MCP
 - dashboard con tarjetas, métricas y accesos directos
 - secciones específicas para `Puntos de entrada` y atribución técnica
 - perfil de usuario con cambio de nombre y contraseña

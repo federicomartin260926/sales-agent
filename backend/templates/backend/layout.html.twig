@@ -16,7 +16,11 @@
       </div>
       <nav class="nav">
         <a class="{{ active_nav == 'dashboard' ? 'active' : '' }}" href="/backend/dashboard">Dashboard</a>
-        <a class="{{ active_nav == 'tenants' ? 'active' : '' }}" href="/backend/tenants">Negocios</a>
+        {% if active_tenant is not null %}
+          <a class="{{ active_nav in ['tenants', 'tenant'] ? 'active' : '' }} nav-tenant-link" href="{{ active_tenant.edit_url }}">Negocio</a>
+        {% else %}
+          <a class="{{ active_nav == 'tenants' ? 'active' : '' }} nav-tenant-link" href="/backend/tenants">Negocio</a>
+        {% endif %}
         <a class="{{ active_nav == 'playbooks' ? 'active' : '' }}" href="/backend/playbooks">Guías comerciales</a>
         <a class="{{ active_nav == 'products' ? 'active' : '' }}" href="/backend/products">Productos / servicios</a>
         <a class="{{ active_nav == 'entry-points' ? 'active' : '' }}" href="/backend/entry-points">Puntos de entrada</a>
@@ -37,7 +41,21 @@
           <h1 class="page-title">{{ page_title }}</h1>
           <div class="page-subtitle">{{ page_subtitle }}</div>
         </div>
-        <div class="user-area">
+        <div class="topbar-meta">
+          {% if active_tenant is not null %}
+            <div class="tenant-chip tenant-chip-active">
+              <div class="tenant-chip-label">Negocio</div>
+              <div class="tenant-chip-name">{{ active_tenant.name }}</div>
+              <a class="tenant-chip-link" href="/backend/tenants">Cambiar</a>
+            </div>
+          {% else %}
+            <a class="tenant-chip tenant-chip-empty" href="/backend/tenants">
+              <div class="tenant-chip-label">Negocio</div>
+              <div class="tenant-chip-name">Sin negocio seleccionado</div>
+              <span class="tenant-chip-link">Seleccionar negocio</span>
+            </a>
+          {% endif %}
+          <div class="user-area">
           <details class="user-dropdown">
             <summary class="user-summary">
               <div class="user-chip">
@@ -51,6 +69,7 @@
               <a href="/backend/logout">Salir</a>
             </div>
           </details>
+          </div>
         </div>
       </header>
 

@@ -16,6 +16,7 @@ El proyecto está preparado para integrarse más adelante con:
 - OpenAI u Ollama para LLM
 - routing explícito de WhatsApp mediante entrypoints y atribución por click
 - importación de productos/servicios desde CRM usando `integration_key`
+- selector de negocio activo en la UI backend para trabajar dentro de una ficha tenant concreta
 
 ## Documentación común
 
@@ -128,6 +129,7 @@ Rutas públicas a través de Nginx:
 - `POST /backend/api/login` para el patrón de seguridad basado en JWT
 
 El backend humano sigue un layout tipo CRM con sidebar, métricas, navegación por módulos y perfil editable para nombre y clave.
+La UI también mantiene un `negocio activo` en sesión para orientar secciones dependientes como productos, guías comerciales, puntos de entrada y servidores MCP.
 La UI heredada todavía conserva compatibilidad con piezas antiguas, pero el modelo canónico de routing ya es `EntryPoint -> EntryPointUtm -> Conversation`.
 El catálogo de productos puede importarse desde CRM con `externalSource = crm` y `externalReference = integration_key`.
 La configuración operativa de LLM y audio ahora vive en `runtime_settings` y se edita desde `GET /backend/configuration`.
