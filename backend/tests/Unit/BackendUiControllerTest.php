@@ -991,6 +991,9 @@ final class BackendUiControllerTest extends TestCase
         self::assertStringContainsString('name="handoffRules"', $response->getContent());
         self::assertStringContainsString('name="allowedActions"', $response->getContent());
         self::assertStringContainsString('name="notes"', $response->getContent());
+        self::assertStringContainsString('Guía IA', $response->getContent());
+        self::assertStringContainsString('data-playbook-draft-assistant', $response->getContent());
+        self::assertStringContainsString('playbook-draft-assistant-modal', $response->getContent());
     }
 
     public function testPlaybookCreateSubmissionPersistsNewPlaybook(): void

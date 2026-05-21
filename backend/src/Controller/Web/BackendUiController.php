@@ -2127,6 +2127,15 @@ final class BackendUiController
         return $this->csrfTokenManager->getToken('tenant_ai_draft_assistant')->getValue();
     }
 
+    private function playbookDraftAssistantTokenValue(): string
+    {
+        if ($this->csrfTokenManager === null) {
+            return '';
+        }
+
+        return $this->csrfTokenManager->getToken('playbook_ai_draft_assistant')->getValue();
+    }
+
     private function isValidTenantToken(string $actionUrl, string $value): bool
     {
         if ($this->csrfTokenManager === null) {
@@ -2213,6 +2222,9 @@ final class BackendUiController
             'error_html' => $errorHtml,
             'action_url' => $actionUrl,
             'csrf_token' => $this->playbookTokenValue($actionUrl),
+            'playbook_ai_assistant_endpoint' => '/backend/ai/playbook-draft-assistant',
+            'playbook_ai_assistant_token' => $this->playbookDraftAssistantTokenValue(),
+            'playbook_ai_assistant_initial_message' => 'Hola. Te ayudaré a definir una estrategia específica para esta guía comercial. Te haré preguntas breves y, cuando tenga suficiente información, te prepararé un borrador para rellenar los campos. Yo no guardo nada: tú revisarás y pulsarás "Crear guía comercial" al final.',
             'tenant_options_html' => $tenantOptions,
             'product_options_html' => $productOptions,
             'values' => $values,

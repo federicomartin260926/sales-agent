@@ -16,12 +16,21 @@
       <h3>Ficha de la guía comercial</h3>
       <p>Define reglas específicas para un producto, campaña o situación comercial. Completa solo lo que cambie respecto a la política general del negocio.</p>
     </div>
+    <div class="table-header-actions">
+      <button
+        class="secondary-action"
+        type="button"
+        title="Guía IA"
+        data-bs-toggle="modal"
+        data-bs-target="#playbook-draft-assistant-modal"
+      >Guía IA</button>
+    </div>
   </div>
   {{ error_html|raw }}
   <div class="form-alert form-alert-info">
     Esta guía es opcional. Si no hay una guía activa aplicable, el agente usará la configuración general del negocio.
   </div>
-  <form method="post" action="{{ action_url }}" class="tenant-form">
+  <form method="post" action="{{ action_url }}" class="playbook-form">
     <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
     <div class="form-grid">
       <div class="field">
@@ -120,3 +129,56 @@
     </div>
   </form>
 </section>
+
+<div
+  class="modal fade tenant-draft-assistant-modal"
+  id="playbook-draft-assistant-modal"
+  tabindex="-1"
+  aria-labelledby="playbook-draft-assistant-title"
+  aria-hidden="true"
+  data-playbook-draft-assistant
+  data-endpoint="{{ playbook_ai_assistant_endpoint }}"
+  data-csrf-token="{{ playbook_ai_assistant_token }}"
+  data-initial-message="{{ playbook_ai_assistant_initial_message }}"
+>
+  <div class="modal-dialog modal-lg modal-dialog-centered tenant-draft-assistant-dialog">
+    <div class="modal-content tenant-draft-assistant-shell">
+      <div class="modal-header">
+        <div>
+          <h5 class="modal-title" id="playbook-draft-assistant-title">Guía IA</h5>
+          <div class="tenant-draft-assistant-note">La guía rellena esta estrategia específica. Revisa y guarda manualmente.</div>
+        </div>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
+      </div>
+      <div class="modal-body">
+        <div class="tenant-draft-assistant-summary">
+          <strong>Modo borrador</strong>
+          <p>Responde en lenguaje natural. La IA hará preguntas breves sobre este caso concreto y te devolverá una propuesta para completar la guía comercial.</p>
+        </div>
+        <div class="tenant-draft-assistant-chat" data-chat-log aria-live="polite" aria-label="Conversación de guía IA"></div>
+        <div class="tenant-draft-assistant-status" data-chat-status hidden></div>
+        <div class="tenant-draft-assistant-auto-note" data-auto-apply-note hidden></div>
+      </div>
+      <div class="modal-footer tenant-draft-assistant-footer">
+        <form class="tenant-draft-assistant-form" data-chat-form>
+          <label class="visually-hidden" for="playbook-draft-assistant-input">Mensaje</label>
+          <div class="tenant-draft-assistant-composer">
+            <textarea
+              id="playbook-draft-assistant-input"
+              class="tenant-draft-assistant-input"
+              rows="2"
+              placeholder="Escribe aquí lo que sabes de esta guía..."
+              data-chat-input
+            ></textarea>
+            <div class="tenant-draft-assistant-actions">
+              <button type="button" class="secondary-action" data-send-button>Enviar</button>
+            </div>
+          </div>
+          <div class="tenant-draft-assistant-compose-note">La guía se rellena en pantalla. No se guardará hasta que pulses Crear guía comercial.</div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/assets/playbook-draft-assistant.js" defer></script>
