@@ -17,6 +17,15 @@
       <h3>Ficha del negocio</h3>
       <p>Completa los campos principales y guarda el contexto comercial.</p>
     </div>
+    <div class="table-header-actions">
+      <button
+        class="secondary-action tenant-draft-assistant-trigger"
+        type="button"
+        title="Guía IA"
+        data-bs-toggle="modal"
+        data-bs-target="#tenant-draft-assistant-modal"
+      >Guía IA</button>
+    </div>
   </div>
   {{ error_html|raw }}
   <form method="post" action="{{ action_url }}" class="tenant-form">
@@ -240,3 +249,53 @@
     </div>
   </form>
 </section>
+
+<div
+  class="modal fade tenant-draft-assistant-modal"
+  id="tenant-draft-assistant-modal"
+  tabindex="-1"
+  aria-labelledby="tenant-draft-assistant-title"
+  aria-hidden="true"
+  data-tenant-draft-assistant
+  data-endpoint="{{ ai_assistant_endpoint }}"
+  data-csrf-token="{{ ai_assistant_token }}"
+  data-initial-message="{{ ai_assistant_initial_message }}"
+>
+  <div class="modal-dialog modal-dialog-scrollable modal-lg modal-dialog-centered">
+    <div class="modal-content tenant-draft-assistant-shell">
+      <div class="modal-header">
+        <div>
+          <h5 class="modal-title" id="tenant-draft-assistant-title">Guía IA</h5>
+          <div class="tenant-draft-assistant-note">La guía solo rellena la ficha. Revisa y guarda manualmente.</div>
+        </div>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Cerrar"></button>
+      </div>
+      <div class="modal-body">
+        <div class="tenant-draft-assistant-summary">
+          <strong>Modo borrador</strong>
+          <p>Responde en lenguaje natural. La IA hará preguntas breves y te devolverá una propuesta para completar la ficha del negocio.</p>
+        </div>
+        <div class="tenant-draft-assistant-chat" data-chat-log aria-live="polite" aria-label="Conversación de guía IA"></div>
+        <div class="tenant-draft-assistant-status" data-chat-status hidden></div>
+      </div>
+      <div class="modal-footer tenant-draft-assistant-footer">
+        <form class="tenant-draft-assistant-form" data-chat-form>
+          <label class="visually-hidden" for="tenant-draft-assistant-input">Mensaje</label>
+          <textarea
+            id="tenant-draft-assistant-input"
+            class="tenant-draft-assistant-input"
+            rows="2"
+            placeholder="Escribe aquí lo que sabes del negocio..."
+            data-chat-input
+          ></textarea>
+          <div class="tenant-draft-assistant-actions">
+            <button type="submit" class="secondary-action" data-send-button>Enviar</button>
+            <button type="button" class="primary-action" data-apply-button hidden>Aplicar a la ficha</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="/assets/tenant-draft-assistant.js" defer></script>

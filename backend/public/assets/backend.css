@@ -990,6 +990,140 @@ body.login-page .footer code {
   color: #a61b1b;
 }
 
+.tenant-draft-assistant-trigger {
+  white-space: nowrap;
+}
+
+.tenant-draft-assistant-modal .modal-content {
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  box-shadow: var(--shadow);
+}
+
+.tenant-draft-assistant-shell .modal-header {
+  align-items: flex-start;
+  gap: 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.tenant-draft-assistant-note {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.tenant-draft-assistant-summary {
+  border: 1px solid #dbe4ef;
+  border-radius: 16px;
+  background: linear-gradient(180deg, #f8fbff 0%, #eef5ff 100%);
+  padding: 16px 18px;
+  margin-bottom: 14px;
+}
+
+.tenant-draft-assistant-summary strong {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 15px;
+  color: #0f172a;
+}
+
+.tenant-draft-assistant-summary p {
+  margin: 0;
+  color: #425466;
+  line-height: 1.55;
+}
+
+.tenant-draft-assistant-chat {
+  min-height: 260px;
+  max-height: 42vh;
+  overflow-y: auto;
+  display: grid;
+  gap: 10px;
+  padding: 4px 2px 8px;
+}
+
+.tenant-draft-assistant-message {
+  max-width: 90%;
+  border-radius: 16px;
+  padding: 12px 14px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.tenant-draft-assistant-message-user {
+  justify-self: end;
+  background: linear-gradient(135deg, var(--accent), #134fbf);
+  color: #fff;
+  box-shadow: 0 12px 24px rgba(15, 110, 199, 0.16);
+}
+
+.tenant-draft-assistant-message-assistant {
+  justify-self: start;
+  background: #f7f9fc;
+  border: 1px solid #dbe4ef;
+  color: #1e293b;
+}
+
+.tenant-draft-assistant-status {
+  margin-top: 12px;
+  border-radius: 14px;
+  padding: 12px 14px;
+  background: rgba(15, 110, 199, 0.08);
+  border: 1px solid rgba(15, 110, 199, 0.16);
+  color: #0f172a;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.tenant-draft-assistant-status-error {
+  background: rgba(195, 52, 52, 0.08);
+  border-color: rgba(195, 52, 52, 0.18);
+  color: #a61b1b;
+}
+
+.tenant-draft-assistant-footer {
+  border-top: 1px solid var(--border);
+}
+
+.tenant-draft-assistant-form {
+  display: grid;
+  gap: 12px;
+  width: 100%;
+}
+
+.tenant-draft-assistant-input {
+  width: 100%;
+  min-height: 72px;
+  resize: vertical;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--panel-soft);
+  color: var(--text);
+  padding: 12px 14px;
+  font: inherit;
+}
+
+.tenant-draft-assistant-input:focus {
+  outline: none;
+  border-color: rgba(15, 110, 199, 0.55);
+  box-shadow: 0 0 0 4px rgba(15, 110, 199, 0.1);
+}
+
+.tenant-draft-assistant-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.tenant-draft-assistant-actions .primary-action,
+.tenant-draft-assistant-actions .secondary-action {
+  min-width: 170px;
+}
+
 .info-card {
   background: #fff;
   border: 1px solid var(--border);

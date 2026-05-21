@@ -1780,6 +1780,9 @@ final class BackendUiController
             'error_html' => $errorHtml,
             'action_url' => $actionUrl,
             'csrf_token' => $this->tenantTokenValue($actionUrl),
+            'ai_assistant_endpoint' => '/backend/ai/tenant-draft-assistant',
+            'ai_assistant_token' => $this->tenantDraftAssistantTokenValue(),
+            'ai_assistant_initial_message' => 'Hola. Te ayudaré a completar la ficha del negocio. Te haré preguntas breves y, cuando tenga suficiente información, te prepararé un borrador para rellenar los campos. Yo no guardo nada: tú revisarás y pulsarás "Crear negocio" al final.',
             'values' => $values,
             'submit_label' => $submitLabel,
             'ai_usage' => $aiUsage,
@@ -2113,6 +2116,15 @@ final class BackendUiController
         }
 
         return $this->csrfTokenManager->getToken($this->tenantTokenId($actionUrl))->getValue();
+    }
+
+    private function tenantDraftAssistantTokenValue(): string
+    {
+        if ($this->csrfTokenManager === null) {
+            return '';
+        }
+
+        return $this->csrfTokenManager->getToken('tenant_ai_draft_assistant')->getValue();
     }
 
     private function isValidTenantToken(string $actionUrl, string $value): bool
