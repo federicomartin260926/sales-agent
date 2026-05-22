@@ -203,6 +203,7 @@ final class BackendUiController
         $playbookCount = $this->countTenantPlaybooks($playbooks, $activeTenant);
         $entryPointCount = $this->countTenantEntryPoints($entryPoints, $activeTenant);
         $externalToolCount = $this->countTenantExternalTools($externalTools, $activeTenant);
+        $mcpState = $this->tenantMcpRuntimeState($externalTools, $activeTenant);
 
         $heroActions = implode('', [
             sprintf('<a class="primary-action" href="/backend/tenants/%s/edit">Editar negocio</a>', rawurlencode($activeTenant->getId()->toRfc4122())),
@@ -222,13 +223,14 @@ final class BackendUiController
                 $this->metricCard('Guías comerciales', (string) $playbookCount, 'Estrategias opcionales del negocio'),
                 $this->metricCard('Puntos de entrada', (string) $entryPointCount, 'Rutas y campañas activas'),
                 $this->metricCard('Servidores MCP', (string) $externalToolCount, 'Herramientas técnicas del negocio'),
+                $this->metricCard('MCP runtime', $mcpState['value'], $mcpState['note']),
             ]),
             'info_cards_html' => implode('', [
                 $this->infoCard('Ficha del negocio', 'Edita contexto, tono y política comercial del tenant activo.', sprintf('/backend/tenants/%s/edit', rawurlencode($activeTenant->getId()->toRfc4122())), 'Editar'),
                 $this->infoCard('Productos / servicios', 'Gestiona el catálogo comercial de este negocio.', '/backend/products', 'Abrir'),
                 $this->infoCard('Guías comerciales', 'Ajusta estrategias específicas opcionales.', '/backend/playbooks', 'Abrir'),
                 $this->infoCard('Puntos de entrada', 'Revisa rutas públicas y campañas del negocio activo.', '/backend/entry-points', 'Abrir'),
-                $this->infoCard('Servidores MCP', 'Configura herramientas externas del negocio.', '/backend/external-tools', 'Abrir'),
+                $this->infoCard('Servidores MCP', $mcpState['detail'], '/backend/external-tools', 'Abrir'),
             ]),
         ]);
 
@@ -1751,6 +1753,52 @@ final class BackendUiController
         }
 
         return count($externalTools->findByTenantOrdered($tenant));
+    }
+
+    /**
+     * @return array{value: string, note: string, detail: string}
+     */
+    private function tenantMcpRuntimeState(?ExternalToolRepository $externalTools, Tenant $tenant): array
+    {
+        if (!$externalTools instanceof ExternalToolRepository) {
+            return [
+                'value' => 'MCP pendiente de configurar',
+                'note' => 'Usado por el agente',
+                'detail' => 'Configura un MCP principal para que el runtime tenga una referencia explícita.',
+            ];
+        }
+
+        $default = $externalTools->findRuntimeDefaultMcpByTenant($tenant);
+        if ($default instanceof ExternalTool) {
+            return [
+                'value' => sprintf('Principal: %s', $default->getName()),
+                'note' => 'Usado por el agente',
+                'detail' => sprintf('El MCP principal del runtime es %s.', $default->getName()),
+            ];
+        }
+
+        $activeCandidates = $externalTools->findActiveMcpCandidatesByTenant($tenant);
+        if ($activeCandidates !== [] && count($activeCandidates) > 1) {
+            return [
+                'value' => 'Varios MCP activos sin principal',
+                'note' => 'Usado por el agente',
+                'detail' => 'Hay varios MCP activos, pero el runtime no elegirá ninguno automáticamente hasta definir uno principal.',
+            ];
+        }
+
+        if ($activeCandidates !== [] && count($activeCandidates) === 1 && $activeCandidates[0] instanceof ExternalTool) {
+            return [
+                'value' => sprintf('Usado por el agente: %s', $activeCandidates[0]->getName()),
+                'note' => 'Sin principal explícito',
+                'detail' => sprintf('Hay un único MCP activo: %s. Conviene marcarlo como principal para evitar ambigüedad.', $activeCandidates[0]->getName()),
+            ];
+        }
+
+        return [
+            'value' => 'MCP pendiente de configurar',
+            'note' => 'Usado por el agente',
+            'detail' => 'No hay ningún MCP activo para este negocio. Configura uno para que el runtime lo pueda usar.',
+        ];
     }
 
     private function currentUser(): ?User

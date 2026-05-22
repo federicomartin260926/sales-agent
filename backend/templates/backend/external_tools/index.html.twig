@@ -29,10 +29,10 @@
     <div class="alert alert-error">{{ message }}</div>
   {% endfor %}
 
-  {% if tools is defined and tools is not empty and has_runtime_default is defined and not has_runtime_default %}
+  {% if runtime_state is defined and runtime_state is not null %}
     <div class="alert alert-warning">
-      <strong>Falta un MCP principal</strong>
-      <div>Marca un servidor MCP activo como principal para que el runtime tenga una referencia explícita.</div>
+      <strong>{{ runtime_state.value }}</strong>
+      <div>{{ runtime_state.detail }}</div>
     </div>
   {% endif %}
 

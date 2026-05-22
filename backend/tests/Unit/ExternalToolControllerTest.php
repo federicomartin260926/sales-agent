@@ -426,6 +426,11 @@ final class ExternalToolControllerTest extends TestCase
             {
                 return null;
             }
+
+            public function findActiveMcpCandidatesByTenant(\App\Entity\Tenant $tenant): array
+            {
+                return [$this->tool];
+            }
         };
 
         $controller = $this->createController(
@@ -532,6 +537,11 @@ final class ExternalToolControllerTest extends TestCase
             public function findRuntimeDefaultMcpByTenant(\App\Entity\Tenant $tenant): ?\App\Entity\ExternalTool
             {
                 return null;
+            }
+
+            public function findActiveMcpCandidatesByTenant(\App\Entity\Tenant $tenant): array
+            {
+                return [$this->tool];
             }
         };
 

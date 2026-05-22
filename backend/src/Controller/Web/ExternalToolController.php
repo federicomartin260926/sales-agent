@@ -79,6 +79,7 @@ final class ExternalToolController extends AbstractController
             'filter_error' => null,
             'active_tenant_name' => $activeTenant->getName(),
             'has_runtime_default' => $hasRuntimeDefault,
+            'runtime_state' => $runtimeState,
             ...$this->currentUserTemplateData(),
         ]);
     }
@@ -309,6 +310,7 @@ final class ExternalToolController extends AbstractController
             'active_nav' => 'admin-external-tools',
             'tools' => array_map([$this, 'toolRow'], $this->externalTools->findByTenantOrdered($activeTenant)),
             'has_runtime_default' => $this->externalTools->findRuntimeDefaultMcpByTenant($activeTenant) instanceof ExternalTool,
+            'runtime_state' => $this->tenantMcpRuntimeState($activeTenant),
             'test_result' => $testResult,
             'active_tenant_name' => $activeTenant->getName(),
             ...$this->currentUserTemplateData(),
@@ -672,6 +674,44 @@ final class ExternalToolController extends AbstractController
         }
 
         return mb_strlen($json) > 120 ? mb_substr($json, 0, 117).'…' : $json;
+    }
+
+    /**
+     * @return array{value: string, note: string, detail: string}
+     */
+    private function tenantMcpRuntimeState(Tenant $tenant): array
+    {
+        $default = $this->externalTools->findRuntimeDefaultMcpByTenant($tenant);
+        if ($default instanceof ExternalTool) {
+            return [
+                'value' => sprintf('Principal: %s', $default->getName()),
+                'note' => 'Usado por el agente',
+                'detail' => sprintf('El runtime usa %s como MCP principal.', $default->getName()),
+            ];
+        }
+
+        $activeCandidates = $this->externalTools->findActiveMcpCandidatesByTenant($tenant);
+        if ($activeCandidates !== [] && count($activeCandidates) > 1) {
+            return [
+                'value' => 'Varios MCP activos sin principal',
+                'note' => 'Usado por el agente',
+                'detail' => 'El runtime no elegirá ninguno automáticamente hasta definir un MCP principal.',
+            ];
+        }
+
+        if ($activeCandidates !== [] && count($activeCandidates) === 1 && $activeCandidates[0] instanceof ExternalTool) {
+            return [
+                'value' => sprintf('Usado por el agente: %s', $activeCandidates[0]->getName()),
+                'note' => 'Sin principal explícito',
+                'detail' => sprintf('Hay un único MCP activo: %s. Conviene marcarlo como principal.', $activeCandidates[0]->getName()),
+            ];
+        }
+
+        return [
+            'value' => 'MCP pendiente de configurar',
+            'note' => 'Usado por el agente',
+            'detail' => 'No hay ningún MCP activo para este negocio.',
+        ];
     }
 
     private function renderToolFormPage(

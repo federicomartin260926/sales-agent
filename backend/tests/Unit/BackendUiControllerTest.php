@@ -248,6 +248,25 @@ final class BackendUiControllerTest extends TestCase
             {
                 return $this->orderedTools;
             }
+
+            public function findRuntimeDefaultMcpByTenant(\App\Entity\Tenant $tenant): ?\App\Entity\ExternalTool
+            {
+                foreach ($this->orderedTools as $tool) {
+                    if ($tool->getTenant()->getId()->toRfc4122() === $tenant->getId()->toRfc4122() && $tool->isRuntimeDefault()) {
+                        return $tool;
+                    }
+                }
+
+                return null;
+            }
+
+            public function findActiveMcpCandidatesByTenant(\App\Entity\Tenant $tenant): array
+            {
+                return array_values(array_filter(
+                    $this->orderedTools,
+                    static fn (ExternalTool $tool) => $tool->getTenant()->getId()->toRfc4122() === $tenant->getId()->toRfc4122() && $tool->isActive() && $tool->getType() === 'mcp_remote'
+                ));
+            }
         };
     }
 
@@ -646,6 +665,127 @@ final class BackendUiControllerTest extends TestCase
         self::assertStringContainsString('Ver servidores MCP', $response->getContent());
         self::assertStringNotContainsString('Selecciona un negocio para empezar', $response->getContent());
         self::assertStringNotContainsString('Usuarios registrados', $response->getContent());
+    }
+
+    public function testDashboardShowsRuntimeDefaultMcpWhenPresent(): void
+    {
+        $tenant = new Tenant('Tech Investments', 'tech-investments');
+        $tool = new \App\Entity\ExternalTool($tenant, 'MCP principal', 'mcp_remote', 'openai_remote_mcp');
+        $tool->setWebhookUrl('https://mcp.example.test');
+        $tool->setRuntimeDefault(true);
+        $tool->setConfig(['enabled_for_llm' => true, 'server_label' => 'principal_mcp']);
+
+        $security = $this->createStub(Security::class);
+        $security->method('getUser')->willReturn(new class implements UserInterface {
+            public function getUserIdentifier(): string
+            {
+                return 'manager@example.com';
+            }
+
+            public function getRoles(): array
+            {
+                return ['ROLE_MANAGER'];
+            }
+
+            public function eraseCredentials(): void
+            {
+            }
+        });
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => in_array($role, ['ROLE_AGENT', 'ROLE_MANAGER', 'ROLE_ADMIN'], true));
+
+        $controller = $this->createController($security, null, null, null, null, null, null, $this->createActiveTenantContext($tenant));
+        $response = $controller->dashboard(
+            null,
+            null,
+            null,
+            null,
+            null,
+            $this->createExternalToolRepositoryFake([$tool])
+        );
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        self::assertStringContainsString('MCP runtime</div><div class="metric-value">Principal: MCP principal', $response->getContent());
+        self::assertStringContainsString('El MCP principal del runtime es MCP principal.', $response->getContent());
+    }
+
+    public function testDashboardShowsWarningWhenMultipleActiveMcpsExistWithoutPrincipal(): void
+    {
+        $tenant = new Tenant('Tech Investments', 'tech-investments');
+        $toolA = new \App\Entity\ExternalTool($tenant, 'MCP A', 'mcp_remote', 'openai_remote_mcp');
+        $toolA->setWebhookUrl('https://mcp-a.example.test');
+        $toolA->setConfig(['enabled_for_llm' => true, 'server_label' => 'mcp_a']);
+        $toolB = new \App\Entity\ExternalTool($tenant, 'MCP B', 'mcp_remote', 'openai_remote_mcp');
+        $toolB->setWebhookUrl('https://mcp-b.example.test');
+        $toolB->setConfig(['enabled_for_llm' => true, 'server_label' => 'mcp_b']);
+
+        $security = $this->createStub(Security::class);
+        $security->method('getUser')->willReturn(new class implements UserInterface {
+            public function getUserIdentifier(): string
+            {
+                return 'manager@example.com';
+            }
+
+            public function getRoles(): array
+            {
+                return ['ROLE_MANAGER'];
+            }
+
+            public function eraseCredentials(): void
+            {
+            }
+        });
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => in_array($role, ['ROLE_AGENT', 'ROLE_MANAGER', 'ROLE_ADMIN'], true));
+
+        $controller = $this->createController($security, null, null, null, null, null, null, $this->createActiveTenantContext($tenant));
+        $response = $controller->dashboard(
+            null,
+            null,
+            null,
+            null,
+            null,
+            $this->createExternalToolRepositoryFake([$toolA, $toolB])
+        );
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        self::assertStringContainsString('MCP runtime</div><div class="metric-value">Varios MCP activos sin principal', $response->getContent());
+        self::assertStringContainsString('Hay varios MCP activos, pero el runtime no elegirá ninguno automáticamente hasta definir uno principal.', $response->getContent());
+    }
+
+    public function testDashboardShowsPendingMcpWhenNoneExists(): void
+    {
+        $tenant = new Tenant('Tech Investments', 'tech-investments');
+
+        $security = $this->createStub(Security::class);
+        $security->method('getUser')->willReturn(new class implements UserInterface {
+            public function getUserIdentifier(): string
+            {
+                return 'manager@example.com';
+            }
+
+            public function getRoles(): array
+            {
+                return ['ROLE_MANAGER'];
+            }
+
+            public function eraseCredentials(): void
+            {
+            }
+        });
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => in_array($role, ['ROLE_AGENT', 'ROLE_MANAGER', 'ROLE_ADMIN'], true));
+
+        $controller = $this->createController($security, null, null, null, null, null, null, $this->createActiveTenantContext($tenant));
+        $response = $controller->dashboard(
+            null,
+            null,
+            null,
+            null,
+            null,
+            $this->createExternalToolRepositoryFake([])
+        );
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        self::assertStringContainsString('MCP runtime</div><div class="metric-value">MCP pendiente de configurar', $response->getContent());
+        self::assertStringContainsString('No hay ningún MCP activo para este negocio.', $response->getContent());
     }
 
     public function testUsersRendersTwigListForAdmins(): void
