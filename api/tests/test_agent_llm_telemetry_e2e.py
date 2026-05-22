@@ -293,6 +293,7 @@ def test_agent_respond_persists_prompt_limit_and_llm_telemetry(monkeypatch):
 
     prompt = prompts[1]
     assert prompt["conversation"]["summary"] is None
+    assert list(prompt.keys())[:5] == ["tenant", "product", "playbook", "entry_point", "sales_runtime"]
     assert prompt["conversation"]["last_messages"] == ["Hola", "¿Qué tal?"]
     assert prompt["current_message"] == "Hola"
 

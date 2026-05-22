@@ -46,19 +46,6 @@ def transport_handler(request: httpx.Request) -> httpx.Response:
                     "config": {},
                     "isActive": True,
                 },
-                "effective_context": {
-                    "summary": "Entrada: crm-demo · Guía: Guía comercial WhatsApp · Producto: WhatsApp Automation · Negocio: Negocio Demo",
-                    "priority": ["entry_point", "playbook", "product", "tenant"],
-                    "conflict_policy": "Lo específico añade o restringe lo general; el orden efectivo es entry_point > playbook > product > tenant.",
-                    "tenant": {
-                        "summary": "Posicionamiento comercial",
-                        "name": "Negocio Demo",
-                    },
-                    "effective": {
-                        "tone": "consultivo",
-                        "objective": "Cerrar cita",
-                    },
-                },
             },
         )
 
@@ -221,8 +208,7 @@ async def test_backend_client_loads_tenant_context():
     assert context.selected_product.name == "WhatsApp Automation"
     assert context.selected_product.slug == "whatsapp-automation"
     assert context.selected_product.external_reference == "pack-starter"
-    assert context.effective_context["priority"] == ["entry_point", "playbook", "product", "tenant"]
-    assert context.context_summary().startswith("Entrada: crm-demo")
+    assert context.context_summary() == "Negocio Demo · WhatsApp Automation · Guía comercial WhatsApp · Entrada Demo"
 
 
 @pytest.mark.asyncio

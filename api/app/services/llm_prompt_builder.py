@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import copy
 import json
 from datetime import datetime
 from typing import Any
@@ -14,13 +13,8 @@ from app.services.llm_context_helper import LLMContextHelper
 
 
 class LLMPromptBuilder:
-    def __init__(
-        self,
-        context_helper: LLMContextHelper | None = None,
-        use_compact_effective_context_prompt: bool = False,
-    ) -> None:
+    def __init__(self, context_helper: LLMContextHelper | None = None) -> None:
         self.context_helper = context_helper or LLMContextHelper()
-        self.use_compact_effective_context_prompt = use_compact_effective_context_prompt
 
     def build(
         self,
@@ -39,16 +33,9 @@ class LLMPromptBuilder:
             "Si preguntan por precio y no hay un precio claro, pide 1-2 datos de cualificación. "
             "Si piden humano/persona/asesor/comercial, needs_human debe ser true. "
             "Si tienes herramientas MCP nativas del tenant, úsalas cuando hagan falta para completar la respuesta. "
-            "Si existe effective_context, úsalo como el contexto comercial ya priorizado y trata los bloques legacy como referencia secundaria. "
-            "effective_context manda sobre los bloques legacy; usa estos últimos solo como respaldo si falta información. "
             "No inventes datos ni cites sistemas internos, CRM, n8n, webhooks, IDs internos, UTM, refs, tokens o detalles técnicos. "
             "Mantén el tono breve, útil y orientado a conversación."
         )
-        if self.use_compact_effective_context_prompt:
-            system_prompt += (
-                " Modo compacto activo: prioriza effective_context y evita repetir bloques legacy completos. "
-                "Usa legacy solo como referencia mínima si effective_context no cubre algún dato."
-            )
         current_madrid_time = self._current_madrid_time()
         system_prompt += (
             f" Contexto temporal explícito: fecha y hora actual {current_madrid_time.isoformat()} "
@@ -77,158 +64,27 @@ class LLMPromptBuilder:
                 "Si no devuelve resultados o falla, orienta de forma general y pide una aclaración breve."
             )
 
-        effective_context_payload = self._effective_context_payload(backend_context, mcp_config)
-        user_payload = self._user_payload(
-            payload,
-            routing,
-            backend_context,
-            effective_context_payload,
-            mcp_config,
-        )
-
-        return system_prompt, json.dumps(user_payload, ensure_ascii=False, indent=2)
-
-    def effective_context_trace(
-        self,
-        backend_context: CommercialContext | None,
-        mcp_config: McpRemoteConfig | None = None,
-    ) -> dict[str, Any]:
-        trace: dict[str, Any] = {
-            "effective_context_present": False,
-            "effective_context_source": "none",
-            "effective_context_summary": None,
-            "effective_context_priority": None,
-            "mcp_runtime_available": bool(mcp_config is not None and mcp_config.enabled),
-            "compact_prompt_enabled": bool(self.use_compact_effective_context_prompt),
-            "prompt_mode": "compact" if self.use_compact_effective_context_prompt else "legacy",
-        }
-
-        if backend_context is None:
-            return trace
-
-        trace["effective_context_present"] = backend_context.effective_context != {}
-        trace["effective_context_source"] = "backend" if trace["effective_context_present"] else "synthesized_legacy"
-
-        effective_context_payload = self._effective_context_payload(backend_context, mcp_config)
-        if isinstance(effective_context_payload, dict):
-            summary = effective_context_payload.get("summary")
-            if isinstance(summary, str) and summary.strip() != "":
-                trace["effective_context_summary"] = summary.strip()
-
-            priority = effective_context_payload.get("priority")
-            if isinstance(priority, list) and priority != []:
-                trace["effective_context_priority"] = [item for item in priority if isinstance(item, str) and item.strip() != ""]
-
-        return self.context_helper.sanitize_jsonish(trace, max_depth=2, max_items=8, max_string_chars=400)
-
-    def _user_payload(
-        self,
-        payload: AgentRequest,
-        routing: RoutingContext | None,
-        backend_context: CommercialContext | None,
-        effective_context_payload: dict[str, Any] | None,
-        mcp_config: McpRemoteConfig | None,
-    ) -> dict[str, Any]:
-        if self.use_compact_effective_context_prompt:
-            return self._compact_user_payload(
-                payload,
-                routing,
-                backend_context,
-                effective_context_payload,
-            )
-
-        return self._legacy_user_payload(payload, routing, backend_context, mcp_config)
-
-    def _legacy_user_payload(
-        self,
-        payload: AgentRequest,
-        routing: RoutingContext | None,
-        backend_context: CommercialContext | None,
-        mcp_config: McpRemoteConfig | None,
-    ) -> dict[str, Any]:
-        return {
-            "effective_context": self._effective_context_payload(backend_context, mcp_config),
+        user_payload = {
             "tenant": self._tenant_payload(backend_context),
             "product": self._product_payload(backend_context),
             "playbook": self._playbook_payload(backend_context),
             "entry_point": self._entry_point_payload(backend_context),
             "sales_runtime": self._sales_runtime_payload(backend_context),
             "routing": self._routing_payload(routing),
-            "contact": self._contact_payload(payload),
-            "conversation": self._conversation_payload(payload),
+            "contact": {
+                "phone": self.context_helper.sanitize_text(payload.contact.phone, max_chars=64),
+                "name": self.context_helper.sanitize_text(payload.contact.name, max_chars=255),
+                "channel_type": self.context_helper.sanitize_text(payload.channel_type, max_chars=32),
+                "external_channel_id": self.context_helper.sanitize_text(payload.external_channel_id, max_chars=128),
+            },
+            "conversation": {
+                "external_id": self.context_helper.sanitize_text(payload.conversation.external_id, max_chars=128),
+                **self.context_helper.build_conversation_payload(payload.conversation.summary, payload.conversation.last_messages),
+            },
             "current_message": self.context_helper.sanitize_text(payload.message.text, max_chars=2000),
         }
 
-    def _compact_user_payload(
-        self,
-        payload: AgentRequest,
-        routing: RoutingContext | None,
-        backend_context: CommercialContext | None,
-        effective_context_payload: dict[str, Any] | None,
-    ) -> dict[str, Any]:
-        user_payload: dict[str, Any] = {
-            "effective_context": effective_context_payload,
-            "routing": self._routing_payload(routing),
-            "contact": self._contact_payload(payload),
-            "conversation": self._conversation_payload(payload),
-            "current_message": self.context_helper.sanitize_text(payload.message.text, max_chars=2000),
-        }
-
-        if backend_context is not None and backend_context.effective_context == {}:
-            legacy_reference = self._legacy_reference_payload(backend_context)
-            if legacy_reference != {}:
-                user_payload["legacy_reference"] = legacy_reference
-
-        return user_payload
-
-    def _contact_payload(self, payload: AgentRequest) -> dict[str, Any]:
-        return {
-            "phone": self.context_helper.sanitize_text(payload.contact.phone, max_chars=64),
-            "name": self.context_helper.sanitize_text(payload.contact.name, max_chars=255),
-            "channel_type": self.context_helper.sanitize_text(payload.channel_type, max_chars=32),
-            "external_channel_id": self.context_helper.sanitize_text(payload.external_channel_id, max_chars=128),
-        }
-
-    def _conversation_payload(self, payload: AgentRequest) -> dict[str, Any]:
-        return {
-            "external_id": self.context_helper.sanitize_text(payload.conversation.external_id, max_chars=128),
-            **self.context_helper.build_conversation_payload(payload.conversation.summary, payload.conversation.last_messages),
-        }
-
-    def _legacy_reference_payload(self, backend_context: CommercialContext) -> dict[str, Any]:
-        reference: dict[str, Any] = {
-            "tenant": {
-                "id": backend_context.tenant.id,
-                "name": self.context_helper.sanitize_text(backend_context.tenant.name, max_chars=255),
-                "slug": self.context_helper.sanitize_text(backend_context.tenant.slug, max_chars=180),
-                "tone": self.context_helper.sanitize_text(backend_context.tenant.tone, max_chars=120),
-            }
-        }
-
-        if backend_context.selected_product is not None:
-            reference["product"] = {
-                "id": backend_context.selected_product.id,
-                "name": self.context_helper.sanitize_text(backend_context.selected_product.name, max_chars=255),
-                "slug": self.context_helper.sanitize_text(backend_context.selected_product.slug, max_chars=180),
-                "value_proposition": self.context_helper.sanitize_text(backend_context.selected_product.value_proposition, max_chars=400),
-            }
-
-        if backend_context.selected_playbook is not None:
-            reference["playbook"] = {
-                "id": backend_context.selected_playbook.id,
-                "name": self.context_helper.sanitize_text(backend_context.selected_playbook.name, max_chars=255),
-                "product_id": backend_context.selected_playbook.product_id,
-            }
-
-        if backend_context.entry_point is not None:
-            reference["entry_point"] = {
-                "id": backend_context.entry_point.id,
-                "code": self.context_helper.sanitize_text(backend_context.entry_point.code, max_chars=180),
-                "name": self.context_helper.sanitize_text(backend_context.entry_point.name, max_chars=255),
-                "crm_branch_ref": self.context_helper.sanitize_text(backend_context.entry_point.crm_branch_ref, max_chars=255),
-            }
-
-        return reference
+        return system_prompt, json.dumps(user_payload, ensure_ascii=False, indent=2)
 
     def _current_madrid_time(self) -> datetime:
         return datetime.now(ZoneInfo("Europe/Madrid"))
@@ -327,242 +183,6 @@ class LLMPromptBuilder:
             return None
 
         return backend_context.sales_runtime.model_dump(exclude_none=True)
-
-    def _effective_context_payload(self, backend_context: CommercialContext | None, mcp_config: McpRemoteConfig | None) -> dict[str, Any] | None:
-        if backend_context is None:
-            return None
-
-        if backend_context.effective_context != {}:
-            payload: dict[str, Any] = copy.deepcopy(backend_context.effective_context)
-        else:
-            payload = self._build_effective_context_from_legacy(backend_context)
-
-        if payload == {}:
-            return None
-
-        runtime = payload.get("runtime")
-        if not isinstance(runtime, dict):
-            runtime = {}
-            payload["runtime"] = runtime
-
-        sales_runtime = self._sales_runtime_payload(backend_context)
-        if sales_runtime is not None and sales_runtime != {}:
-            runtime.setdefault("sales_runtime", sales_runtime)
-
-        if mcp_config is not None and mcp_config.enabled:
-            runtime.setdefault(
-                "mcp",
-                {
-                    "enabled": True,
-                    "server_label": self.context_helper.sanitize_text(mcp_config.server_label, max_chars=255),
-                    "server_url": self.context_helper.sanitize_text(mcp_config.server_url, max_chars=500),
-                    "allowed_tools": list(mcp_config.allowed_tools),
-                    "require_approval": self.context_helper.sanitize_text(mcp_config.require_approval, max_chars=32),
-                },
-            )
-
-        return self.context_helper.sanitize_jsonish(payload, max_depth=4, max_items=12, max_string_chars=1000)
-
-    def _build_effective_context_from_legacy(self, backend_context: CommercialContext) -> dict[str, Any]:
-        tenant = self._tenant_payload(backend_context)
-        if tenant is None:
-            return {}
-
-        product = self._product_payload(backend_context)
-        playbook = self._playbook_payload(backend_context)
-        entry_point = self._entry_point_payload(backend_context)
-
-        tenant_sales_policy = tenant.get("sales_policy") if isinstance(tenant.get("sales_policy"), dict) else {}
-        product_sales_policy = product.get("sales_policy") if isinstance(product, dict) and isinstance(product.get("sales_policy"), dict) else {}
-        playbook_config = playbook.get("config") if isinstance(playbook, dict) and isinstance(playbook.get("config"), dict) else {}
-
-        summary_parts = []
-        if entry_point is not None:
-            entry_summary = f"Entrada: {entry_point.get('code')} · {entry_point.get('name')}"
-            initial_message = self.context_helper.sanitize_text(entry_point.get("initial_message"), max_chars=500)
-            if initial_message is not None:
-                entry_summary = f"{entry_summary} · {initial_message}"
-            summary_parts.append(entry_summary)
-
-        if playbook is not None:
-            playbook_summary = self._summarize_playbook_config(playbook_config)
-            summary_parts.append(f"Guía: {playbook.get('name')} · {playbook_summary}")
-
-        if product is not None:
-            product_summary = self._summarize_product_policy(product_sales_policy)
-            summary_parts.append(f"Producto: {product.get('name')} · {product_summary}")
-
-        tenant_summary = self._summarize_tenant_policy(tenant_sales_policy)
-        summary_parts.append(f"Negocio: {tenant.get('name')} · {tenant_summary}")
-
-        effective: dict[str, Any] = {}
-        tenant_tone = self.context_helper.sanitize_text(tenant.get("tone"), max_chars=120)
-        if tenant_tone is not None:
-            effective["tone"] = tenant_tone
-
-        positioning = self._first_non_empty_string(
-            self.context_helper.sanitize_text(product_sales_policy.get("positioning"), max_chars=500),
-            self.context_helper.sanitize_text(tenant_sales_policy.get("positioning"), max_chars=500),
-        )
-        if positioning is not None:
-            effective["positioning"] = positioning
-
-        objective = self._first_non_empty_string(
-            self.context_helper.sanitize_text(playbook_config.get("objective"), max_chars=500),
-            self.context_helper.sanitize_text(product.get("value_proposition") if isinstance(product, dict) else None, max_chars=500),
-            self.context_helper.sanitize_text(tenant_sales_policy.get("positioning"), max_chars=500),
-        )
-        if objective is not None:
-            effective["objective"] = objective
-
-        qualification_focus = self._merge_unique_lines(
-            self._lines_from_value(playbook_config.get("qualificationQuestions")),
-            self._lines_from_value(product_sales_policy.get("objections")),
-            self._lines_from_value(tenant_sales_policy.get("qualificationFocus")),
-        )
-        if qualification_focus != []:
-            effective["qualification_focus"] = qualification_focus
-
-        handoff_rules = self._merge_unique_lines(
-            self._lines_from_value(playbook_config.get("handoffRules")),
-            self._lines_from_value(product_sales_policy.get("handoffRules")),
-            self._lines_from_value(tenant_sales_policy.get("handoffRules")),
-        )
-        if handoff_rules != []:
-            effective["handoff_rules"] = handoff_rules
-
-        pricing_notes = self._lines_from_value(product_sales_policy.get("pricingNotes"))
-        if pricing_notes != []:
-            effective["pricing_notes"] = pricing_notes
-
-        sales_boundaries = self._lines_from_value(tenant_sales_policy.get("salesBoundaries"))
-        if sales_boundaries != []:
-            effective["sales_boundaries"] = sales_boundaries
-
-        agenda_rules = self._lines_from_value(playbook_config.get("agendaRules"))
-        if agenda_rules != []:
-            effective["agenda_rules"] = agenda_rules
-
-        allowed_actions = self._lines_from_value(playbook_config.get("allowedActions"))
-        if allowed_actions != []:
-            effective["allowed_actions"] = allowed_actions
-
-        notes = self._merge_unique_lines(
-            self._lines_from_value(playbook_config.get("notes")),
-            self._lines_from_value(product_sales_policy.get("notes")),
-            self._lines_from_value(tenant_sales_policy.get("notes")),
-        )
-        if notes != []:
-            effective["notes"] = notes
-
-        return {
-            "summary": " · ".join(summary_parts),
-            "priority": ["entry_point", "playbook", "product", "tenant"],
-            "conflict_policy": "Lo específico añade o restringe lo general; el orden efectivo es entry_point > playbook > product > tenant.",
-            "tenant": {
-                "summary": tenant_summary,
-                "name": tenant.get("name"),
-                "business_context": tenant.get("business_context"),
-                "tone": tenant.get("tone"),
-                "positioning": self.context_helper.sanitize_text(tenant_sales_policy.get("positioning"), max_chars=500),
-                "qualification_focus": self.context_helper.sanitize_text(tenant_sales_policy.get("qualificationFocus"), max_chars=500),
-                "handoff_rules": self.context_helper.sanitize_text(tenant_sales_policy.get("handoffRules"), max_chars=500),
-                "sales_boundaries": self._lines_from_value(tenant_sales_policy.get("salesBoundaries")),
-                "notes": self.context_helper.sanitize_text(tenant_sales_policy.get("notes"), max_chars=1000),
-            },
-            "product": product,
-            "playbook": playbook,
-            "entry_point": entry_point,
-            "effective": effective,
-        }
-
-    def _lines_from_value(self, value: Any) -> list[str]:
-        if isinstance(value, str):
-            value = value.splitlines()
-
-        if not isinstance(value, list):
-            return []
-
-        lines: list[str] = []
-        for item in value:
-            if not isinstance(item, str):
-                continue
-
-            trimmed = item.strip()
-            if trimmed != "":
-                lines.append(trimmed)
-
-        return lines
-
-    def _merge_unique_lines(self, *lists: list[str]) -> list[str]:
-        merged: list[str] = []
-        seen: set[str] = set()
-
-        for values in lists:
-            for value in values:
-                if value in seen:
-                    continue
-
-                seen.add(value)
-                merged.append(value)
-
-        return merged
-
-    def _first_non_empty_string(self, *values: str | None) -> str | None:
-        for value in values:
-            if not isinstance(value, str):
-                continue
-
-            trimmed = value.strip()
-            if trimmed != "":
-                return trimmed
-
-        return None
-
-    def _summarize_tenant_policy(self, policy: dict[str, Any]) -> str:
-        return self._summarize_by_keys(policy, ("positioning", "qualificationFocus", "handoffRules"))
-
-    def _summarize_product_policy(self, policy: dict[str, Any]) -> str:
-        return self._summarize_by_keys(policy, ("positioning", "pricingNotes", "handoffRules"))
-
-    def _summarize_playbook_config(self, config: dict[str, Any]) -> str:
-        parts = []
-        objective = self.context_helper.sanitize_text(config.get("objective"), max_chars=300)
-        if objective is not None:
-            parts.append(objective)
-
-        qualification_questions = self._lines_from_value(config.get("qualificationQuestions"))
-        if qualification_questions != []:
-            parts.append(qualification_questions[0])
-
-        scoring = config.get("scoring")
-        if isinstance(scoring, dict):
-            max_score = scoring.get("maxScore")
-            handoff_threshold = scoring.get("handoffThreshold")
-            if isinstance(max_score, int) and isinstance(handoff_threshold, int):
-                parts.append(f"score {handoff_threshold}/{max_score}")
-
-        cleaned = [part for part in parts if isinstance(part, str) and part.strip() != ""]
-        return " · ".join(cleaned) if cleaned != [] else "Sin resumen"
-
-    def _summarize_by_keys(self, payload: dict[str, Any], keys: tuple[str, ...]) -> str:
-        parts: list[str] = []
-        for key in keys:
-            if key not in payload:
-                continue
-
-            value = payload[key]
-            if isinstance(value, str):
-                trimmed = value.strip()
-                if trimmed != "":
-                    parts.append(trimmed)
-            elif isinstance(value, list):
-                first = self._first_non_empty_string(*[item for item in value if isinstance(item, str)])
-                if first is not None:
-                    parts.append(first)
-
-        cleaned = [part for part in parts if part.strip() != ""]
-        return " · ".join(cleaned) if cleaned != [] else "Sin resumen"
 
     def _external_context_payload(self, contact_context: dict[str, Any] | None) -> dict[str, Any] | None:
         if not isinstance(contact_context, dict):

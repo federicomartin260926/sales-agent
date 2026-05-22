@@ -22,7 +22,7 @@ final class InternalCommercialContextControllerTest extends TestCase
 {
     private const TOKEN = 'test-internal-token';
 
-    public function testTenantOnlyContextIncludesEffectiveBlock(): void
+    public function testTenantOnlyContextReturnsLegacyBlocksOnly(): void
     {
         $tenant = $this->tenant();
         $controller = $this->createController([$tenant->getId()->toRfc4122() => $tenant], [], [], [], []);
@@ -33,15 +33,15 @@ final class InternalCommercialContextControllerTest extends TestCase
 
         self::assertSame(200, $response->getStatusCode());
         $payload = json_decode((string) $response->getContent(), true);
-        self::assertSame(['entry_point', 'playbook', 'product', 'tenant'], $payload['effective_context']['priority']);
-        self::assertSame('consultivo', $payload['effective_context']['effective']['tone']);
-        self::assertSame('Responder con claridad y foco comercial.', $payload['effective_context']['effective']['positioning']);
+        self::assertArrayNotHasKey('effective_context', $payload);
+        self::assertSame('consultivo', $payload['tenant']['tone']);
+        self::assertSame('Responder con claridad y foco comercial.', $payload['tenant']['sales_policy']['positioning']);
         self::assertNull($payload['product']);
         self::assertNull($payload['playbook']);
         self::assertNull($payload['entry_point']);
     }
 
-    public function testProductPlaybookAndEntryPointArePrioritizedInEffectiveContext(): void
+    public function testProductPlaybookAndEntryPointAreReturnedAsLegacyBlocks(): void
     {
         $tenant = $this->tenant();
         $product = $this->product($tenant);
@@ -66,34 +66,12 @@ final class InternalCommercialContextControllerTest extends TestCase
 
         self::assertSame(200, $response->getStatusCode());
         $payload = json_decode((string) $response->getContent(), true);
-        self::assertStringContainsString('Entrada: crm-demo', $payload['effective_context']['summary']);
-        self::assertSame('Cerrar cita', $payload['effective_context']['effective']['objective']);
-        self::assertSame(
-            [
-                '¿Qué horario le encaja?',
-                '¿Qué tratamiento le interesa?',
-                'Tiene experiencia previa con depilación láser',
-                'Identificar volumen, canal y urgencia.',
-            ],
-            $payload['effective_context']['effective']['qualification_focus']
-        );
-        self::assertSame(
-            [
-                'Derivar a humano cuando haya dudas médicas.',
-                'Derivar a humano si pide valoración personalizada.',
-                'Derivar a humano si piden seguimiento manual.',
-            ],
-            $payload['effective_context']['effective']['handoff_rules']
-        );
-        self::assertSame(
-            [
-                'No prometer integraciones inexistentes.',
-            ],
-            $payload['effective_context']['effective']['sales_boundaries']
-        );
-        self::assertSame('crm-demo', $payload['effective_context']['entry_point']['code']);
-        self::assertSame('Guía campañas láser', $payload['effective_context']['playbook']['name']);
-        self::assertSame('Depilación láser', $payload['effective_context']['product']['name']);
+        self::assertArrayNotHasKey('effective_context', $payload);
+        self::assertSame('crm-demo', $payload['entry_point']['code']);
+        self::assertSame('Guía campañas láser', $payload['playbook']['name']);
+        self::assertSame('Depilación láser', $payload['product']['name']);
+        self::assertSame('Cerrar cita', $payload['playbook']['config']['objective']);
+        self::assertSame(['¿Qué horario le encaja?'], $payload['playbook']['config']['qualificationQuestions']);
     }
 
     public function testCrossTenantProductIsRejected(): void
@@ -247,12 +225,6 @@ final class InternalCommercialContextControllerTest extends TestCase
 
             public function findActiveGeneralByTenant(Tenant $tenant): ?Playbook
             {
-                foreach ($this->playbooks as $playbook) {
-                    if ($playbook->getTenant()->getId()->toRfc4122() === $tenant->getId()->toRfc4122() && $playbook->getProduct() === null && $playbook->isActive()) {
-                        return $playbook;
-                    }
-                }
-
                 return null;
             }
         };
@@ -281,7 +253,7 @@ final class InternalCommercialContextControllerTest extends TestCase
 
             public function findByRef(string $ref): ?EntryPointUtm
             {
-                return $this->entryPointUtms[trim($ref)] ?? null;
+                return $this->entryPointUtms[$ref] ?? null;
             }
         };
     }
