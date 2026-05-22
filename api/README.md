@@ -197,6 +197,7 @@ El runtime no escribe en el CRM. Solo consume ese contexto para enriquecer la de
 Si un tenant tiene `ExternalTool` activo de tipo `mcp_remote`, el runtime lee la configuración interna en Symfony y, cuando el perfil LLM activo es OpenAI compatible con Responses API, puede exponer ese MCP como herramienta nativa para el modelo.
 La API interna prioriza el MCP marcado como principal (`is_runtime_default = true`). Si no existe principal, sólo usa un único MCP activo como fallback conservador; no selecciona uno arbitrario por fecha.
 Para pruebas técnicas temporales de autorización contra un MCP remoto, el runtime acepta `MCP_TEST_AUTHORIZATION` en el entorno de `sales-agent-api` y lo envía en la propiedad `authorization` del tool MCP de OpenAI. El valor puede venir como token puro o como `Bearer ...`; internamente se normaliza para no exponerlo en prompt, logs ni respuestas.
+En producción, el valor preferente llega desde la config interna de MCP del tenant como `downstream_authorization_token` y se mantiene cifrado en Symfony; `bearer_token` sigue existiendo como compatibilidad interna.
 Si necesitas validar el pasaje extremo a extremo con un gateway temporal, define también `MCP_ENABLE_DEBUG_TOOLS=true` en `mcp-gateway` para exponer la tool `debug_auth_context`.
 Tras cambiar `MCP_TEST_AUTHORIZATION` en `.env`, recrea el contenedor con `docker compose up -d --force-recreate sales-agent-api` para que la variable entre realmente en el entorno del servicio.
 

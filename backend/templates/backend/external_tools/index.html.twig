@@ -113,7 +113,9 @@
               <td>
                 <div>{{ tool.authType }}</div>
                 {% if tool.hasBearerToken %}
-                  <div class="subtle">Token: ********</div>
+                  <div class="subtle">Autorización downstream: configurada</div>
+                {% else %}
+                  <div class="subtle">Autorización downstream: no configurada</div>
                 {% endif %}
               </td>
               <td>{{ tool.timeoutSeconds }}s</td>

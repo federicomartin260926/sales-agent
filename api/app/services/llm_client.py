@@ -460,6 +460,10 @@ class LLMClient:
         if override != "":
             return override
 
+        downstream_token = self._normalize_mcp_authorization(getattr(mcp_config, "downstream_authorization_token", None))
+        if downstream_token != "":
+            return downstream_token
+
         bearer_token = self._normalize_mcp_authorization(mcp_config.bearer_token)
         return bearer_token
 

@@ -245,6 +245,311 @@ final class ExternalToolControllerTest extends TestCase
         self::assertStringContainsString('Marcar principal', $response->getContent());
     }
 
+    public function testIndexShowsDownstreamAuthorizationStatusWithoutExposingToken(): void
+    {
+        $tenant = new Tenant('Tech Investments', 'tech-investments');
+        $tool = new ExternalTool($tenant, 'MCP principal', 'mcp_remote', 'openai_remote_mcp');
+        $tool->setWebhookUrl('https://mcp.example.test');
+        $tool->setAuthType('bearer');
+        $tool->setBearerToken((new RuntimeSettingCipher('kernel-secret'))->encrypt('super-secret-token'));
+        $tool->setConfig(['enabled_for_llm' => true, 'server_label' => 'principal_mcp']);
+
+        $security = $this->createStub(Security::class);
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role === 'ROLE_ADMIN');
+        $security->method('getUser')->willReturn(new User('admin@example.com', ['admin']));
+
+        $tenantRepository = new class($tenant) extends TenantRepository {
+            public function __construct(private readonly Tenant $tenant)
+            {
+            }
+
+            public function findAllOrdered(): array
+            {
+                return [$this->tenant];
+            }
+        };
+
+        $externalToolRepository = new class($tool) extends ExternalToolRepository {
+            public function __construct(private readonly ExternalTool $tool)
+            {
+            }
+
+            public function findByTenantOrdered(\App\Entity\Tenant $tenant): array
+            {
+                return [$this->tool];
+            }
+
+            public function findRuntimeDefaultMcpByTenant(\App\Entity\Tenant $tenant): ?\App\Entity\ExternalTool
+            {
+                return $this->tool;
+            }
+
+            public function findActiveMcpCandidatesByTenant(\App\Entity\Tenant $tenant): array
+            {
+                return [$this->tool];
+            }
+
+            public function unsetRuntimeDefaultForTenant(\App\Entity\Tenant $tenant, ?\App\Entity\ExternalTool $except = null, bool $flush = true): int
+            {
+                return 0;
+            }
+        };
+
+        $controller = $this->createController($security, null, null, $tenantRepository, $externalToolRepository, $this->createActiveTenantContext($tenant));
+        $container = new Container();
+        $container->set('twig', $this->createTwigEnvironment());
+        $controller->setContainer($container);
+
+        $response = $controller->index(new Request());
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        self::assertStringContainsString('Autorización downstream: configurada', $response->getContent());
+        self::assertStringNotContainsString('super-secret-token', $response->getContent());
+    }
+
+    public function testEditFormShowsDownstreamAuthorizationStatusWithoutTokenValue(): void
+    {
+        $tenant = new Tenant('Tech Investments', 'tech-investments');
+        $tool = new ExternalTool($tenant, 'MCP principal', 'mcp_remote', 'openai_remote_mcp');
+        $tool->setWebhookUrl('https://mcp.example.test');
+        $tool->setAuthType('bearer');
+        $tool->setBearerToken((new RuntimeSettingCipher('kernel-secret'))->encrypt('super-secret-token'));
+        $tool->setConfig(['enabled_for_llm' => true, 'server_label' => 'principal_mcp']);
+
+        $security = $this->createStub(Security::class);
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role === 'ROLE_ADMIN');
+        $security->method('getUser')->willReturn(new User('admin@example.com', ['admin']));
+
+        $tenantRepository = new class($tenant) extends TenantRepository {
+            public function __construct(private readonly Tenant $tenant)
+            {
+            }
+
+            public function findAllOrdered(): array
+            {
+                return [$this->tenant];
+            }
+        };
+
+        $externalToolRepository = new class($tool) extends ExternalToolRepository {
+            public function __construct(private readonly ExternalTool $tool)
+            {
+            }
+
+            public function find($id, $lockMode = null, $lockVersion = null): ?object
+            {
+                return $this->tool;
+            }
+
+            public function findByTenantOrdered(\App\Entity\Tenant $tenant): array
+            {
+                return [$this->tool];
+            }
+
+            public function findRuntimeDefaultMcpByTenant(\App\Entity\Tenant $tenant): ?\App\Entity\ExternalTool
+            {
+                return $this->tool->isRuntimeDefault() ? $this->tool : null;
+            }
+
+            public function findActiveMcpCandidatesByTenant(\App\Entity\Tenant $tenant): array
+            {
+                return [$this->tool];
+            }
+
+            public function unsetRuntimeDefaultForTenant(\App\Entity\Tenant $tenant, ?\App\Entity\ExternalTool $except = null, bool $flush = true): int
+            {
+                return 0;
+            }
+        };
+
+        $controller = $this->createController($security, null, null, $tenantRepository, $externalToolRepository, $this->createActiveTenantContext($tenant));
+        $container = new Container();
+        $container->set('twig', $this->createTwigEnvironment());
+        $controller->setContainer($container);
+
+        $response = $controller->edit($tool->getId()->toRfc4122(), Request::create('/backend/external-tools/'.$tool->getId()->toRfc4122().'/edit'));
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        self::assertStringContainsString('Token CRM para n8n/MCP', $response->getContent());
+        self::assertStringContainsString('Estado: Configurado', $response->getContent());
+        self::assertStringNotContainsString('super-secret-token', $response->getContent());
+    }
+
+    public function testEditPreservesExistingDownstreamTokenWhenFieldIsEmpty(): void
+    {
+        $tenant = new Tenant('Tech Investments', 'tech-investments');
+        $tool = new ExternalTool($tenant, 'MCP principal', 'mcp_remote', 'openai_remote_mcp');
+        $tool->setWebhookUrl('https://mcp.example.test');
+        $tool->setAuthType('bearer');
+        $tool->setBearerToken((new RuntimeSettingCipher('kernel-secret'))->encrypt('super-secret-token'));
+        $tool->setConfig(['enabled_for_llm' => true, 'server_label' => 'principal_mcp']);
+
+        $security = $this->createStub(Security::class);
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role === 'ROLE_ADMIN');
+        $security->method('getUser')->willReturn(new User('admin@example.com', ['admin']));
+
+        $tenantRepository = new class($tenant) extends TenantRepository {
+            public function __construct(private readonly Tenant $tenant)
+            {
+            }
+
+            public function findAllOrdered(): array
+            {
+                return [$this->tenant];
+            }
+        };
+
+        $externalToolRepository = new class($tool) extends ExternalToolRepository {
+            public function __construct(private readonly ExternalTool $tool)
+            {
+            }
+
+            public function find($id, $lockMode = null, $lockVersion = null): ?object
+            {
+                return $this->tool;
+            }
+
+            public function findByTenantOrdered(\App\Entity\Tenant $tenant): array
+            {
+                return [$this->tool];
+            }
+
+            public function findRuntimeDefaultMcpByTenant(\App\Entity\Tenant $tenant): ?\App\Entity\ExternalTool
+            {
+                return null;
+            }
+
+            public function findActiveMcpCandidatesByTenant(\App\Entity\Tenant $tenant): array
+            {
+                return [$this->tool];
+            }
+
+            public function unsetRuntimeDefaultForTenant(\App\Entity\Tenant $tenant, ?\App\Entity\ExternalTool $except = null, bool $flush = true): int
+            {
+                return 0;
+            }
+        };
+
+        $controller = $this->createController($security, null, null, $tenantRepository, $externalToolRepository, $this->createActiveTenantContext($tenant));
+        $container = new Container();
+        $container->set('twig', $this->createTwigEnvironment());
+        $controller->setContainer($container);
+
+        $originalToken = $tool->getBearerToken();
+
+        $response = $controller->edit(
+            $tool->getId()->toRfc4122(),
+            Request::create('/backend/external-tools/'.$tool->getId()->toRfc4122().'/edit', 'POST', [
+                '_csrf_token' => '',
+                'name' => 'MCP principal',
+                'type' => 'mcp_remote',
+                'provider' => 'openai_remote_mcp',
+                'webhookUrl' => 'https://mcp.example.test',
+                'authType' => 'bearer',
+                'bearerToken' => '',
+                'timeoutSeconds' => '5',
+                'isActive' => '1',
+                'isRuntimeDefault' => '1',
+                'config' => '{"enabled_for_llm":true,"server_label":"principal_mcp"}',
+                'serverLabel' => 'principal_mcp',
+                'allowedTools' => "search_properties\nappointment_availability",
+                'requireApproval' => 'never',
+                'enabledForLlm' => '1',
+                'notes' => '',
+            ])
+        );
+
+        self::assertSame(Response::HTTP_FOUND, $response->getStatusCode());
+        self::assertSame($originalToken, $tool->getBearerToken());
+    }
+
+    public function testEditCanClearDownstreamTokenWithExplicitCheckbox(): void
+    {
+        $tenant = new Tenant('Tech Investments', 'tech-investments');
+        $tool = new ExternalTool($tenant, 'MCP principal', 'mcp_remote', 'openai_remote_mcp');
+        $tool->setWebhookUrl('https://mcp.example.test');
+        $tool->setAuthType('bearer');
+        $tool->setBearerToken((new RuntimeSettingCipher('kernel-secret'))->encrypt('super-secret-token'));
+        $tool->setConfig(['enabled_for_llm' => true, 'server_label' => 'principal_mcp']);
+
+        $security = $this->createStub(Security::class);
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role === 'ROLE_ADMIN');
+        $security->method('getUser')->willReturn(new User('admin@example.com', ['admin']));
+
+        $tenantRepository = new class($tenant) extends TenantRepository {
+            public function __construct(private readonly Tenant $tenant)
+            {
+            }
+
+            public function findAllOrdered(): array
+            {
+                return [$this->tenant];
+            }
+        };
+
+        $externalToolRepository = new class($tool) extends ExternalToolRepository {
+            public function __construct(private readonly ExternalTool $tool)
+            {
+            }
+
+            public function find($id, $lockMode = null, $lockVersion = null): ?object
+            {
+                return $this->tool;
+            }
+
+            public function findByTenantOrdered(\App\Entity\Tenant $tenant): array
+            {
+                return [$this->tool];
+            }
+
+            public function findRuntimeDefaultMcpByTenant(\App\Entity\Tenant $tenant): ?\App\Entity\ExternalTool
+            {
+                return null;
+            }
+
+            public function findActiveMcpCandidatesByTenant(\App\Entity\Tenant $tenant): array
+            {
+                return [$this->tool];
+            }
+
+            public function unsetRuntimeDefaultForTenant(\App\Entity\Tenant $tenant, ?\App\Entity\ExternalTool $except = null, bool $flush = true): int
+            {
+                return 0;
+            }
+        };
+
+        $controller = $this->createController($security, null, null, $tenantRepository, $externalToolRepository, $this->createActiveTenantContext($tenant));
+        $container = new Container();
+        $container->set('twig', $this->createTwigEnvironment());
+        $controller->setContainer($container);
+
+        $response = $controller->edit(
+            $tool->getId()->toRfc4122(),
+            Request::create('/backend/external-tools/'.$tool->getId()->toRfc4122().'/edit', 'POST', [
+                '_csrf_token' => '',
+                'name' => 'MCP principal',
+                'type' => 'mcp_remote',
+                'provider' => 'openai_remote_mcp',
+                'webhookUrl' => 'https://mcp.example.test',
+                'authType' => 'bearer',
+                'bearerToken' => '',
+                'clearBearerToken' => '1',
+                'timeoutSeconds' => '5',
+                'isActive' => '1',
+                'isRuntimeDefault' => '1',
+                'config' => '{"enabled_for_llm":true,"server_label":"principal_mcp"}',
+                'serverLabel' => 'principal_mcp',
+                'allowedTools' => "search_properties\nappointment_availability",
+                'requireApproval' => 'never',
+                'enabledForLlm' => '1',
+                'notes' => '',
+            ])
+        );
+
+        self::assertSame(Response::HTTP_FOUND, $response->getStatusCode());
+        self::assertNull($tool->getBearerToken());
+    }
+
     public function testMarkDefaultPromotesSelectedMcpAndUnmarksOthers(): void
     {
         $tenant = new Tenant('Tech Investments', 'tech-investments');

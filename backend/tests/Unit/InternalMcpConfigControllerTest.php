@@ -68,6 +68,8 @@ final class InternalMcpConfigControllerTest extends TestCase
         self::assertSame('https://mcp-a.example.test', $payload['server_url']);
         self::assertSame('bearer', $payload['auth_type']);
         self::assertSame('mcp-token', $payload['bearer_token']);
+        self::assertSame('mcp-token', $payload['downstream_authorization_token']);
+        self::assertTrue($payload['downstream_authorization_configured']);
         self::assertSame(['search_properties', 'appointment_availability'], $payload['allowed_tools']);
         self::assertSame('never', $payload['require_approval']);
     }

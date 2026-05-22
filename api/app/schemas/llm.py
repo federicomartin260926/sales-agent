@@ -59,6 +59,14 @@ class McpRemoteConfig(BaseModel):
     server_url: str | None = Field(default=None, validation_alias=AliasChoices("server_url", "serverUrl", "webhook_url", "webhookUrl"))
     auth_type: str | None = Field(default=None, validation_alias=AliasChoices("auth_type", "authType"))
     bearer_token: str | None = Field(default=None, validation_alias=AliasChoices("bearer_token", "bearerToken"))
+    downstream_authorization_token: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("downstream_authorization_token", "downstreamAuthorizationToken"),
+    )
+    downstream_authorization_configured: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("downstream_authorization_configured", "downstreamAuthorizationConfigured"),
+    )
     allowed_tools: list[str] = Field(default_factory=list, validation_alias=AliasChoices("allowed_tools", "allowedTools"))
     require_approval: str | None = Field(default=None, validation_alias=AliasChoices("require_approval", "requireApproval"))
     timeout_seconds: int | None = Field(default=None, validation_alias=AliasChoices("timeout_seconds", "timeoutSeconds"))

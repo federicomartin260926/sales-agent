@@ -239,13 +239,14 @@ class AgentRuntime:
             return
 
         logger.info(
-            "Runtime MCP config resolved tenant_id=%s enabled=%s server_label=%s server_url=%s allowed_tools=%d require_approval=%s error_code=%s",
+            "Runtime MCP config resolved tenant_id=%s enabled=%s server_label=%s server_url=%s allowed_tools=%d require_approval=%s downstream_authorization_configured=%s error_code=%s",
             tenant_id,
             mcp_config.enabled,
             (mcp_config.server_label or "-").strip() or "-",
             (mcp_config.server_url or "-").strip() or "-",
             len(mcp_config.allowed_tools),
             (mcp_config.require_approval or "-").strip() or "-",
+            mcp_config.downstream_authorization_configured,
             (mcp_config.error_code or "-").strip() or "-",
         )
 

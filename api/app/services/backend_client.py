@@ -584,6 +584,14 @@ class BackendClient:
             logger.warning("Backend MCP config payload validation failed for tenant=%s", tenant_id)
             return self._disabled_mcp_config("invalid_response", "Backend MCP config payload validation failed")
 
+        if self._is_non_empty_string(config.downstream_authorization_token):
+            if not self._is_non_empty_string(config.bearer_token):
+                config.bearer_token = config.downstream_authorization_token
+        elif self._is_non_empty_string(config.bearer_token):
+            config.downstream_authorization_token = config.bearer_token
+
+        config.downstream_authorization_configured = self._is_non_empty_string(config.downstream_authorization_token)
+
         if not config.enabled:
             config.error_code = config.error_code or "not_configured"
 
@@ -788,6 +796,9 @@ class BackendClient:
             normalized["reason"] = reason.strip()
 
         return normalized
+
+    def _is_non_empty_string(self, value: Any) -> bool:
+        return isinstance(value, str) and value.strip() != ""
 
     def _filter_active_products(self, payload: Any, tenant_id: str) -> list[BackendProduct]:
         if not isinstance(payload, list):

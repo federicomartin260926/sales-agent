@@ -111,6 +111,15 @@ def transport_handler(request: httpx.Request) -> httpx.Response:
                     "config": {},
                     "isActive": True,
                 },
+                "entry_point": {
+                    "id": "entrypoint-1",
+                    "code": "crm-demo",
+                    "name": "Entrada Demo",
+                    "description": "Entrada comercial",
+                    "initial_message": "Hola",
+                    "crm_branch_ref": "branch-1",
+                    "is_active": True,
+                },
             },
         )
 
@@ -247,6 +256,8 @@ def transport_handler(request: httpx.Request) -> httpx.Response:
                 "server_url": "https://mcp.example.test",
                 "auth_type": "bearer",
                 "bearer_token": "mcp-token",
+                "downstream_authorization_token": "mcp-token",
+                "downstream_authorization_configured": True,
                 "allowed_tools": ["search_properties"],
                 "require_approval": "never",
                 "timeout_seconds": 15,
@@ -367,6 +378,8 @@ async def test_backend_client_fetches_mcp_config():
     assert config.server_url == "https://mcp.example.test"
     assert config.auth_type == "bearer"
     assert config.bearer_token == "mcp-token"
+    assert config.downstream_authorization_token == "mcp-token"
+    assert config.downstream_authorization_configured is True
     assert config.allowed_tools == ["search_properties"]
 
 

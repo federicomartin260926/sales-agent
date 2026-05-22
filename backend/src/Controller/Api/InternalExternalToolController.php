@@ -78,6 +78,8 @@ final class InternalExternalToolController extends AbstractApiController
             'webhook_url' => $externalTool->getWebhookUrl(),
             'auth_type' => $externalTool->getAuthType(),
             'bearer_token' => $bearerToken,
+            'downstream_authorization_token' => $bearerToken,
+            'downstream_authorization_configured' => $bearerToken !== null && $bearerToken !== '',
             'timeout_seconds' => $externalTool->getTimeoutSeconds(),
             'config' => $externalTool->getConfig() !== [] ? $externalTool->getConfig() : (object) [],
         ];

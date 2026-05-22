@@ -13,7 +13,7 @@
     <div class="hero-aside">
       <div class="badge-live">Admin</div>
       <div class="hero-aside-title">Seguridad</div>
-      <p>El token se guarda cifrado. Si ya existe, el formulario lo oculta y puedes dejarlo vacío para conservarlo.</p>
+      <p>La autorización downstream se guarda cifrada. Si ya existe, el formulario la oculta y puedes dejarla vacía para conservarla.</p>
     </div>
   </section>
 
@@ -65,16 +65,20 @@
             <option value="none"{{ values.authType == 'none' ? ' selected' : '' }}>none</option>
             <option value="bearer"{{ values.authType == 'bearer' ? ' selected' : '' }}>bearer</option>
           </select>
-          <div class="field-note">Para n8n Header Auth usa <code>Name=Authorization</code> y <code>Value=Bearer &lt;token&gt;</code>. En sales-agent guarda sólo el token, sin el prefijo Bearer.</div>
+          <div class="field-note">Para autenticación downstream usa <code>Name=Authorization</code> y <code>Value=Bearer &lt;token&gt;</code>. Sales Agent guarda sólo el token, sin el prefijo Bearer.</div>
         </div>
 
-        <div class="field">
-          <label for="tool-token">Bearer token (sin prefijo Bearer)</label>
-          <input id="tool-token" name="bearerToken" type="password" value="" autocomplete="new-password" placeholder="{{ has_token ? 'Token ya guardado: ********' : 'Opcional' }}">
-          {% if has_token %}
-            <div class="field-note">Hay un token guardado. Déjalo vacío para conservarlo o escribe uno nuevo para reemplazarlo.</div>
-          {% else %}
-            <div class="field-note">Opcional por ahora. Si usas bearer, puedes guardarlo más tarde. En n8n Header Auth usa Name=Authorization y Value=Bearer &lt;token&gt;.</div>
+        <div class="field field-full">
+          <label for="tool-token">Token CRM para n8n/MCP</label>
+          <input id="tool-token" name="bearerToken" type="password" value="" autocomplete="new-password" placeholder="{{ has_token ? '•••••••• configurado — dejar vacío para conservar' : 'Pega el token Bearer o token puro' }}">
+          <div class="field-note">Autorización downstream opcional que Sales Agent enviará como <code>Authorization</code> al servidor MCP. No se envía al prompt ni como argumento de tool.</div>
+          <div class="field-note">Estado: {{ downstream_authorization_configured ? 'Configurado' : 'No configurado' }}</div>
+          {% if is_edit and has_token %}
+            <label class="checkbox-inline mt-2" for="tool-token-clear">
+              <input id="tool-token-clear" name="clearBearerToken" type="checkbox" value="1">
+              <span>Eliminar token guardado</span>
+            </label>
+            <div class="field-note">Activa esta opción para borrar el token guardado en lugar de conservarlo.</div>
           {% endif %}
         </div>
 

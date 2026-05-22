@@ -82,6 +82,8 @@ final class InternalMcpConfigController extends AbstractApiController
             'server_url' => $tool->getWebhookUrl(),
             'auth_type' => $tool->getAuthType(),
             'bearer_token' => $bearerToken,
+            'downstream_authorization_token' => $bearerToken,
+            'downstream_authorization_configured' => $bearerToken !== null && $bearerToken !== '',
             'allowed_tools' => $tool->getAllowedTools(),
             'require_approval' => $tool->getRequireApproval() ?? 'auto',
             'timeout_seconds' => $tool->getTimeoutSeconds(),

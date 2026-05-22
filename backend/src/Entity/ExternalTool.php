@@ -154,6 +154,21 @@ class ExternalTool
         $this->updatedAt = new \DateTimeImmutable();
     }
 
+    public function getDownstreamAuthorizationToken(): ?string
+    {
+        return $this->getBearerToken();
+    }
+
+    public function setDownstreamAuthorizationToken(?string $downstreamAuthorizationToken): void
+    {
+        $this->setBearerToken($downstreamAuthorizationToken);
+    }
+
+    public function hasDownstreamAuthorizationToken(): bool
+    {
+        return $this->bearerToken !== null && $this->bearerToken !== '';
+    }
+
     public function getTimeoutSeconds(): int
     {
         return $this->timeoutSeconds;

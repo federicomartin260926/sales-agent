@@ -70,6 +70,7 @@ final class ExternalToolController extends AbstractController
 
         $tools = $this->externalTools->findByTenantOrdered($activeTenant);
         $hasRuntimeDefault = $this->externalTools->findRuntimeDefaultMcpByTenant($activeTenant) instanceof ExternalTool;
+        $runtimeState = $this->tenantMcpRuntimeState($activeTenant);
 
         return $this->render('backend/external_tools/index.html.twig', [
             'page_title' => sprintf('Servidores MCP de %s', $activeTenant->getName()),
@@ -346,7 +347,7 @@ final class ExternalToolController extends AbstractController
             'provider' => $tool->getProvider(),
             'webhookUrl' => $tool->getWebhookUrl() ?? '',
             'authType' => $tool->getAuthType() ?? 'none',
-            'hasBearerToken' => $tool->getBearerToken() !== null && $tool->getBearerToken() !== '',
+            'hasBearerToken' => $tool->hasDownstreamAuthorizationToken(),
             'timeoutSeconds' => $tool->getTimeoutSeconds(),
             'isActive' => $tool->isActive(),
             'isRuntimeDefault' => $tool->isRuntimeDefault(),
@@ -361,7 +362,7 @@ final class ExternalToolController extends AbstractController
     }
 
     /**
-     * @return array{name: string, tenantId: string, type: string, provider: string, webhookUrl: string, authType: string, bearerToken: string, timeoutSeconds: string, isActive: bool, isRuntimeDefault: bool, config: string, serverLabel: string, allowedTools: string, requireApproval: string, enabledForLlm: bool, notes: string}
+     * @return array{name: string, tenantId: string, type: string, provider: string, webhookUrl: string, authType: string, bearerToken: string, clearBearerToken: bool, timeoutSeconds: string, isActive: bool, isRuntimeDefault: bool, config: string, serverLabel: string, allowedTools: string, requireApproval: string, enabledForLlm: bool, notes: string}
      */
     private function toolFormDefaults(?ExternalTool $tool = null, ?Tenant $tenant = null): array
     {
@@ -375,6 +376,7 @@ final class ExternalToolController extends AbstractController
             'webhookUrl' => $tool?->getWebhookUrl() ?? '',
             'authType' => $tool?->getAuthType() ?? 'none',
             'bearerToken' => '',
+            'clearBearerToken' => false,
             'timeoutSeconds' => (string) ($tool?->getTimeoutSeconds() ?? 5),
             'isActive' => $tool?->isActive() ?? true,
             'isRuntimeDefault' => $tool?->isRuntimeDefault() ?? ($tool === null && $tenantRuntimeDefault === null),
@@ -388,7 +390,7 @@ final class ExternalToolController extends AbstractController
     }
 
     /**
-     * @return array{name: string, tenantId: string, type: string, provider: string, webhookUrl: string, authType: string, bearerToken: string, timeoutSeconds: string, isActive: bool, isRuntimeDefault: bool, config: string, serverLabel: string, allowedTools: string, requireApproval: string, enabledForLlm: bool, notes: string}
+     * @return array{name: string, tenantId: string, type: string, provider: string, webhookUrl: string, authType: string, bearerToken: string, clearBearerToken: bool, timeoutSeconds: string, isActive: bool, isRuntimeDefault: bool, config: string, serverLabel: string, allowedTools: string, requireApproval: string, enabledForLlm: bool, notes: string}
      */
     private function toolFormValuesFromRequest(Request $request): array
     {
@@ -400,6 +402,7 @@ final class ExternalToolController extends AbstractController
             'webhookUrl' => trim((string) $request->request->get('webhookUrl', '')),
             'authType' => trim((string) $request->request->get('authType', 'none')),
             'bearerToken' => trim((string) $request->request->get('bearerToken', '')),
+            'clearBearerToken' => $request->request->has('clearBearerToken'),
             'timeoutSeconds' => trim((string) $request->request->get('timeoutSeconds', '5')),
             'isActive' => $request->request->has('isActive'),
             'isRuntimeDefault' => $request->request->has('isRuntimeDefault'),
@@ -413,7 +416,7 @@ final class ExternalToolController extends AbstractController
     }
 
     /**
-     * @param array{name: string, tenantId: string, type: string, provider: string, webhookUrl: string, authType: string, bearerToken: string, timeoutSeconds: string, isActive: bool, isRuntimeDefault: bool, config: string, serverLabel: string, allowedTools: string, requireApproval: string, enabledForLlm: bool, notes: string} $values
+     * @param array{name: string, tenantId: string, type: string, provider: string, webhookUrl: string, authType: string, bearerToken: string, clearBearerToken: bool, timeoutSeconds: string, isActive: bool, isRuntimeDefault: bool, config: string, serverLabel: string, allowedTools: string, requireApproval: string, enabledForLlm: bool, notes: string} $values
      *
      * @return list<string>
      */
@@ -491,7 +494,7 @@ final class ExternalToolController extends AbstractController
     }
 
     /**
-     * @param array{name: string, tenantId: string, type: string, provider: string, webhookUrl: string, authType: string, bearerToken: string, timeoutSeconds: string, isActive: bool, isRuntimeDefault: bool, config: string} $values
+     * @param array{name: string, tenantId: string, type: string, provider: string, webhookUrl: string, authType: string, bearerToken: string, clearBearerToken: bool, timeoutSeconds: string, isActive: bool, isRuntimeDefault: bool, config: string} $values
      */
     private function applyToolFormValues(ExternalTool $tool, array $values, bool $isNew, Tenant $tenant): void
     {
@@ -510,12 +513,18 @@ final class ExternalToolController extends AbstractController
         }
         $tool->setRuntimeDefault($isRuntimeDefault);
         $tool->setConfig($this->buildConfig($values));
-        $this->applyBearerToken($tool, $values['authType'], $values['bearerToken'], $isNew);
+        $this->applyBearerToken($tool, $values['authType'], $values['bearerToken'], $values['clearBearerToken'], $isNew);
     }
 
-    private function applyBearerToken(ExternalTool $tool, string $authType, string $rawBearerToken, bool $isNew): void
+    private function applyBearerToken(ExternalTool $tool, string $authType, string $rawBearerToken, bool $clearBearerToken, bool $isNew): void
     {
         if ($authType !== 'bearer') {
+            $tool->setBearerToken(null);
+
+            return;
+        }
+
+        if ($clearBearerToken) {
             $tool->setBearerToken(null);
 
             return;
@@ -533,7 +542,7 @@ final class ExternalToolController extends AbstractController
     }
 
     /**
-     * @param array{name: string, tenantId: string, type: string, provider: string, webhookUrl: string, authType: string, bearerToken: string, timeoutSeconds: string, isActive: bool, config: string, serverLabel: string, allowedTools: string, requireApproval: string, enabledForLlm: bool, notes: string} $values
+     * @param array{name: string, tenantId: string, type: string, provider: string, webhookUrl: string, authType: string, bearerToken: string, clearBearerToken: bool, timeoutSeconds: string, isActive: bool, config: string, serverLabel: string, allowedTools: string, requireApproval: string, enabledForLlm: bool, notes: string} $values
      *
      * @return array<string, mixed>
      */
@@ -737,7 +746,8 @@ final class ExternalToolController extends AbstractController
             'action_url' => $actionUrl,
             'is_edit' => $isEdit,
             'tool_id' => $tool?->getId()->toRfc4122(),
-            'has_token' => $tool?->getBearerToken() !== null && $tool->getBearerToken() !== '',
+            'has_token' => $tool?->hasDownstreamAuthorizationToken() ?? false,
+            'downstream_authorization_configured' => $tool?->hasDownstreamAuthorizationToken() ?? false,
             'can_test' => $tool === null ? false : $this->canTestTool($tool),
             'form_token' => $this->externalToolTokenValue($isEdit && $tool instanceof ExternalTool ? 'external_tool_form_'.$tool->getId()->toRfc4122() : 'external_tool_form_create'),
             'active_tenant_name' => $activeTenant instanceof Tenant ? $activeTenant->getName() : null,
