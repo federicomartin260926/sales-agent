@@ -70,8 +70,9 @@ Este directorio contiene el backend administrativo de `sales-agent`.
 - `GET /api/health`
 - CRUD:
   - `/api/tenants` para negocios
-  - `/api/products`
-  - `/api/playbooks` para guías comerciales
+  - `/api/products` para productos/servicios, con `tenant_id` obligatorio en list/show/update/delete
+  - `/api/playbooks` para guías comerciales, con `tenant_id` obligatorio en list/show/update/delete
+    y `productId` limitado al mismo tenant en create/update
 - `GET /api/internal/runtime-settings` para la snapshot operativa que consume el runtime
 - `POST /api/login`
 - Routing público:

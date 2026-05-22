@@ -140,8 +140,10 @@ En Docker local el valor por defecto apunta a:
 El runtime consulta:
 
 - `GET /api/tenants/{tenant_id}`
-- `GET /api/products`
-- `GET /api/playbooks`
+- `GET /api/products?tenant_id=<tenant_id>`
+- `GET /api/playbooks?tenant_id=<tenant_id>`
+
+Las APIs REST legacy de productos y guías comerciales son tenant-scoped: requieren `tenant_id` y no permiten reasignar entidades entre tenants por `update`.
 
 El catálogo de productos devuelto por el backend incluye además:
 

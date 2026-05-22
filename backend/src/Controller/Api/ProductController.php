@@ -23,11 +23,16 @@ final class ProductController extends AbstractApiController
     }
 
     #[Route('', methods: ['GET'])]
-    public function index(): JsonResponse
+    public function index(Request $request): JsonResponse
     {
+        $tenant = $this->resolveTenantScope($request);
+        if (!$tenant instanceof Tenant) {
+            return $this->badRequest('tenantId is required');
+        }
+
         return $this->json(array_map(
             static fn (Product $product): array => $product->toArray(),
-            $this->products->findAllOrdered()
+            $this->products->findByTenantOrdered($tenant)
         ));
     }
 
@@ -36,13 +41,17 @@ final class ProductController extends AbstractApiController
     {
         $data = $this->readJson($request);
 
-        if (($data['tenantId'] ?? '') === '' || ($data['name'] ?? '') === '') {
+        $tenant = $this->resolveTenantScope($request, $data);
+        if (!$tenant instanceof Tenant) {
+            return $this->badRequest('tenantId is required');
+        }
+
+        if (($data['name'] ?? '') === '') {
             return $this->badRequest('tenantId and name are required');
         }
 
-        $tenant = $this->tenants->find($data['tenantId']);
-        if (!$tenant instanceof Tenant) {
-            return $this->badRequest('tenant not found');
+        if (array_key_exists('tenantId', $data) && trim((string) $data['tenantId']) !== '' && trim((string) $data['tenantId']) !== $tenant->getId()->toRfc4122()) {
+            return $this->badRequest('tenantId cannot be changed');
         }
 
         $slug = isset($data['slug']) && is_string($data['slug']) ? trim($data['slug']) : '';
@@ -91,11 +100,16 @@ final class ProductController extends AbstractApiController
     }
 
     #[Route('/{id}', methods: ['GET'])]
-    public function show(string $id): JsonResponse
+    public function show(string $id, Request $request): JsonResponse
     {
+        $tenant = $this->resolveTenantScope($request);
+        if (!$tenant instanceof Tenant) {
+            return $this->badRequest('tenantId is required');
+        }
+
         $product = $this->products->find($id);
 
-        if (!$product instanceof Product) {
+        if (!$product instanceof Product || $product->getTenant()->getId()->toRfc4122() !== $tenant->getId()->toRfc4122()) {
             return $this->notFound('Product not found');
         }
 
@@ -113,16 +127,21 @@ final class ProductController extends AbstractApiController
 
         $data = $this->readJson($request);
 
-        if (array_key_exists('tenantId', $data)) {
-            $tenant = $this->tenants->find($data['tenantId']);
-            if (!$tenant instanceof Tenant) {
-                return $this->badRequest('tenant not found');
-            }
-            $product->setTenant($tenant);
+        $tenant = $this->resolveTenantScope($request, $data);
+        if (!$tenant instanceof Tenant) {
+            return $this->badRequest('tenantId is required');
+        }
+
+        if ($product->getTenant()->getId()->toRfc4122() !== $tenant->getId()->toRfc4122()) {
+            return $this->notFound('Product not found');
+        }
+
+        if (array_key_exists('tenantId', $data) && trim((string) $data['tenantId']) !== '' && trim((string) $data['tenantId']) !== $tenant->getId()->toRfc4122()) {
+            return $this->badRequest('tenantId cannot be changed');
         }
 
         if (($error = $this->guardProductIdentity(
-            $product->getTenant(),
+            $tenant,
             $product,
             array_key_exists('slug', $data) && is_string($data['slug']) && trim($data['slug']) !== '' ? trim($data['slug']) : null,
             array_key_exists('externalSource', $data) && is_string($data['externalSource']) ? trim($data['externalSource']) : null,
@@ -181,11 +200,16 @@ final class ProductController extends AbstractApiController
     }
 
     #[Route('/{id}', methods: ['DELETE'])]
-    public function delete(string $id): JsonResponse
+    public function delete(string $id, Request $request): JsonResponse
     {
+        $tenant = $this->resolveTenantScope($request);
+        if (!$tenant instanceof Tenant) {
+            return $this->badRequest('tenantId is required');
+        }
+
         $product = $this->products->find($id);
 
-        if (!$product instanceof Product) {
+        if (!$product instanceof Product || $product->getTenant()->getId()->toRfc4122() !== $tenant->getId()->toRfc4122()) {
             return $this->notFound('Product not found');
         }
 
@@ -205,6 +229,40 @@ final class ProductController extends AbstractApiController
         }
 
         return null;
+    }
+
+    private function resolveTenantScope(Request $request, array $data = []): ?Tenant
+    {
+        $tenantId = $this->requestTenantId($request, $data);
+        if ($tenantId === '') {
+            return null;
+        }
+
+        $tenant = $this->tenants->find($tenantId);
+        if (!$tenant instanceof Tenant) {
+            return null;
+        }
+
+        return $tenant;
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     */
+    private function requestTenantId(Request $request, array $data = []): string
+    {
+        $tenantId = trim((string) $request->query->get('tenant_id', $request->query->get('tenantId', '')));
+        if ($tenantId !== '') {
+            return $tenantId;
+        }
+
+        if ($data === []) {
+            return '';
+        }
+
+        $tenantId = trim((string) ($data['tenant_id'] ?? $data['tenantId'] ?? ''));
+
+        return $tenantId;
     }
 
     private function guardProductIdentity(

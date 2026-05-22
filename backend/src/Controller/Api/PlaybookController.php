@@ -26,11 +26,16 @@ final class PlaybookController extends AbstractApiController
     }
 
     #[Route('', methods: ['GET'])]
-    public function index(): JsonResponse
+    public function index(Request $request): JsonResponse
     {
+        $tenant = $this->resolveTenantScope($request);
+        if (!$tenant instanceof Tenant) {
+            return $this->badRequest('tenantId is required');
+        }
+
         return $this->json(array_map(
             static fn (Playbook $playbook): array => $playbook->toArray(),
-            $this->playbooks->findAllOrdered()
+            $this->playbooks->findByTenantOrdered($tenant)
         ));
     }
 
@@ -39,13 +44,17 @@ final class PlaybookController extends AbstractApiController
     {
         $data = $this->readJson($request);
 
-        if (($data['tenantId'] ?? '') === '' || ($data['name'] ?? '') === '') {
+        $tenant = $this->resolveTenantScope($request, $data);
+        if (!$tenant instanceof Tenant) {
+            return $this->badRequest('tenantId is required');
+        }
+
+        if (($data['name'] ?? '') === '') {
             return $this->badRequest('tenantId and name are required');
         }
 
-        $tenant = $this->tenants->find($data['tenantId']);
-        if (!$tenant instanceof Tenant) {
-            return $this->badRequest('tenant not found');
+        if (array_key_exists('tenantId', $data) && trim((string) $data['tenantId']) !== '' && trim((string) $data['tenantId']) !== $tenant->getId()->toRfc4122()) {
+            return $this->badRequest('tenantId cannot be changed');
         }
 
         $product = null;
@@ -73,11 +82,16 @@ final class PlaybookController extends AbstractApiController
     }
 
     #[Route('/{id}', methods: ['GET'])]
-    public function show(string $id): JsonResponse
+    public function show(string $id, Request $request): JsonResponse
     {
+        $tenant = $this->resolveTenantScope($request);
+        if (!$tenant instanceof Tenant) {
+            return $this->badRequest('tenantId is required');
+        }
+
         $playbook = $this->playbooks->find($id);
 
-        if (!$playbook instanceof Playbook) {
+        if (!$playbook instanceof Playbook || $playbook->getTenant()->getId()->toRfc4122() !== $tenant->getId()->toRfc4122()) {
             return $this->notFound('Playbook not found');
         }
 
@@ -95,12 +109,17 @@ final class PlaybookController extends AbstractApiController
 
         $data = $this->readJson($request);
 
-        if (array_key_exists('tenantId', $data)) {
-            $tenant = $this->tenants->find($data['tenantId']);
-            if (!$tenant instanceof Tenant) {
-                return $this->badRequest('tenant not found');
-            }
-            $playbook->setTenant($tenant);
+        $tenant = $this->resolveTenantScope($request, $data);
+        if (!$tenant instanceof Tenant) {
+            return $this->badRequest('tenantId is required');
+        }
+
+        if ($playbook->getTenant()->getId()->toRfc4122() !== $tenant->getId()->toRfc4122()) {
+            return $this->notFound('Playbook not found');
+        }
+
+        if (array_key_exists('tenantId', $data) && trim((string) $data['tenantId']) !== '' && trim((string) $data['tenantId']) !== $tenant->getId()->toRfc4122()) {
+            return $this->badRequest('tenantId cannot be changed');
         }
 
         if (array_key_exists('productId', $data)) {
@@ -143,16 +162,53 @@ final class PlaybookController extends AbstractApiController
     }
 
     #[Route('/{id}', methods: ['DELETE'])]
-    public function delete(string $id): JsonResponse
+    public function delete(string $id, Request $request): JsonResponse
     {
+        $tenant = $this->resolveTenantScope($request);
+        if (!$tenant instanceof Tenant) {
+            return $this->badRequest('tenantId is required');
+        }
+
         $playbook = $this->playbooks->find($id);
 
-        if (!$playbook instanceof Playbook) {
+        if (!$playbook instanceof Playbook || $playbook->getTenant()->getId()->toRfc4122() !== $tenant->getId()->toRfc4122()) {
             return $this->notFound('Playbook not found');
         }
 
         $this->playbooks->remove($playbook);
 
         return $this->json(null, JsonResponse::HTTP_NO_CONTENT);
+    }
+
+    private function resolveTenantScope(Request $request, array $data = []): ?Tenant
+    {
+        $tenantId = $this->requestTenantId($request, $data);
+        if ($tenantId === '') {
+            return null;
+        }
+
+        $tenant = $this->tenants->find($tenantId);
+        if (!$tenant instanceof Tenant) {
+            return null;
+        }
+
+        return $tenant;
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     */
+    private function requestTenantId(Request $request, array $data = []): string
+    {
+        $tenantId = trim((string) $request->query->get('tenant_id', $request->query->get('tenantId', '')));
+        if ($tenantId !== '') {
+            return $tenantId;
+        }
+
+        if ($data === []) {
+            return '';
+        }
+
+        return trim((string) ($data['tenant_id'] ?? $data['tenantId'] ?? ''));
     }
 }
