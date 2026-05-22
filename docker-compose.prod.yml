@@ -33,6 +33,7 @@ services:
       CRM_BASE_URL: ${CRM_BASE_URL:-http://crm-nginx}
       RAG_API_URL: ${RAG_API_URL:-}
       SALES_AGENT_BEARER_TOKEN: ${SALES_AGENT_BEARER_TOKEN:-change-me-sales-agent-bearer-token}
+      MCP_TEST_AUTHORIZATION: ${MCP_TEST_AUTHORIZATION:-}
     restart: unless-stopped
 
   sales-agent-nginx:

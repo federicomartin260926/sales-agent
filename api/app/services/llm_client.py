@@ -138,6 +138,7 @@ class LLMClient:
         tools = self._build_openai_mcp_tools(mcp_config)
         if tools != []:
             payload["tools"] = tools
+        self._log_openai_responses_mcp_request(model, tools, mcp_config)
 
         timeout = httpx.Timeout(timeout_seconds, connect=2.0)
         headers = {
@@ -497,6 +498,29 @@ class LLMClient:
             sanitized["tools"] = sanitized_tools
 
         return sanitized
+
+    def _log_openai_responses_mcp_request(self, model: str, tools: list[dict[str, Any]], mcp_config: McpRemoteConfig) -> None:
+        if tools == []:
+            logger.info(
+                "OpenAI Responses MCP request starting model=%s mcp_enabled=%s tools=0",
+                model,
+                mcp_config.enabled,
+            )
+            return
+
+        tool = tools[0]
+        allowed_tools = tool.get("allowed_tools") if isinstance(tool.get("allowed_tools"), list) else []
+        authorization_present = isinstance(tool.get("authorization"), str) and tool.get("authorization") != ""
+        logger.info(
+            "OpenAI Responses MCP request starting model=%s mcp_enabled=%s server_label=%s server_url=%s allowed_tools=%d authorization_present=%s require_approval=%s",
+            model,
+            mcp_config.enabled,
+            tool.get("server_label") or "-",
+            tool.get("server_url") or "-",
+            len(allowed_tools),
+            authorization_present,
+            tool.get("require_approval") or "-",
+        )
 
     def _build_responses_input(self, user_prompt: str) -> str:
         prompt = user_prompt.strip()

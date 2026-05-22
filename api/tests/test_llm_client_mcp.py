@@ -58,7 +58,9 @@ def mcp_transport_handler(request: httpx.Request) -> httpx.Response:
 
 
 @pytest.mark.asyncio
-async def test_llm_client_uses_openai_responses_with_mcp_tools():
+async def test_llm_client_uses_openai_responses_with_mcp_tools(monkeypatch):
+    monkeypatch.setenv("MCP_TEST_AUTHORIZATION", "")
+
     client = LLMClient(
         Settings(OPENAI_API_KEY="sk-test", OPENAI_TIMEOUT_SECONDS=15),
         transport=httpx.MockTransport(mcp_transport_handler),

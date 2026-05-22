@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import time
@@ -16,6 +17,9 @@ from app.services.backend_client import (
 )
 from app.services.decision_engine import DecisionEngine
 from app.services.routing_resolver import RoutingContext, RuntimeRoutingResolver
+
+
+logger = logging.getLogger(__name__)
 
 
 class AgentRuntime:
@@ -54,6 +58,7 @@ class AgentRuntime:
             payload.message.text,
         )
         mcp_config = await self.backend_client.fetch_mcp_config(routing.tenant_id)
+        self._log_mcp_config(routing.tenant_id, mcp_config)
 
         conversation_result = await self.backend_client.upsert_conversation(
             BackendConversationUpsertPayload(
@@ -227,6 +232,22 @@ class AgentRuntime:
             return int(round(score * 100))
         except Exception:
             return None
+
+    def _log_mcp_config(self, tenant_id: str, mcp_config: McpRemoteConfig | None) -> None:
+        if mcp_config is None:
+            logger.info("Runtime MCP config resolved tenant_id=%s mcp_config=null", tenant_id)
+            return
+
+        logger.info(
+            "Runtime MCP config resolved tenant_id=%s enabled=%s server_label=%s server_url=%s allowed_tools=%d require_approval=%s error_code=%s",
+            tenant_id,
+            mcp_config.enabled,
+            (mcp_config.server_label or "-").strip() or "-",
+            (mcp_config.server_url or "-").strip() or "-",
+            len(mcp_config.allowed_tools),
+            (mcp_config.require_approval or "-").strip() or "-",
+            (mcp_config.error_code or "-").strip() or "-",
+        )
 
     def _outbound_metadata(self, response: AgentResponse, mcp_config: McpRemoteConfig | None) -> dict[str, Any]:
         metadata: dict[str, Any] = {
