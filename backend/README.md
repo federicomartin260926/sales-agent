@@ -140,6 +140,7 @@ Las `Herramientas externas` permiten registrar:
 - `mcp_remote` para dejar configurado el servidor MCP remoto del tenant que usará OpenAI Responses API
 
 La configuración MCP queda guardada en `ExternalTool.config` con campos como `server_label`, `allowed_tools`, `require_approval`, `enabled_for_llm` y `notes`.
+Además, `ExternalTool.is_runtime_default` marca el MCP principal del tenant para runtime. Si no hay un principal explícito, la API interna sólo cae a un único MCP activo; no elige arbitrariamente por fecha.
 Cuando el runtime usa un perfil no compatible con Responses API, el MCP se ignora y se registra la causa en la traza del mensaje.
 
 Reglas operativas:

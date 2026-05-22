@@ -29,6 +29,13 @@
     <div class="alert alert-error">{{ message }}</div>
   {% endfor %}
 
+  {% if tools is defined and tools is not empty and has_runtime_default is defined and not has_runtime_default %}
+    <div class="alert alert-warning">
+      <strong>Falta un MCP principal</strong>
+      <div>Marca un servidor MCP activo como principal para que el runtime tenga una referencia explícita.</div>
+    </div>
+  {% endif %}
+
   {% if filter_error is defined and filter_error is not null %}
     <div class="alert alert-error">{{ filter_error }}</div>
   {% endif %}
@@ -82,6 +89,7 @@
             <th>Webhook</th>
             <th>Auth</th>
             <th>Timeout</th>
+            <th>Principal</th>
             <th>Estado</th>
             <th class="text-right">Acciones</th>
           </tr>
@@ -109,6 +117,18 @@
                 {% endif %}
               </td>
               <td>{{ tool.timeoutSeconds }}s</td>
+              <td>
+                {% if tool.isRuntimeDefault %}
+                  <span class="status-ok">Principal</span>
+                {% elseif tool.isActive %}
+                  <form method="post" action="/backend/external-tools/{{ tool.id }}/mark-default" style="display:inline-flex;">
+                    <input type="hidden" name="_csrf_token" value="{{ tool.runtimeDefaultToken }}">
+                    <button class="secondary-action" type="submit">Marcar principal</button>
+                  </form>
+                {% else %}
+                  <span class="status-off">No</span>
+                {% endif %}
+              </td>
               <td>{% if tool.isActive %}<span class="status-ok">Activo</span>{% else %}<span class="status-off">Inactivo</span>{% endif %}</td>
               <td class="text-right">
                 <div class="tool-actions-inline">
@@ -125,6 +145,9 @@
                     <input type="hidden" name="_csrf_token" value="{{ tool.toggleToken }}">
                     <button class="icon-action tool-action-icon-button" type="submit" title="{{ tool.isActive ? 'Desactivar' : 'Activar' }}" aria-label="{{ tool.isActive ? 'Desactivar' : 'Activar' }}">{{ tool.isActive ? '⏸' : '▶' }}</button>
                   </form>
+                  {% if tool.isRuntimeDefault %}
+                    <span class="badge-live">Runtime</span>
+                  {% endif %}
                   <form method="post" action="/backend/external-tools/{{ tool.id }}/delete" onsubmit="return confirm('¿Eliminar esta herramienta externa?');" style="display:inline-flex;">
                     <input type="hidden" name="_csrf_token" value="{{ tool.deleteToken }}">
                     <button class="icon-action icon-action-danger tool-action-icon-button" type="submit" title="Eliminar herramienta externa" aria-label="Eliminar herramienta externa">🗑</button>
@@ -134,7 +157,7 @@
             </tr>
           {% else %}
             <tr>
-              <td colspan="8" class="empty-row">No hay herramientas externas todavía.</td>
+              <td colspan="9" class="empty-row">No hay herramientas externas todavía.</td>
             </tr>
           {% endfor %}
         </tbody>

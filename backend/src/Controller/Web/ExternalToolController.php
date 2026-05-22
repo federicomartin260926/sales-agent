@@ -69,6 +69,7 @@ final class ExternalToolController extends AbstractController
         }
 
         $tools = $this->externalTools->findByTenantOrdered($activeTenant);
+        $hasRuntimeDefault = $this->externalTools->findRuntimeDefaultMcpByTenant($activeTenant) instanceof ExternalTool;
 
         return $this->render('backend/external_tools/index.html.twig', [
             'page_title' => sprintf('Servidores MCP de %s', $activeTenant->getName()),
@@ -77,6 +78,7 @@ final class ExternalToolController extends AbstractController
             'tools' => array_map([$this, 'toolRow'], $tools),
             'filter_error' => null,
             'active_tenant_name' => $activeTenant->getName(),
+            'has_runtime_default' => $hasRuntimeDefault,
             ...$this->currentUserTemplateData(),
         ]);
     }
@@ -206,11 +208,53 @@ final class ExternalToolController extends AbstractController
             return $this->redirectToRoute('backend_external_tools_index', ['tenant_id' => $tool->getTenant()->getId()->toRfc4122()]);
         }
 
+        $wasRuntimeDefault = $tool->isRuntimeDefault();
         $tool->setActive(!$tool->isActive());
+        if (!$tool->isActive() && $wasRuntimeDefault) {
+            $tool->setRuntimeDefault(false);
+        }
         $this->entityManager->persist($tool);
         $this->entityManager->flush();
 
         $this->addFlash('success', $tool->isActive() ? 'Herramienta externa activada.' : 'Herramienta externa desactivada.');
+
+        return new RedirectResponse($this->backendExternalToolsIndexUrl($tool->getTenant()->getId()->toRfc4122()));
+    }
+
+    #[Route('/{id}/mark-default', name: 'backend_external_tools_mark_default', methods: ['POST'])]
+    public function markDefault(string $id, Request $request): Response
+    {
+        if (!$this->security->isGranted('ROLE_ADMIN')) {
+            return $this->redirect('/backend/login');
+        }
+
+        $activeTenant = $this->activeTenantContext->getActiveTenant();
+        $tool = $this->externalTools->find($id);
+        if (!$tool instanceof ExternalTool || !$activeTenant instanceof Tenant || $tool->getTenant()->getId()->toRfc4122() !== $activeTenant->getId()->toRfc4122()) {
+            return new Response('', Response::HTTP_NOT_FOUND);
+        }
+
+        if ($tool->getType() !== self::MCP_TOOL_TYPE) {
+            return new Response('', Response::HTTP_BAD_REQUEST);
+        }
+
+        if (!$this->isValidExternalToolToken('external_tool_runtime_default_'.$tool->getId()->toRfc4122(), (string) $request->request->get('_csrf_token'))) {
+            return new RedirectResponse($this->backendExternalToolsIndexUrl($tool->getTenant()->getId()->toRfc4122()));
+        }
+
+        if (!$tool->isActive()) {
+            $this->addFlash('error', 'El MCP debe estar activo para marcarlo como principal.');
+
+            return new RedirectResponse($this->backendExternalToolsIndexUrl($tool->getTenant()->getId()->toRfc4122()));
+        }
+
+        if (!$tool->isRuntimeDefault()) {
+            $this->externalTools->unsetRuntimeDefaultForTenant($tool->getTenant(), $tool);
+            $tool->setRuntimeDefault(true);
+            $this->entityManager->persist($tool);
+            $this->entityManager->flush();
+            $this->addFlash('success', 'Servidor MCP marcado como principal.');
+        }
 
         return new RedirectResponse($this->backendExternalToolsIndexUrl($tool->getTenant()->getId()->toRfc4122()));
     }
@@ -264,6 +308,7 @@ final class ExternalToolController extends AbstractController
             'page_subtitle' => 'Configuración de servidores MCP remotos del negocio activo.',
             'active_nav' => 'admin-external-tools',
             'tools' => array_map([$this, 'toolRow'], $this->externalTools->findByTenantOrdered($activeTenant)),
+            'has_runtime_default' => $this->externalTools->findRuntimeDefaultMcpByTenant($activeTenant) instanceof ExternalTool,
             'test_result' => $testResult,
             'active_tenant_name' => $activeTenant->getName(),
             ...$this->currentUserTemplateData(),
@@ -285,7 +330,7 @@ final class ExternalToolController extends AbstractController
     }
 
     /**
-     * @return array{id: string, tenantId: string, tenantName: string, name: string, type: string, provider: string, webhookUrl: string, authType: string, hasBearerToken: bool, timeoutSeconds: int, isActive: bool, configText: string, configSummary: string}
+     * @return array{id: string, tenantId: string, tenantName: string, name: string, type: string, provider: string, webhookUrl: string, authType: string, hasBearerToken: bool, timeoutSeconds: int, isActive: bool, isRuntimeDefault: bool, configText: string, configSummary: string}
      */
     private function toolRow(ExternalTool $tool): array
     {
@@ -302,21 +347,24 @@ final class ExternalToolController extends AbstractController
             'hasBearerToken' => $tool->getBearerToken() !== null && $tool->getBearerToken() !== '',
             'timeoutSeconds' => $tool->getTimeoutSeconds(),
             'isActive' => $tool->isActive(),
+            'isRuntimeDefault' => $tool->isRuntimeDefault(),
             'configText' => $this->configToTextarea($config),
             'configSummary' => $this->configSummary($config, $tool),
             'canTest' => $this->canTestTool($tool),
             'testToken' => $this->externalToolTokenValue('external_tool_test_'.$tool->getId()->toRfc4122()),
             'toggleToken' => $this->externalToolTokenValue('external_tool_toggle_'.$tool->getId()->toRfc4122()),
+            'runtimeDefaultToken' => $this->externalToolTokenValue('external_tool_runtime_default_'.$tool->getId()->toRfc4122()),
             'deleteToken' => $this->externalToolTokenValue('external_tool_delete_'.$tool->getId()->toRfc4122()),
         ];
     }
 
     /**
-     * @return array{name: string, tenantId: string, type: string, provider: string, webhookUrl: string, authType: string, bearerToken: string, timeoutSeconds: string, isActive: bool, config: string, serverLabel: string, allowedTools: string, requireApproval: string, enabledForLlm: bool, notes: string}
+     * @return array{name: string, tenantId: string, type: string, provider: string, webhookUrl: string, authType: string, bearerToken: string, timeoutSeconds: string, isActive: bool, isRuntimeDefault: bool, config: string, serverLabel: string, allowedTools: string, requireApproval: string, enabledForLlm: bool, notes: string}
      */
     private function toolFormDefaults(?ExternalTool $tool = null, ?Tenant $tenant = null): array
     {
         $config = $tool?->getConfig() ?? [];
+        $tenantRuntimeDefault = $tenant instanceof Tenant ? $this->externalTools->findRuntimeDefaultMcpByTenant($tenant) : null;
         return [
             'name' => $tool?->getName() ?? '',
             'tenantId' => $tenant?->getId()->toRfc4122() ?? $tool?->getTenant()?->getId()->toRfc4122() ?? '',
@@ -327,6 +375,7 @@ final class ExternalToolController extends AbstractController
             'bearerToken' => '',
             'timeoutSeconds' => (string) ($tool?->getTimeoutSeconds() ?? 5),
             'isActive' => $tool?->isActive() ?? true,
+            'isRuntimeDefault' => $tool?->isRuntimeDefault() ?? ($tool === null && $tenantRuntimeDefault === null),
             'config' => $this->configToTextarea($config),
             'serverLabel' => $this->configStringField($config, 'server_label'),
             'allowedTools' => $this->configAllowedToolsField($config),
@@ -337,7 +386,7 @@ final class ExternalToolController extends AbstractController
     }
 
     /**
-     * @return array{name: string, tenantId: string, type: string, provider: string, webhookUrl: string, authType: string, bearerToken: string, timeoutSeconds: string, isActive: bool, config: string, serverLabel: string, allowedTools: string, requireApproval: string, enabledForLlm: bool, notes: string}
+     * @return array{name: string, tenantId: string, type: string, provider: string, webhookUrl: string, authType: string, bearerToken: string, timeoutSeconds: string, isActive: bool, isRuntimeDefault: bool, config: string, serverLabel: string, allowedTools: string, requireApproval: string, enabledForLlm: bool, notes: string}
      */
     private function toolFormValuesFromRequest(Request $request): array
     {
@@ -351,6 +400,7 @@ final class ExternalToolController extends AbstractController
             'bearerToken' => trim((string) $request->request->get('bearerToken', '')),
             'timeoutSeconds' => trim((string) $request->request->get('timeoutSeconds', '5')),
             'isActive' => $request->request->has('isActive'),
+            'isRuntimeDefault' => $request->request->has('isRuntimeDefault'),
             'config' => trim((string) $request->request->get('config', '{}')),
             'serverLabel' => trim((string) $request->request->get('serverLabel', '')),
             'allowedTools' => trim((string) $request->request->get('allowedTools', '')),
@@ -361,7 +411,7 @@ final class ExternalToolController extends AbstractController
     }
 
     /**
-     * @param array{name: string, tenantId: string, type: string, provider: string, webhookUrl: string, authType: string, bearerToken: string, timeoutSeconds: string, isActive: bool, config: string, serverLabel: string, allowedTools: string, requireApproval: string, enabledForLlm: bool, notes: string} $values
+     * @param array{name: string, tenantId: string, type: string, provider: string, webhookUrl: string, authType: string, bearerToken: string, timeoutSeconds: string, isActive: bool, isRuntimeDefault: bool, config: string, serverLabel: string, allowedTools: string, requireApproval: string, enabledForLlm: bool, notes: string} $values
      *
      * @return list<string>
      */
@@ -425,6 +475,10 @@ final class ExternalToolController extends AbstractController
             if (!in_array($values['requireApproval'], ['auto', 'never', 'always'], true)) {
                 $errors[] = 'El modo de aprobación MCP no es válido.';
             }
+
+            if ($values['isRuntimeDefault'] && !$values['isActive']) {
+                $errors[] = 'El MCP principal debe estar activo.';
+            }
         }
 
         if ($values['authType'] === 'bearer' && $tool === null && $values['bearerToken'] === '') {
@@ -435,7 +489,7 @@ final class ExternalToolController extends AbstractController
     }
 
     /**
-     * @param array{name: string, tenantId: string, type: string, provider: string, webhookUrl: string, authType: string, bearerToken: string, timeoutSeconds: string, isActive: bool, config: string} $values
+     * @param array{name: string, tenantId: string, type: string, provider: string, webhookUrl: string, authType: string, bearerToken: string, timeoutSeconds: string, isActive: bool, isRuntimeDefault: bool, config: string} $values
      */
     private function applyToolFormValues(ExternalTool $tool, array $values, bool $isNew, Tenant $tenant): void
     {
@@ -448,6 +502,11 @@ final class ExternalToolController extends AbstractController
         $tool->setAuthType($values['authType'] !== 'none' ? $values['authType'] : null);
         $tool->setTimeoutSeconds((int) $values['timeoutSeconds']);
         $tool->setActive($values['isActive']);
+        $isRuntimeDefault = $values['type'] === self::MCP_TOOL_TYPE && $values['isActive'] && $values['isRuntimeDefault'];
+        if ($isRuntimeDefault) {
+            $this->externalTools->unsetRuntimeDefaultForTenant($tenant, $tool);
+        }
+        $tool->setRuntimeDefault($isRuntimeDefault);
         $tool->setConfig($this->buildConfig($values));
         $this->applyBearerToken($tool, $values['authType'], $values['bearerToken'], $isNew);
     }

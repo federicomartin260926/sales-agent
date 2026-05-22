@@ -195,6 +195,7 @@ El runtime no escribe en el CRM. Solo consume ese contexto para enriquecer la de
 ## Integración con MCP remoto
 
 Si un tenant tiene `ExternalTool` activo de tipo `mcp_remote`, el runtime lee la configuración interna en Symfony y, cuando el perfil LLM activo es OpenAI compatible con Responses API, puede exponer ese MCP como herramienta nativa para el modelo.
+La API interna prioriza el MCP marcado como principal (`is_runtime_default = true`). Si no existe principal, sólo usa un único MCP activo como fallback conservador; no selecciona uno arbitrario por fecha.
 
 En esta fase:
 

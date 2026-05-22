@@ -34,7 +34,13 @@ final class InternalMcpConfigController extends AbstractApiController
             return $this->notFound('Tenant not found');
         }
 
-        $tool = $this->externalTools->findActiveMcpByTenant($tenant);
+        $tool = $this->externalTools->findRuntimeDefaultMcpByTenant($tenant);
+        if (!$tool instanceof ExternalTool) {
+            $candidates = $this->externalTools->findActiveMcpCandidatesByTenant($tenant);
+            if (count($candidates) === 1 && $candidates[0] instanceof ExternalTool) {
+                $tool = $candidates[0];
+            }
+        }
         if (!$tool instanceof ExternalTool || !$tool->isEnabledForLlm()) {
             return $this->json([
                 'enabled' => false,

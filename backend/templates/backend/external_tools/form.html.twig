@@ -127,6 +127,15 @@
           </label>
         </div>
 
+        <div class="field field-check">
+          <label for="tool-runtime-default">Runtime</label>
+          <label class="checkbox-inline" for="tool-runtime-default">
+            <input id="tool-runtime-default" name="isRuntimeDefault" type="checkbox" value="1"{{ values.isRuntimeDefault ? ' checked' : '' }}{{ values.isActive ? '' : ' disabled' }}>
+            <span>Usar como MCP principal de runtime</span>
+          </label>
+          <div class="field-note">Solo los servidores activos pueden ser principales. Si marcas uno, los demás MCP activos del negocio dejarán de ser el principal.</div>
+        </div>
+
         <div class="field field-full">
           <label for="tool-config">Config JSON</label>
           <textarea id="tool-config" name="config" rows="8" spellcheck="false" placeholder="{}">{{ values.config }}</textarea>

@@ -47,6 +47,9 @@ class ExternalTool
     #[ORM\Column(name: 'is_active', type: 'boolean')]
     private bool $isActive = true;
 
+    #[ORM\Column(name: 'is_runtime_default', type: 'boolean', options: ['default' => false])]
+    private bool $isRuntimeDefault = false;
+
     #[ORM\Column(type: 'json')]
     private array $config = [];
 
@@ -173,6 +176,17 @@ class ExternalTool
         $this->updatedAt = new \DateTimeImmutable();
     }
 
+    public function isRuntimeDefault(): bool
+    {
+        return $this->isRuntimeDefault;
+    }
+
+    public function setRuntimeDefault(bool $isRuntimeDefault): void
+    {
+        $this->isRuntimeDefault = $isRuntimeDefault;
+        $this->updatedAt = new \DateTimeImmutable();
+    }
+
     public function getConfig(): array
     {
         return $this->config;
@@ -275,6 +289,7 @@ class ExternalTool
             'bearerToken' => null,
             'timeoutSeconds' => $this->timeoutSeconds,
             'isActive' => $this->isActive,
+            'isRuntimeDefault' => $this->isRuntimeDefault,
             'config' => $this->config !== [] ? $this->config : (object) [],
             'createdAt' => $this->createdAt->format(\DateTimeInterface::ATOM),
             'updatedAt' => $this->updatedAt?->format(\DateTimeInterface::ATOM),

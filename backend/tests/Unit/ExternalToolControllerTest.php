@@ -74,6 +74,21 @@ final class ExternalToolControllerTest extends TestCase
             {
                 return [];
             }
+
+            public function findRuntimeDefaultMcpByTenant(\App\Entity\Tenant $tenant): ?\App\Entity\ExternalTool
+            {
+                return null;
+            }
+
+            public function findActiveMcpCandidatesByTenant(\App\Entity\Tenant $tenant): array
+            {
+                return [];
+            }
+
+            public function unsetRuntimeDefaultForTenant(\App\Entity\Tenant $tenant, ?\App\Entity\ExternalTool $except = null, bool $flush = true): int
+            {
+                return 0;
+            }
         };
 
         $runtimeConfigurationService ??= $this->createRuntimeConfigurationService([]);
@@ -168,6 +183,159 @@ final class ExternalToolControllerTest extends TestCase
         self::assertStringContainsString('/backend/tenants', $response->getContent());
     }
 
+    public function testIndexHighlightsRuntimeDefaultMcp(): void
+    {
+        $tenant = new Tenant('Tech Investments', 'tech-investments');
+        $defaultTool = new ExternalTool($tenant, 'MCP principal', 'mcp_remote', 'openai_remote_mcp');
+        $defaultTool->setWebhookUrl('https://mcp.example.test');
+        $defaultTool->setRuntimeDefault(true);
+        $defaultTool->setConfig(['enabled_for_llm' => true, 'server_label' => 'principal_mcp']);
+        $otherTool = new ExternalTool($tenant, 'MCP secundario', 'mcp_remote', 'openai_remote_mcp');
+        $otherTool->setWebhookUrl('https://mcp-2.example.test');
+        $otherTool->setConfig(['enabled_for_llm' => true, 'server_label' => 'secondary_mcp']);
+
+        $security = $this->createStub(Security::class);
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role === 'ROLE_ADMIN');
+        $security->method('getUser')->willReturn(new User('admin@example.com', ['admin']));
+
+        $tenantRepository = new class($tenant) extends TenantRepository {
+            public function __construct(private readonly Tenant $tenant)
+            {
+            }
+
+            public function findAllOrdered(): array
+            {
+                return [$this->tenant];
+            }
+        };
+
+        $externalToolRepository = new class($tenant, $defaultTool, $otherTool) extends ExternalToolRepository {
+            public function __construct(
+                private readonly Tenant $tenant,
+                private readonly ExternalTool $defaultTool,
+                private readonly ExternalTool $otherTool,
+            ) {
+            }
+
+            public function findByTenantOrdered(\App\Entity\Tenant $tenant): array
+            {
+                return [$this->defaultTool, $this->otherTool];
+            }
+
+            public function findRuntimeDefaultMcpByTenant(\App\Entity\Tenant $tenant): ?\App\Entity\ExternalTool
+            {
+                return $this->defaultTool;
+            }
+
+            public function findActiveMcpCandidatesByTenant(\App\Entity\Tenant $tenant): array
+            {
+                return [$this->defaultTool, $this->otherTool];
+            }
+        };
+
+        $controller = $this->createController($security, null, null, $tenantRepository, $externalToolRepository, $this->createActiveTenantContext($tenant));
+        $container = new Container();
+        $container->set('twig', $this->createTwigEnvironment());
+        $controller->setContainer($container);
+
+        $response = $controller->index(new Request());
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        self::assertStringContainsString('Principal', $response->getContent());
+        self::assertStringContainsString('Marcar principal', $response->getContent());
+    }
+
+    public function testMarkDefaultPromotesSelectedMcpAndUnmarksOthers(): void
+    {
+        $tenant = new Tenant('Tech Investments', 'tech-investments');
+        $toolA = new ExternalTool($tenant, 'MCP A', 'mcp_remote', 'openai_remote_mcp');
+        $toolA->setWebhookUrl('https://mcp-a.example.test');
+        $toolA->setConfig(['enabled_for_llm' => true, 'server_label' => 'mcp_a']);
+        $toolB = new ExternalTool($tenant, 'MCP B', 'mcp_remote', 'openai_remote_mcp');
+        $toolB->setWebhookUrl('https://mcp-b.example.test');
+        $toolB->setConfig(['enabled_for_llm' => true, 'server_label' => 'mcp_b']);
+
+        $security = $this->createStub(Security::class);
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role === 'ROLE_ADMIN');
+        $security->method('getUser')->willReturn(new User('admin@example.com', ['admin']));
+
+        $tenantRepository = new class($tenant) extends TenantRepository {
+            public function __construct(private readonly Tenant $tenant)
+            {
+            }
+
+            public function findAllOrdered(): array
+            {
+                return [$this->tenant];
+            }
+        };
+
+        $externalToolRepository = new class($toolA, $toolB) extends ExternalToolRepository {
+            public function __construct(
+                private ExternalTool $toolA,
+                private ExternalTool $toolB,
+            ) {
+            }
+
+            public function find($id, $lockMode = null, $lockVersion = null): ?object
+            {
+                return $this->toolA->getId()->toRfc4122() === $id ? $this->toolA : $this->toolB;
+            }
+
+            public function findRuntimeDefaultMcpByTenant(\App\Entity\Tenant $tenant): ?\App\Entity\ExternalTool
+            {
+                return $this->toolA->isRuntimeDefault() ? $this->toolA : ($this->toolB->isRuntimeDefault() ? $this->toolB : null);
+            }
+
+            public function findByTenantOrdered(\App\Entity\Tenant $tenant): array
+            {
+                return [$this->toolA, $this->toolB];
+            }
+
+            public function findActiveMcpCandidatesByTenant(\App\Entity\Tenant $tenant): array
+            {
+                return [$this->toolA, $this->toolB];
+            }
+
+            public function unsetRuntimeDefaultForTenant(\App\Entity\Tenant $tenant, ?\App\Entity\ExternalTool $except = null, bool $flush = true): int
+            {
+                $count = 0;
+                foreach ([$this->toolA, $this->toolB] as $tool) {
+                    if ($except instanceof ExternalTool && $tool->getId()->toRfc4122() === $except->getId()->toRfc4122()) {
+                        continue;
+                    }
+                    if ($tool->isRuntimeDefault()) {
+                        $tool->setRuntimeDefault(false);
+                        $count++;
+                    }
+                }
+
+                return $count;
+            }
+        };
+
+        $controller = $this->createController($security, null, null, $tenantRepository, $externalToolRepository, $this->createActiveTenantContext($tenant));
+        $container = new Container();
+        $container->set('twig', $this->createTwigEnvironment());
+        $requestStack = new RequestStack();
+        $request = Request::create('/backend/external-tools');
+        $request->setSession(new Session());
+        $requestStack->push($request);
+        $container->set('request_stack', $requestStack);
+        $controller->setContainer($container);
+
+        $response = $controller->markDefault(
+            $toolB->getId()->toRfc4122(),
+            Request::create('/backend/external-tools/'.$toolB->getId()->toRfc4122().'/mark-default', 'POST', [
+                '_csrf_token' => 'anything',
+            ])
+        );
+
+        self::assertSame(Response::HTTP_FOUND, $response->getStatusCode());
+        self::assertFalse($toolA->isRuntimeDefault());
+        self::assertTrue($toolB->isRuntimeDefault());
+    }
+
     public function testMcpTestUsesOpenAiRuntimeProviderAndDoesNotConfuseToolProvider(): void
     {
         $tenant = new Tenant('Negocio Demo', 'tenant-1');
@@ -252,6 +420,11 @@ final class ExternalToolControllerTest extends TestCase
             public function findByTenantOrdered(\App\Entity\Tenant $tenant): array
             {
                 return [$this->tool];
+            }
+
+            public function findRuntimeDefaultMcpByTenant(\App\Entity\Tenant $tenant): ?\App\Entity\ExternalTool
+            {
+                return null;
             }
         };
 
@@ -354,6 +527,11 @@ final class ExternalToolControllerTest extends TestCase
             public function findByTenantOrdered(\App\Entity\Tenant $tenant): array
             {
                 return [$this->tool];
+            }
+
+            public function findRuntimeDefaultMcpByTenant(\App\Entity\Tenant $tenant): ?\App\Entity\ExternalTool
+            {
+                return null;
             }
         };
 
