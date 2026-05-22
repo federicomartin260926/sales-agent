@@ -42,16 +42,16 @@ final class PlaybookDraftAssistantServiceTest extends TestCase
         self::assertSame('', $response['draft']['objective']);
     }
 
-    public function testHeuristicFallbackBuildsUsefulDraftForCampaignStrategy(): void
+    public function testHeuristicFallbackKeepsAskingWhenContextIsPartial(): void
     {
         $service = new PlaybookDraftAssistantService(
             $this->runtimeConfigurationService([]),
             $this->createStub(HttpClientInterface::class),
         );
 
-        $response = $service->buildResponse([], 'Quiero una guía para campaña de depilación láser verano.', [
+        $response = $service->buildResponse([], 'Quiero una guía simple para campaña de depilación láser verano.', [
             'tenantId' => 'tenant-demo',
-            'productId' => '',
+            'productId' => 'product-demo',
             'name' => '',
             'objective' => '',
             'qualificationQuestions' => '',
@@ -71,9 +71,61 @@ final class PlaybookDraftAssistantServiceTest extends TestCase
             'tone' => 'cercano, profesional y de confianza',
             'salesPolicySummary' => 'Saludar con cercanía y orientar a cita.',
             'whatsappPublicPhone' => '34612345678',
+        ], [
+            'id' => 'product-demo',
+            'name' => 'Depilación láser',
+            'description' => 'Tratamiento principal',
+            'valueProposition' => 'Resultados personalizados',
+            'salesPolicySummary' => 'Priorizar leads de cita.',
         ]);
 
         self::assertSame('asking', $response['status']);
+        self::assertNotEmpty($response['questions']);
+        self::assertStringContainsString('conseguir', mb_strtolower(implode(' ', $response['questions'])));
+        self::assertStringContainsString('cliente o lead', mb_strtolower(implode(' ', $response['questions'])));
+        self::assertStringContainsString('derivar', mb_strtolower(implode(' ', $response['questions'])));
+        self::assertSame('', $response['draft']['whatsappPhoneNumberId'] ?? '');
+        self::assertSame('', $response['draft']['whatsappPublicPhone'] ?? '');
+    }
+
+    public function testHeuristicFallbackBuildsUsefulDraftForCampaignStrategy(): void
+    {
+        $service = new PlaybookDraftAssistantService(
+            $this->runtimeConfigurationService([]),
+            $this->createStub(HttpClientInterface::class),
+        );
+
+        $response = $service->buildResponse([], 'Quiero una guía para campaña de depilación láser verano. Va dirigida a mujeres que buscan cita rápida. El agente debe captar interés, preguntar zona a tratar y disponibilidad, y derivar a Mary si hay dudas médicas o precios no configurados.', [
+            'tenantId' => 'tenant-demo',
+            'productId' => 'product-demo',
+            'name' => '',
+            'objective' => '',
+            'qualificationQuestions' => '',
+            'maxScore' => '',
+            'handoffThreshold' => '',
+            'positiveSignals' => '',
+            'negativeSignals' => '',
+            'agendaRules' => '',
+            'handoffRules' => '',
+            'allowedActions' => '',
+            'notes' => '',
+            'isActive' => true,
+        ], [
+            'id' => 'tenant-demo',
+            'name' => 'Centro de estética Mary',
+            'businessContext' => 'Centro de estética en Villanueva de la Cañada.',
+            'tone' => 'cercano, profesional y de confianza',
+            'salesPolicySummary' => 'Saludar con cercanía y orientar a cita.',
+            'whatsappPublicPhone' => '34612345678',
+        ], [
+            'id' => 'product-demo',
+            'name' => 'Depilación láser',
+            'description' => 'Tratamiento principal',
+            'valueProposition' => 'Resultados personalizados',
+            'salesPolicySummary' => 'Priorizar leads de cita.',
+        ]);
+
+        self::assertSame('ready', $response['status']);
         self::assertNotSame('', $response['draft']['name']);
         self::assertStringContainsString('depilación láser', mb_strtolower($response['draft']['objective']));
         self::assertNotSame('', $response['draft']['qualificationQuestions']);
@@ -82,6 +134,50 @@ final class PlaybookDraftAssistantServiceTest extends TestCase
         self::assertNotSame('', $response['draft']['notes']);
         self::assertSame('', $response['draft']['whatsappPhoneNumberId'] ?? '');
         self::assertSame('', $response['draft']['whatsappPublicPhone'] ?? '');
+    }
+
+    public function testHeuristicFallbackPreservesExistingFormValuesDuringRevision(): void
+    {
+        $service = new PlaybookDraftAssistantService(
+            $this->runtimeConfigurationService([]),
+            $this->createStub(HttpClientInterface::class),
+        );
+
+        $response = $service->buildResponse([], 'Quiero ajustar solo el handoff y las acciones.', [
+            'tenantId' => 'tenant-demo',
+            'productId' => 'product-demo',
+            'name' => 'Guía de depilación láser',
+            'objective' => 'Objetivo previo',
+            'qualificationQuestions' => 'Pregunta previa',
+            'maxScore' => '',
+            'handoffThreshold' => '',
+            'positiveSignals' => '',
+            'negativeSignals' => '',
+            'agendaRules' => '',
+            'handoffRules' => 'No tocar',
+            'allowedActions' => 'Respetar flujo actual',
+            'notes' => 'Notas base',
+            'isActive' => true,
+        ], [
+            'id' => 'tenant-demo',
+            'name' => 'Centro de estética Mary',
+            'businessContext' => 'Centro de estética en Villanueva de la Cañada.',
+            'tone' => 'cercano, profesional y de confianza',
+            'salesPolicySummary' => 'Saludar con cercanía y orientar a cita.',
+            'whatsappPublicPhone' => '34612345678',
+        ], [
+            'id' => 'product-demo',
+            'name' => 'Depilación láser',
+            'description' => 'Tratamiento principal',
+            'valueProposition' => 'Resultados personalizados',
+            'salesPolicySummary' => 'Priorizar leads de cita.',
+        ]);
+
+        self::assertSame('asking', $response['status']);
+        self::assertSame('Objetivo previo', $response['draft']['objective']);
+        self::assertSame('No tocar', $response['draft']['handoffRules']);
+        self::assertSame('Respetar flujo actual', $response['draft']['allowedActions']);
+        self::assertSame('Notas base', $response['draft']['notes']);
     }
 
     public function testOpenAiResponseUsesConciseContextPayload(): void
@@ -126,7 +222,7 @@ final class PlaybookDraftAssistantServiceTest extends TestCase
             $httpClient,
         );
 
-        $response = $service->buildResponse([], 'Solo quiero una guía simple para campaña de depilación láser verano.', [
+        $response = $service->buildResponse([], 'Quiero una guía para campaña de depilación láser verano. Va dirigida a mujeres que buscan cita rápida. El agente debe captar interés, preguntar zona a tratar y disponibilidad, y derivar a Mary si hay dudas médicas o precios no configurados.', [
             'tenantId' => 'tenant-demo',
             'productId' => 'product-demo',
             'name' => '',

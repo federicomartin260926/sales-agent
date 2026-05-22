@@ -136,11 +136,11 @@ final class PlaybookDraftAssistantService
         }
 
         $draft = $this->completeDraft($draft, $tenantContext, $productContext, $history, $message);
-        $ready = $this->shouldFinalize($draft, $history, $message);
+        $ready = $this->shouldFinalize($form, $tenantContext, $productContext, $history, $message);
 
         if (!$ready) {
             $status = 'asking';
-            $questions = $this->buildFollowUpQuestions($draft, $tenantContext, $productContext, $history, $message);
+            $questions = $this->buildFollowUpQuestions($tenantContext, $productContext, $history, $message);
             $answer = $answer !== '' && $status === 'ready' ? $answer : $this->buildFollowUpAnswer($questions, $tenantContext, $productContext);
         } else {
             $questions = [];
@@ -339,10 +339,10 @@ final class PlaybookDraftAssistantService
     private function heuristicResponse(array $form, array $tenantContext, ?array $productContext, array $history, string $message): array
     {
         $draft = $this->completeDraft($this->buildBaseDraft($form, $tenantContext, $productContext, $history, $message), $tenantContext, $productContext, $history, $message);
-        $ready = $this->shouldFinalize($draft, $history, $message);
+        $ready = $this->shouldFinalize($form, $tenantContext, $productContext, $history, $message);
 
         if (!$ready) {
-            $questions = $this->buildFollowUpQuestions($draft, $tenantContext, $productContext, $history, $message);
+            $questions = $this->buildFollowUpQuestions($tenantContext, $productContext, $history, $message);
 
             return [
                 'answer' => $this->buildFollowUpAnswer($questions, $tenantContext, $productContext),
@@ -393,25 +393,43 @@ final class PlaybookDraftAssistantService
     }
 
     /**
-     * @param array<string, mixed> $draft
      * @param array<string, mixed>|null $tenantContext
      * @param array<string, mixed>|null $productContext
      * @param list<array{role: string, content: string}> $history
      *
      * @return list<string>
      */
-    private function buildFollowUpQuestions(array $draft, ?array $tenantContext, ?array $productContext, array $history, string $message): array
+    private function buildFollowUpQuestions(?array $tenantContext, ?array $productContext, array $history, string $message): array
     {
         $productName = $this->contextName($productContext);
+        $coverage = $this->coverageState($tenantContext, $productContext, $history, $message);
         $questions = [];
 
-        $questions[] = $productName !== ''
-            ? sprintf('¿Para qué caso concreto sirve esta guía sobre %s?', $productName)
-            : '¿Para qué caso concreto sirve esta guía: producto, campaña, canal o situación?';
-        $questions[] = '¿Qué debe preguntar el agente antes de proponer cita o siguiente paso?';
-        $questions[] = '¿Qué límites, scoring o agenda cambian respecto a la política general?';
-        $questions[] = '¿Cuándo debe derivar a una persona y qué acciones puede ejecutar?';
-        $questions[] = '¿Hay alguna nota especial que deba quedar reflejada?';
+        if (empty($coverage['objective'])) {
+            $questions[] = '¿Qué debe conseguir el agente con esta guía concreta?';
+        }
+
+        if (empty($coverage['scenario'])) {
+            $questions[] = $productName !== ''
+                ? sprintf('¿La guía es para %s o para otro caso concreto?', $productName)
+                : '¿En qué situación concreta se usará: producto, campaña, canal o caso especial?';
+        }
+
+        if (empty($coverage['audience'])) {
+            $questions[] = '¿Qué tipo de cliente o lead quieres captar o atender?';
+        }
+
+        if (empty($coverage['qualification'])) {
+            $questions[] = '¿Qué debe preguntar el agente antes de priorizar, proponer cita o avanzar?';
+        }
+
+        if (empty($coverage['action'])) {
+            $questions[] = '¿Qué debe hacer exactamente el agente con esta guía?';
+        }
+
+        if (empty($coverage['handoff'])) {
+            $questions[] = '¿Cuándo debe derivar a una persona o no insistir más?';
+        }
 
         return array_values(array_slice($questions, 0, 5));
     }
@@ -441,28 +459,19 @@ final class PlaybookDraftAssistantService
     }
 
     /**
-     * @param array<string, mixed> $draft
+     * @param array<string, string|bool> $form
      * @param list<array{role: string, content: string}> $history
      */
-    private function shouldFinalize(array $draft, array $history, string $message): bool
+    private function shouldFinalize(array $form, ?array $tenantContext, ?array $productContext, array $history, string $message): bool
     {
-        if (($draft['name'] ?? '') === '' || ($draft['objective'] ?? '') === '') {
-            return false;
-        }
-
-        $userMessages = 0;
-        foreach ($history as $item) {
-            if (($item['role'] ?? '') === 'user') {
-                $userMessages++;
+        $coverage = $this->coverageState($tenantContext, $productContext, $history, $message);
+        foreach (['objective', 'scenario', 'audience', 'qualification', 'action', 'handoff'] as $key) {
+            if (empty($coverage[$key])) {
+                return false;
             }
         }
 
-        $normalized = mb_strtolower($this->cleanText($message, 2000));
-        if ($this->containsAny($normalized, ['solo quiero', 'simple', 'mínima', 'minima', 'priorice', 'priorizar', 'prioridad', 'lead', 'cita'])) {
-            return true;
-        }
-
-        return $userMessages >= 2;
+        return true;
     }
 
     /**
@@ -477,13 +486,24 @@ final class PlaybookDraftAssistantService
             $current = $this->removeLeadingPrompt($current);
             $current = preg_replace('/[.?!]+$/u', '', $current) ?? $current;
             if ($current !== '') {
+                $normalized = mb_strtolower($current);
+                $campaignTopic = $this->extractCampaignTopic($current);
+
+                if ($campaignTopic !== '') {
+                    return mb_convert_case('Campaña '.$campaignTopic, MB_CASE_TITLE, 'UTF-8');
+                }
+
+                if ($this->containsAny($normalized, ['prioriz', 'lead', 'cita', 'cualific', 'calific'])) {
+                    return 'Guía de cualificación y cita';
+                }
+
                 return mb_convert_case($current, MB_CASE_TITLE, 'UTF-8');
             }
         }
 
         $productName = $this->contextName($productContext);
         if ($productName !== '') {
-            return 'Guía específica para '.$productName;
+            return 'Guía para '.$productName;
         }
 
         return 'Guía comercial específica';
@@ -499,10 +519,7 @@ final class PlaybookDraftAssistantService
         $normalized = mb_strtolower($this->cleanText($message, 400));
         $productName = $this->contextName($productContext);
         $campaignTopic = $this->extractCampaignTopic($message);
-
-        if ($this->containsAny($normalized, ['priorice', 'priorizar', 'lead', 'cita'])) {
-            return 'Priorizar leads que pidan cita y orientar la conversación hacia la reserva o siguiente paso útil.';
-        }
+        $productFocus = $this->productFocusSnippet($productContext);
 
         if ($this->containsAny($normalized, ['campaña'])) {
             if ($campaignTopic !== '') {
@@ -516,8 +533,24 @@ final class PlaybookDraftAssistantService
             return 'Gestionar una campaña concreta, resolver dudas iniciales y orientar hacia cita o siguiente paso.';
         }
 
+        if ($this->containsAny($normalized, ['priorice', 'priorizar', 'lead', 'cita'])) {
+            if ($campaignTopic !== '') {
+                return sprintf('Priorizar leads que pidan cita dentro de la campaña sobre %s y orientar la conversación hacia la reserva o el siguiente paso útil.', $campaignTopic);
+            }
+
+            if ($productName !== '') {
+                return sprintf('Priorizar leads que pidan cita para %s y orientar la conversación hacia la reserva o el siguiente paso útil.', $productName);
+            }
+
+            return 'Priorizar leads que pidan cita y orientar la conversación hacia la reserva o siguiente paso útil.';
+        }
+
         if ($productName !== '') {
-            return sprintf('Definir una estrategia específica para %s.', $productName);
+            if ($productFocus !== '') {
+                return sprintf('Definir una estrategia específica para %s, apoyando %s y orientando hacia cita o siguiente paso.', $productName, $productFocus);
+            }
+
+            return sprintf('Definir una estrategia específica para %s, resolver dudas iniciales y orientar hacia cita o siguiente paso.', $productName);
         }
 
         return $message !== '' ? $message : 'Definir una estrategia específica para esta guía comercial.';
@@ -640,6 +673,118 @@ final class PlaybookDraftAssistantService
     }
 
     /**
+     * @param list<array{role: string, content: string}> $history
+     *
+     * @return array{objective: bool, scenario: bool, audience: bool, qualification: bool, action: bool, handoff: bool}
+     */
+    private function coverageState(?array $tenantContext, ?array $productContext, array $history, string $message): array
+    {
+        $corpus = mb_strtolower($this->conversationText($history, $message));
+
+        return [
+            'objective' => $this->containsAny($corpus, [
+                'objetivo',
+                'conseguir',
+                'captar',
+                'resolver',
+                'prioriz',
+                'prioridad',
+                'agendar',
+                'cita',
+                'derivar',
+                'informar',
+                'vender',
+                'cualific',
+                'calific',
+            ]),
+            'scenario' => $productContext !== null || $this->containsAny($corpus, [
+                'campaña',
+                'campana',
+                'producto',
+                'servicio',
+                'canal',
+                'situación',
+                'situacion',
+                'caso',
+                'promo',
+                'promoción',
+                'promocion',
+            ]),
+            'audience' => $this->containsAny($corpus, [
+                'lead',
+                'leads',
+                'cliente',
+                'clientes',
+                'prospecto',
+                'prospectos',
+                'mujer',
+                'mujeres',
+                'hombre',
+                'hombres',
+                'empresa',
+                'empresas',
+                'particular',
+                'particulares',
+                'paciente',
+                'pacientes',
+                'alumno',
+                'alumnos',
+                'usuario',
+                'usuarios',
+            ]),
+            'qualification' => $this->containsAny($corpus, [
+                'preguntar',
+                'preguntas',
+                'cualificar',
+                'calificar',
+                'priorizar',
+                'priorice',
+                'prioridad',
+                'score',
+                'scoring',
+                'filtrar',
+                'disponibilidad',
+                'urgencia',
+                'presupuesto',
+                'interés',
+                'interes',
+                'nuevo',
+                'recurrente',
+            ]),
+            'action' => $this->containsAny($corpus, [
+                'responder',
+                'resolver',
+                'captar',
+                'agendar',
+                'cita',
+                'orientar',
+                'proponer',
+                'cerrar',
+                'informar',
+                'vender',
+                'ayudar',
+                'acompañar',
+                'acompanar',
+            ]),
+            'handoff' => $this->containsAny($corpus, [
+                'derivar',
+                'derivación',
+                'derivacion',
+                'humano',
+                'persona',
+                'asesor',
+                'asesora',
+                'mary',
+                'equipo',
+                'validación',
+                'validacion',
+                'llamar',
+                'no insistir',
+            ]),
+        ];
+    }
+
+    /**
      * @param array<string, mixed>|null $tenantContext
      * @param array<string, mixed>|null $productContext
      */
@@ -675,6 +820,25 @@ final class PlaybookDraftAssistantService
     }
 
     /**
+     * @param array<string, mixed>|null $productContext
+     */
+    private function productFocusSnippet(?array $productContext): string
+    {
+        if (!is_array($productContext)) {
+            return '';
+        }
+
+        foreach (['valueProposition', 'description', 'salesPolicySummary'] as $key) {
+            $value = $this->cleanText((string) ($productContext[$key] ?? ''), 120);
+            if ($value !== '') {
+                return $value;
+            }
+        }
+
+        return '';
+    }
+
+    /**
      * @param array<string, mixed> $settings
      */
     private function canUseOpenAi(array $settings): bool
@@ -691,7 +855,7 @@ final class PlaybookDraftAssistantService
 
     private function systemPrompt(): string
     {
-        return 'Eres un asistente de configuración de Guías Comerciales para Sales Agent. La política general del negocio ya existe y no debes duplicarla. Tu objetivo es ayudar al usuario a definir una estrategia específica para un producto, campaña, canal o situación comercial. Usa el negocio seleccionado como contexto base. Si no hay negocio seleccionado, pide que seleccione uno y no inventes contexto. Haz preguntas breves y agrupadas. Completa solo campos que aporten reglas específicas. Si el usuario no necesita una regla especial, deja ese campo vacío. No inventes datos técnicos ni precios. Devuelve siempre JSON válido con answer, status, questions y draft. En el draft, usa strings para los campos del formulario.';
+        return 'Eres un asistente de configuración de Guías Comerciales para Sales Agent. La política general del negocio ya existe y no debes duplicarla. Tu objetivo es ayudar al usuario a definir una estrategia específica para un producto, campaña, canal o situación comercial. Usa el negocio seleccionado como contexto base. Si hay producto seleccionado, úsalo para orientar la estrategia sin inventar datos. Si no hay negocio seleccionado, pide que seleccione uno y no inventes contexto. Haz preguntas breves y agrupadas. No marques la guía como lista hasta tener información mínima suficiente sobre: objetivo, situación o canal, tipo de cliente o lead, criterio de cualificación o prioridad, acción esperada y derivación a humano. Si la guía ya tiene valores, trátalos como base y céntrate en revisar o completar lo que falte, sin sobrescribir de forma agresiva. Completa solo campos que aporten reglas específicas. Si el usuario no necesita una regla especial, deja ese campo vacío. No inventes datos técnicos ni precios. Devuelve siempre JSON válido con answer, status, questions y draft. En el draft, usa strings para los campos del formulario.';
     }
 
     /**

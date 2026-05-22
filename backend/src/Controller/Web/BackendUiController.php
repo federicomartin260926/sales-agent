@@ -2309,7 +2309,7 @@ final class BackendUiController
             'csrf_token' => $this->playbookTokenValue($actionUrl),
             'playbook_ai_assistant_endpoint' => '/backend/ai/playbook-draft-assistant',
             'playbook_ai_assistant_token' => $this->playbookDraftAssistantTokenValue(),
-            'playbook_ai_assistant_initial_message' => 'Hola. Te ayudaré a definir una estrategia específica para esta guía comercial. Te haré preguntas breves y, cuando tenga suficiente información, te prepararé un borrador para rellenar los campos. Yo no guardo nada: tú revisarás y pulsarás "Crear guía comercial" al final.',
+            'playbook_ai_assistant_initial_message' => 'Te ayudaré a definir una estrategia específica para esta guía comercial. Cuéntame el caso, el objetivo, el tipo de lead y cuándo derivar, y yo te ordenaré un borrador sobre el formulario. Yo no guardo nada: tú revisarás y guardarás manualmente.',
             'product_options_html' => $productOptions,
             'values' => $values,
             'submit_label' => $submitLabel,

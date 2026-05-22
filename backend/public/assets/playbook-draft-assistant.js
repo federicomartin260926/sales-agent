@@ -6,6 +6,7 @@
 
   const endpoint = root.dataset.endpoint || '';
   const csrfToken = root.dataset.csrfToken || '';
+  const initialMessageText = (root.dataset.initialMessage || '').trim();
   const chatLog = root.querySelector('[data-chat-log]');
   const statusBox = root.querySelector('[data-chat-status]');
   const autoApplyNote = root.querySelector('[data-auto-apply-note]');
@@ -110,22 +111,41 @@
   function buildInitialMessage() {
     const tenantName = readTenantName();
     const productName = readProductName();
+    const existingContent = hasExistingContent();
 
     if (tenantName === '') {
       return 'Primero selecciona un negocio para que pueda usar su contexto general. Después te ayudaré a definir una estrategia específica.';
     }
 
-    const intro = productName !== ''
-      ? `Veo que hay un producto seleccionado: ${productName}. Enfocaré la guía en ese producto.`
-      : `Hola. Te ayudaré a definir una estrategia específica para ${tenantName}.`;
+    if (existingContent) {
+      const intro = productName !== ''
+        ? `Veo que esta guía ya tiene contenido y está asociada a ${productName}. La usaré como base.`
+        : 'Veo que esta guía ya tiene contenido. La usaré como base.';
 
-    return `${intro} Para empezar:
-1. ¿Esta guía es para un producto, campaña, canal o situación concreta?
-2. ¿Qué objetivo debe conseguir el agente en este caso?
-3. ¿Qué debe preguntar distinto a la política general del negocio?
-4. ¿Cuándo debe derivar a una persona en este caso?
+      return `${intro} Para revisar o completar lo que falte:
+1. ¿Qué quieres ajustar exactamente: objetivo, cualificación, scoring, agenda, handoff, acciones o notas?
+2. ¿Qué caso concreto debe cubrir o mejorar esta guía?
+3. ¿Qué debe hacer distinto el agente?
+4. ¿Cuándo debe derivar a una persona?`;
+    }
 
-Yo no guardo nada: tú revisarás y pulsarás "Crear guía comercial" al final.`;
+    if (productName !== '') {
+      return `${initialMessageText !== '' ? initialMessageText : 'Hola. Te ayudaré a definir una estrategia específica para esta guía comercial.'} Veo que esta guía está asociada a ${productName}. Para empezar:
+1. ¿Quieres que sirva para captar citas, resolver dudas o priorizar leads?
+2. ¿En qué situación concreta se usará: campaña, canal o caso especial?
+3. ¿Qué tipo de cliente o lead quieres atender?
+4. ¿Cuándo debe derivar a una persona?
+
+Si quieres, respóndeme en una frase y yo lo ordeno.`;
+    }
+
+    return `${initialMessageText !== '' ? initialMessageText : 'Hola. Te ayudaré a definir una estrategia específica para esta guía comercial.'} Para empezar:
+1. ¿En qué situación concreta se usará: producto, campaña, canal o caso especial?
+2. ¿Qué tipo de cliente o lead quieres captar o atender?
+3. ¿Qué debe conseguir el agente?
+4. ¿Cuándo debe derivar a una persona?
+
+Si quieres, respóndeme en una frase y yo lo ordeno.`;
   }
 
   function readTenantName() {
@@ -154,6 +174,21 @@ Yo no guardo nada: tú revisarás y pulsarás "Crear guía comercial" al final.`
 
     const option = select.selectedOptions?.[0];
     return option ? String(option.textContent || '').trim() : '';
+  }
+
+  function hasExistingContent() {
+    return [
+      'objective',
+      'qualificationQuestions',
+      'maxScore',
+      'handoffThreshold',
+      'positiveSignals',
+      'negativeSignals',
+      'agendaRules',
+      'handoffRules',
+      'allowedActions',
+      'notes',
+    ].some((name) => readValue(name) !== '');
   }
 
   function readCheckbox(name) {
