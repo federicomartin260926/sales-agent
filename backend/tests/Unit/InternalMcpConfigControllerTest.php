@@ -10,6 +10,7 @@ use App\Repository\TenantRepository;
 use App\Security\InternalBearerTokenValidator;
 use App\Service\RuntimeSettingCipher;
 use PHPUnit\Framework\TestCase;
+use Symfony\Component\DependencyInjection\Container;
 use Symfony\Component\HttpFoundation\Request;
 
 final class InternalMcpConfigControllerTest extends TestCase
@@ -99,6 +100,8 @@ final class InternalMcpConfigControllerTest extends TestCase
             new RuntimeSettingCipher('kernel-secret'),
             new InternalBearerTokenValidator(self::TOKEN),
         );
+
+        $controller->setContainer(new Container());
 
         return $controller;
     }
