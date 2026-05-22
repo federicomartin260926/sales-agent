@@ -32,6 +32,10 @@ class LLMPromptBuilder:
             "No inventes precios, plazos ni funcionalidades. "
             "Si preguntan por precio y no hay un precio claro, pide 1-2 datos de cualificación. "
             "Si piden humano/persona/asesor/comercial, needs_human debe ser true. "
+            "El producto o servicio ya debe venir resuelto en product o product_selection; no uses playbook para descubrirlo. "
+            "Si product_selection.needs_service_clarification es true, pregunta qué servicio busca antes de profundizar. "
+            "Si products incluye varios candidatos, usa solo esos candidatos y pide confirmación si hay ambigüedad. "
+            "Si product_selection.fallback_to_mcp_allowed es true y no hay un producto local claro, puedes usar herramientas MCP de búsqueda de servicios si están disponibles. "
             "Si tienes herramientas MCP nativas del tenant, úsalas cuando hagan falta para completar la respuesta. "
             "No inventes datos ni cites sistemas internos, CRM, n8n, webhooks, IDs internos, UTM, refs, tokens o detalles técnicos. "
             "Mantén el tono breve, útil y orientado a conversación."
@@ -67,6 +71,8 @@ class LLMPromptBuilder:
         user_payload = {
             "tenant": self._tenant_payload(backend_context),
             "product": self._product_payload(backend_context),
+            "products": self._products_payload(backend_context),
+            "product_selection": self._product_selection_payload(backend_context),
             "playbook": self._playbook_payload(backend_context),
             "entry_point": self._entry_point_payload(backend_context),
             "sales_runtime": self._sales_runtime_payload(backend_context),
@@ -149,6 +155,49 @@ class LLMPromptBuilder:
             "external_source": self.context_helper.sanitize_text(product.external_source, max_chars=100),
             "external_reference": self.context_helper.sanitize_text(product.external_reference, max_chars=255),
             "sales_policy": self.context_helper.sanitize_jsonish(product.sales_policy, max_depth=2, max_items=10, max_string_chars=500),
+        }
+
+    def _products_payload(self, backend_context: CommercialContext | None) -> list[dict[str, Any]]:
+        if backend_context is None or backend_context.products == []:
+            return []
+
+        return [
+            self._product_payload_from_product(product)
+            for product in backend_context.products
+        ]
+
+    def _product_payload_from_product(self, product: Any) -> dict[str, Any] | None:
+        if product is None:
+            return None
+
+        return {
+            "id": product.id,
+            "name": self.context_helper.sanitize_text(product.name, max_chars=255),
+            "slug": self.context_helper.sanitize_text(product.slug, max_chars=180),
+            "description": self.context_helper.sanitize_text(product.description, max_chars=1500),
+            "value_proposition": self.context_helper.sanitize_text(product.value_proposition, max_chars=1500),
+            "base_price_cents": product.base_price_cents,
+            "currency": self.context_helper.sanitize_text(product.currency, max_chars=10),
+            "external_source": self.context_helper.sanitize_text(product.external_source, max_chars=100),
+            "external_reference": self.context_helper.sanitize_text(product.external_reference, max_chars=255),
+            "sales_policy": self.context_helper.sanitize_jsonish(product.sales_policy, max_depth=2, max_items=10, max_string_chars=500),
+        }
+
+    def _product_selection_payload(self, backend_context: CommercialContext | None) -> dict[str, Any] | None:
+        if backend_context is None:
+            return None
+
+        selection = backend_context.product_selection
+        if selection == {} and backend_context.selected_product is None and backend_context.products == []:
+            return None
+
+        return {
+            "selection_source": self.context_helper.sanitize_text(selection.get("selection_source"), max_chars=64),
+            "search_query_used": self.context_helper.sanitize_text(selection.get("search_query_used"), max_chars=255),
+            "candidate_count": selection.get("candidate_count") if isinstance(selection.get("candidate_count"), int) else None,
+            "needs_service_clarification": bool(selection.get("needs_service_clarification", False)),
+            "fallback_to_mcp_allowed": bool(selection.get("fallback_to_mcp_allowed", False)),
+            "reason": self.context_helper.sanitize_text(selection.get("reason"), max_chars=255),
         }
 
     def _playbook_payload(self, backend_context: CommercialContext | None) -> dict[str, Any] | None:

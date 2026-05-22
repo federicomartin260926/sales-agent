@@ -12,6 +12,7 @@ use App\Repository\EntryPointUtmRepository;
 use App\Repository\PlaybookRepository;
 use App\Repository\ProductRepository;
 use App\Repository\TenantRepository;
+use App\Service\ProductContextResolver;
 use App\Security\InternalBearerTokenValidator;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
@@ -26,6 +27,7 @@ final class InternalCommercialContextController extends AbstractApiController
         private readonly PlaybookRepository $playbooks,
         private readonly EntryPointRepository $entryPoints,
         private readonly EntryPointUtmRepository $entryPointUtms,
+        private readonly ProductContextResolver $productResolver,
         private readonly InternalBearerTokenValidator $validator,
     ) {
     }
@@ -55,10 +57,17 @@ final class InternalCommercialContextController extends AbstractApiController
             return $this->notFound('Entry point not found');
         }
 
-        $product = $this->resolveProduct($request, $tenant, $entryPoint);
-        if ($productParamProvided && !$product instanceof Product) {
-            return $this->notFound('Product not found');
+        $explicitProduct = null;
+        if (!$this->entryPointProvidesProduct($entryPoint)) {
+            $explicitProduct = $this->resolveExplicitProduct($request, $tenant);
+            if ($productParamProvided && !$explicitProduct instanceof Product) {
+                return $this->notFound('Product not found');
+            }
         }
+
+        $currentMessage = $this->normalizeNullableString($request->query->get('current_message'));
+        $productSelection = $this->productResolver->resolve($tenant, $entryPoint, $explicitProduct, $currentMessage);
+        $product = $productSelection['selected_product'];
 
         $playbook = $this->resolvePlaybook($request, $tenant, $entryPoint, $product);
         if ($playbookParamProvided && !$playbook instanceof Playbook) {
@@ -71,6 +80,15 @@ final class InternalCommercialContextController extends AbstractApiController
         return $this->json([
             'tenant' => $this->tenantPayload($tenant),
             'product' => $this->productPayload($product),
+            'products' => $this->productCandidatesPayload($productSelection['product_candidates']),
+            'product_selection' => [
+                'selection_source' => $productSelection['selection_source'],
+                'search_query_used' => $productSelection['search_query_used'],
+                'candidate_count' => $productSelection['candidate_count'],
+                'needs_service_clarification' => $productSelection['needs_service_clarification'],
+                'fallback_to_mcp_allowed' => $productSelection['fallback_to_mcp_allowed'],
+                'reason' => $productSelection['reason'],
+            ],
             'playbook' => $this->playbookPayload($playbook),
             'entry_point' => $this->entryPointPayload($entryPoint),
             'routing' => [
@@ -138,7 +156,7 @@ final class InternalCommercialContextController extends AbstractApiController
         return $entryPoint;
     }
 
-    private function resolveProduct(Request $request, Tenant $tenant, ?EntryPoint $entryPoint): ?Product
+    private function resolveExplicitProduct(Request $request, Tenant $tenant): ?Product
     {
         $productId = trim((string) $request->query->get('product_id', ''));
         if ($productId !== '') {
@@ -154,20 +172,18 @@ final class InternalCommercialContextController extends AbstractApiController
             return $product;
         }
 
-        if ($entryPoint instanceof EntryPoint) {
-            $product = $entryPoint->getProduct();
-            if ($product->getTenant()->getId()->toRfc4122() !== $tenant->getId()->toRfc4122() || !$product->isActive()) {
-                return null;
-            }
-
-            return $product;
-        }
-
         return null;
     }
 
     private function resolvePlaybook(Request $request, Tenant $tenant, ?EntryPoint $entryPoint, ?Product $product): ?Playbook
     {
+        if ($entryPoint instanceof EntryPoint) {
+            $playbook = $entryPoint->getPlaybook();
+            if ($playbook instanceof Playbook && $playbook->isActive() && $playbook->getTenant()->getId()->toRfc4122() === $tenant->getId()->toRfc4122()) {
+                return $playbook;
+            }
+        }
+
         $playbookId = trim((string) $request->query->get('playbook_id', ''));
         if ($playbookId !== '') {
             $playbook = $this->playbooks->find($playbookId);
@@ -182,14 +198,41 @@ final class InternalCommercialContextController extends AbstractApiController
             return $playbook;
         }
 
-        if ($entryPoint instanceof EntryPoint) {
-            $playbook = $entryPoint->getPlaybook();
-            if ($playbook instanceof Playbook && $playbook->isActive() && $playbook->getTenant()->getId()->toRfc4122() === $tenant->getId()->toRfc4122()) {
+        if ($product instanceof Product) {
+            $playbook = $this->playbooks->findActiveByTenantAndProduct($tenant, $product);
+            if ($playbook instanceof Playbook) {
                 return $playbook;
             }
         }
 
         return $this->playbooks->findActiveGeneralByTenant($tenant);
+    }
+
+    /**
+     * @param list<Product> $products
+     * @return list<array{id: string, tenant_id: string, name: string, slug: string, description: string, value_proposition: string, sales_policy: mixed, base_price_cents: ?int, currency: ?string, external_source: ?string, external_reference: ?string, is_active: bool}>
+     */
+    private function productCandidatesPayload(array $products): array
+    {
+        $payload = [];
+        foreach ($products as $product) {
+            if (!$product instanceof Product) {
+                continue;
+            }
+
+            $payload[] = $this->productPayload($product);
+        }
+
+        return $payload;
+    }
+
+    private function entryPointProvidesProduct(?EntryPoint $entryPoint): bool
+    {
+        if (!$entryPoint instanceof EntryPoint) {
+            return false;
+        }
+
+        return $entryPoint->getProduct() instanceof Product && $entryPoint->getProduct()->isActive();
     }
 
     private function tenantPayload(Tenant $tenant): array

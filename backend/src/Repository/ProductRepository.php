@@ -63,6 +63,95 @@ class ProductRepository extends ServiceEntityRepository
             ->getResult();
     }
 
+    /**
+     * @return Product[]
+     */
+    public function findActiveByTenantOrdered(Tenant $tenant): array
+    {
+        return $this->createQueryBuilder('p')
+            ->join('p.tenant', 't')
+            ->addSelect('t')
+            ->andWhere('p.tenant = :tenant')
+            ->andWhere('p.isActive = true')
+            ->setParameter('tenant', $tenant)
+            ->orderBy('p.name', 'ASC')
+            ->getQuery()
+            ->getResult();
+    }
+
+    /**
+     * @return Product[]
+     */
+    public function searchActiveByTenantAndText(Tenant $tenant, string $query, int $limit = 20): array
+    {
+        $tokens = $this->searchTokens($query);
+        if ($tokens === []) {
+            return [];
+        }
+
+        $qb = $this->createQueryBuilder('p')
+            ->join('p.tenant', 't')
+            ->addSelect('t')
+            ->andWhere('p.tenant = :tenant')
+            ->andWhere('p.isActive = true')
+            ->setParameter('tenant', $tenant)
+            ->orderBy('p.name', 'ASC')
+            ->setMaxResults(max(1, min($limit, 50)));
+
+        $orX = $qb->expr()->orX();
+        foreach ($tokens as $index => $token) {
+            $parameter = sprintf('token_%d', $index);
+            $term = '%'.mb_strtolower($token).'%';
+            $orX->add($qb->expr()->orX(
+                $qb->expr()->like('LOWER(p.name)', ':' . $parameter),
+                $qb->expr()->like('LOWER(COALESCE(p.slug, \'\'))', ':' . $parameter),
+                $qb->expr()->like('LOWER(COALESCE(p.description, \'\'))', ':' . $parameter),
+                $qb->expr()->like('LOWER(COALESCE(p.valueProposition, \'\'))', ':' . $parameter),
+                $qb->expr()->like('LOWER(COALESCE(p.externalReference, \'\'))', ':' . $parameter),
+            ));
+            $qb->setParameter($parameter, $term);
+        }
+
+        $qb->andWhere($orX);
+
+        return $qb->getQuery()->getResult();
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function searchTokens(string $query): array
+    {
+        $normalized = trim(mb_strtolower($query));
+        if ($normalized === '') {
+            return [];
+        }
+
+        $tokens = preg_split('/[^\p{L}\p{N}]+/u', $normalized) ?: [];
+        $stopwords = [
+            'de', 'del', 'la', 'el', 'los', 'las', 'un', 'una', 'unos', 'unas', 'para', 'por', 'con', 'sin',
+            'sobre', 'y', 'o', 'u', 'a', 'al', 'en', 'que', 'quiero', 'necesito', 'busco', 'informacion', 'información',
+            'info', 'mostrar', 'ver', 'me', 'mi', 'mis', 'tener', 'tengo', 'hay', 'servicio', 'servicios', 'producto',
+            'productos', 'tratamiento', 'tratamientos', 'consulta', 'consultar', 'precio', 'precios', 'costo', 'coste',
+        ];
+
+        $filtered = [];
+        foreach ($tokens as $token) {
+            $token = trim($token);
+            if ($token === '' || mb_strlen($token) < 3) {
+                continue;
+            }
+
+            if (in_array($token, $stopwords, true)) {
+                continue;
+            }
+
+            $filtered[] = $token;
+        }
+
+        return array_values(array_unique($filtered));
+    }
+
     public function findOneByTenantAndSlug(Tenant $tenant, string $slug): ?Product
     {
         return $this->createQueryBuilder('p')

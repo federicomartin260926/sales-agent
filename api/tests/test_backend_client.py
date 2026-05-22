@@ -11,6 +11,71 @@ def transport_handler(request: httpx.Request) -> httpx.Response:
     if request.method == "GET" and request.url.path == "/api/internal/commercial-context":
         assert request.headers.get("Authorization") == "Bearer test-internal-token"
         assert request.url.params.get("tenant_id") == "tenant-1"
+        if request.url.params.get("current_message") == "Busco depilación láser":
+            return httpx.Response(
+                200,
+                json={
+                    "tenant": {
+                        "id": "tenant-1",
+                        "name": "Negocio Demo",
+                        "slug": "negocio-demo",
+                        "businessContext": "Contexto comercial",
+                        "tone": "consultivo",
+                        "salesPolicy": {},
+                        "isActive": True,
+                        "createdAt": "2026-04-28T12:00:00+00:00",
+                    },
+                    "product": None,
+                    "products": [
+                        {
+                            "id": "product-1",
+                            "tenantId": "tenant-1",
+                            "name": "Depilación láser",
+                            "slug": "depilacion-laser",
+                            "externalSource": "crm",
+                            "externalReference": "laser-basic",
+                            "description": "Depilación progresiva.",
+                            "valueProposition": "Reduce el vello de forma gradual.",
+                            "basePriceCents": 150000,
+                            "currency": "EUR",
+                            "salesPolicy": {},
+                            "isActive": True,
+                        },
+                        {
+                            "id": "product-2",
+                            "tenantId": "tenant-1",
+                            "name": "Depilación con cera",
+                            "slug": "depilacion-cera",
+                            "externalSource": "crm",
+                            "externalReference": "wax-basic",
+                            "description": "Depilación temporal.",
+                            "valueProposition": "Sesiones rápidas para mantenimiento.",
+                            "basePriceCents": 4500,
+                            "currency": "EUR",
+                            "salesPolicy": {},
+                            "isActive": True,
+                        },
+                    ],
+                    "product_selection": {
+                        "selection_source": "sa_search",
+                        "search_query_used": "depilación láser",
+                        "candidate_count": 2,
+                        "needs_service_clarification": True,
+                        "fallback_to_mcp_allowed": False,
+                        "reason": "multiple local product candidates",
+                    },
+                    "playbook": None,
+                    "entry_point": None,
+                    "sales_runtime": {
+                        "has_product_context": False,
+                        "has_playbook_context": False,
+                        "has_entry_point_context": False,
+                        "handoff_enabled": False,
+                        "booking_enabled": False,
+                        "rag_enabled": False,
+                    },
+                },
+            )
         return httpx.Response(
             200,
             json={
@@ -203,11 +268,12 @@ async def test_backend_client_loads_tenant_context():
 
     assert context is not None
     assert context.tenant.name == "Negocio Demo"
-    assert len(context.products) == 1
+    assert len(context.products) == 0
     assert context.selected_product is not None
     assert context.selected_product.name == "WhatsApp Automation"
     assert context.selected_product.slug == "whatsapp-automation"
     assert context.selected_product.external_reference == "pack-starter"
+    assert context.product_selection == {}
     assert context.context_summary() == "Negocio Demo · WhatsApp Automation · Guía comercial WhatsApp · Entrada Demo"
 
 
@@ -237,6 +303,23 @@ async def test_backend_client_resolves_whatsapp_phone():
 
     assert context is not None
     assert context["tenant_id"] == "tenant-1"
+
+
+@pytest.mark.asyncio
+async def test_backend_client_parses_product_candidates_and_selection():
+    client = BackendClient(
+        Settings(BACKEND_BASE_URL="http://sales-agent-nginx", SALES_AGENT_BEARER_TOKEN="test-internal-token"),
+        transport=httpx.MockTransport(transport_handler),
+    )
+
+    context = await client.fetch_tenant_context("tenant-1", current_message="Busco depilación láser")
+
+    assert context is not None
+    assert context.selected_product is None
+    assert len(context.products) == 2
+    assert context.product_selection["selection_source"] == "sa_search"
+    assert context.product_selection["needs_service_clarification"] is True
+    assert context.product_selection["fallback_to_mcp_allowed"] is False
 
 
 @pytest.mark.asyncio

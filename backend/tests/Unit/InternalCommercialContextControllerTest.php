@@ -5,15 +5,18 @@ namespace App\Tests\Unit;
 use App\Controller\Api\InternalCommercialContextController;
 use App\Entity\EntryPoint;
 use App\Entity\EntryPointUtm;
+use App\Entity\ExternalTool;
 use App\Entity\Playbook;
 use App\Entity\Product;
 use App\Entity\Tenant;
 use App\Repository\EntryPointRepository;
 use App\Repository\EntryPointUtmRepository;
+use App\Repository\ExternalToolRepository;
 use App\Repository\PlaybookRepository;
 use App\Repository\ProductRepository;
 use App\Repository\TenantRepository;
 use App\Security\InternalBearerTokenValidator;
+use App\Service\ProductContextResolver;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\DependencyInjection\Container;
 use Symfony\Component\HttpFoundation\Request;
@@ -37,6 +40,9 @@ final class InternalCommercialContextControllerTest extends TestCase
         self::assertSame('consultivo', $payload['tenant']['tone']);
         self::assertSame('Responder con claridad y foco comercial.', $payload['tenant']['sales_policy']['positioning']);
         self::assertNull($payload['product']);
+        self::assertSame([], $payload['products']);
+        self::assertSame('none', $payload['product_selection']['selection_source']);
+        self::assertTrue($payload['product_selection']['needs_service_clarification']);
         self::assertNull($payload['playbook']);
         self::assertNull($payload['entry_point']);
     }
@@ -70,8 +76,38 @@ final class InternalCommercialContextControllerTest extends TestCase
         self::assertSame('crm-demo', $payload['entry_point']['code']);
         self::assertSame('Guía campañas láser', $payload['playbook']['name']);
         self::assertSame('Depilación láser', $payload['product']['name']);
+        self::assertSame('entry_point', $payload['product_selection']['selection_source']);
+        self::assertSame([], $payload['products']);
         self::assertSame('Cerrar cita', $payload['playbook']['config']['objective']);
         self::assertSame(['¿Qué horario le encaja?'], $payload['playbook']['config']['qualificationQuestions']);
+    }
+
+    public function testProductSearchReturnsCandidatesAndClarification(): void
+    {
+        $tenant = $this->tenant();
+        $productA = $this->product($tenant, 'Depilación láser', 'depilacion-laser');
+        $productB = $this->product($tenant, 'Depilación con cera', 'depilacion-cera');
+        $controller = $this->createController(
+            [$tenant->getId()->toRfc4122() => $tenant],
+            [
+                $productA->getId()->toRfc4122() => $productA,
+                $productB->getId()->toRfc4122() => $productB,
+            ],
+            [],
+            [],
+            [],
+        );
+
+        $response = $controller(Request::create('/api/internal/commercial-context?tenant_id='.$tenant->getId()->toRfc4122().'&current_message=Busco depilación', 'GET', server: [
+            'HTTP_AUTHORIZATION' => 'Bearer '.self::TOKEN,
+        ]));
+
+        self::assertSame(200, $response->getStatusCode());
+        $payload = json_decode((string) $response->getContent(), true);
+        self::assertNull($payload['product']);
+        self::assertCount(2, $payload['products']);
+        self::assertSame('sa_search', $payload['product_selection']['selection_source']);
+        self::assertTrue($payload['product_selection']['needs_service_clarification']);
     }
 
     public function testCrossTenantProductIsRejected(): void
@@ -99,14 +135,49 @@ final class InternalCommercialContextControllerTest extends TestCase
         self::assertSame('Product not found', json_decode((string) $response->getContent(), true)['message']);
     }
 
-    private function createController(array $tenants, array $products, array $playbooks, array $entryPoints, array $entryPointUtms): InternalCommercialContextController
+    public function testProductSearchAllowsMcpFallbackWhenNoLocalMatchExists(): void
     {
+        $tenant = $this->tenant();
+        $externalTool = new ExternalTool($tenant, 'MCP principal', 'mcp_remote', 'openai_remote_mcp');
+        $externalTool->setRuntimeDefault(true);
+
+        $controller = $this->createController(
+            [$tenant->getId()->toRfc4122() => $tenant],
+            [],
+            [],
+            [],
+            [],
+            $this->externalToolRepository([$externalTool]),
+        );
+
+        $response = $controller(Request::create('/api/internal/commercial-context?tenant_id='.$tenant->getId()->toRfc4122().'&current_message=Busco servicio que no existe', 'GET', server: [
+            'HTTP_AUTHORIZATION' => 'Bearer '.self::TOKEN,
+        ]));
+
+        self::assertSame(200, $response->getStatusCode());
+        $payload = json_decode((string) $response->getContent(), true);
+        self::assertNull($payload['product']);
+        self::assertSame([], $payload['products']);
+        self::assertTrue($payload['product_selection']['fallback_to_mcp_allowed']);
+        self::assertFalse($payload['product_selection']['needs_service_clarification']);
+    }
+
+    private function createController(array $tenants, array $products, array $playbooks, array $entryPoints, array $entryPointUtms, ?ExternalToolRepository $externalTools = null): InternalCommercialContextController
+    {
+        $tenantRepository = $this->tenantRepository($tenants);
+        $productRepository = $this->productRepository($products);
+        $playbookRepository = $this->playbookRepository($playbooks);
+        $entryPointRepository = $this->entryPointRepository($entryPoints);
+        $entryPointUtmRepository = $this->entryPointUtmRepository($entryPointUtms);
+        $externalTools ??= $this->externalToolRepository([]);
+
         $controller = new InternalCommercialContextController(
-            $this->tenantRepository($tenants),
-            $this->productRepository($products),
-            $this->playbookRepository($playbooks),
-            $this->entryPointRepository($entryPoints),
-            $this->entryPointUtmRepository($entryPointUtms),
+            $tenantRepository,
+            $productRepository,
+            $playbookRepository,
+            $entryPointRepository,
+            $entryPointUtmRepository,
+            new ProductContextResolver($productRepository, $externalTools),
             new InternalBearerTokenValidator(self::TOKEN),
         );
         $controller->setContainer(new Container());
@@ -208,6 +279,14 @@ final class InternalCommercialContextControllerTest extends TestCase
             {
                 return $this->products[(string) $id] ?? null;
             }
+
+            public function searchActiveByTenantAndText(Tenant $tenant, string $query, int $limit = 20): array
+            {
+                return array_values(array_filter(
+                    $this->products,
+                    static fn ($product): bool => $product instanceof Product && $product->getTenant()->getId()->toRfc4122() === $tenant->getId()->toRfc4122() && $product->isActive()
+                ));
+            }
         };
     }
 
@@ -254,6 +333,26 @@ final class InternalCommercialContextControllerTest extends TestCase
             public function findByRef(string $ref): ?EntryPointUtm
             {
                 return $this->entryPointUtms[$ref] ?? null;
+            }
+        };
+    }
+
+    private function externalToolRepository(array $tools): ExternalToolRepository
+    {
+        return new class($tools) extends ExternalToolRepository {
+            public function __construct(private array $tools)
+            {
+            }
+
+            public function findRuntimeDefaultMcpByTenant(Tenant $tenant): ?ExternalTool
+            {
+                foreach ($this->tools as $tool) {
+                    if ($tool instanceof ExternalTool && $tool->getTenant()->getId()->toRfc4122() === $tenant->getId()->toRfc4122() && $tool->isActive() && $tool->isRuntimeDefault()) {
+                        return $tool;
+                    }
+                }
+
+                return null;
             }
         };
     }

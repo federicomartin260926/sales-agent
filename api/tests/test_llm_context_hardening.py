@@ -57,12 +57,77 @@ def build_backend_context() -> CommercialContext:
 
     return CommercialContext(
         tenant=tenant,
-        products=[product],
+        products=[],
+        product_selection={
+            "selection_source": "explicit_product_id",
+            "candidate_count": 1,
+            "needs_service_clarification": False,
+            "fallback_to_mcp_allowed": False,
+            "reason": "explicit product requested",
+        },
         playbooks=[playbook],
         entry_point=entry_point,
         sales_runtime=BackendSalesRuntime(),
         selected_product=product,
         selected_playbook=playbook,
+    )
+
+
+def build_backend_context_with_candidates() -> CommercialContext:
+    tenant = BackendTenant.model_validate(
+        {
+            "id": "tenant-1",
+            "name": "Negocio Demo",
+            "slug": "negocio-demo",
+            "businessContext": "Contexto estable del negocio",
+            "tone": "cercano",
+            "salesPolicy": {"positioning": "Mensaje"},
+            "isActive": True,
+        }
+    )
+    candidates = [
+        BackendProduct.model_validate(
+            {
+                "id": "product-1",
+                "tenantId": "tenant-1",
+                "name": "Depilación láser",
+                "slug": "depilacion-laser",
+                "description": "Depilación progresiva",
+                "valueProposition": "Reduce el vello",
+                "salesPolicy": {},
+                "isActive": True,
+            }
+        ),
+        BackendProduct.model_validate(
+            {
+                "id": "product-2",
+                "tenantId": "tenant-1",
+                "name": "Depilación con cera",
+                "slug": "depilacion-cera",
+                "description": "Depilación temporal",
+                "valueProposition": "Sesiones rápidas",
+                "salesPolicy": {},
+                "isActive": True,
+            }
+        ),
+    ]
+
+    return CommercialContext(
+        tenant=tenant,
+        products=candidates,
+        product_selection={
+            "selection_source": "sa_search",
+            "search_query_used": "depilación láser",
+            "candidate_count": 2,
+            "needs_service_clarification": True,
+            "fallback_to_mcp_allowed": False,
+            "reason": "multiple local product candidates",
+        },
+        playbooks=[],
+        entry_point=None,
+        sales_runtime=BackendSalesRuntime(),
+        selected_product=None,
+        selected_playbook=None,
     )
 
 
@@ -83,7 +148,7 @@ def test_prompt_builder_limits_history_and_keeps_summary_before_messages():
     assert "Devuelve solo JSON válido" in system_prompt
 
     parsed = json.loads(user_prompt)
-    assert list(parsed.keys())[:5] == ["tenant", "product", "playbook", "entry_point", "sales_runtime"]
+    assert list(parsed.keys())[:6] == ["tenant", "product", "products", "product_selection", "playbook", "entry_point"]
     assert "effective_context" not in parsed
     assert list(parsed.keys())[-1] == "current_message"
     assert list(parsed["conversation"].keys())[:3] == ["external_id", "summary", "last_messages"]
@@ -108,9 +173,11 @@ def test_prompt_builder_uses_legacy_blocks_without_effective_context():
     assert "effective_context" not in parsed
     assert parsed["tenant"]["name"] == "Negocio Demo"
     assert parsed["product"]["name"] == "Producto Demo"
+    assert parsed["products"] == []
+    assert parsed["product_selection"]["selection_source"] == "explicit_product_id"
     assert parsed["playbook"]["name"] == "Guia Demo"
     assert parsed["entry_point"]["code"] == "demo"
-    assert parsed["sales_runtime"]["has_product_context"] is True
+    assert parsed["sales_runtime"]["has_product_context"] is False
 
 
 def test_prompt_builder_enriches_prompt_with_mcp_runtime():
@@ -136,8 +203,27 @@ def test_prompt_builder_enriches_prompt_with_mcp_runtime():
     assert "tenant_main_mcp" in system_prompt
     assert "search_properties" in system_prompt
     assert parsed["product"]["name"] == "Producto Demo"
+    assert parsed["products"] == []
     assert parsed["sales_runtime"]["has_product_context"] is False
     assert parsed["tenant"]["tone"] == "cercano"
+
+
+def test_prompt_builder_shows_candidate_products_and_clarification():
+    payload = AgentRequest(
+        tenant_id="tenant-1",
+        message="Busco depilación láser",
+        contact=Contact(phone="+34600000000"),
+        conversation={"last_messages": []},
+    )
+
+    system_prompt, user_prompt = LLMPromptBuilder().build(payload, None, build_backend_context_with_candidates(), None, None)
+    parsed = json.loads(user_prompt)
+
+    assert "product_selection.needs_service_clarification" in system_prompt
+    assert parsed["product"] is None
+    assert len(parsed["products"]) == 2
+    assert parsed["product_selection"]["selection_source"] == "sa_search"
+    assert parsed["product_selection"]["needs_service_clarification"] is True
 
 
 def test_prompt_builder_sanitizes_long_commercial_fields():

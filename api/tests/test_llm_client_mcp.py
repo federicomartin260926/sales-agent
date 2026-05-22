@@ -21,6 +21,7 @@ def mcp_transport_handler(request: httpx.Request) -> httpx.Response:
     assert payload["tools"][0]["server_url"] == "https://mcp.example.test"
     assert payload["tools"][0]["allowed_tools"] == ["search_properties"]
     assert payload["tools"][0]["require_approval"] == "never"
+    assert payload["tools"][0]["authorization"] == "mcp-token"
 
     return httpx.Response(
         200,
@@ -95,6 +96,46 @@ async def test_llm_client_uses_openai_responses_with_mcp_tools():
     assert result.estimated_cost is not None
     assert len(result.tool_traces) == 1
     assert result.tool_traces[0].tool_name == "appointment_availability"
+
+
+@pytest.mark.asyncio
+async def test_llm_client_prefers_test_authorization_override(monkeypatch):
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content.decode("utf-8"))
+        seen["authorization"] = payload["tools"][0]["authorization"]
+        return httpx.Response(200, json={"id": "resp_1", "output_text": json.dumps({"reply": "ok", "intent": "open_question", "score": 0.1, "action": "ask_question", "needs_human": False, "data_to_save": {}}), "output": []})
+
+    monkeypatch.setenv("MCP_TEST_AUTHORIZATION", "Bearer TEST_MCP_AUTH_TOKEN_123456")
+
+    client = LLMClient(
+        Settings(OPENAI_API_KEY="sk-test", OPENAI_TIMEOUT_SECONDS=15),
+        transport=httpx.MockTransport(handler),
+    )
+
+    await client.generate_with_mcp(
+        "openai",
+        "Eres un asistente de ventas.",
+        "Hola",
+        McpRemoteConfig(
+            enabled=True,
+            server_label="tenant_main_mcp",
+            server_url="https://mcp.example.test",
+            auth_type="bearer",
+            bearer_token="mcp-token",
+            allowed_tools=["search_properties"],
+            require_approval="always",
+        ),
+        configuration={
+            "openai_base_url": "https://api.openai.com/v1",
+            "openai_model": "gpt-4.1-mini",
+            "openai_api_key": "sk-test",
+            "openai_timeout_seconds": "15",
+        },
+    )
+
+    assert seen["authorization"] == "TEST_MCP_AUTH_TOKEN_123456"
 
 
 @pytest.mark.asyncio

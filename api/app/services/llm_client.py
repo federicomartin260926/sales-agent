@@ -435,11 +435,9 @@ class LLMClient:
         if approval is not None:
             tool["require_approval"] = approval
 
-        bearer_token = (mcp_config.bearer_token or "").strip()
-        if bearer_token != "":
-            tool["headers"] = {
-                "Authorization": f"Bearer {bearer_token}",
-            }
+        authorization = self._mcp_authorization_token(mcp_config)
+        if authorization != "":
+            tool["authorization"] = authorization
 
         return [tool]
 
@@ -455,6 +453,24 @@ class LLMClient:
             return "never"
 
         return None
+
+    def _mcp_authorization_token(self, mcp_config: McpRemoteConfig) -> str:
+        override = self._normalize_mcp_authorization(self.settings.mcp_test_authorization)
+        if override != "":
+            return override
+
+        bearer_token = self._normalize_mcp_authorization(mcp_config.bearer_token)
+        return bearer_token
+
+    def _normalize_mcp_authorization(self, value: str | None) -> str:
+        normalized = (value or "").strip()
+        if normalized == "":
+            return ""
+
+        if normalized.lower().startswith("bearer "):
+            normalized = normalized[7:].strip()
+
+        return normalized
 
     def _sanitize_openai_responses_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         sanitized: dict[str, Any] = {

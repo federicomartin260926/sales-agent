@@ -36,6 +36,7 @@ class DecisionEngine:
                     routing.entrypoint_ref if routing is not None else None,
                     payload.contact.phone,
                     routing.external_channel_id if routing is not None else payload.external_channel_id,
+                    payload.message.text,
                 )
 
         message = payload.message.text.lower().strip()
@@ -247,7 +248,10 @@ class DecisionEngine:
     ) -> AgentResponse:
         tenant_name = context.tenant.name
         product_name = context.selected_product.name if context.selected_product is not None else None
-        inferred_product_name = None if context.selected_product is not None else self._infer_product_name(context, message)
+        product_selection = context.product_selection if isinstance(context.product_selection, dict) else {}
+        needs_service_clarification = bool(product_selection.get("needs_service_clarification", False))
+        product_candidates = context.products if context.products else []
+        inferred_product_name = None if context.selected_product is not None or needs_service_clarification else self._infer_product_name(context, message)
         playbook = context.selected_playbook
         first_question = self._first_qualification_question(playbook)
         external_name = self._external_contact_name(contact_context)
@@ -281,6 +285,22 @@ class DecisionEngine:
                 action="handoff_to_human",
                 needs_human=True,
                 data_to_save=self._base_context_save(payload, context, routing, "handoff", contact_context),
+            )
+
+        if product_name is None and needs_service_clarification:
+            candidate_names = [product.name for product in product_candidates if isinstance(product.name, str) and product.name.strip() != ""]
+            if candidate_names:
+                reply = f"¿Qué servicio buscas exactamente? Veo opciones como {', '.join(candidate_names[:3])}."
+            else:
+                reply = "¿Qué servicio buscas exactamente? Cuéntame un poco más y te ayudo a orientarte."
+
+            return AgentResponse(
+                reply=reply,
+                intent="qualification",
+                score=0.68,
+                action="ask_question",
+                needs_human=False,
+                data_to_save=self._base_context_save(payload, context, routing, "service_clarification", contact_context),
             )
 
         if product_name is None and inferred_product_name is not None:

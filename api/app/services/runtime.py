@@ -51,6 +51,7 @@ class AgentRuntime:
             routing.entrypoint_ref,
             payload.contact.phone,
             routing.external_channel_id or payload.external_channel_id,
+            payload.message.text,
         )
         mcp_config = await self.backend_client.fetch_mcp_config(routing.tenant_id)
 

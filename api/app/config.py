@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     crm_base_url: str = Field(default="", alias="CRM_BASE_URL")
     rag_api_url: str = Field(default="", alias="RAG_API_URL")
     sales_agent_bearer_token: str = Field(default="", alias="SALES_AGENT_BEARER_TOKEN")
+    mcp_test_authorization: str = Field(default="", alias="MCP_TEST_AUTHORIZATION")
 
 
 @lru_cache
