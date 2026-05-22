@@ -3,12 +3,13 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from app.schemas.agent import AgentRequest, Contact
+from app.schemas.llm import McpRemoteConfig
 from app.services.backend_client import CommercialContext, BackendEntryPoint, BackendPlaybook, BackendProduct, BackendSalesRuntime, BackendTenant
 from app.services.llm_context_helper import LLMContextHelper
 from app.services.llm_prompt_builder import LLMPromptBuilder
 
 
-def build_backend_context() -> CommercialContext:
+def build_backend_context(include_effective_context: bool = True) -> CommercialContext:
     tenant = BackendTenant.model_validate(
         {
             "id": "tenant-1",
@@ -54,8 +55,21 @@ def build_backend_context() -> CommercialContext:
         }
     )
 
+    effective_context = None
+    if include_effective_context:
+        effective_context = {
+            "summary": "Entrada: demo · Guía: Guia Demo · Producto: Producto Demo · Negocio: Negocio Demo",
+            "priority": ["entry_point", "playbook", "product", "tenant"],
+            "conflict_policy": "Lo específico añade o restringe lo general; el orden efectivo es entry_point > playbook > product > tenant.",
+            "effective": {
+                "tone": "cercano",
+                "objective": "Calificar leads entrantes.",
+            },
+        }
+
     return CommercialContext(
         tenant=tenant,
+        effective_context=effective_context or {},
         products=[product],
         playbooks=[playbook],
         entry_point=entry_point,
@@ -82,7 +96,8 @@ def test_prompt_builder_limits_history_and_keeps_summary_before_messages():
     assert "Devuelve solo JSON válido" in system_prompt
 
     parsed = json.loads(user_prompt)
-    assert list(parsed.keys())[:5] == ["tenant", "product", "playbook", "entry_point", "sales_runtime"]
+    assert list(parsed.keys())[:5] == ["effective_context", "tenant", "product", "playbook", "entry_point"]
+    assert parsed["effective_context"]["priority"] == ["entry_point", "playbook", "product", "tenant"]
     assert list(parsed.keys())[-1] == "current_message"
     assert list(parsed["conversation"].keys())[:3] == ["external_id", "summary", "last_messages"]
     assert len(parsed["conversation"]["last_messages"]) <= LLMContextHelper.MAX_CONVERSATION_MESSAGES
@@ -90,6 +105,44 @@ def test_prompt_builder_limits_history_and_keeps_summary_before_messages():
     assert parsed["conversation"].get("history_truncated") is True
     assert parsed["conversation"]["summary"] == "Resumen previo de la conversación"
     assert parsed["current_message"] == "Necesito información comercial muy concreta."
+
+
+def test_prompt_builder_synthesizes_effective_context_when_missing():
+    payload = AgentRequest(
+        tenant_id="tenant-1",
+        message="Hola",
+        contact=Contact(phone="+34600000000"),
+        conversation={"last_messages": []},
+    )
+
+    _, user_prompt = LLMPromptBuilder().build(payload, None, build_backend_context(include_effective_context=False), None, None)
+    parsed = json.loads(user_prompt)
+
+    assert parsed["effective_context"]["priority"] == ["entry_point", "playbook", "product", "tenant"]
+    assert parsed["effective_context"]["effective"]["objective"] == "Propuesta"
+
+
+def test_prompt_builder_enriches_effective_context_with_mcp_runtime():
+    payload = AgentRequest(
+        tenant_id="tenant-1",
+        message="Hola",
+        contact=Contact(phone="+34600000000"),
+        conversation={"last_messages": []},
+    )
+
+    mcp_config = McpRemoteConfig(
+        enabled=True,
+        server_label="tenant_main_mcp",
+        server_url="https://mcp.example.test",
+        allowed_tools=["search_properties"],
+        require_approval="never",
+    )
+
+    _, user_prompt = LLMPromptBuilder().build(payload, None, build_backend_context(), None, mcp_config)
+    parsed = json.loads(user_prompt)
+
+    assert parsed["effective_context"]["runtime"]["mcp"]["server_label"] == "tenant_main_mcp"
+    assert parsed["effective_context"]["runtime"]["mcp"]["allowed_tools"] == ["search_properties"]
 
 
 def test_prompt_builder_sanitizes_long_commercial_fields():

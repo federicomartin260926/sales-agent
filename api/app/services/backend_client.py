@@ -260,6 +260,7 @@ class CommercialContext(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     tenant: BackendTenant
+    effective_context: dict[str, Any] = Field(default_factory=dict)
     products: list[BackendProduct] = Field(default_factory=list)
     playbooks: list[BackendPlaybook] = Field(default_factory=list)
     entry_point: BackendEntryPoint | None = None
@@ -270,6 +271,10 @@ class CommercialContext(BaseModel):
     selected_playbook_is_fallback: bool = False
 
     def context_summary(self) -> str:
+        effective_summary = self.effective_context.get("summary")
+        if isinstance(effective_summary, str) and effective_summary.strip() != "":
+            return effective_summary.strip()
+
         parts = [self.tenant.name]
         if self.selected_product is not None:
             parts.append(self.selected_product.name)
@@ -332,6 +337,8 @@ class BackendClient:
             return None
 
         tenant_model = BackendTenant.model_validate(tenant_payload)
+        effective_context_payload = payload.get("effective_context")
+        effective_context = effective_context_payload if isinstance(effective_context_payload, dict) else {}
 
         product_payload = payload.get("product") if isinstance(payload.get("product"), dict) else None
         playbook_payload = payload.get("playbook") if isinstance(payload.get("playbook"), dict) else None
@@ -348,6 +355,7 @@ class BackendClient:
 
         return CommercialContext(
             tenant=tenant_model,
+            effective_context=effective_context,
             products=products,
             playbooks=playbooks,
             entry_point=entry_point,

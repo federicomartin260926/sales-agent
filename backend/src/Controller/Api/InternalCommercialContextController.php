@@ -4,6 +4,7 @@ namespace App\Controller\Api;
 
 use App\Entity\EntryPoint;
 use App\Entity\EntryPointUtm;
+use App\Domain\CommercialDomainSchema;
 use App\Entity\Playbook;
 use App\Entity\Product;
 use App\Entity\Tenant;
@@ -69,6 +70,7 @@ final class InternalCommercialContextController extends AbstractApiController
         $customerPhone = trim((string) $request->query->get('customer_phone', ''));
 
         return $this->json([
+            'effective_context' => $this->effectiveContextPayload($tenant, $product, $playbook, $entryPoint),
             'tenant' => $this->tenantPayload($tenant),
             'product' => $this->productPayload($product),
             'playbook' => $this->playbookPayload($playbook),
@@ -260,6 +262,239 @@ final class InternalCommercialContextController extends AbstractApiController
             'crm_branch_ref' => $entryPoint->getCrmBranchRef(),
             'is_active' => $entryPoint->isActive(),
         ];
+    }
+
+    private function effectiveContextPayload(Tenant $tenant, ?Product $product, ?Playbook $playbook, ?EntryPoint $entryPoint): array
+    {
+        $tenantSalesPolicy = $tenant->getSalesPolicy();
+        $productSalesPolicy = $product instanceof Product ? $product->getSalesPolicy() : [];
+        $playbookConfig = $playbook instanceof Playbook ? $playbook->getConfig() : [];
+
+        $effective = array_filter([
+            'tone' => $tenant->getTone(),
+            'positioning' => $this->firstNonEmptyString(
+                $this->policyText($productSalesPolicy, 'positioning'),
+                $this->policyText($tenantSalesPolicy, 'positioning'),
+            ),
+            'objective' => $this->firstNonEmptyString(
+                $this->policyText($playbookConfig, 'objective'),
+                $product instanceof Product ? $this->normalizeNullableString($product->getValueProposition()) : null,
+                $this->policyText($tenantSalesPolicy, 'positioning'),
+            ),
+            'qualification_focus' => $this->mergeUniqueLines(
+                $this->policyLines($playbookConfig, 'qualificationQuestions'),
+                $this->policyLines($productSalesPolicy, 'objections'),
+                $this->policyLines($tenantSalesPolicy, 'qualificationFocus'),
+            ),
+            'handoff_rules' => $this->mergeUniqueLines(
+                $this->policyLines($playbookConfig, 'handoffRules'),
+                $this->policyLines($productSalesPolicy, 'handoffRules'),
+                $this->policyLines($tenantSalesPolicy, 'handoffRules'),
+            ),
+            'pricing_notes' => $this->mergeUniqueLines(
+                $this->policyLines($productSalesPolicy, 'pricingNotes'),
+            ),
+            'sales_boundaries' => $this->policyLines($tenantSalesPolicy, 'salesBoundaries'),
+            'agenda_rules' => $this->policyLines($playbookConfig, 'agendaRules'),
+            'allowed_actions' => $this->policyLines($playbookConfig, 'allowedActions'),
+            'notes' => $this->mergeUniqueLines(
+                $this->policyLines($playbookConfig, 'notes'),
+                $this->policyLines($productSalesPolicy, 'notes'),
+                $this->policyLines($tenantSalesPolicy, 'notes'),
+            ),
+        ], static fn (mixed $value): bool => $value !== null && $value !== [] && $value !== '');
+
+        $summaryParts = [];
+        if ($entryPoint instanceof EntryPoint) {
+            $entryPointSummary = sprintf('Entrada: %s · %s', $entryPoint->getCode(), $entryPoint->getName());
+            $initialMessage = $this->normalizeNullableString($entryPoint->getDefaultMessage());
+            if ($initialMessage !== null) {
+                $entryPointSummary .= sprintf(' · %s', $initialMessage);
+            }
+
+            $summaryParts[] = $entryPointSummary;
+        }
+
+        if ($playbook instanceof Playbook) {
+            $summaryParts[] = sprintf('Guía: %s · %s', $playbook->getName(), CommercialDomainSchema::summarizePlaybookConfig($playbook->getConfig()));
+        }
+
+        if ($product instanceof Product) {
+            $summaryParts[] = sprintf('Producto: %s · %s', $product->getName(), CommercialDomainSchema::summarizeProductSalesPolicy($productSalesPolicy));
+        }
+
+        $summaryParts[] = sprintf('Negocio: %s · %s', $tenant->getName(), CommercialDomainSchema::summarizeTenantSalesPolicy($tenantSalesPolicy));
+
+        return [
+            'summary' => implode(' · ', $summaryParts),
+            'priority' => ['entry_point', 'playbook', 'product', 'tenant'],
+            'conflict_policy' => 'Lo específico añade o restringe lo general; el orden efectivo es entry_point > playbook > product > tenant.',
+            'tenant' => [
+                'summary' => CommercialDomainSchema::summarizeTenantSalesPolicy($tenantSalesPolicy),
+                'name' => $tenant->getName(),
+                'business_context' => $tenant->getBusinessContext(),
+                'tone' => $tenant->getTone(),
+                'positioning' => $this->policyText($tenantSalesPolicy, 'positioning'),
+                'qualification_focus' => $this->policyText($tenantSalesPolicy, 'qualificationFocus'),
+                'handoff_rules' => $this->policyText($tenantSalesPolicy, 'handoffRules'),
+                'sales_boundaries' => $this->policyLines($tenantSalesPolicy, 'salesBoundaries'),
+                'notes' => $this->policyText($tenantSalesPolicy, 'notes'),
+            ],
+            'product' => $product instanceof Product ? [
+                'summary' => CommercialDomainSchema::summarizeProductSalesPolicy($productSalesPolicy),
+                'name' => $product->getName(),
+                'description' => $product->getDescription(),
+                'value_proposition' => $product->getValueProposition(),
+                'positioning' => $this->policyText($productSalesPolicy, 'positioning'),
+                'pricing_notes' => $this->policyText($productSalesPolicy, 'pricingNotes'),
+                'objections' => $this->policyLines($productSalesPolicy, 'objections'),
+                'handoff_rules' => $this->policyText($productSalesPolicy, 'handoffRules'),
+                'notes' => $this->policyText($productSalesPolicy, 'notes'),
+            ] : null,
+            'playbook' => $playbook instanceof Playbook ? [
+                'summary' => CommercialDomainSchema::summarizePlaybookConfig($playbookConfig),
+                'name' => $playbook->getName(),
+                'objective' => $this->policyText($playbookConfig, 'objective'),
+                'qualification_questions' => $this->policyLines($playbookConfig, 'qualificationQuestions'),
+                'scoring' => $this->playbookScoringPayload($playbookConfig),
+                'agenda_rules' => $this->policyLines($playbookConfig, 'agendaRules'),
+                'handoff_rules' => $this->policyLines($playbookConfig, 'handoffRules'),
+                'allowed_actions' => $this->policyLines($playbookConfig, 'allowedActions'),
+                'notes' => $this->policyText($playbookConfig, 'notes'),
+            ] : null,
+            'entry_point' => $entryPoint instanceof EntryPoint ? [
+                'summary' => sprintf('Entrada: %s · %s', $entryPoint->getCode(), $entryPoint->getName()),
+                'code' => $entryPoint->getCode(),
+                'name' => $entryPoint->getName(),
+                'initial_message' => $this->normalizeNullableString($entryPoint->getDefaultMessage()),
+                'crm_branch_ref' => $this->normalizeNullableString($entryPoint->getCrmBranchRef()),
+                'is_active' => $entryPoint->isActive(),
+            ] : null,
+            'effective' => $effective,
+            'runtime' => [
+                'has_product_context' => $product instanceof Product,
+                'has_playbook_context' => $playbook instanceof Playbook,
+                'has_entry_point_context' => $entryPoint instanceof EntryPoint,
+                'handoff_enabled' => $this->hasHandoffEnabled($tenant, $product, $playbook),
+                'booking_enabled' => $this->hasBookingEnabled($playbook),
+                'rag_enabled' => $this->hasRagEnabled($tenant, $product, $playbook),
+            ],
+        ];
+    }
+
+    private function policyText(array $payload, string $key): ?string
+    {
+        if (!array_key_exists($key, $payload)) {
+            return null;
+        }
+
+        $value = $payload[$key];
+        if (!is_string($value)) {
+            return null;
+        }
+
+        $trimmed = trim($value);
+
+        return $trimmed !== '' ? $trimmed : null;
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function policyLines(array $payload, string $key): array
+    {
+        if (!array_key_exists($key, $payload)) {
+            return [];
+        }
+
+        $value = $payload[$key];
+        if (is_string($value)) {
+            $value = preg_split('/\R+/', $value) ?: [];
+        }
+
+        if (!is_array($value)) {
+            return [];
+        }
+
+        $lines = [];
+        foreach ($value as $item) {
+            if (!is_string($item)) {
+                continue;
+            }
+
+            $trimmed = trim($item);
+            if ($trimmed !== '') {
+                $lines[] = $trimmed;
+            }
+        }
+
+        return $lines;
+    }
+
+    /**
+     * @param array<int, string> ...$lists
+     * @return array<int, string>
+     */
+    private function mergeUniqueLines(array ...$lists): array
+    {
+        $merged = [];
+        $seen = [];
+
+        foreach ($lists as $list) {
+            foreach ($list as $item) {
+                if (isset($seen[$item])) {
+                    continue;
+                }
+
+                $seen[$item] = true;
+                $merged[] = $item;
+            }
+        }
+
+        return $merged;
+    }
+
+    private function firstNonEmptyString(?string ...$values): ?string
+    {
+        foreach ($values as $value) {
+            if (!is_string($value)) {
+                continue;
+            }
+
+            $trimmed = trim($value);
+            if ($trimmed !== '') {
+                return $trimmed;
+            }
+        }
+
+        return null;
+    }
+
+    private function playbookScoringPayload(array $config): ?array
+    {
+        if (!is_array($config['scoring'] ?? null)) {
+            return null;
+        }
+
+        $scoring = $config['scoring'];
+        $payload = [];
+
+        foreach (['maxScore', 'handoffThreshold', 'positiveSignals', 'negativeSignals'] as $key) {
+            if (!array_key_exists($key, $scoring)) {
+                continue;
+            }
+
+            if (in_array($key, ['positiveSignals', 'negativeSignals'], true)) {
+                $payload[$key] = $this->policyLines($scoring, $key);
+                continue;
+            }
+
+            if (is_int($scoring[$key])) {
+                $payload[$key] = $scoring[$key];
+            }
+        }
+
+        return $payload !== [] ? $payload : null;
     }
 
     private function hasHandoffEnabled(Tenant $tenant, ?Product $product, ?Playbook $playbook): bool

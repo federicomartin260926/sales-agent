@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 from datetime import datetime
 from typing import Any
@@ -33,6 +34,7 @@ class LLMPromptBuilder:
             "Si preguntan por precio y no hay un precio claro, pide 1-2 datos de cualificación. "
             "Si piden humano/persona/asesor/comercial, needs_human debe ser true. "
             "Si tienes herramientas MCP nativas del tenant, úsalas cuando hagan falta para completar la respuesta. "
+            "Si existe effective_context, úsalo como el contexto comercial ya priorizado y trata los bloques legacy como referencia secundaria. "
             "No inventes datos ni cites sistemas internos, CRM, n8n, webhooks, IDs internos, UTM, refs, tokens o detalles técnicos. "
             "Mantén el tono breve, útil y orientado a conversación."
         )
@@ -65,6 +67,7 @@ class LLMPromptBuilder:
             )
 
         user_payload = {
+            "effective_context": self._effective_context_payload(backend_context, mcp_config),
             "tenant": self._tenant_payload(backend_context),
             "product": self._product_payload(backend_context),
             "playbook": self._playbook_payload(backend_context),
@@ -183,6 +186,242 @@ class LLMPromptBuilder:
             return None
 
         return backend_context.sales_runtime.model_dump(exclude_none=True)
+
+    def _effective_context_payload(self, backend_context: CommercialContext | None, mcp_config: McpRemoteConfig | None) -> dict[str, Any] | None:
+        if backend_context is None:
+            return None
+
+        if backend_context.effective_context != {}:
+            payload: dict[str, Any] = copy.deepcopy(backend_context.effective_context)
+        else:
+            payload = self._build_effective_context_from_legacy(backend_context)
+
+        if payload == {}:
+            return None
+
+        runtime = payload.get("runtime")
+        if not isinstance(runtime, dict):
+            runtime = {}
+            payload["runtime"] = runtime
+
+        sales_runtime = self._sales_runtime_payload(backend_context)
+        if sales_runtime is not None and sales_runtime != {}:
+            runtime.setdefault("sales_runtime", sales_runtime)
+
+        if mcp_config is not None and mcp_config.enabled:
+            runtime.setdefault(
+                "mcp",
+                {
+                    "enabled": True,
+                    "server_label": self.context_helper.sanitize_text(mcp_config.server_label, max_chars=255),
+                    "server_url": self.context_helper.sanitize_text(mcp_config.server_url, max_chars=500),
+                    "allowed_tools": list(mcp_config.allowed_tools),
+                    "require_approval": self.context_helper.sanitize_text(mcp_config.require_approval, max_chars=32),
+                },
+            )
+
+        return self.context_helper.sanitize_jsonish(payload, max_depth=4, max_items=12, max_string_chars=1000)
+
+    def _build_effective_context_from_legacy(self, backend_context: CommercialContext) -> dict[str, Any]:
+        tenant = self._tenant_payload(backend_context)
+        if tenant is None:
+            return {}
+
+        product = self._product_payload(backend_context)
+        playbook = self._playbook_payload(backend_context)
+        entry_point = self._entry_point_payload(backend_context)
+
+        tenant_sales_policy = tenant.get("sales_policy") if isinstance(tenant.get("sales_policy"), dict) else {}
+        product_sales_policy = product.get("sales_policy") if isinstance(product, dict) and isinstance(product.get("sales_policy"), dict) else {}
+        playbook_config = playbook.get("config") if isinstance(playbook, dict) and isinstance(playbook.get("config"), dict) else {}
+
+        summary_parts = []
+        if entry_point is not None:
+            entry_summary = f"Entrada: {entry_point.get('code')} · {entry_point.get('name')}"
+            initial_message = self.context_helper.sanitize_text(entry_point.get("initial_message"), max_chars=500)
+            if initial_message is not None:
+                entry_summary = f"{entry_summary} · {initial_message}"
+            summary_parts.append(entry_summary)
+
+        if playbook is not None:
+            playbook_summary = self._summarize_playbook_config(playbook_config)
+            summary_parts.append(f"Guía: {playbook.get('name')} · {playbook_summary}")
+
+        if product is not None:
+            product_summary = self._summarize_product_policy(product_sales_policy)
+            summary_parts.append(f"Producto: {product.get('name')} · {product_summary}")
+
+        tenant_summary = self._summarize_tenant_policy(tenant_sales_policy)
+        summary_parts.append(f"Negocio: {tenant.get('name')} · {tenant_summary}")
+
+        effective: dict[str, Any] = {}
+        tenant_tone = self.context_helper.sanitize_text(tenant.get("tone"), max_chars=120)
+        if tenant_tone is not None:
+            effective["tone"] = tenant_tone
+
+        positioning = self._first_non_empty_string(
+            self.context_helper.sanitize_text(product_sales_policy.get("positioning"), max_chars=500),
+            self.context_helper.sanitize_text(tenant_sales_policy.get("positioning"), max_chars=500),
+        )
+        if positioning is not None:
+            effective["positioning"] = positioning
+
+        objective = self._first_non_empty_string(
+            self.context_helper.sanitize_text(playbook_config.get("objective"), max_chars=500),
+            self.context_helper.sanitize_text(product.get("value_proposition") if isinstance(product, dict) else None, max_chars=500),
+            self.context_helper.sanitize_text(tenant_sales_policy.get("positioning"), max_chars=500),
+        )
+        if objective is not None:
+            effective["objective"] = objective
+
+        qualification_focus = self._merge_unique_lines(
+            self._lines_from_value(playbook_config.get("qualificationQuestions")),
+            self._lines_from_value(product_sales_policy.get("objections")),
+            self._lines_from_value(tenant_sales_policy.get("qualificationFocus")),
+        )
+        if qualification_focus != []:
+            effective["qualification_focus"] = qualification_focus
+
+        handoff_rules = self._merge_unique_lines(
+            self._lines_from_value(playbook_config.get("handoffRules")),
+            self._lines_from_value(product_sales_policy.get("handoffRules")),
+            self._lines_from_value(tenant_sales_policy.get("handoffRules")),
+        )
+        if handoff_rules != []:
+            effective["handoff_rules"] = handoff_rules
+
+        pricing_notes = self._lines_from_value(product_sales_policy.get("pricingNotes"))
+        if pricing_notes != []:
+            effective["pricing_notes"] = pricing_notes
+
+        sales_boundaries = self._lines_from_value(tenant_sales_policy.get("salesBoundaries"))
+        if sales_boundaries != []:
+            effective["sales_boundaries"] = sales_boundaries
+
+        agenda_rules = self._lines_from_value(playbook_config.get("agendaRules"))
+        if agenda_rules != []:
+            effective["agenda_rules"] = agenda_rules
+
+        allowed_actions = self._lines_from_value(playbook_config.get("allowedActions"))
+        if allowed_actions != []:
+            effective["allowed_actions"] = allowed_actions
+
+        notes = self._merge_unique_lines(
+            self._lines_from_value(playbook_config.get("notes")),
+            self._lines_from_value(product_sales_policy.get("notes")),
+            self._lines_from_value(tenant_sales_policy.get("notes")),
+        )
+        if notes != []:
+            effective["notes"] = notes
+
+        return {
+            "summary": " · ".join(summary_parts),
+            "priority": ["entry_point", "playbook", "product", "tenant"],
+            "conflict_policy": "Lo específico añade o restringe lo general; el orden efectivo es entry_point > playbook > product > tenant.",
+            "tenant": {
+                "summary": tenant_summary,
+                "name": tenant.get("name"),
+                "business_context": tenant.get("business_context"),
+                "tone": tenant.get("tone"),
+                "positioning": self.context_helper.sanitize_text(tenant_sales_policy.get("positioning"), max_chars=500),
+                "qualification_focus": self.context_helper.sanitize_text(tenant_sales_policy.get("qualificationFocus"), max_chars=500),
+                "handoff_rules": self.context_helper.sanitize_text(tenant_sales_policy.get("handoffRules"), max_chars=500),
+                "sales_boundaries": self._lines_from_value(tenant_sales_policy.get("salesBoundaries")),
+                "notes": self.context_helper.sanitize_text(tenant_sales_policy.get("notes"), max_chars=1000),
+            },
+            "product": product,
+            "playbook": playbook,
+            "entry_point": entry_point,
+            "effective": effective,
+        }
+
+    def _lines_from_value(self, value: Any) -> list[str]:
+        if isinstance(value, str):
+            value = value.splitlines()
+
+        if not isinstance(value, list):
+            return []
+
+        lines: list[str] = []
+        for item in value:
+            if not isinstance(item, str):
+                continue
+
+            trimmed = item.strip()
+            if trimmed != "":
+                lines.append(trimmed)
+
+        return lines
+
+    def _merge_unique_lines(self, *lists: list[str]) -> list[str]:
+        merged: list[str] = []
+        seen: set[str] = set()
+
+        for values in lists:
+            for value in values:
+                if value in seen:
+                    continue
+
+                seen.add(value)
+                merged.append(value)
+
+        return merged
+
+    def _first_non_empty_string(self, *values: str | None) -> str | None:
+        for value in values:
+            if not isinstance(value, str):
+                continue
+
+            trimmed = value.strip()
+            if trimmed != "":
+                return trimmed
+
+        return None
+
+    def _summarize_tenant_policy(self, policy: dict[str, Any]) -> str:
+        return self._summarize_by_keys(policy, ("positioning", "qualificationFocus", "handoffRules"))
+
+    def _summarize_product_policy(self, policy: dict[str, Any]) -> str:
+        return self._summarize_by_keys(policy, ("positioning", "pricingNotes", "handoffRules"))
+
+    def _summarize_playbook_config(self, config: dict[str, Any]) -> str:
+        parts = []
+        objective = self.context_helper.sanitize_text(config.get("objective"), max_chars=300)
+        if objective is not None:
+            parts.append(objective)
+
+        qualification_questions = self._lines_from_value(config.get("qualificationQuestions"))
+        if qualification_questions != []:
+            parts.append(qualification_questions[0])
+
+        scoring = config.get("scoring")
+        if isinstance(scoring, dict):
+            max_score = scoring.get("maxScore")
+            handoff_threshold = scoring.get("handoffThreshold")
+            if isinstance(max_score, int) and isinstance(handoff_threshold, int):
+                parts.append(f"score {handoff_threshold}/{max_score}")
+
+        cleaned = [part for part in parts if isinstance(part, str) and part.strip() != ""]
+        return " · ".join(cleaned) if cleaned != [] else "Sin resumen"
+
+    def _summarize_by_keys(self, payload: dict[str, Any], keys: tuple[str, ...]) -> str:
+        parts: list[str] = []
+        for key in keys:
+            if key not in payload:
+                continue
+
+            value = payload[key]
+            if isinstance(value, str):
+                trimmed = value.strip()
+                if trimmed != "":
+                    parts.append(trimmed)
+            elif isinstance(value, list):
+                first = self._first_non_empty_string(*[item for item in value if isinstance(item, str)])
+                if first is not None:
+                    parts.append(first)
+
+        cleaned = [part for part in parts if part.strip() != ""]
+        return " · ".join(cleaned) if cleaned != [] else "Sin resumen"
 
     def _external_context_payload(self, contact_context: dict[str, Any] | None) -> dict[str, Any] | None:
         if not isinstance(contact_context, dict):
