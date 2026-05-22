@@ -14,8 +14,13 @@ from app.services.llm_context_helper import LLMContextHelper
 
 
 class LLMPromptBuilder:
-    def __init__(self, context_helper: LLMContextHelper | None = None) -> None:
+    def __init__(
+        self,
+        context_helper: LLMContextHelper | None = None,
+        use_compact_effective_context_prompt: bool = False,
+    ) -> None:
         self.context_helper = context_helper or LLMContextHelper()
+        self.use_compact_effective_context_prompt = use_compact_effective_context_prompt
 
     def build(
         self,
@@ -35,9 +40,15 @@ class LLMPromptBuilder:
             "Si piden humano/persona/asesor/comercial, needs_human debe ser true. "
             "Si tienes herramientas MCP nativas del tenant, úsalas cuando hagan falta para completar la respuesta. "
             "Si existe effective_context, úsalo como el contexto comercial ya priorizado y trata los bloques legacy como referencia secundaria. "
+            "effective_context manda sobre los bloques legacy; usa estos últimos solo como respaldo si falta información. "
             "No inventes datos ni cites sistemas internos, CRM, n8n, webhooks, IDs internos, UTM, refs, tokens o detalles técnicos. "
             "Mantén el tono breve, útil y orientado a conversación."
         )
+        if self.use_compact_effective_context_prompt:
+            system_prompt += (
+                " Modo compacto activo: prioriza effective_context y evita repetir bloques legacy completos. "
+                "Usa legacy solo como referencia mínima si effective_context no cubre algún dato."
+            )
         current_madrid_time = self._current_madrid_time()
         system_prompt += (
             f" Contexto temporal explícito: fecha y hora actual {current_madrid_time.isoformat()} "
@@ -66,7 +77,76 @@ class LLMPromptBuilder:
                 "Si no devuelve resultados o falla, orienta de forma general y pide una aclaración breve."
             )
 
-        user_payload = {
+        effective_context_payload = self._effective_context_payload(backend_context, mcp_config)
+        user_payload = self._user_payload(
+            payload,
+            routing,
+            backend_context,
+            effective_context_payload,
+            mcp_config,
+        )
+
+        return system_prompt, json.dumps(user_payload, ensure_ascii=False, indent=2)
+
+    def effective_context_trace(
+        self,
+        backend_context: CommercialContext | None,
+        mcp_config: McpRemoteConfig | None = None,
+    ) -> dict[str, Any]:
+        trace: dict[str, Any] = {
+            "effective_context_present": False,
+            "effective_context_source": "none",
+            "effective_context_summary": None,
+            "effective_context_priority": None,
+            "mcp_runtime_available": bool(mcp_config is not None and mcp_config.enabled),
+            "compact_prompt_enabled": bool(self.use_compact_effective_context_prompt),
+            "prompt_mode": "compact" if self.use_compact_effective_context_prompt else "legacy",
+        }
+
+        if backend_context is None:
+            return trace
+
+        trace["effective_context_present"] = backend_context.effective_context != {}
+        trace["effective_context_source"] = "backend" if trace["effective_context_present"] else "synthesized_legacy"
+
+        effective_context_payload = self._effective_context_payload(backend_context, mcp_config)
+        if isinstance(effective_context_payload, dict):
+            summary = effective_context_payload.get("summary")
+            if isinstance(summary, str) and summary.strip() != "":
+                trace["effective_context_summary"] = summary.strip()
+
+            priority = effective_context_payload.get("priority")
+            if isinstance(priority, list) and priority != []:
+                trace["effective_context_priority"] = [item for item in priority if isinstance(item, str) and item.strip() != ""]
+
+        return self.context_helper.sanitize_jsonish(trace, max_depth=2, max_items=8, max_string_chars=400)
+
+    def _user_payload(
+        self,
+        payload: AgentRequest,
+        routing: RoutingContext | None,
+        backend_context: CommercialContext | None,
+        effective_context_payload: dict[str, Any] | None,
+        mcp_config: McpRemoteConfig | None,
+    ) -> dict[str, Any]:
+        if self.use_compact_effective_context_prompt:
+            return self._compact_user_payload(
+                payload,
+                routing,
+                backend_context,
+                effective_context_payload,
+            )
+
+        return self._legacy_user_payload(payload, routing, backend_context, mcp_config)
+
+    def _legacy_user_payload(
+        self,
+        payload: AgentRequest,
+        routing: RoutingContext | None,
+        backend_context: CommercialContext | None,
+        mcp_config: McpRemoteConfig | None,
+    ) -> dict[str, Any]:
+        return {
             "effective_context": self._effective_context_payload(backend_context, mcp_config),
             "tenant": self._tenant_payload(backend_context),
             "product": self._product_payload(backend_context),
@@ -74,20 +154,81 @@ class LLMPromptBuilder:
             "entry_point": self._entry_point_payload(backend_context),
             "sales_runtime": self._sales_runtime_payload(backend_context),
             "routing": self._routing_payload(routing),
-            "contact": {
-                "phone": self.context_helper.sanitize_text(payload.contact.phone, max_chars=64),
-                "name": self.context_helper.sanitize_text(payload.contact.name, max_chars=255),
-                "channel_type": self.context_helper.sanitize_text(payload.channel_type, max_chars=32),
-                "external_channel_id": self.context_helper.sanitize_text(payload.external_channel_id, max_chars=128),
-            },
-            "conversation": {
-                "external_id": self.context_helper.sanitize_text(payload.conversation.external_id, max_chars=128),
-                **self.context_helper.build_conversation_payload(payload.conversation.summary, payload.conversation.last_messages),
-            },
+            "contact": self._contact_payload(payload),
+            "conversation": self._conversation_payload(payload),
             "current_message": self.context_helper.sanitize_text(payload.message.text, max_chars=2000),
         }
 
-        return system_prompt, json.dumps(user_payload, ensure_ascii=False, indent=2)
+    def _compact_user_payload(
+        self,
+        payload: AgentRequest,
+        routing: RoutingContext | None,
+        backend_context: CommercialContext | None,
+        effective_context_payload: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        user_payload: dict[str, Any] = {
+            "effective_context": effective_context_payload,
+            "routing": self._routing_payload(routing),
+            "contact": self._contact_payload(payload),
+            "conversation": self._conversation_payload(payload),
+            "current_message": self.context_helper.sanitize_text(payload.message.text, max_chars=2000),
+        }
+
+        if backend_context is not None and backend_context.effective_context == {}:
+            legacy_reference = self._legacy_reference_payload(backend_context)
+            if legacy_reference != {}:
+                user_payload["legacy_reference"] = legacy_reference
+
+        return user_payload
+
+    def _contact_payload(self, payload: AgentRequest) -> dict[str, Any]:
+        return {
+            "phone": self.context_helper.sanitize_text(payload.contact.phone, max_chars=64),
+            "name": self.context_helper.sanitize_text(payload.contact.name, max_chars=255),
+            "channel_type": self.context_helper.sanitize_text(payload.channel_type, max_chars=32),
+            "external_channel_id": self.context_helper.sanitize_text(payload.external_channel_id, max_chars=128),
+        }
+
+    def _conversation_payload(self, payload: AgentRequest) -> dict[str, Any]:
+        return {
+            "external_id": self.context_helper.sanitize_text(payload.conversation.external_id, max_chars=128),
+            **self.context_helper.build_conversation_payload(payload.conversation.summary, payload.conversation.last_messages),
+        }
+
+    def _legacy_reference_payload(self, backend_context: CommercialContext) -> dict[str, Any]:
+        reference: dict[str, Any] = {
+            "tenant": {
+                "id": backend_context.tenant.id,
+                "name": self.context_helper.sanitize_text(backend_context.tenant.name, max_chars=255),
+                "slug": self.context_helper.sanitize_text(backend_context.tenant.slug, max_chars=180),
+                "tone": self.context_helper.sanitize_text(backend_context.tenant.tone, max_chars=120),
+            }
+        }
+
+        if backend_context.selected_product is not None:
+            reference["product"] = {
+                "id": backend_context.selected_product.id,
+                "name": self.context_helper.sanitize_text(backend_context.selected_product.name, max_chars=255),
+                "slug": self.context_helper.sanitize_text(backend_context.selected_product.slug, max_chars=180),
+                "value_proposition": self.context_helper.sanitize_text(backend_context.selected_product.value_proposition, max_chars=400),
+            }
+
+        if backend_context.selected_playbook is not None:
+            reference["playbook"] = {
+                "id": backend_context.selected_playbook.id,
+                "name": self.context_helper.sanitize_text(backend_context.selected_playbook.name, max_chars=255),
+                "product_id": backend_context.selected_playbook.product_id,
+            }
+
+        if backend_context.entry_point is not None:
+            reference["entry_point"] = {
+                "id": backend_context.entry_point.id,
+                "code": self.context_helper.sanitize_text(backend_context.entry_point.code, max_chars=180),
+                "name": self.context_helper.sanitize_text(backend_context.entry_point.name, max_chars=255),
+                "crm_branch_ref": self.context_helper.sanitize_text(backend_context.entry_point.crm_branch_ref, max_chars=255),
+            }
+
+        return reference
 
     def _current_madrid_time(self) -> datetime:
         return datetime.now(ZoneInfo("Europe/Madrid"))
