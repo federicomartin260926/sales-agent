@@ -374,7 +374,7 @@ final class ExternalToolController extends AbstractController
             'type' => $tool?->getType() ?? self::TEST_TOOL_TYPE,
             'provider' => $tool?->getProvider() ?? self::PROVIDERS[0],
             'webhookUrl' => $tool?->getWebhookUrl() ?? '',
-            'authType' => $tool?->getAuthType() ?? 'none',
+            'authType' => $tool?->getAuthType() ?? ($tool?->hasDownstreamAuthorizationToken() ? 'bearer' : 'none'),
             'bearerToken' => '',
             'clearBearerToken' => false,
             'timeoutSeconds' => (string) ($tool?->getTimeoutSeconds() ?? 5),
@@ -504,7 +504,12 @@ final class ExternalToolController extends AbstractController
         $tool->setType($values['type']);
         $tool->setProvider($values['provider']);
         $tool->setWebhookUrl($values['webhookUrl'] !== '' ? $values['webhookUrl'] : null);
-        $tool->setAuthType($values['authType'] !== 'none' ? $values['authType'] : null);
+        $effectiveAuthType = $values['authType'];
+        if ($effectiveAuthType === 'none' && ($values['bearerToken'] !== '' || $tool->hasDownstreamAuthorizationToken())) {
+            $effectiveAuthType = 'bearer';
+        }
+
+        $tool->setAuthType($effectiveAuthType !== 'none' ? $effectiveAuthType : null);
         $tool->setTimeoutSeconds((int) $values['timeoutSeconds']);
         $tool->setActive($values['isActive']);
         $isRuntimeDefault = $values['type'] === self::MCP_TOOL_TYPE && $values['isActive'] && $values['isRuntimeDefault'];
@@ -513,7 +518,7 @@ final class ExternalToolController extends AbstractController
         }
         $tool->setRuntimeDefault($isRuntimeDefault);
         $tool->setConfig($this->buildConfig($values));
-        $this->applyBearerToken($tool, $values['authType'], $values['bearerToken'], $values['clearBearerToken'], $isNew);
+        $this->applyBearerToken($tool, $effectiveAuthType, $values['bearerToken'], $values['clearBearerToken'], $isNew);
     }
 
     private function applyBearerToken(ExternalTool $tool, string $authType, string $rawBearerToken, bool $clearBearerToken, bool $isNew): void

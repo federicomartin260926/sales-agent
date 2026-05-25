@@ -66,12 +66,14 @@
             <option value="bearer"{{ values.authType == 'bearer' ? ' selected' : '' }}>bearer</option>
           </select>
           <div class="field-note">Para autenticación downstream usa <code>Name=Authorization</code> y <code>Value=Bearer &lt;token&gt;</code>. Sales Agent guarda sólo el token, sin el prefijo Bearer.</div>
+          <div class="field-note">Si pegas un token, el formulario lo tratará como <code>bearer</code> al guardar para que no se pierda.</div>
         </div>
 
         <div class="field field-full">
           <label for="tool-token">Token CRM para n8n/MCP</label>
           <input id="tool-token" name="bearerToken" type="password" value="" autocomplete="new-password" placeholder="{{ has_token ? '•••••••• configurado — dejar vacío para conservar' : 'Pega el token Bearer o token puro' }}">
           <div class="field-note">Autorización downstream opcional que Sales Agent enviará como <code>Authorization</code> al servidor MCP. No se envía al prompt ni como argumento de tool.</div>
+          <div class="field-note">El valor no se repuebla en el input por seguridad; si el estado dice “Configurado”, el token sigue guardado.</div>
           <div class="field-note">Estado: {{ downstream_authorization_configured ? 'Configurado' : 'No configurado' }}</div>
           {% if is_edit and has_token %}
             <label class="checkbox-inline mt-2" for="tool-token-clear">
