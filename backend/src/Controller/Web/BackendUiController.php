@@ -10,6 +10,7 @@ use App\Entity\Playbook;
 use App\Entity\Product;
 use App\Entity\Tenant;
 use App\Entity\TenantAiUsagePolicy;
+use App\Entity\TenantAiTopUpRequest;
 use App\Entity\TenantMembership;
 use App\Entity\User;
 use App\Repository\AiUsageEventRepository;
@@ -18,6 +19,7 @@ use App\Repository\ProductRepository;
 use App\Repository\EntryPointRepository;
 use App\Repository\ExternalToolRepository;
 use App\Repository\TenantAiUsagePolicyRepository;
+use App\Repository\TenantAiTopUpRequestRepository;
 use App\Repository\TenantRepository;
 use App\Repository\UserRepository;
 use App\Service\ActiveTenantContext;
@@ -806,6 +808,100 @@ final class BackendUiController
             $values,
             $error,
             $aiUsageData
+        );
+    }
+
+    #[Route('/ai-usage', methods: ['GET'])]
+    public function aiUsage(
+        Request $request,
+        ?TenantAiUsagePolicyRepository $aiUsagePolicies = null,
+        ?AiUsageEventRepository $aiUsageEvents = null,
+        ?TenantAiTopUpRequestRepository $topUpRequests = null,
+    ): Response {
+        if (!$this->security->isGranted('ROLE_MANAGER')) {
+            return new RedirectResponse('/backend/login');
+        }
+
+        $activeTenant = $this->resolvedActiveTenantForCurrentUser();
+        if (!$activeTenant instanceof Tenant) {
+            return $this->renderTenantSelectionRequiredPage(
+                'Uso IA',
+                'Selecciona un negocio antes de consultar consumo, límites o solicitudes de ampliación.',
+                'ai-usage',
+                'Uso IA'
+            );
+        }
+
+        return $this->renderAiUsageDashboardPage(
+            $request,
+            $activeTenant,
+            $this->tenantAiUsageTopUpRequestFormDefaults(),
+            [],
+            $aiUsagePolicies,
+            $aiUsageEvents,
+            $topUpRequests
+        );
+    }
+
+    #[Route('/ai-usage/top-up-requests', methods: ['POST'])]
+    public function aiUsageTopUpRequestCreate(
+        Request $request,
+        ?TenantAiUsagePolicyRepository $aiUsagePolicies = null,
+        ?AiUsageEventRepository $aiUsageEvents = null,
+        ?TenantAiTopUpRequestRepository $topUpRequests = null,
+    ): Response {
+        if (!$this->security->isGranted('ROLE_MANAGER')) {
+            return new RedirectResponse('/backend/login');
+        }
+
+        $activeTenant = $this->resolvedActiveTenantForCurrentUser();
+        if (!$activeTenant instanceof Tenant) {
+            return $this->renderTenantSelectionRequiredPage(
+                'Uso IA',
+                'Selecciona un negocio antes de enviar una solicitud de ampliación.',
+                'ai-usage',
+                'Uso IA'
+            );
+        }
+
+        $values = $this->tenantAiUsageTopUpRequestFormValuesFromRequest($request);
+        $errors = [];
+
+        if (!$this->isValidTenantAiUsageTopUpRequestToken((string) $request->request->get('_csrf_token'))) {
+            $errors[] = 'La sesión del formulario ha expirado. Vuelve a intentarlo.';
+        } else {
+            $errors = $this->validateTenantAiUsageTopUpRequestForm($values);
+
+            if ($errors === []) {
+                $requestedAmount = (float) $values['requestedAmountEur'];
+                $message = (string) $values['message'];
+                $requestEntity = new TenantAiTopUpRequest($activeTenant, $requestedAmount, $message);
+                $currentUser = $this->currentUser();
+                if ($currentUser instanceof User) {
+                    $requestEntity->setRequestedBy($currentUser);
+                }
+
+                if ($topUpRequests instanceof TenantAiTopUpRequestRepository) {
+                    $topUpRequests->save($requestEntity);
+                } else {
+                    $this->entityManager->persist($requestEntity);
+                    $this->entityManager->flush();
+                }
+
+                $this->addFlashMessage($request, 'success', 'Solicitud de ampliación enviada y marcada como pendiente.');
+
+                return new RedirectResponse('/backend/ai-usage');
+            }
+        }
+
+        return $this->renderAiUsageDashboardPage(
+            $request,
+            $activeTenant,
+            $values,
+            $errors,
+            $aiUsagePolicies,
+            $aiUsageEvents,
+            $topUpRequests
         );
     }
 
@@ -2532,6 +2628,335 @@ final class BackendUiController
                 $aiUsageEvents->findRecentByTenant($tenant, 5)
             ),
         ];
+    }
+
+    /**
+     * @param array{requestedAmountEur: string, message: string} $values
+     */
+    private function renderAiUsageDashboardPage(
+        Request $request,
+        Tenant $tenant,
+        array $values,
+        array $errors,
+        ?TenantAiUsagePolicyRepository $aiUsagePolicies,
+        ?AiUsageEventRepository $aiUsageEvents,
+        ?TenantAiTopUpRequestRepository $topUpRequests,
+    ): Response {
+        $policy = $this->loadTenantAiUsagePolicyForView($tenant, $aiUsagePolicies);
+        $dashboard = $this->tenantAiUsageDashboardData($tenant, $policy, $aiUsageEvents ?? $this->aiUsageEvents, $topUpRequests);
+        $errorHtml = '';
+        foreach ($errors as $error) {
+            $errorHtml .= $this->renderDismissibleAlert('alert-error', htmlspecialchars((string) $error, ENT_QUOTES, 'UTF-8'));
+        }
+
+        $content = $this->twig->render('backend/ai_usage/index.html.twig', [
+            'hero_title' => 'Uso IA',
+            'page_subtitle' => sprintf('Consumo, límites y solicitudes de ampliación de %s.', $tenant->getName()),
+            'feedback_html' => $this->renderProfileFeedback($request),
+            'error_html' => $errorHtml,
+            'action_url' => '/backend/ai-usage/top-up-requests',
+            'csrf_token' => $this->aiUsageTopUpRequestTokenValue(),
+            'values' => $values,
+            ...$dashboard,
+        ]);
+
+        return $this->renderBackendShell('Uso IA', 'Consumo, límites y solicitudes de ampliación del negocio activo.', 'ai-usage', $content);
+    }
+
+    /**
+     * @return array{
+     *   status: array{label: string, class: string, detail: string},
+     *   today: array{estimatedCostEur: string, totalTokens: string},
+     *   month: array{estimatedCostEur: string, totalTokens: string},
+     *   daily_limit: array{label: string, value: string, used: string, remaining: string, percent: ?int, percent_label: string, class: string},
+     *   monthly_limit: array{label: string, value: string, used: string, remaining: string, percent: ?int, percent_label: string, class: string},
+     *   period: array{label: string, current: string, daily_reset: string, monthly_reset: string},
+     *   recentEvents: array<int, array{
+     *     createdAt: string,
+     *     feature: string,
+     *     provider: string,
+     *     model: string,
+     *     inputTokens: string,
+     *     outputTokens: string,
+     *     cachedTokens: string,
+     *     totalTokens: string,
+     *     estimatedCostEur: string,
+     *     latencyMs: string,
+     *     status: string,
+     *     status_class: string
+     *   }>,
+     *   recentRequests: array<int, array{
+     *     createdAt: string,
+     *     amountEur: string,
+     *     message: string,
+     *     status: string,
+     *     status_class: string,
+     *     requestedBy: string
+     *   }>,
+     *   policy: array{exists: bool, aiEnabled: bool, defaultModel: string, fallbackModel: string, limitAction: string, monthlyCostLimitEur: string, dailyCostLimitEur: string}
+     * }
+     */
+    private function tenantAiUsageDashboardData(
+        Tenant $tenant,
+        ?TenantAiUsagePolicy $policy,
+        ?AiUsageEventRepository $aiUsageEvents,
+        ?TenantAiTopUpRequestRepository $topUpRequests,
+    ): array {
+        $timezone = new \DateTimeZone(date_default_timezone_get() ?: 'UTC');
+        $today = new \DateTimeImmutable('today', $timezone);
+        $month = new \DateTimeImmutable('first day of this month', $timezone);
+        $dailyReset = $today->modify('+1 day');
+        $monthlyReset = $month->modify('+1 month');
+
+        $todaySummary = $aiUsageEvents instanceof AiUsageEventRepository ? $aiUsageEvents->summarizeSince($tenant, $today) : [
+            'estimated_cost_eur' => 0.0,
+            'total_tokens' => 0,
+        ];
+        $monthSummary = $aiUsageEvents instanceof AiUsageEventRepository ? $aiUsageEvents->summarizeSince($tenant, $month) : [
+            'estimated_cost_eur' => 0.0,
+            'total_tokens' => 0,
+        ];
+
+        $dailyLimit = $policy instanceof TenantAiUsagePolicy ? $policy->getDailyCostLimitEur() : null;
+        $monthlyLimit = $policy instanceof TenantAiUsagePolicy ? $policy->getMonthlyCostLimitEur() : null;
+        $dailyUsed = (float) ($todaySummary['estimated_cost_eur'] ?? 0.0);
+        $monthlyUsed = (float) ($monthSummary['estimated_cost_eur'] ?? 0.0);
+        $dailyRemaining = $dailyLimit !== null ? max(0.0, $dailyLimit - $dailyUsed) : null;
+        $monthlyRemaining = $monthlyLimit !== null ? max(0.0, $monthlyLimit - $monthlyUsed) : null;
+        $dailyPercent = $dailyLimit !== null && $dailyLimit > 0 ? min(100, (int) round(($dailyUsed / $dailyLimit) * 100)) : null;
+        $monthlyPercent = $monthlyLimit !== null && $monthlyLimit > 0 ? min(100, (int) round(($monthlyUsed / $monthlyLimit) * 100)) : null;
+
+        $status = [
+            'label' => 'Sin política',
+            'class' => 'status-warn',
+            'detail' => 'No hay política IA configurada. La vista se muestra en modo seguro.',
+        ];
+        if ($policy instanceof TenantAiUsagePolicy) {
+            if (!$policy->isAiEnabled()) {
+                $status = [
+                    'label' => 'Inactiva',
+                    'class' => 'status-off',
+                    'detail' => 'La política IA está desactivada para este negocio.',
+                ];
+            } elseif ($dailyLimit !== null && $dailyUsed >= $dailyLimit) {
+                $status = [
+                    'label' => 'Bloqueada por límite diario',
+                    'class' => 'status-warn',
+                    'detail' => 'El consumo diario ha alcanzado el límite configurado.',
+                ];
+            } elseif ($monthlyLimit !== null && $monthlyUsed >= $monthlyLimit) {
+                $status = [
+                    'label' => 'Bloqueada por límite mensual',
+                    'class' => 'status-warn',
+                    'detail' => 'El consumo mensual ha alcanzado el límite configurado.',
+                ];
+            } else {
+                $status = [
+                    'label' => 'Activa',
+                    'class' => 'status-ok',
+                    'detail' => 'La IA está habilitada y operando dentro de los límites configurados.',
+                ];
+            }
+        }
+
+        $recentEvents = [];
+        if ($aiUsageEvents instanceof AiUsageEventRepository) {
+            $recentEvents = array_map(
+                fn (AiUsageEvent $event): array => $this->tenantAiUsageDashboardEventView($event),
+                $aiUsageEvents->findRecentByTenant($tenant, 5)
+            );
+        }
+
+        $recentRequests = [];
+        if ($topUpRequests instanceof TenantAiTopUpRequestRepository) {
+            $recentRequests = array_map(
+                fn (TenantAiTopUpRequest $requestEntity): array => $this->tenantAiUsageTopUpRequestView($requestEntity),
+                $topUpRequests->findRecentByTenant($tenant, 5)
+            );
+        }
+
+        return [
+            'status' => $status,
+            'today' => [
+                'estimatedCostEur' => $this->formatMoneyEur((float) ($todaySummary['estimated_cost_eur'] ?? 0.0)),
+                'totalTokens' => $this->formatIntegerDisplay((int) ($todaySummary['total_tokens'] ?? 0)),
+            ],
+            'month' => [
+                'estimatedCostEur' => $this->formatMoneyEur((float) ($monthSummary['estimated_cost_eur'] ?? 0.0)),
+                'totalTokens' => $this->formatIntegerDisplay((int) ($monthSummary['total_tokens'] ?? 0)),
+            ],
+            'daily_limit' => $this->tenantAiUsageLimitView('Límite diario', $dailyLimit, $dailyUsed, $dailyRemaining, $dailyPercent),
+            'monthly_limit' => $this->tenantAiUsageLimitView('Límite mensual', $monthlyLimit, $monthlyUsed, $monthlyRemaining, $monthlyPercent),
+            'period' => [
+                'label' => 'Periodo actual',
+                'current' => $month->format('Y-m'),
+                'daily_reset' => $dailyReset->format('Y-m-d H:i'),
+                'monthly_reset' => $monthlyReset->format('Y-m-d H:i'),
+            ],
+            'recentEvents' => $recentEvents,
+            'recentRequests' => $recentRequests,
+            'policy' => [
+                'exists' => $policy instanceof TenantAiUsagePolicy,
+                'aiEnabled' => $policy?->isAiEnabled() ?? true,
+                'defaultModel' => $policy?->getDefaultModel() ?? '',
+                'fallbackModel' => $policy?->getFallbackModel() ?? '',
+                'limitAction' => $policy?->getLimitAction() ?? 'handoff_human',
+                'monthlyCostLimitEur' => $this->formatNullableFloat($policy?->getMonthlyCostLimitEur()),
+                'dailyCostLimitEur' => $this->formatNullableFloat($policy?->getDailyCostLimitEur()),
+            ],
+        ];
+    }
+
+    /**
+     * @return array{label: string, value: string, used: string, remaining: string, percent: ?int, percent_label: string, class: string}
+     */
+    private function tenantAiUsageLimitView(
+        string $label,
+        ?float $limitEur,
+        float $usedEur,
+        ?float $remainingEur,
+        ?int $percent,
+    ): array {
+        return [
+            'label' => $label,
+            'value' => $limitEur !== null ? $this->formatMoneyEur($limitEur) : 'Sin límite',
+            'used' => $this->formatMoneyEur($usedEur),
+            'remaining' => $remainingEur !== null ? $this->formatMoneyEur($remainingEur) : 'Sin límite',
+            'percent' => $percent,
+            'percent_label' => $percent !== null ? sprintf('%d%%', $percent) : '—',
+            'class' => $percent !== null && $percent >= 100 ? 'status-warn' : 'status-ok',
+        ];
+    }
+
+    private function tenantAiUsageDashboardEventView(AiUsageEvent $event): array
+    {
+        return [
+            'createdAt' => $event->getCreatedAt()->format('Y-m-d H:i'),
+            'feature' => $event->getConversationMessage() instanceof \App\Entity\ConversationMessage
+                ? 'Mensajería'
+                : ($event->getConversation() instanceof \App\Entity\Conversation ? 'Conversación' : 'Evento IA'),
+            'provider' => $event->getProvider() !== null && $event->getProvider() !== '' ? $event->getProvider() : '—',
+            'model' => $event->getModel() !== null && $event->getModel() !== '' ? $this->shortenListText($event->getModel(), 24, '—') : '—',
+            'inputTokens' => $this->formatIntegerDisplay($event->getInputTokens()),
+            'outputTokens' => $this->formatIntegerDisplay($event->getOutputTokens()),
+            'cachedTokens' => $this->formatIntegerDisplay($event->getCachedTokens()),
+            'totalTokens' => $this->formatIntegerDisplay($event->getTotalTokens()),
+            'estimatedCostEur' => $this->formatMoneyEur($event->getEstimatedCost()),
+            'latencyMs' => $event->getLatencyMs() !== null ? $this->formatIntegerDisplay($event->getLatencyMs()).' ms' : '—',
+            'status' => $event->getTotalTokens() !== null || $event->getEstimatedCost() !== null ? 'Registrado' : 'Sin datos',
+            'status_class' => $event->getTotalTokens() !== null || $event->getEstimatedCost() !== null ? 'status-ok' : 'status-warn',
+        ];
+    }
+
+    private function tenantAiUsageTopUpRequestView(TenantAiTopUpRequest $requestEntity): array
+    {
+        $requestedBy = $requestEntity->getRequestedBy();
+
+        return [
+            'createdAt' => $requestEntity->getCreatedAt()->format('Y-m-d H:i'),
+            'amountEur' => $this->formatMoneyEur($requestEntity->getRequestedAmountEur()),
+            'message' => $requestEntity->getMessage(),
+            'status' => match ($requestEntity->getStatus()) {
+                TenantAiTopUpRequest::STATUS_APPROVED => 'Aprobada',
+                TenantAiTopUpRequest::STATUS_REJECTED => 'Rechazada',
+                default => 'Pendiente',
+            },
+            'status_class' => match ($requestEntity->getStatus()) {
+                TenantAiTopUpRequest::STATUS_APPROVED => 'status-ok',
+                TenantAiTopUpRequest::STATUS_REJECTED => 'status-off',
+                default => 'status-warn',
+            },
+            'requestedBy' => $requestedBy instanceof User ? $requestedBy->getName() !== '' ? $requestedBy->getName() : $requestedBy->getEmail() : 'Sistema',
+        ];
+    }
+
+    /**
+     * @param array{requestedAmountEur: string, message: string} $values
+     *
+     * @return string[]
+     */
+    private function validateTenantAiUsageTopUpRequestForm(array $values): array
+    {
+        $errors = [];
+
+        $requestedAmount = $this->parsePositiveFloat($values['requestedAmountEur']);
+        if ($requestedAmount === null) {
+            $errors[] = 'Debes indicar un importe solicitado válido.';
+        }
+
+        $message = trim((string) ($values['message'] ?? ''));
+        if ($message === '') {
+            $errors[] = 'Debes indicar el motivo de la solicitud.';
+        } elseif (mb_strlen($message) > 2000) {
+            $errors[] = 'El motivo de la solicitud no puede superar 2000 caracteres.';
+        }
+
+        return $errors;
+    }
+
+    /**
+     * @return array{requestedAmountEur: string, message: string}
+     */
+    private function tenantAiUsageTopUpRequestFormDefaults(): array
+    {
+        return [
+            'requestedAmountEur' => '',
+            'message' => '',
+        ];
+    }
+
+    /**
+     * @return array{requestedAmountEur: string, message: string}
+     */
+    private function tenantAiUsageTopUpRequestFormValuesFromRequest(Request $request): array
+    {
+        return [
+            'requestedAmountEur' => trim((string) $request->request->get('requestedAmountEur', '')),
+            'message' => trim((string) $request->request->get('message', '')),
+        ];
+    }
+
+    private function isValidTenantAiUsageTopUpRequestToken(string $value): bool
+    {
+        if ($this->csrfTokenManager === null) {
+            return true;
+        }
+
+        return $this->csrfTokenManager->isTokenValid(new CsrfToken('tenant_ai_top_up_request', $value));
+    }
+
+    private function aiUsageTopUpRequestTokenValue(): string
+    {
+        if ($this->csrfTokenManager === null) {
+            return '';
+        }
+
+        return $this->csrfTokenManager->getToken('tenant_ai_top_up_request')->getValue();
+    }
+
+    private function loadTenantAiUsagePolicyForView(Tenant $tenant, ?TenantAiUsagePolicyRepository $aiUsagePolicies): ?TenantAiUsagePolicy
+    {
+        if ($aiUsagePolicies instanceof TenantAiUsagePolicyRepository) {
+            return $aiUsagePolicies->findOneByTenant($tenant);
+        }
+
+        return null;
+    }
+
+    private function parsePositiveFloat(mixed $value): ?float
+    {
+        if (!is_string($value)) {
+            return null;
+        }
+
+        $trimmed = str_replace(',', '.', trim($value));
+        if ($trimmed === '' || !is_numeric($trimmed)) {
+            return null;
+        }
+
+        $number = (float) $trimmed;
+
+        return $number > 0 ? $number : null;
     }
 
     /**

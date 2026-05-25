@@ -29,12 +29,14 @@
             </div>
           </div>
 
-          <div class="nav-section">
-            <div class="nav-section-title">Uso IA</div>
-            <div class="nav-section-items">
-              <span class="nav-placeholder">Próximamente</span>
+          {% if can_manage_active_tenant|default(false) or is_super_admin|default(false) %}
+            <div class="nav-section">
+              <div class="nav-section-title">Uso IA</div>
+              <div class="nav-section-items">
+                <a class="{{ active_nav == 'ai-usage' ? 'active' : '' }}" href="/backend/ai-usage">Uso IA</a>
+              </div>
             </div>
-          </div>
+          {% endif %}
         {% endif %}
         {% if is_super_admin|default(false) %}
           <div class="nav-section">

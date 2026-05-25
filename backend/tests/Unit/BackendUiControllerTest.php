@@ -661,7 +661,6 @@ final class BackendUiControllerTest extends TestCase
         self::assertStringContainsString('Guías comerciales</div><div class="metric-value">2</div>', $response->getContent());
         self::assertStringContainsString('Puntos de entrada</div><div class="metric-value">3</div>', $response->getContent());
         self::assertStringContainsString('Uso IA', $response->getContent());
-        self::assertStringContainsString('Próximamente', $response->getContent());
         self::assertStringContainsString('/backend/tenants/'.$tenant->getId()->toRfc4122().'/edit', $response->getContent());
         self::assertStringContainsString('/backend/products', $response->getContent());
         self::assertStringContainsString('/backend/playbooks', $response->getContent());
@@ -670,6 +669,7 @@ final class BackendUiControllerTest extends TestCase
         self::assertStringContainsString('Ver productos / servicios', $response->getContent());
         self::assertStringContainsString('Ver guías comerciales', $response->getContent());
         self::assertStringContainsString('Ver puntos de entrada', $response->getContent());
+        self::assertStringContainsString('/backend/ai-usage', $response->getContent());
         self::assertStringNotContainsString('/backend/external-tools', $response->getContent());
         self::assertStringNotContainsString('Servidores MCP', $response->getContent());
         self::assertStringNotContainsString('Plataforma', $response->getContent());
