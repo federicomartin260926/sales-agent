@@ -203,6 +203,15 @@ def test_prompt_builder_enriches_prompt_with_mcp_runtime():
     assert "tenant_main_mcp" in system_prompt
     assert "search_properties" in system_prompt
     assert "Si no hay catálogo local o el catálogo local no es concluyente" in system_prompt
+    assert "bookable=null" in system_prompt
+    assert "bookable=true" in system_prompt
+    assert "1 palabra" in system_prompt
+    assert "2 palabras" in system_prompt
+    assert "No copies literalmente frases compuestas" in system_prompt
+    assert "WhatsApp Business con IA" in system_prompt
+    assert "WhatsApp Business IA" in system_prompt
+    assert "query='IA'" in system_prompt or "query=\"IA\"" in system_prompt
+    assert "query='automatización'" in system_prompt or "query=\"automatización\"" in system_prompt
     assert parsed["product"]["name"] == "Producto Demo"
     assert parsed["products"] == []
     assert parsed["sales_runtime"]["has_product_context"] is False
