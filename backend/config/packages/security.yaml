@@ -65,10 +65,11 @@ security:
     - { path: ^/login, roles: PUBLIC_ACCESS }
     - { path: ^/(backend/)?logout$, roles: PUBLIC_ACCESS }
     - { path: ^/(dashboard|profile), roles: [ROLE_AGENT, ROLE_MANAGER, ROLE_ADMIN, ROLE_SUPER_ADMIN] }
-    - { path: ^/(playbooks|tenants|products|api-health|channels|entry-points|tracking), roles: [ROLE_MANAGER, ROLE_ADMIN, ROLE_SUPER_ADMIN] }
+    - { path: ^/(playbooks|tenants|products|channels|entry-points|tracking), roles: [ROLE_MANAGER, ROLE_ADMIN, ROLE_SUPER_ADMIN] }
     - { path: ^/users, roles: ROLE_SUPER_ADMIN }
     - { path: ^/backend/configuration, roles: ROLE_SUPER_ADMIN }
     - { path: ^/external-tools, roles: ROLE_SUPER_ADMIN }
+    - { path: ^/(backend/)?api-health, roles: ROLE_SUPER_ADMIN }
     - { path: ^/api/tenants, roles: ROLE_SUPER_ADMIN }
     - { path: ^/api/internal, roles: ROLE_INTERNAL_SERVICE }
     - { path: ^/api/health, roles: PUBLIC_ACCESS }

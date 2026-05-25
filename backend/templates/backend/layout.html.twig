@@ -15,24 +15,44 @@
         <div class="brand-sub">Panel para definir negocios, productos/servicios y comportamiento del agente IA.</div>
       </div>
       <nav class="nav">
-        <a class="{{ active_nav == 'dashboard' ? 'active' : '' }}" href="/backend/dashboard">Dashboard</a>
         {% if active_tenant is not null %}
-          <a class="{{ active_nav in ['tenants', 'tenant'] ? 'active' : '' }} nav-tenant-link" href="{{ active_tenant.edit_url }}">Negocio</a>
-        {% else %}
-          <a class="{{ active_nav == 'tenants' ? 'active' : '' }} nav-tenant-link" href="/backend/tenants">Negocio</a>
+          <div class="nav-section">
+            <div class="nav-section-title">Negocio activo</div>
+            <div class="nav-section-items">
+              <a class="{{ active_nav == 'dashboard' ? 'active' : '' }}" href="/backend/dashboard">Dashboard</a>
+              {% if can_manage_active_tenant|default(false) %}
+                <a class="{{ active_nav in ['tenants', 'tenant'] ? 'active' : '' }} nav-tenant-link" href="{{ active_tenant.edit_url }}">Negocio</a>
+              {% endif %}
+              <a class="{{ active_nav == 'playbooks' ? 'active' : '' }}" href="/backend/playbooks">Guías comerciales</a>
+              <a class="{{ active_nav == 'products' ? 'active' : '' }}" href="/backend/products">Productos / servicios</a>
+              <a class="{{ active_nav == 'entry-points' ? 'active' : '' }}" href="/backend/entry-points">Puntos de entrada</a>
+            </div>
+          </div>
+
+          <div class="nav-section">
+            <div class="nav-section-title">Uso IA</div>
+            <div class="nav-section-items">
+              <span class="nav-placeholder">Próximamente</span>
+            </div>
+          </div>
         {% endif %}
-        <a class="{{ active_nav == 'playbooks' ? 'active' : '' }}" href="/backend/playbooks">Guías comerciales</a>
-        <a class="{{ active_nav == 'products' ? 'active' : '' }}" href="/backend/products">Productos / servicios</a>
-        <a class="{{ active_nav == 'entry-points' ? 'active' : '' }}" href="/backend/entry-points">Puntos de entrada</a>
         {% if is_super_admin|default(false) %}
-          <details class="nav-group"{{ active_nav in ['admin-users', 'admin-configuration', 'admin-external-tools'] ? ' open' : '' }}>
-            <summary>Administración <span class="nav-caret">▾</span></summary>
-            <div class="nav-subitems">
-              <a class="{{ active_nav == 'admin-users' ? 'active' : '' }}" href="/backend/users">Usuarios</a>
-              <a class="{{ active_nav == 'admin-configuration' ? 'active' : '' }}" href="/backend/configuration">Configuración</a>
+          <div class="nav-section">
+            <div class="nav-section-title">Administración técnica</div>
+            <div class="nav-section-items">
               <a class="{{ active_nav == 'admin-external-tools' ? 'active' : '' }}" href="/backend/external-tools">Servidores MCP</a>
             </div>
-          </details>
+          </div>
+
+          <div class="nav-section">
+            <div class="nav-section-title">Plataforma</div>
+            <div class="nav-section-items">
+              <a class="{{ active_nav == 'tenants' ? 'active' : '' }}" href="/backend/tenants">Negocios</a>
+              <a class="{{ active_nav == 'admin-users' ? 'active' : '' }}" href="/backend/users">Usuarios</a>
+              <a class="{{ active_nav == 'admin-configuration' ? 'active' : '' }}" href="/backend/configuration">Configuración</a>
+              <a class="{{ active_nav == 'admin-api-health' ? 'active' : '' }}" href="/backend/api-health">API Health</a>
+            </div>
+          </div>
         {% endif %}
       </nav>
     </aside>
@@ -45,12 +65,25 @@
         </div>
         <div class="topbar-meta">
           {% if active_tenant is not null %}
-            <div class="tenant-chip tenant-chip-active">
-              <div class="tenant-chip-label">Negocio</div>
-              <div class="tenant-chip-name">{{ active_tenant.name }}</div>
-              <a class="tenant-chip-link" href="/backend/tenants">Cambiar</a>
-            </div>
-          {% else %}
+            {% if is_super_admin|default(false) %}
+              <a class="tenant-chip tenant-chip-active tenant-chip-linkable" href="/backend/tenants">
+                <div class="tenant-chip-label">Negocio</div>
+                <div class="tenant-chip-name">{{ active_tenant.name }}</div>
+                <span class="tenant-chip-link">Cambiar</span>
+              </a>
+            {% elseif can_manage_active_tenant|default(false) %}
+              <div class="tenant-chip tenant-chip-active">
+                <div class="tenant-chip-label">Negocio</div>
+                <div class="tenant-chip-name">{{ active_tenant.name }}</div>
+                <div class="tenant-chip-link">Activo</div>
+              </div>
+            {% else %}
+              <div class="tenant-chip tenant-chip-active">
+                <div class="tenant-chip-label">Negocio</div>
+                <div class="tenant-chip-name">{{ active_tenant.name }}</div>
+              </div>
+            {% endif %}
+          {% elseif is_super_admin|default(false) %}
             <a class="tenant-chip tenant-chip-empty" href="/backend/tenants">
               <div class="tenant-chip-label">Negocio</div>
               <div class="tenant-chip-name">Sin negocio seleccionado</div>

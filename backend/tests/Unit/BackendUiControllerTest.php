@@ -583,11 +583,13 @@ final class BackendUiControllerTest extends TestCase
         self::assertStringContainsString('Selecciona un negocio para empezar', $response->getContent());
         self::assertStringContainsString('Ir al selector', $response->getContent());
         self::assertStringContainsString('Crear negocio', $response->getContent());
-        self::assertStringContainsString('nav-tenant-link', $response->getContent());
-        self::assertStringContainsString('href="/backend/tenants">Negocio</a>', $response->getContent());
         self::assertStringContainsString('Sin negocio seleccionado', $response->getContent());
         self::assertStringContainsString('Seleccionar negocio', $response->getContent());
-        self::assertStringContainsString('/backend/tenants', $response->getContent());
+        self::assertStringContainsString('Plataforma', $response->getContent());
+        self::assertStringContainsString('Administración técnica', $response->getContent());
+        self::assertStringContainsString('API Health', $response->getContent());
+        self::assertStringNotContainsString('Negocio activo', $response->getContent());
+        self::assertStringNotContainsString('Uso IA', $response->getContent());
         self::assertStringNotContainsString('metric-value', $response->getContent());
     }
 
@@ -649,13 +651,17 @@ final class BackendUiControllerTest extends TestCase
         self::assertSame(Response::HTTP_OK, $response->getStatusCode());
         self::assertStringContainsString('Dashboard comercial — Tech Investments', $response->getContent());
         self::assertStringContainsString('Aquí configuras el contexto, productos, guías y herramientas del agente para este negocio.', $response->getContent());
+        self::assertStringContainsString('Negocio activo', $response->getContent());
         self::assertStringContainsString('nav-tenant-link', $response->getContent());
         self::assertStringContainsString('href="/backend/tenants/'.$tenant->getId()->toRfc4122().'/edit">Negocio</a>', $response->getContent());
         self::assertStringContainsString('tenant-chip-name">Tech Investments', $response->getContent());
-        self::assertStringContainsString('Cambiar</a>', $response->getContent());
+        self::assertStringNotContainsString('Seleccionar negocio', $response->getContent());
+        self::assertStringNotContainsString('Cambiar</a>', $response->getContent());
         self::assertStringContainsString('Productos / servicios</div><div class="metric-value">2</div>', $response->getContent());
         self::assertStringContainsString('Guías comerciales</div><div class="metric-value">2</div>', $response->getContent());
         self::assertStringContainsString('Puntos de entrada</div><div class="metric-value">3</div>', $response->getContent());
+        self::assertStringContainsString('Uso IA', $response->getContent());
+        self::assertStringContainsString('Próximamente', $response->getContent());
         self::assertStringContainsString('/backend/tenants/'.$tenant->getId()->toRfc4122().'/edit', $response->getContent());
         self::assertStringContainsString('/backend/products', $response->getContent());
         self::assertStringContainsString('/backend/playbooks', $response->getContent());
@@ -666,8 +672,60 @@ final class BackendUiControllerTest extends TestCase
         self::assertStringContainsString('Ver puntos de entrada', $response->getContent());
         self::assertStringNotContainsString('/backend/external-tools', $response->getContent());
         self::assertStringNotContainsString('Servidores MCP', $response->getContent());
+        self::assertStringNotContainsString('Plataforma', $response->getContent());
+        self::assertStringNotContainsString('Administración técnica', $response->getContent());
+        self::assertStringNotContainsString('API Health', $response->getContent());
         self::assertStringNotContainsString('Selecciona un negocio para empezar', $response->getContent());
         self::assertStringNotContainsString('Usuarios registrados', $response->getContent());
+    }
+
+    public function testDashboardShowsPlatformAndTechnicalBlocksForSuperAdmin(): void
+    {
+        $tenant = new Tenant('Tech Investments', 'tech-investments');
+        $tool = new \App\Entity\ExternalTool($tenant, 'MCP principal', 'mcp_remote', 'openai_remote_mcp');
+        $tool->setWebhookUrl('https://mcp.example.test');
+        $tool->setRuntimeDefault(true);
+        $tool->setConfig(['enabled_for_llm' => true, 'server_label' => 'principal_mcp']);
+
+        $security = $this->createStub(Security::class);
+        $security->method('getUser')->willReturn(new class implements UserInterface {
+            public function getUserIdentifier(): string
+            {
+                return 'owner@example.com';
+            }
+
+            public function getRoles(): array
+            {
+                return ['ROLE_SUPER_ADMIN'];
+            }
+
+            public function eraseCredentials(): void
+            {
+            }
+        });
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => in_array($role, ['ROLE_AGENT', 'ROLE_MANAGER', 'ROLE_ADMIN', 'ROLE_SUPER_ADMIN'], true));
+
+        $controller = $this->createController($security, null, null, null, null, null, null, $this->createActiveTenantContext($tenant));
+        $response = $controller->dashboard(
+            null,
+            null,
+            null,
+            null,
+            null,
+            $this->createExternalToolRepositoryFake([$tool])
+        );
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        self::assertStringContainsString('Negocio activo', $response->getContent());
+        self::assertStringContainsString('Administración técnica', $response->getContent());
+        self::assertStringContainsString('Plataforma', $response->getContent());
+        self::assertStringContainsString('Servidores MCP', $response->getContent());
+        self::assertStringContainsString('API Health', $response->getContent());
+        self::assertStringContainsString('Cambiar</span>', $response->getContent());
+        self::assertStringContainsString('/backend/external-tools', $response->getContent());
+        self::assertStringContainsString('/backend/users', $response->getContent());
+        self::assertStringContainsString('/backend/configuration', $response->getContent());
+        self::assertStringContainsString('/backend/tenants', $response->getContent());
     }
 
     public function testDashboardShowsRuntimeDefaultMcpWhenPresent(): void

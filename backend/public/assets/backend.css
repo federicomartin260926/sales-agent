@@ -235,7 +235,7 @@ body.login-page .footer code {
 
 .sidebar .nav {
   display: grid;
-  gap: 8px;
+  gap: 14px;
   margin-top: 4px;
 }
 
@@ -250,6 +250,25 @@ body.login-page .footer code {
   text-decoration: none;
   color: #334155;
   background: transparent;
+}
+
+.nav-section {
+  display: grid;
+  gap: 8px;
+}
+
+.nav-section-title {
+  padding: 0 4px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--muted);
+  font-weight: 800;
+}
+
+.nav-section-items {
+  display: grid;
+  gap: 8px;
 }
 
 .sidebar .nav a.nav-tenant-link {
@@ -318,6 +337,16 @@ body.login-page .footer code {
 .nav-caret {
   color: var(--muted);
   font-size: 12px;
+}
+
+.nav-placeholder {
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px dashed #d8e0ea;
+  color: var(--muted);
+  background: #fafbfd;
+  font-size: 13px;
+  font-weight: 700;
 }
 
 .content-shell {
@@ -410,6 +439,10 @@ body.login-page .footer code {
   color: rgba(255, 255, 255, 0.82);
   text-decoration: underline;
   text-underline-offset: 2px;
+}
+
+.tenant-chip-linkable {
+  text-decoration: none;
 }
 
 .tenant-chip-empty .tenant-chip-link {

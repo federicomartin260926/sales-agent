@@ -1772,6 +1772,7 @@ final class BackendUiController
             'current_user_display_name' => $this->currentUserDisplayName(),
             'current_user_initials' => $this->currentUserInitials(),
             'active_tenant' => $this->activeTenantTemplateData(),
+            'can_manage_active_tenant' => $this->canManageActiveTenant(),
             'is_super_admin' => $this->isSuperAdmin(),
         ];
     }
@@ -1792,6 +1793,20 @@ final class BackendUiController
             'slug' => $tenant->getSlug(),
             'edit_url' => sprintf('/backend/tenants/%s/edit', rawurlencode($tenant->getId()->toRfc4122())),
         ];
+    }
+
+    private function canManageActiveTenant(): bool
+    {
+        $tenant = $this->resolvedActiveTenantForCurrentUser();
+        if (!$tenant instanceof Tenant) {
+            return false;
+        }
+
+        if ($this->tenantAccessResolver instanceof TenantAccessResolver) {
+            return $this->tenantAccessResolver->canManageTenant($this->currentUser(), $tenant);
+        }
+
+        return true;
     }
 
     private function countTenantProducts(?ProductRepository $products, Tenant $tenant): int
