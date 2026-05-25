@@ -62,6 +62,20 @@ final class ProductContextResolver
 
         $searchQuery = $this->extractSearchQuery($currentMessage);
         if ($searchQuery === null) {
+            $fallbackAllowed = $this->hasServicesSearchMcp($tenant);
+            if ($fallbackAllowed && $this->products->findActiveByTenantOrdered($tenant) === []) {
+                return $this->resolvedResult(
+                    null,
+                    [],
+                    'none',
+                    null,
+                    0,
+                    false,
+                    true,
+                    'no local catalog; MCP fallback available',
+                );
+            }
+
             return $this->resolvedResult(
                 null,
                 [],
@@ -76,10 +90,9 @@ final class ProductContextResolver
 
         $matches = $this->products->searchActiveByTenantAndText($tenant, $searchQuery, 20);
         $ranked = $this->rankProducts($matches, $searchQuery);
+        $fallbackAllowed = $this->hasServicesSearchMcp($tenant);
 
         if ($ranked === []) {
-            $fallbackAllowed = $this->externalTools->findRuntimeDefaultMcpByTenant($tenant) instanceof ExternalTool;
-
             return $this->resolvedResult(
                 null,
                 [],
@@ -93,6 +106,33 @@ final class ProductContextResolver
         }
 
         if (count($ranked) === 1) {
+            $topScore = $ranked[0]['score'];
+            if ($topScore < 60 && $fallbackAllowed) {
+                return $this->resolvedResult(
+                    null,
+                    [$ranked[0]['product']],
+                    'sa_search',
+                    $searchQuery,
+                    1,
+                    false,
+                    true,
+                    'single weak local product candidate; MCP fallback available',
+                );
+            }
+
+            if ($topScore < 60) {
+                return $this->resolvedResult(
+                    null,
+                    [$ranked[0]['product']],
+                    'sa_search',
+                    $searchQuery,
+                    1,
+                    true,
+                    false,
+                    'single weak local product candidate',
+                );
+            }
+
             return $this->resolvedResult(
                 $ranked[0]['product'],
                 [],
@@ -118,6 +158,24 @@ final class ProductContextResolver
                 false,
                 false,
                 'clear local product match',
+            );
+        }
+
+        if ($fallbackAllowed && $topScore < 18) {
+            $candidates = array_map(
+                static fn (array $item): Product => $item['product'],
+                array_slice($ranked, 0, 5),
+            );
+
+            return $this->resolvedResult(
+                null,
+                $candidates,
+                'sa_search',
+                $searchQuery,
+                count($candidates),
+                false,
+                true,
+                'weak local candidates; MCP fallback available',
             );
         }
 
@@ -170,6 +228,16 @@ final class ProductContextResolver
             'fallback_to_mcp_allowed' => $fallbackToMcpAllowed,
             'reason' => $reason,
         ];
+    }
+
+    private function hasServicesSearchMcp(Tenant $tenant): bool
+    {
+        $tool = $this->externalTools->findRuntimeDefaultMcpByTenant($tenant);
+        if (!$tool instanceof ExternalTool || !$tool->isEnabledForLlm()) {
+            return false;
+        }
+
+        return in_array('services_search', $tool->getAllowedTools(), true);
     }
 
     private function extractSearchQuery(?string $message): ?string

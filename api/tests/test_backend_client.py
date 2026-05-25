@@ -334,6 +334,133 @@ async def test_backend_client_parses_product_candidates_and_selection():
 
 
 @pytest.mark.asyncio
+async def test_backend_client_keeps_weak_candidates_unselected_when_mcp_fallback_is_allowed():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/api/internal/commercial-context":
+            return httpx.Response(
+                200,
+                json={
+                    "tenant": {
+                        "id": "tenant-1",
+                        "name": "Negocio Demo",
+                        "slug": "negocio-demo",
+                        "businessContext": "Contexto comercial",
+                        "tone": "consultivo",
+                        "salesPolicy": {},
+                        "isActive": True,
+                        "createdAt": "2026-04-28T12:00:00+00:00",
+                    },
+                    "product": None,
+                    "products": [
+                        {
+                            "id": "product-1",
+                            "tenantId": "tenant-1",
+                            "name": "Integración de APIs y sistemas",
+                            "slug": "integracion-api-sistemas",
+                            "externalSource": "crm",
+                            "externalReference": "integration-basic",
+                            "description": "Integraciones genéricas para distintos ERP.",
+                            "valueProposition": "Conecta sistemas de forma flexible.",
+                            "basePriceCents": 150000,
+                            "currency": "EUR",
+                            "salesPolicy": {},
+                            "isActive": True,
+                        }
+                    ],
+                    "product_selection": {
+                        "selection_source": "sa_search",
+                        "search_query_used": "holded factura scripts",
+                        "candidate_count": 1,
+                        "needs_service_clarification": False,
+                        "fallback_to_mcp_allowed": True,
+                        "reason": "single weak local product candidate; MCP fallback available",
+                    },
+                    "playbook": None,
+                    "entry_point": None,
+                    "sales_runtime": {
+                        "has_product_context": False,
+                        "has_playbook_context": False,
+                        "has_entry_point_context": False,
+                        "handoff_enabled": False,
+                        "booking_enabled": False,
+                        "rag_enabled": False,
+                    },
+                },
+            )
+
+        return httpx.Response(404, json={"detail": "not found"})
+
+    client = BackendClient(
+        Settings(BACKEND_BASE_URL="http://sales-agent-nginx", SALES_AGENT_BEARER_TOKEN="test-internal-token"),
+        transport=httpx.MockTransport(handler),
+    )
+
+    context = await client.fetch_tenant_context("tenant-1", current_message="Busco integrar Holded o FacturaScripts")
+
+    assert context is not None
+    assert context.selected_product is None
+    assert len(context.products) == 1
+    assert context.product_selection["fallback_to_mcp_allowed"] is True
+    assert context.product_selection["needs_service_clarification"] is False
+
+
+@pytest.mark.asyncio
+async def test_backend_client_keeps_empty_catalog_available_for_mcp_fallback():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/api/internal/commercial-context":
+            return httpx.Response(
+                200,
+                json={
+                    "tenant": {
+                        "id": "tenant-1",
+                        "name": "Negocio Demo",
+                        "slug": "negocio-demo",
+                        "businessContext": "Contexto comercial",
+                        "tone": "consultivo",
+                        "salesPolicy": {},
+                        "isActive": True,
+                        "createdAt": "2026-04-28T12:00:00+00:00",
+                    },
+                    "product": None,
+                    "products": [],
+                    "product_selection": {
+                        "selection_source": "none",
+                        "search_query_used": None,
+                        "candidate_count": 0,
+                        "needs_service_clarification": False,
+                        "fallback_to_mcp_allowed": True,
+                        "reason": "no local catalog; MCP fallback available",
+                    },
+                    "playbook": None,
+                    "entry_point": None,
+                    "sales_runtime": {
+                        "has_product_context": False,
+                        "has_playbook_context": False,
+                        "has_entry_point_context": False,
+                        "handoff_enabled": False,
+                        "booking_enabled": False,
+                        "rag_enabled": False,
+                    },
+                },
+            )
+
+        return httpx.Response(404, json={"detail": "not found"})
+
+    client = BackendClient(
+        Settings(BACKEND_BASE_URL="http://sales-agent-nginx", SALES_AGENT_BEARER_TOKEN="test-internal-token"),
+        transport=httpx.MockTransport(handler),
+    )
+
+    context = await client.fetch_tenant_context("tenant-1", current_message="Hola")
+
+    assert context is not None
+    assert context.selected_product is None
+    assert context.products == []
+    assert context.product_selection["fallback_to_mcp_allowed"] is True
+    assert context.product_selection["needs_service_clarification"] is False
+
+
+@pytest.mark.asyncio
 async def test_backend_client_returns_none_for_missing_tenant():
     client = BackendClient(
         Settings(BACKEND_BASE_URL="http://sales-agent-nginx", SALES_AGENT_BEARER_TOKEN="test-internal-token"),

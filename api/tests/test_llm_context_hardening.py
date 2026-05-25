@@ -202,6 +202,7 @@ def test_prompt_builder_enriches_prompt_with_mcp_runtime():
     assert "MCP remoto nativo del tenant" in system_prompt
     assert "tenant_main_mcp" in system_prompt
     assert "search_properties" in system_prompt
+    assert "Si no hay catálogo local o el catálogo local no es concluyente" in system_prompt
     assert parsed["product"]["name"] == "Producto Demo"
     assert parsed["products"] == []
     assert parsed["sales_runtime"]["has_product_context"] is False

@@ -40,14 +40,25 @@ class DecisionEngine:
                 )
 
         message = payload.message.text.lower().strip()
+        should_defer_to_llm = self._should_defer_to_llm(backend_context, mcp_config)
 
-        llm_decision = await self.llm_decision_service.propose(payload, routing, backend_context, contact_context, mcp_config)
-        if llm_decision is not None:
-            logger.debug("LLM decision accepted intent=%s action=%s", llm_decision.intent, llm_decision.action)
-            return self._build_llm_response(payload, routing, backend_context, contact_context, llm_decision)
+        llm_response = await self.resolve_llm_response(
+            payload,
+            routing=routing,
+            backend_context=backend_context,
+            contact_context=contact_context,
+            mcp_config=mcp_config,
+            force_llm=should_defer_to_llm,
+        )
+        if llm_response is not None:
+            logger.debug("LLM decision accepted intent=%s action=%s", llm_response.intent, llm_response.action)
+            return llm_response
+
+        if should_defer_to_llm:
+            return self._deferred_mcp_response(payload, routing, backend_context, contact_context, mcp_config)
 
         if backend_context is not None:
-            return self._decide_with_context(payload, backend_context, routing, message, contact_context)
+            return self._decide_with_context(payload, backend_context, routing, message, contact_context, mcp_config)
 
         return self._decide_without_context(payload, routing, message, contact_context)
 
@@ -245,13 +256,23 @@ class DecisionEngine:
         routing: RoutingContext | None,
         message: str,
         contact_context: dict | None = None,
+        mcp_config: McpRemoteConfig | None = None,
     ) -> AgentResponse:
         tenant_name = context.tenant.name
         product_name = context.selected_product.name if context.selected_product is not None else None
         product_selection = context.product_selection if isinstance(context.product_selection, dict) else {}
         needs_service_clarification = bool(product_selection.get("needs_service_clarification", False))
+        fallback_to_mcp_allowed = bool(product_selection.get("fallback_to_mcp_allowed", False))
+        mcp_services_search_available = self._mcp_services_search_available(mcp_config)
         product_candidates = context.products if context.products else []
-        inferred_product_name = None if context.selected_product is not None or needs_service_clarification else self._infer_product_name(context, message)
+        allow_local_product_inference = (
+            context.selected_product is not None
+            or (
+                not needs_service_clarification
+                and not (fallback_to_mcp_allowed and mcp_services_search_available)
+            )
+        )
+        inferred_product_name = self._infer_product_name(context, message) if allow_local_product_inference else None
         playbook = context.selected_playbook
         first_question = self._first_qualification_question(playbook)
         external_name = self._external_contact_name(contact_context)
@@ -300,7 +321,15 @@ class DecisionEngine:
                 score=0.68,
                 action="ask_question",
                 needs_human=False,
-                data_to_save=self._base_context_save(payload, context, routing, "service_clarification", contact_context),
+                data_to_save=self._base_context_save(
+                    payload,
+                    context,
+                    routing,
+                    "service_clarification",
+                    contact_context,
+                    local_response_short_circuited=True,
+                    mcp_services_search_available=mcp_services_search_available,
+                ),
             )
 
         if product_name is None and inferred_product_name is not None:
@@ -311,7 +340,15 @@ class DecisionEngine:
                 score=0.72,
                 action="ask_confirmation",
                 needs_human=False,
-                data_to_save=self._base_context_save(payload, context, routing, "product_confirmation", contact_context),
+                data_to_save=self._base_context_save(
+                    payload,
+                    context,
+                    routing,
+                    "product_confirmation",
+                    contact_context,
+                    local_response_short_circuited=True,
+                    mcp_services_search_available=mcp_services_search_available,
+                ),
             )
 
         if external_stage in {"qualified", "proposal", "negotiation"} and any(
@@ -323,7 +360,15 @@ class DecisionEngine:
                 score=0.86,
                 action="ask_question" if "precio" in message or "presupuesto" in message or "costo" in message or "coste" in message else "propose_meeting",
                 needs_human=False,
-                data_to_save=self._base_context_save(payload, context, routing, "warm_lead", contact_context),
+                data_to_save=self._base_context_save(
+                    payload,
+                    context,
+                    routing,
+                    "warm_lead",
+                    contact_context,
+                    local_response_short_circuited=True,
+                    mcp_services_search_available=mcp_services_search_available,
+                ),
             )
 
         if any(keyword in message for keyword in ("precio", "precios", "presupuesto", "presupuestos", "costo", "coste")):
@@ -334,7 +379,15 @@ class DecisionEngine:
                 score=0.82,
                 action="ask_question",
                 needs_human=False,
-                data_to_save=self._base_context_save(payload, context, routing, "pricing", contact_context),
+                data_to_save=self._base_context_save(
+                    payload,
+                    context,
+                    routing,
+                    "pricing",
+                    contact_context,
+                    local_response_short_circuited=True,
+                    mcp_services_search_available=mcp_services_search_available,
+                ),
             )
 
         if message.startswith("hola") or message.startswith("buenas") or "buen día" in message or "buen dia" in message:
@@ -350,7 +403,15 @@ class DecisionEngine:
                 score=0.96,
                 action="greet",
                 needs_human=False,
-                data_to_save=self._base_context_save(payload, context, routing, "greeting", contact_context),
+                data_to_save=self._base_context_save(
+                    payload,
+                    context,
+                    routing,
+                    "greeting",
+                    contact_context,
+                    local_response_short_circuited=True,
+                    mcp_services_search_available=mcp_services_search_available,
+                ),
             )
 
         if self._agenda_message_kind(message) == "lookup":
@@ -361,7 +422,15 @@ class DecisionEngine:
                 score=0.52,
                 action="answer_question",
                 needs_human=False,
-                data_to_save=self._base_context_save(payload, context, routing, "agenda_lookup", contact_context),
+                data_to_save=self._base_context_save(
+                    payload,
+                    context,
+                    routing,
+                    "agenda_lookup",
+                    contact_context,
+                    local_response_short_circuited=True,
+                    mcp_services_search_available=mcp_services_search_available,
+                ),
             )
 
         if any(keyword in message for keyword in ("demo", "agenda", "agendar", "reunión", "reunion", "cita")):
@@ -377,7 +446,15 @@ class DecisionEngine:
                 score=0.78,
                 action="propose_meeting",
                 needs_human=False,
-                data_to_save=self._base_context_save(payload, context, routing, "agenda", contact_context),
+                data_to_save=self._base_context_save(
+                    payload,
+                    context,
+                    routing,
+                    "agenda",
+                    contact_context,
+                    local_response_short_circuited=True,
+                    mcp_services_search_available=mcp_services_search_available,
+                ),
             )
 
         reply = first_question or f"Cuéntame un poco más sobre {tenant_name} para orientarte mejor."
@@ -389,7 +466,15 @@ class DecisionEngine:
             score=0.5,
             action="ask_question",
             needs_human=False,
-            data_to_save=self._base_context_save(payload, context, routing, "discovery", contact_context),
+            data_to_save=self._base_context_save(
+                payload,
+                context,
+                routing,
+                "discovery",
+                contact_context,
+                local_response_short_circuited=True,
+                mcp_services_search_available=mcp_services_search_available,
+            ),
         )
 
     def _base_fallback_save(
@@ -398,6 +483,9 @@ class DecisionEngine:
         routing: RoutingContext | None,
         topic: str,
         contact_context: dict | None = None,
+        *,
+        local_response_short_circuited: bool = False,
+        mcp_services_search_available: bool | None = None,
     ) -> dict:
         data = {
             "topic": topic,
@@ -406,6 +494,7 @@ class DecisionEngine:
 
         self._apply_external_context_data(data, contact_context)
         self._apply_routing_data(data, routing)
+        self._apply_runtime_selection_data(data, None, local_response_short_circuited, mcp_services_search_available)
 
         return data
 
@@ -416,6 +505,8 @@ class DecisionEngine:
         routing: RoutingContext | None,
         topic: str,
         contact_context: dict | None = None,
+        local_response_short_circuited: bool = False,
+        mcp_services_search_available: bool | None = None,
     ) -> dict:
         data = {
             "topic": topic,
@@ -452,8 +543,106 @@ class DecisionEngine:
 
         self._apply_external_context_data(data, contact_context)
         self._apply_routing_data(data, routing)
+        self._apply_runtime_selection_data(data, context, local_response_short_circuited, mcp_services_search_available)
 
         return data
+
+    def _apply_runtime_selection_data(
+        self,
+        data: dict,
+        context: CommercialContext | None,
+        local_response_short_circuited: bool,
+        mcp_services_search_available: bool | None,
+    ) -> None:
+        if context is not None:
+            selection = context.product_selection if isinstance(context.product_selection, dict) else {}
+            fallback_allowed = bool(selection.get("fallback_to_mcp_allowed", False))
+            data["product_selection_fallback_to_mcp_allowed"] = fallback_allowed
+            fallback_reason = selection.get("reason")
+            if isinstance(fallback_reason, str) and fallback_reason.strip() != "":
+                data["product_selection_fallback_reason"] = fallback_reason.strip()
+
+        if mcp_services_search_available is not None:
+            data["mcp_services_search_available"] = mcp_services_search_available
+
+        data["local_response_short_circuited"] = local_response_short_circuited
+
+    def _should_defer_to_llm(self, backend_context: CommercialContext | None, mcp_config: McpRemoteConfig | None) -> bool:
+        if backend_context is None:
+            return False
+
+        selection = backend_context.product_selection if isinstance(backend_context.product_selection, dict) else {}
+        if not bool(selection.get("fallback_to_mcp_allowed", False)):
+            return False
+
+        if bool(selection.get("needs_service_clarification", False)):
+            return False
+
+        if backend_context.selected_product is not None:
+            return False
+
+        return self._mcp_services_search_available(mcp_config)
+
+    def _deferred_mcp_response(
+        self,
+        payload: AgentRequest,
+        routing: RoutingContext | None,
+        backend_context: CommercialContext | None,
+        contact_context: dict | None = None,
+        mcp_config: McpRemoteConfig | None = None,
+    ) -> AgentResponse:
+        tenant_name = backend_context.tenant.name if backend_context is not None else "tu negocio"
+        reply = f"Estoy revisando opciones de catálogo para {tenant_name}. Dame un momento."
+
+        return AgentResponse(
+            reply=reply,
+            intent="open_question",
+            score=0.42,
+            action="defer_to_llm",
+            needs_human=False,
+            data_to_save=(
+                self._base_context_save(
+                    payload,
+                    backend_context,
+                    routing,
+                    "defer_to_llm",
+                    contact_context,
+                    local_response_short_circuited=False,
+                    mcp_services_search_available=self._mcp_services_search_available(mcp_config),
+                )
+                if backend_context is not None
+                else self._base_fallback_save(
+                    payload,
+                    routing,
+                    "defer_to_llm",
+                    contact_context,
+                    local_response_short_circuited=False,
+                    mcp_services_search_available=self._mcp_services_search_available(mcp_config),
+                )
+            ),
+        )
+
+    async def resolve_llm_response(
+        self,
+        payload: AgentRequest,
+        routing: RoutingContext | None = None,
+        backend_context: CommercialContext | None = None,
+        contact_context: dict[str, Any] | None = None,
+        mcp_config: McpRemoteConfig | None = None,
+        force_llm: bool = False,
+    ) -> AgentResponse | None:
+        llm_decision = await self.llm_decision_service.propose(
+            payload,
+            routing,
+            backend_context,
+            contact_context,
+            mcp_config,
+            force_llm=force_llm,
+        )
+        if llm_decision is None:
+            return None
+
+        return self._build_llm_response(payload, routing, backend_context, contact_context, llm_decision)
 
     def _first_qualification_question(self, playbook: BackendPlaybook | None) -> str | None:
         if playbook is None:
@@ -711,6 +900,12 @@ class DecisionEngine:
 
     def _tokenize(self, text: str) -> list[str]:
         return [token for token in "".join(ch if ch.isalnum() else " " for ch in text.lower()).split() if token]
+
+    def _mcp_services_search_available(self, mcp_config: McpRemoteConfig | None) -> bool:
+        if mcp_config is None or not mcp_config.enabled:
+            return False
+
+        return any(tool.strip() == "services_search" for tool in mcp_config.allowed_tools)
 
     def _apply_external_context_data(self, data: dict, contact_context: dict | None) -> None:
         if not isinstance(contact_context, dict):

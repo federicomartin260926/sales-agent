@@ -3,7 +3,7 @@ import pytest
 from app.config import Settings
 from app.schemas.agent import AgentResponse
 from app.schemas.agent import AgentRequest, Contact
-from app.services.backend_client import BackendAiUsagePolicy, BackendAiUsageSnapshot, BackendRoutingEntryPointUtmContext
+from app.services.backend_client import BackendAiUsagePolicy, BackendAiUsageSnapshot, BackendRoutingEntryPointUtmContext, BackendTenant, CommercialContext
 from app.schemas.llm import McpRemoteConfig
 from app.services.decision_engine import DecisionEngine
 from app.services.llm_decision_service import LLMDecisionService
@@ -435,3 +435,100 @@ async def test_runtime_skips_mcp_for_ollama_and_records_reason(monkeypatch: pyte
     assert len(create_calls) == 2
     outbound_payload = create_calls[-1][1][0]
     assert outbound_payload["metadata"]["mcp_skipped_reason"] == "provider_not_supported"
+
+
+@pytest.mark.asyncio
+async def test_runtime_forces_llm_path_when_catalog_is_empty_and_mcp_search_is_available(monkeypatch: pytest.MonkeyPatch):
+    backend = RecordingBackendClient(
+        ref_context=BackendRoutingEntryPointUtmContext.model_validate(
+            {
+                "entry_point_utm_id": "utm-1",
+                "ref": "abc123",
+                "entry_point_id": "entrypoint-1",
+                "entry_point_code": "crm-demo",
+                "tenant_id": "tenant-1",
+                "tenant_slug": "negocio-demo",
+                "product_id": "product-1",
+                "product_name": "CRM Automation",
+                "playbook_id": "playbook-1",
+                "crm_branch_ref": "branch-1",
+                "utm_source": "google",
+                "utm_medium": "cpc",
+                "utm_campaign": "crm_pymes",
+                "status": "matched",
+            }
+        ),
+        mcp_config=McpRemoteConfig(
+            enabled=True,
+            server_label="tech_investments_mcp",
+            server_url="https://mcp.tech-investments.net/mcp",
+            allowed_tools=["services_search"],
+            timeout_seconds=15,
+        ),
+    )
+
+    async def fake_fetch_tenant_context(self, tenant_id, selected_product_id=None, selected_playbook_id=None, *args):
+        self.calls.append(("fetch_tenant_context", (tenant_id, selected_product_id, selected_playbook_id, *args)))
+        tenant = BackendTenant.model_validate(
+            {
+                "id": "tenant-1",
+                "name": "Negocio Demo",
+                "slug": "negocio-demo",
+                "businessContext": "Negocio especializado en automatización de WhatsApp.",
+                "tone": "consultivo",
+                "salesPolicy": {},
+                "isActive": True,
+                "createdAt": "2026-04-28T12:00:00+00:00",
+            }
+        )
+        return CommercialContext(
+            tenant=tenant,
+            products=[],
+            product_selection={
+                "selection_source": "none",
+                "candidate_count": 0,
+                "needs_service_clarification": False,
+                "fallback_to_mcp_allowed": True,
+                "reason": "no local catalog; MCP fallback available",
+            },
+            playbooks=[],
+            selected_product=None,
+            selected_playbook=None,
+        )
+
+    async def fake_resolve_llm_response(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None, force_llm=False):
+        assert force_llm is True
+        assert mcp_config is not None and mcp_config.enabled is True
+        return AgentResponse(
+            reply="Respuesta desde LLM con MCP.",
+            intent="open_question",
+            score=0.9,
+            action="answer_question",
+            needs_human=False,
+            data_to_save={
+                "topic": "discovery",
+                "local_response_short_circuited": False,
+                "mcp_services_search_available": True,
+            },
+            provider="openai",
+            model="gpt-4.1-mini",
+            latency_ms=77,
+        )
+
+    monkeypatch.setattr(RecordingBackendClient, "fetch_tenant_context", fake_fetch_tenant_context)
+    monkeypatch.setattr(DecisionEngine, "resolve_llm_response", fake_resolve_llm_response)
+
+    runtime = AgentRuntime(backend, RuntimeRoutingResolver(backend), DecisionEngine(backend))  # type: ignore[arg-type]
+    payload = AgentRequest(
+        tenant_id="tenant-ignored",
+        entrypoint_ref="abc123",
+        message="Estoy interesado en un servicio de integración con Holded o FacturaScripts.",
+        contact=Contact(phone="+34999999999"),
+    )
+
+    response = await runtime.respond(payload)
+
+    assert response.provider == "openai"
+    assert response.model == "gpt-4.1-mini"
+    assert response.data_to_save["local_response_short_circuited"] is False
+    assert response.data_to_save["mcp_services_search_available"] is True

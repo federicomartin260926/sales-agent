@@ -54,6 +54,7 @@ class LLMDecisionService:
         backend_context: CommercialContext | None,
         contact_context: dict[str, Any] | None = None,
         mcp_config: McpRemoteConfig | None = None,
+        force_llm: bool = False,
     ) -> LLMDecisionDraft | None:
         self.last_mcp_skip_reason = None
         configuration = await self.llm_client.resolve_configuration()
@@ -61,7 +62,7 @@ class LLMDecisionService:
         if mcp_config is not None and mcp_config.enabled and provider_profile != "openai":
             self.last_mcp_skip_reason = "provider_not_supported"
             logger.warning("MCP remote skipped reason=%s provider_profile=%s", self.last_mcp_skip_reason, provider_profile or "empty")
-        if provider_profile == "heuristic":
+        if provider_profile == "heuristic" and not force_llm:
             logger.debug("LLM heuristics mode selected; skipping provider calls")
             return None
 

@@ -36,6 +36,7 @@ class LLMPromptBuilder:
             "Si product_selection.needs_service_clarification es true, pregunta qué servicio busca antes de profundizar. "
             "Si products incluye varios candidatos, usa solo esos candidatos y pide confirmación si hay ambigüedad. "
             "Si product_selection.fallback_to_mcp_allowed es true y no hay un producto local claro, puedes usar herramientas MCP de búsqueda de servicios si están disponibles. "
+            "Si no hay catálogo local o el catálogo local no es concluyente y services_search está disponible, úsalo como fuente principal antes de responder. "
             "Si tienes herramientas MCP nativas del tenant, úsalas cuando hagan falta para completar la respuesta. "
             "No inventes datos ni cites sistemas internos, CRM, n8n, webhooks, IDs internos, UTM, refs, tokens o detalles técnicos. "
             "Mantén el tono breve, útil y orientado a conversación."

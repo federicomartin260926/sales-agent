@@ -1,7 +1,7 @@
 import pytest
 
 from app.config import Settings
-from app.schemas.agent import AgentRequest, Contact
+from app.schemas.agent import AgentRequest, AgentResponse, Contact
 from app.services.backend_client import BackendPlaybook, BackendProduct, BackendTenant, CommercialContext
 from app.schemas.llm import McpRemoteConfig
 from app.services.decision_engine import DecisionEngine
@@ -144,6 +144,53 @@ def build_multi_product_context(selected_product: BackendProduct | None = None) 
     )
 
 
+def build_mcp_fallback_context() -> CommercialContext:
+    tenant = BackendTenant.model_validate(
+        {
+            "id": "tenant-1",
+            "name": "Negocio Demo",
+            "slug": "negocio-demo",
+            "businessContext": "Negocio especializado en automatización de WhatsApp.",
+            "tone": "consultivo",
+            "salesPolicy": {},
+            "isActive": True,
+            "createdAt": "2026-04-28T12:00:00+00:00",
+        }
+    )
+    product = BackendProduct.model_validate(
+        {
+            "id": "product-1",
+            "tenantId": "tenant-1",
+            "name": "Integración de APIs y sistemas",
+            "slug": "integracion-api-sistemas",
+            "externalSource": "crm",
+            "externalReference": "integration-basic",
+            "description": "Integraciones genéricas para distintos ERP.",
+            "valueProposition": "Conecta sistemas de forma flexible.",
+            "basePriceCents": 150000,
+            "currency": "EUR",
+            "salesPolicy": {},
+            "isActive": True,
+        }
+    )
+
+    return CommercialContext(
+        tenant=tenant,
+        products=[product],
+        playbooks=[],
+        product_selection={
+            "selection_source": "sa_search",
+            "search_query_used": "holded factura scripts",
+            "candidate_count": 1,
+            "needs_service_clarification": False,
+            "fallback_to_mcp_allowed": True,
+            "reason": "single weak local product candidate; MCP fallback available",
+        },
+        selected_product=None,
+        selected_playbook=None,
+    )
+
+
 @pytest.mark.asyncio
 async def test_decision_engine_greeting_uses_context():
     payload = AgentRequest(
@@ -245,6 +292,97 @@ async def test_decision_engine_does_not_pick_first_active_product_blindly():
 
     assert response.intent == "greeting"
     assert "Website Widgets" not in response.reply
+
+
+@pytest.mark.asyncio
+async def test_decision_engine_does_not_infer_generic_product_when_mcp_fallback_is_available():
+    payload = AgentRequest(
+        tenant_id="tenant-1",
+        message="Estoy interesado en un servicio de integración con Holded o FacturaScripts.",
+        contact=Contact(phone="+34999999999"),
+    )
+
+    context = build_mcp_fallback_context()
+    response = await DecisionEngine(FakeBackendClient(context)).decide(
+        payload,
+        backend_context=context,
+        mcp_config=McpRemoteConfig(enabled=True, server_label="tenant_main_mcp", allowed_tools=["services_search"]),
+    )
+
+    assert response.action != "ask_confirmation"
+    assert "Integración de APIs y sistemas" not in response.reply
+    assert response.data_to_save["product_selection_fallback_to_mcp_allowed"] is True
+    assert response.data_to_save["product_selection_fallback_reason"] == "single weak local product candidate; MCP fallback available"
+    assert response.data_to_save["mcp_services_search_available"] is True
+    assert response.data_to_save["local_response_short_circuited"] is False
+
+
+@pytest.mark.asyncio
+async def test_decision_engine_forces_llm_when_catalog_is_empty_and_mcp_search_is_available(monkeypatch: pytest.MonkeyPatch):
+    payload = AgentRequest(
+        tenant_id="tenant-1",
+        message="Quiero ver opciones de servicio",
+        contact=Contact(phone="+34999999999"),
+    )
+
+    context = CommercialContext(
+        tenant=BackendTenant.model_validate(
+            {
+                "id": "tenant-1",
+                "name": "Negocio Demo",
+                "slug": "negocio-demo",
+                "businessContext": "Negocio especializado en automatización de WhatsApp.",
+                "tone": "consultivo",
+                "salesPolicy": {},
+                "isActive": True,
+                "createdAt": "2026-04-28T12:00:00+00:00",
+            }
+        ),
+        products=[],
+        playbooks=[],
+        product_selection={
+            "selection_source": "none",
+            "search_query_used": None,
+            "candidate_count": 0,
+            "needs_service_clarification": False,
+            "fallback_to_mcp_allowed": True,
+            "reason": "no local catalog; MCP fallback available",
+        },
+        selected_product=None,
+        selected_playbook=None,
+    )
+
+    seen: dict[str, object] = {}
+
+    async def fake_resolve_llm_response(self, *args, **kwargs):
+        seen["force_llm"] = kwargs.get("force_llm")
+        seen["mcp_enabled"] = kwargs.get("mcp_config").enabled if kwargs.get("mcp_config") is not None else None
+        return AgentResponse(
+            reply="Respuesta desde LLM con MCP.",
+            intent="open_question",
+            score=0.9,
+            action="answer_question",
+            needs_human=False,
+            data_to_save={"local_response_short_circuited": False, "mcp_services_search_available": True},
+            provider="openai",
+            model="gpt-4.1-mini",
+            latency_ms=123,
+        )
+
+    monkeypatch.setattr(DecisionEngine, "resolve_llm_response", fake_resolve_llm_response)
+
+    response = await DecisionEngine(FakeBackendClient(context)).decide(
+        payload,
+        backend_context=context,
+        mcp_config=McpRemoteConfig(enabled=True, server_label="tenant_main_mcp", allowed_tools=["services_search"]),
+    )
+
+    assert seen["force_llm"] is True
+    assert seen["mcp_enabled"] is True
+    assert response.provider == "openai"
+    assert response.model == "gpt-4.1-mini"
+    assert response.data_to_save["local_response_short_circuited"] is False
+    assert response.data_to_save["mcp_services_search_available"] is True
 
 
 @pytest.mark.asyncio

@@ -345,7 +345,12 @@ class BackendClient:
         selected_product = BackendProduct.model_validate(product_payload) if product_payload is not None else None
         product_candidates = [BackendProduct.model_validate(item) for item in products_payload if isinstance(item, dict)]
         product_selection = self._normalize_product_selection(product_selection_payload)
-        if selected_product is None and product_candidates and not product_selection.get("needs_service_clarification", False):
+        if (
+            selected_product is None
+            and product_candidates
+            and not product_selection.get("needs_service_clarification", False)
+            and not product_selection.get("fallback_to_mcp_allowed", False)
+        ):
             selected_product = product_candidates[0]
             product_candidates = []
 

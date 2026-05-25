@@ -74,6 +74,36 @@ final class ProductContextResolverTest extends TestCase
         self::assertSame('no local product match; MCP fallback available', $result['reason']);
     }
 
+    public function testWeakSingleMatchAllowsMcpFallbackWhenRuntimeDefaultExists(): void
+    {
+        $tenant = $this->tenant();
+        $product = $this->product($tenant, 'Integración de APIs y sistemas', 'integracion-api-sistemas');
+        $resolver = $this->resolver([$product], true);
+
+        $result = $resolver->resolve($tenant, null, null, 'Busco integración con Holded o FacturaScripts');
+
+        self::assertNull($result['selected_product']);
+        self::assertCount(1, $result['product_candidates']);
+        self::assertTrue($result['fallback_to_mcp_allowed']);
+        self::assertFalse($result['needs_service_clarification']);
+        self::assertSame('single weak local product candidate; MCP fallback available', $result['reason']);
+    }
+
+    public function testNoQueryAllowsMcpFallbackWhenTenantHasNoLocalCatalog(): void
+    {
+        $tenant = $this->tenant();
+        $resolver = $this->resolver([], true);
+
+        $result = $resolver->resolve($tenant, null, null, 'Hola');
+
+        self::assertNull($result['selected_product']);
+        self::assertSame('none', $result['selection_source']);
+        self::assertSame(0, $result['candidate_count']);
+        self::assertFalse($result['needs_service_clarification']);
+        self::assertTrue($result['fallback_to_mcp_allowed']);
+        self::assertSame('no local catalog; MCP fallback available', $result['reason']);
+    }
+
     public function testNoQueryRequiresClarification(): void
     {
         $tenant = $this->tenant();
@@ -101,6 +131,11 @@ final class ProductContextResolverTest extends TestCase
             {
                 return $this->products;
             }
+
+            public function findActiveByTenantOrdered(Tenant $tenant): array
+            {
+                return $this->products;
+            }
         };
 
         $externalToolRepository = new class($hasDefaultMcp) extends ExternalToolRepository {
@@ -114,7 +149,13 @@ final class ProductContextResolverTest extends TestCase
                     return null;
                 }
 
-                return new ExternalTool($tenant, 'MCP principal', 'mcp_remote', 'openai_remote_mcp');
+                $tool = new ExternalTool($tenant, 'MCP principal', 'mcp_remote', 'openai_remote_mcp');
+                $tool->setConfig([
+                    'enabled_for_llm' => true,
+                    'allowed_tools' => ['services_search', 'appointment_events'],
+                ]);
+
+                return $tool;
             }
         };
 

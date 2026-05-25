@@ -140,6 +140,10 @@ final class InternalCommercialContextControllerTest extends TestCase
         $tenant = $this->tenant();
         $externalTool = new ExternalTool($tenant, 'MCP principal', 'mcp_remote', 'openai_remote_mcp');
         $externalTool->setRuntimeDefault(true);
+        $externalTool->setConfig([
+            'enabled_for_llm' => true,
+            'allowed_tools' => ['services_search'],
+        ]);
 
         $controller = $this->createController(
             [$tenant->getId()->toRfc4122() => $tenant],
@@ -160,6 +164,39 @@ final class InternalCommercialContextControllerTest extends TestCase
         self::assertSame([], $payload['products']);
         self::assertTrue($payload['product_selection']['fallback_to_mcp_allowed']);
         self::assertFalse($payload['product_selection']['needs_service_clarification']);
+    }
+
+    public function testWeakSingleSearchAllowsMcpFallbackWhenRuntimeDefaultExists(): void
+    {
+        $tenant = $this->tenant();
+        $product = $this->product($tenant, 'Integración de APIs y sistemas', 'integracion-api-sistemas');
+        $externalTool = new ExternalTool($tenant, 'MCP principal', 'mcp_remote', 'openai_remote_mcp');
+        $externalTool->setRuntimeDefault(true);
+        $externalTool->setConfig([
+            'enabled_for_llm' => true,
+            'allowed_tools' => ['services_search'],
+        ]);
+
+        $controller = $this->createController(
+            [$tenant->getId()->toRfc4122() => $tenant],
+            [$product->getId()->toRfc4122() => $product],
+            [],
+            [],
+            [],
+            $this->externalToolRepository([$externalTool]),
+        );
+
+        $response = $controller(Request::create('/api/internal/commercial-context?tenant_id='.$tenant->getId()->toRfc4122().'&current_message=Busco integración con Holded o FacturaScripts', 'GET', server: [
+            'HTTP_AUTHORIZATION' => 'Bearer '.self::TOKEN,
+        ]));
+
+        self::assertSame(200, $response->getStatusCode());
+        $payload = json_decode((string) $response->getContent(), true);
+        self::assertNull($payload['product']);
+        self::assertCount(1, $payload['products']);
+        self::assertTrue($payload['product_selection']['fallback_to_mcp_allowed']);
+        self::assertFalse($payload['product_selection']['needs_service_clarification']);
+        self::assertSame('single weak local product candidate; MCP fallback available', $payload['product_selection']['reason']);
     }
 
     private function createController(array $tenants, array $products, array $playbooks, array $entryPoints, array $entryPointUtms, ?ExternalToolRepository $externalTools = null): InternalCommercialContextController
