@@ -4,8 +4,10 @@ namespace App\Command;
 
 use App\Entity\Playbook;
 use App\Entity\Product;
+use App\Entity\TenantMembership;
 use App\Entity\Tenant;
 use App\Entity\User;
+use App\Repository\TenantMembershipRepository;
 use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\Persistence\ObjectRepository;
 use Symfony\Component\Console\Attribute\AsCommand;
@@ -87,6 +89,8 @@ final class BootstrapDefaultDataCommand extends Command
         $productRepository = $this->entityManager->getRepository(Product::class);
         /** @var ObjectRepository<Playbook> $playbookRepository */
         $playbookRepository = $this->entityManager->getRepository(Playbook::class);
+        /** @var ObjectRepository<TenantMembership> $membershipRepository */
+        $membershipRepository = $this->entityManager->getRepository(TenantMembership::class);
 
         $tenant = $tenantRepository->findOneBy(['slug' => self::TENANT_SLUG]);
         if (!$tenant instanceof Tenant) {
@@ -142,7 +146,7 @@ final class BootstrapDefaultDataCommand extends Command
 
         $user = $userRepository->findOneBy(['email' => self::ADMIN_EMAIL]);
         if (!$user instanceof User) {
-            $user = new User(self::ADMIN_EMAIL, ['admin'], 'Federico Martín');
+            $user = new User(self::ADMIN_EMAIL, ['admin', 'super_admin'], 'Federico Martín');
             $user->setPassword($this->passwordHasher->hashPassword($user, self::INITIAL_PASSWORD));
             $user->setActive(true);
 
@@ -151,6 +155,26 @@ final class BootstrapDefaultDataCommand extends Command
         } elseif ($user->getName() === '') {
             $user->setName('Federico Martín');
             $changes[] = 'admin user name';
+        }
+
+        $hasSuperAdminRole = in_array('super_admin', $user->toArray()['roles'] ?? [], true);
+        $user->addRole('super_admin');
+        if (!$hasSuperAdminRole) {
+            $changes[] = 'admin user role';
+        }
+
+        $membership = $membershipRepository->findOneBy([
+            'user' => $user,
+            'tenant' => $tenant,
+        ]);
+        if (!$membership instanceof TenantMembership) {
+            $membership = new TenantMembership($user, $tenant, 'manager');
+            $membership->setActive(true);
+            $this->entityManager->persist($membership);
+            $changes[] = 'tenant membership';
+        } elseif (!$membership->isActive()) {
+            $membership->setActive(true);
+            $changes[] = 'tenant membership reactivated';
         }
 
         $generalPlaybook = $playbookRepository->findOneBy([

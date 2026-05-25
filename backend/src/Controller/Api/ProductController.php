@@ -7,10 +7,12 @@ use App\Entity\Product;
 use App\Entity\Tenant;
 use App\Repository\ProductRepository;
 use App\Repository\TenantRepository;
+use App\Service\TenantAccessResolver;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\Routing\Attribute\Route;
+use Symfony\Bundle\SecurityBundle\Security;
 
 #[Route('/api/products')]
 final class ProductController extends AbstractApiController
@@ -19,6 +21,8 @@ final class ProductController extends AbstractApiController
         private readonly ProductRepository $products,
         private readonly TenantRepository $tenants,
         private readonly EntityManagerInterface $em,
+        private readonly Security $security,
+        private readonly ?TenantAccessResolver $tenantAccessResolver = null,
     ) {
     }
 
@@ -28,6 +32,10 @@ final class ProductController extends AbstractApiController
         $tenant = $this->resolveTenantScope($request);
         if (!$tenant instanceof Tenant) {
             return $this->badRequest('tenantId is required');
+        }
+
+        if (!$this->canAccessTenant($tenant)) {
+            return $this->json(['message' => 'Forbidden'], JsonResponse::HTTP_FORBIDDEN);
         }
 
         return $this->json(array_map(
@@ -44,6 +52,10 @@ final class ProductController extends AbstractApiController
         $tenant = $this->resolveTenantScope($request, $data);
         if (!$tenant instanceof Tenant) {
             return $this->badRequest('tenantId is required');
+        }
+
+        if (!$this->canManageTenant($tenant)) {
+            return $this->json(['message' => 'Forbidden'], JsonResponse::HTTP_FORBIDDEN);
         }
 
         if (($data['name'] ?? '') === '') {
@@ -107,6 +119,10 @@ final class ProductController extends AbstractApiController
             return $this->badRequest('tenantId is required');
         }
 
+        if (!$this->canAccessTenant($tenant)) {
+            return $this->json(['message' => 'Forbidden'], JsonResponse::HTTP_FORBIDDEN);
+        }
+
         $product = $this->products->find($id);
 
         if (!$product instanceof Product || $product->getTenant()->getId()->toRfc4122() !== $tenant->getId()->toRfc4122()) {
@@ -130,6 +146,10 @@ final class ProductController extends AbstractApiController
         $tenant = $this->resolveTenantScope($request, $data);
         if (!$tenant instanceof Tenant) {
             return $this->badRequest('tenantId is required');
+        }
+
+        if (!$this->canManageTenant($tenant)) {
+            return $this->json(['message' => 'Forbidden'], JsonResponse::HTTP_FORBIDDEN);
         }
 
         if ($product->getTenant()->getId()->toRfc4122() !== $tenant->getId()->toRfc4122()) {
@@ -205,6 +225,10 @@ final class ProductController extends AbstractApiController
         $tenant = $this->resolveTenantScope($request);
         if (!$tenant instanceof Tenant) {
             return $this->badRequest('tenantId is required');
+        }
+
+        if (!$this->canManageTenant($tenant)) {
+            return $this->json(['message' => 'Forbidden'], JsonResponse::HTTP_FORBIDDEN);
         }
 
         $product = $this->products->find($id);
@@ -287,5 +311,30 @@ final class ProductController extends AbstractApiController
         }
 
         return null;
+    }
+
+    private function canAccessTenant(Tenant $tenant): bool
+    {
+        if (!$this->tenantAccessResolver instanceof TenantAccessResolver) {
+            return true;
+        }
+
+        return $this->tenantAccessResolver->canAccessTenant($this->currentUser(), $tenant);
+    }
+
+    private function canManageTenant(Tenant $tenant): bool
+    {
+        if (!$this->tenantAccessResolver instanceof TenantAccessResolver) {
+            return true;
+        }
+
+        return $this->tenantAccessResolver->canManageTenant($this->currentUser(), $tenant);
+    }
+
+    private function currentUser(): ?\Symfony\Component\Security\Core\User\UserInterface
+    {
+        $user = $this->security->getUser();
+
+        return $user instanceof \Symfony\Component\Security\Core\User\UserInterface ? $user : null;
     }
 }

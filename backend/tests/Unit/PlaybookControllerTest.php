@@ -11,6 +11,7 @@ use App\Repository\ProductRepository;
 use App\Repository\TenantRepository;
 use Doctrine\ORM\EntityManagerInterface;
 use PHPUnit\Framework\TestCase;
+use Symfony\Bundle\SecurityBundle\Security;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\DependencyInjection\Container;
 
@@ -190,6 +191,7 @@ final class PlaybookControllerTest extends TestCase
             $tenantRepository,
             $productRepository,
             $this->createStub(EntityManagerInterface::class),
+            $this->superAdminSecurity(),
         );
         $controller->setContainer(new Container());
 
@@ -304,5 +306,13 @@ final class PlaybookControllerTest extends TestCase
         $playbook->setConfig([]);
 
         return $playbook;
+    }
+
+    private function superAdminSecurity(): Security
+    {
+        $security = $this->createStub(Security::class);
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role === 'ROLE_SUPER_ADMIN');
+
+        return $security;
     }
 }

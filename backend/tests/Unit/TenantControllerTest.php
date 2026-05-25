@@ -8,6 +8,7 @@ use App\Entity\Tenant;
 use App\Repository\TenantRepository;
 use Doctrine\ORM\EntityManagerInterface;
 use PHPUnit\Framework\TestCase;
+use Symfony\Bundle\SecurityBundle\Security;
 use Symfony\Component\DependencyInjection\Container;
 use Symfony\Component\HttpFoundation\Request;
 
@@ -36,6 +37,7 @@ final class TenantControllerTest extends TestCase
         $controller = new TenantController(
             $tenants,
             $this->createStub(EntityManagerInterface::class),
+            $this->superAdminSecurity(),
         );
         $controller->setContainer(new Container());
 
@@ -89,7 +91,7 @@ final class TenantControllerTest extends TestCase
         $em = $this->createMock(EntityManagerInterface::class);
         $em->expects(self::once())->method('flush');
 
-        $controller = new TenantController($tenants, $em);
+        $controller = new TenantController($tenants, $em, $this->superAdminSecurity());
         $controller->setContainer(new Container());
 
         $response = $controller->update($tenant->getId()->toRfc4122(), Request::create('/api/tenants/'.$tenant->getId()->toRfc4122(), 'PATCH', [], [], [], [], json_encode([
@@ -100,5 +102,13 @@ final class TenantControllerTest extends TestCase
         self::assertSame(200, $response->getStatusCode());
         self::assertSame('123456789012345', $tenant->getWhatsappPhoneNumberId());
         self::assertSame('34612345678', $tenant->getWhatsappPublicPhone());
+    }
+
+    private function superAdminSecurity(): Security
+    {
+        $security = $this->createStub(Security::class);
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role === 'ROLE_SUPER_ADMIN');
+
+        return $security;
     }
 }

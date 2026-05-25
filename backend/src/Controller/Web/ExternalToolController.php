@@ -54,7 +54,7 @@ final class ExternalToolController extends AbstractController
     #[Route('', name: 'backend_external_tools_index', methods: ['GET'])]
     public function index(Request $request): Response
     {
-        if (!$this->security->isGranted('ROLE_ADMIN')) {
+        if (!$this->security->isGranted('ROLE_SUPER_ADMIN')) {
             return $this->redirect('/backend/login');
         }
 
@@ -88,7 +88,7 @@ final class ExternalToolController extends AbstractController
     #[Route('/new', name: 'backend_external_tools_new', methods: ['GET', 'POST'])]
     public function new(Request $request): Response
     {
-        if (!$this->security->isGranted('ROLE_ADMIN')) {
+        if (!$this->security->isGranted('ROLE_SUPER_ADMIN')) {
             return $this->redirect('/backend/login');
         }
 
@@ -140,7 +140,7 @@ final class ExternalToolController extends AbstractController
     #[Route('/{id}/edit', name: 'backend_external_tools_edit', methods: ['GET', 'POST'])]
     public function edit(string $id, Request $request): Response
     {
-        if (!$this->security->isGranted('ROLE_ADMIN')) {
+        if (!$this->security->isGranted('ROLE_SUPER_ADMIN')) {
             return $this->redirect('/backend/login');
         }
 
@@ -196,7 +196,7 @@ final class ExternalToolController extends AbstractController
     #[Route('/{id}/toggle', name: 'backend_external_tools_toggle', methods: ['POST'])]
     public function toggle(string $id, Request $request): Response
     {
-        if (!$this->security->isGranted('ROLE_ADMIN')) {
+        if (!$this->security->isGranted('ROLE_SUPER_ADMIN')) {
             return $this->redirect('/backend/login');
         }
 
@@ -226,7 +226,7 @@ final class ExternalToolController extends AbstractController
     #[Route('/{id}/mark-default', name: 'backend_external_tools_mark_default', methods: ['POST'])]
     public function markDefault(string $id, Request $request): Response
     {
-        if (!$this->security->isGranted('ROLE_ADMIN')) {
+        if (!$this->security->isGranted('ROLE_SUPER_ADMIN')) {
             return $this->redirect('/backend/login');
         }
 
@@ -264,7 +264,7 @@ final class ExternalToolController extends AbstractController
     #[Route('/{id}/delete', name: 'backend_external_tools_delete', methods: ['POST'])]
     public function delete(string $id, Request $request): Response
     {
-        if (!$this->security->isGranted('ROLE_ADMIN')) {
+        if (!$this->security->isGranted('ROLE_SUPER_ADMIN')) {
             return $this->redirect('/backend/login');
         }
 
@@ -289,7 +289,7 @@ final class ExternalToolController extends AbstractController
     #[Route('/{id}/test', name: 'backend_external_tools_test', methods: ['POST'])]
     public function test(string $id, Request $request): Response
     {
-        if (!$this->security->isGranted('ROLE_ADMIN')) {
+        if (!$this->security->isGranted('ROLE_SUPER_ADMIN')) {
             return $this->redirect('/backend/login');
         }
 

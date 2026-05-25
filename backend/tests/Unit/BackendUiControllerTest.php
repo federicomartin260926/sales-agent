@@ -21,6 +21,7 @@ use App\Repository\TenantRepository;
 use App\Service\RuntimeConfigurationService;
 use App\Service\ProductCatalogImportService;
 use App\Service\ActiveTenantContext;
+use App\Service\TenantAccessResolver;
 use PHPUnit\Framework\TestCase;
 use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\ORM\EntityRepository;
@@ -48,6 +49,7 @@ final class BackendUiControllerTest extends TestCase
         ?RuntimeConfigurationService $runtimeConfigurationService = null,
         ?Environment $twig = null,
         ?ActiveTenantContext $activeTenantContext = null,
+        ?TenantAccessResolver $tenantAccessResolver = null,
     ): BackendUiController {
         $entityManager ??= $this->createStub(EntityManagerInterface::class);
         $passwordHasher ??= $this->createStub(UserPasswordHasherInterface::class);
@@ -56,7 +58,7 @@ final class BackendUiControllerTest extends TestCase
         $twig ??= $this->createTwigEnvironment();
         $activeTenantContext ??= new ActiveTenantContext(new RequestStack(), $this->createTenantRepositoryFake());
 
-        return new BackendUiController($security, $entityManager, $passwordHasher, $runtimeConfigurationService, $activeTenantContext, $twig, null, $productCatalogImportService, $csrfTokenManager);
+        return new BackendUiController($security, $entityManager, $passwordHasher, $runtimeConfigurationService, $activeTenantContext, $twig, null, $productCatalogImportService, $csrfTokenManager, $tenantAccessResolver);
     }
 
     private function createActiveTenantContext(?Tenant $tenant = null): ActiveTenantContext
@@ -94,6 +96,7 @@ final class BackendUiControllerTest extends TestCase
         ?ProductCatalogImportService $productCatalogImportService = null,
         ?RuntimeConfigurationService $runtimeConfigurationService = null,
         ?Environment $twig = null,
+        ?TenantAccessResolver $tenantAccessResolver = null,
     ): BackendUiController {
         return $this->createController(
             $security,
@@ -103,7 +106,8 @@ final class BackendUiControllerTest extends TestCase
             $productCatalogImportService,
             $runtimeConfigurationService,
             $twig,
-            $this->createActiveTenantContext($tenant)
+            $this->createActiveTenantContext($tenant),
+            $tenantAccessResolver,
         );
     }
 
@@ -563,14 +567,14 @@ final class BackendUiControllerTest extends TestCase
 
             public function getRoles(): array
             {
-                return ['ROLE_ADMIN'];
+                return ['ROLE_SUPER_ADMIN'];
             }
 
             public function eraseCredentials(): void
             {
             }
         });
-        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => in_array($role, ['ROLE_AGENT', 'ROLE_MANAGER', 'ROLE_ADMIN'], true));
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => in_array($role, ['ROLE_AGENT', 'ROLE_MANAGER', 'ROLE_ADMIN', 'ROLE_SUPER_ADMIN'], true));
 
         $controller = $this->createController($security);
         $response = $controller->dashboard();
@@ -652,17 +656,16 @@ final class BackendUiControllerTest extends TestCase
         self::assertStringContainsString('Productos / servicios</div><div class="metric-value">2</div>', $response->getContent());
         self::assertStringContainsString('Guías comerciales</div><div class="metric-value">2</div>', $response->getContent());
         self::assertStringContainsString('Puntos de entrada</div><div class="metric-value">3</div>', $response->getContent());
-        self::assertStringContainsString('Servidores MCP</div><div class="metric-value">4</div>', $response->getContent());
         self::assertStringContainsString('/backend/tenants/'.$tenant->getId()->toRfc4122().'/edit', $response->getContent());
         self::assertStringContainsString('/backend/products', $response->getContent());
         self::assertStringContainsString('/backend/playbooks', $response->getContent());
         self::assertStringContainsString('/backend/entry-points', $response->getContent());
-        self::assertStringContainsString('/backend/external-tools', $response->getContent());
         self::assertStringContainsString('Editar negocio', $response->getContent());
         self::assertStringContainsString('Ver productos / servicios', $response->getContent());
         self::assertStringContainsString('Ver guías comerciales', $response->getContent());
         self::assertStringContainsString('Ver puntos de entrada', $response->getContent());
-        self::assertStringContainsString('Ver servidores MCP', $response->getContent());
+        self::assertStringNotContainsString('/backend/external-tools', $response->getContent());
+        self::assertStringNotContainsString('Servidores MCP', $response->getContent());
         self::assertStringNotContainsString('Selecciona un negocio para empezar', $response->getContent());
         self::assertStringNotContainsString('Usuarios registrados', $response->getContent());
     }
@@ -704,8 +707,8 @@ final class BackendUiControllerTest extends TestCase
         );
 
         self::assertSame(Response::HTTP_OK, $response->getStatusCode());
-        self::assertStringContainsString('MCP runtime</div><div class="metric-value">Principal: MCP principal', $response->getContent());
-        self::assertStringContainsString('El MCP principal del runtime es MCP principal.', $response->getContent());
+        self::assertStringNotContainsString('MCP runtime', $response->getContent());
+        self::assertStringNotContainsString('/backend/external-tools', $response->getContent());
     }
 
     public function testDashboardShowsWarningWhenMultipleActiveMcpsExistWithoutPrincipal(): void
@@ -747,8 +750,8 @@ final class BackendUiControllerTest extends TestCase
         );
 
         self::assertSame(Response::HTTP_OK, $response->getStatusCode());
-        self::assertStringContainsString('MCP runtime</div><div class="metric-value">Varios MCP activos sin principal', $response->getContent());
-        self::assertStringContainsString('Hay varios MCP activos, pero el runtime no elegirá ninguno automáticamente hasta definir uno principal.', $response->getContent());
+        self::assertStringNotContainsString('MCP runtime', $response->getContent());
+        self::assertStringNotContainsString('/backend/external-tools', $response->getContent());
     }
 
     public function testDashboardShowsPendingMcpWhenNoneExists(): void
@@ -784,14 +787,14 @@ final class BackendUiControllerTest extends TestCase
         );
 
         self::assertSame(Response::HTTP_OK, $response->getStatusCode());
-        self::assertStringContainsString('MCP runtime</div><div class="metric-value">MCP pendiente de configurar', $response->getContent());
-        self::assertStringContainsString('No hay ningún MCP activo para este negocio.', $response->getContent());
+        self::assertStringNotContainsString('MCP runtime', $response->getContent());
+        self::assertStringNotContainsString('/backend/external-tools', $response->getContent());
     }
 
     public function testUsersRendersTwigListForAdmins(): void
     {
         $security = $this->createStub(Security::class);
-        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role === 'ROLE_ADMIN');
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => in_array($role, ['ROLE_AGENT', 'ROLE_MANAGER', 'ROLE_ADMIN', 'ROLE_SUPER_ADMIN'], true));
 
         $userOne = $this->createAuthenticatedUser('ana@example.com', ['admin'], 'Ana');
         $userTwo = $this->createAuthenticatedUser('pablo@example.com', ['manager'], 'Pablo');
@@ -859,8 +862,8 @@ final class BackendUiControllerTest extends TestCase
         ]);
 
         $security = $this->createStub(Security::class);
-        $security->method('getUser')->willReturn($this->createAuthenticatedUser('manager@example.com', ['manager'], 'María Manager'));
-        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => in_array($role, ['ROLE_MANAGER', 'ROLE_ADMIN'], true));
+        $security->method('getUser')->willReturn($this->createAuthenticatedUser('admin@example.com', ['super_admin'], 'María Manager'));
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => in_array($role, ['ROLE_AGENT', 'ROLE_MANAGER', 'ROLE_ADMIN', 'ROLE_SUPER_ADMIN'], true));
 
         $tenants = $this->createTenantRepositoryFake([$tenant]);
 
@@ -884,8 +887,8 @@ final class BackendUiControllerTest extends TestCase
         $tenant = new Tenant('Federico Martin Demo', 'federico-martin-demo');
 
         $security = $this->createStub(Security::class);
-        $security->method('getUser')->willReturn($this->createAuthenticatedUser('manager@example.com', ['manager'], 'María Manager'));
-        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => in_array($role, ['ROLE_MANAGER', 'ROLE_ADMIN'], true));
+        $security->method('getUser')->willReturn($this->createAuthenticatedUser('admin@example.com', ['super_admin'], 'María Manager'));
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => in_array($role, ['ROLE_AGENT', 'ROLE_MANAGER', 'ROLE_ADMIN', 'ROLE_SUPER_ADMIN'], true));
 
         $entityManager = $this->createMock(EntityManagerInterface::class);
         $entityManager->expects(self::once())->method('remove')->with($tenant);
@@ -922,8 +925,8 @@ final class BackendUiControllerTest extends TestCase
         $tenant = new Tenant('Tech Investments', 'tech-investments');
 
         $security = $this->createStub(Security::class);
-        $security->method('getUser')->willReturn($this->createAuthenticatedUser('manager@example.com', ['manager'], 'María Manager'));
-        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => in_array($role, ['ROLE_MANAGER', 'ROLE_ADMIN'], true));
+        $security->method('getUser')->willReturn($this->createAuthenticatedUser('admin@example.com', ['super_admin'], 'María Manager'));
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => in_array($role, ['ROLE_AGENT', 'ROLE_MANAGER', 'ROLE_ADMIN', 'ROLE_SUPER_ADMIN'], true));
 
         $tenants = $this->createTenantRepositoryFake([$tenant], $tenant);
         $request = Request::create('/backend/tenants/'.$tenant->getId()->toRfc4122().'/enter', 'POST', [
@@ -947,8 +950,8 @@ final class BackendUiControllerTest extends TestCase
     public function testProductsPageRequiresActiveTenant(): void
     {
         $security = $this->createStub(Security::class);
-        $security->method('getUser')->willReturn($this->createAuthenticatedUser('manager@example.com', ['manager'], 'María Manager'));
-        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => in_array($role, ['ROLE_MANAGER', 'ROLE_ADMIN'], true));
+        $security->method('getUser')->willReturn($this->createAuthenticatedUser('admin@example.com', ['super_admin'], 'María Manager'));
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => in_array($role, ['ROLE_AGENT', 'ROLE_MANAGER', 'ROLE_ADMIN', 'ROLE_SUPER_ADMIN'], true));
 
         $controller = $this->createController($security);
         $response = $controller->products(Request::create('/backend/products', 'GET'));
@@ -990,8 +993,8 @@ final class BackendUiControllerTest extends TestCase
     public function testTenantCreateFormRendersTheExpectedFields(): void
     {
         $security = $this->createStub(Security::class);
-        $security->method('getUser')->willReturn($this->createAuthenticatedUser('manager@example.com', ['manager'], 'María Manager'));
-        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => in_array($role, ['ROLE_MANAGER', 'ROLE_ADMIN'], true));
+        $security->method('getUser')->willReturn($this->createAuthenticatedUser('admin@example.com', ['super_admin'], 'María Manager'));
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role === 'ROLE_SUPER_ADMIN');
 
         $csrfTokenManager = $this->createStub(CsrfTokenManagerInterface::class);
         $csrfTokenManager->method('getToken')->willReturnCallback(
@@ -1026,8 +1029,8 @@ final class BackendUiControllerTest extends TestCase
         $tenant = new Tenant('Academia Nova', 'academia-nova');
 
         $security = $this->createStub(Security::class);
-        $security->method('getUser')->willReturn($this->createAuthenticatedUser('manager@example.com', ['manager'], 'María Manager'));
-        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => in_array($role, ['ROLE_MANAGER', 'ROLE_ADMIN'], true));
+        $security->method('getUser')->willReturn($this->createAuthenticatedUser('admin@example.com', ['super_admin'], 'María Manager'));
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role === 'ROLE_SUPER_ADMIN');
 
         $entityManager = $this->createMock(EntityManagerInterface::class);
         $createdTenant = null;
@@ -1957,6 +1960,31 @@ final class BackendUiControllerTest extends TestCase
         self::assertStringNotContainsString('Revisar usuarios', $response->getContent());
     }
 
+    public function testDashboardHidesMcpForNonSuperAdminWithActiveTenant(): void
+    {
+        $tenant = new Tenant('Tech Investments', 'tech-investments');
+
+        $security = $this->createStub(Security::class);
+        $security->method('getUser')->willReturn($this->createAuthenticatedUser('manager@example.com', ['manager'], 'María Manager'));
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => in_array($role, ['ROLE_AGENT', 'ROLE_MANAGER', 'ROLE_ADMIN'], true));
+
+        $controller = $this->createControllerForActiveTenant($security, $tenant);
+        $response = $controller->dashboard(
+            null,
+            null,
+            null,
+            null,
+            null,
+            $this->createExternalToolRepositoryFake([])
+        );
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        self::assertStringContainsString('Dashboard comercial — Tech Investments', $response->getContent());
+        self::assertStringNotContainsString('/backend/external-tools', $response->getContent());
+        self::assertStringNotContainsString('Servidores MCP', $response->getContent());
+        self::assertStringNotContainsString('MCP runtime', $response->getContent());
+    }
+
     public function testIndexRedirectsToLoginWhenNotAuthenticated(): void
     {
         $security = $this->createStub(Security::class);
@@ -1984,7 +2012,7 @@ final class BackendUiControllerTest extends TestCase
     public function testConfigurationPageDisablesAutofillAndKeepsSaveActionAtTheBottom(): void
     {
         $security = $this->createStub(Security::class);
-        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role === 'ROLE_ADMIN');
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role === 'ROLE_SUPER_ADMIN');
 
         $runtimeConfigurationService = $this->createMock(RuntimeConfigurationService::class);
         $runtimeConfigurationService->expects(self::once())
@@ -2118,7 +2146,7 @@ final class BackendUiControllerTest extends TestCase
     public function testConfigurationSaveRejectsInvalidRuntimeEndpoints(): void
     {
         $security = $this->createStub(Security::class);
-        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role === 'ROLE_ADMIN');
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role === 'ROLE_SUPER_ADMIN');
 
         $runtimeConfigurationService = $this->createMock(RuntimeConfigurationService::class);
         $submitted = [

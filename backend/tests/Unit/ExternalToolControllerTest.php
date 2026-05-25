@@ -150,7 +150,7 @@ final class ExternalToolControllerTest extends TestCase
     {
         $tenant = new Tenant('Tech Investments', 'tech-investments');
         $security = $this->createStub(Security::class);
-        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role === 'ROLE_ADMIN');
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role === 'ROLE_SUPER_ADMIN');
         $security->method('getUser')->willReturn(new User('federicomartin2609@gmail.com', ['admin']));
 
         $controller = $this->createController($security, null, null, null, null, $this->createActiveTenantContext($tenant));
@@ -165,10 +165,23 @@ final class ExternalToolControllerTest extends TestCase
         self::assertStringNotContainsString('<strong>Usuario</strong>', $response->getContent());
     }
 
+    public function testIndexRedirectsWhenUserIsNotSuperAdmin(): void
+    {
+        $security = $this->createStub(Security::class);
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role !== 'ROLE_SUPER_ADMIN');
+        $security->method('getUser')->willReturn(new User('manager@example.com', ['manager']));
+
+        $controller = $this->createController($security);
+        $response = $controller->index(new Request());
+
+        self::assertSame(Response::HTTP_FOUND, $response->getStatusCode());
+        self::assertSame('/backend/login', $response->headers->get('Location'));
+    }
+
     public function testIndexPromptsForActiveTenantWhenNoneIsSelected(): void
     {
         $security = $this->createStub(Security::class);
-        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role === 'ROLE_ADMIN');
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role === 'ROLE_SUPER_ADMIN');
         $security->method('getUser')->willReturn(new User('admin@example.com', ['admin']));
 
         $controller = $this->createController($security);
@@ -195,7 +208,7 @@ final class ExternalToolControllerTest extends TestCase
         $otherTool->setConfig(['enabled_for_llm' => true, 'server_label' => 'secondary_mcp']);
 
         $security = $this->createStub(Security::class);
-        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role === 'ROLE_ADMIN');
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role === 'ROLE_SUPER_ADMIN');
         $security->method('getUser')->willReturn(new User('admin@example.com', ['admin']));
 
         $tenantRepository = new class($tenant) extends TenantRepository {
@@ -255,7 +268,7 @@ final class ExternalToolControllerTest extends TestCase
         $tool->setConfig(['enabled_for_llm' => true, 'server_label' => 'principal_mcp']);
 
         $security = $this->createStub(Security::class);
-        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role === 'ROLE_ADMIN');
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role === 'ROLE_SUPER_ADMIN');
         $security->method('getUser')->willReturn(new User('admin@example.com', ['admin']));
 
         $tenantRepository = new class($tenant) extends TenantRepository {
@@ -317,7 +330,7 @@ final class ExternalToolControllerTest extends TestCase
         $tool->setConfig(['enabled_for_llm' => true, 'server_label' => 'principal_mcp']);
 
         $security = $this->createStub(Security::class);
-        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role === 'ROLE_ADMIN');
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role === 'ROLE_SUPER_ADMIN');
         $security->method('getUser')->willReturn(new User('admin@example.com', ['admin']));
 
         $tenantRepository = new class($tenant) extends TenantRepository {
@@ -385,7 +398,7 @@ final class ExternalToolControllerTest extends TestCase
         $tool->setConfig(['enabled_for_llm' => true, 'server_label' => 'principal_mcp']);
 
         $security = $this->createStub(Security::class);
-        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role === 'ROLE_ADMIN');
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role === 'ROLE_SUPER_ADMIN');
         $security->method('getUser')->willReturn(new User('admin@example.com', ['admin']));
 
         $tenantRepository = new class($tenant) extends TenantRepository {
@@ -471,7 +484,7 @@ final class ExternalToolControllerTest extends TestCase
         $tool->setConfig(['enabled_for_llm' => true, 'server_label' => 'principal_mcp']);
 
         $security = $this->createStub(Security::class);
-        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role === 'ROLE_ADMIN');
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role === 'ROLE_SUPER_ADMIN');
         $security->method('getUser')->willReturn(new User('admin@example.com', ['admin']));
 
         $tenantRepository = new class($tenant) extends TenantRepository {
@@ -558,7 +571,7 @@ final class ExternalToolControllerTest extends TestCase
         $tool->setConfig(['enabled_for_llm' => true, 'server_label' => 'principal_mcp']);
 
         $security = $this->createStub(Security::class);
-        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role === 'ROLE_ADMIN');
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role === 'ROLE_SUPER_ADMIN');
         $security->method('getUser')->willReturn(new User('admin@example.com', ['admin']));
 
         $tenantRepository = new class($tenant) extends TenantRepository {
@@ -646,7 +659,7 @@ final class ExternalToolControllerTest extends TestCase
         $toolB->setConfig(['enabled_for_llm' => true, 'server_label' => 'mcp_b']);
 
         $security = $this->createStub(Security::class);
-        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role === 'ROLE_ADMIN');
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role === 'ROLE_SUPER_ADMIN');
         $security->method('getUser')->willReturn(new User('admin@example.com', ['admin']));
 
         $tenantRepository = new class($tenant) extends TenantRepository {
@@ -773,7 +786,7 @@ final class ExternalToolControllerTest extends TestCase
         });
 
         $security = $this->createStub(Security::class);
-        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role === 'ROLE_ADMIN');
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role === 'ROLE_SUPER_ADMIN');
         $security->method('getUser')->willReturn(new User('admin@example.com', ['admin']));
 
         $tenantRepository = new class($tenant) extends TenantRepository {
@@ -885,7 +898,7 @@ final class ExternalToolControllerTest extends TestCase
         });
 
         $security = $this->createStub(Security::class);
-        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role === 'ROLE_ADMIN');
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role === 'ROLE_SUPER_ADMIN');
         $security->method('getUser')->willReturn(new User('admin@example.com', ['admin']));
 
         $tenantRepository = new class($tenant) extends TenantRepository {

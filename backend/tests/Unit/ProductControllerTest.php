@@ -9,6 +9,7 @@ use App\Repository\ProductRepository;
 use App\Repository\TenantRepository;
 use Doctrine\ORM\EntityManagerInterface;
 use PHPUnit\Framework\TestCase;
+use Symfony\Bundle\SecurityBundle\Security;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\DependencyInjection\Container;
 
@@ -148,6 +149,7 @@ final class ProductControllerTest extends TestCase
             $productRepository,
             $tenantRepository,
             $this->createStub(EntityManagerInterface::class),
+            $this->superAdminSecurity(),
         );
         $controller->setContainer(new Container());
 
@@ -246,5 +248,13 @@ final class ProductControllerTest extends TestCase
     private function product(Tenant $tenant, string $name): Product
     {
         return new Product($tenant, $name);
+    }
+
+    private function superAdminSecurity(): Security
+    {
+        $security = $this->createStub(Security::class);
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role === 'ROLE_SUPER_ADMIN');
+
+        return $security;
     }
 }

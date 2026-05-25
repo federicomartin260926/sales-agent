@@ -5,6 +5,7 @@ namespace App\Tests\Unit;
 use App\Command\BootstrapDefaultDataCommand;
 use App\Entity\Playbook;
 use App\Entity\Product;
+use App\Entity\TenantMembership;
 use App\Entity\Tenant;
 use App\Entity\User;
 use Doctrine\ORM\EntityManagerInterface;
@@ -23,11 +24,13 @@ final class BootstrapDefaultDataCommandTest extends TestCase
         $tenantRepository = $this->createStub(EntityRepository::class);
         $userRepository = $this->createStub(EntityRepository::class);
         $productRepository = $this->createStub(EntityRepository::class);
+        $membershipRepository = $this->createStub(EntityRepository::class);
         $playbookRepository = $this->createStub(EntityRepository::class);
 
         $tenantRepository->method('findOneBy')->willReturn(null);
         $userRepository->method('findOneBy')->willReturn(null);
         $productRepository->method('findOneBy')->willReturn(null);
+        $membershipRepository->method('findOneBy')->willReturn(null);
         $playbookRepository->method('findOneBy')->willReturnCallback(static function (array $criteria) {
             return match ($criteria['name'] ?? null) {
                 'Guía comercial de prueba' => null,
@@ -36,20 +39,21 @@ final class BootstrapDefaultDataCommandTest extends TestCase
             };
         });
 
-        $entityManager->expects(self::exactly(4))
+        $entityManager->expects(self::exactly(5))
             ->method('getRepository')
-            ->willReturnCallback(static function (string $class) use ($tenantRepository, $userRepository, $productRepository, $playbookRepository) {
+            ->willReturnCallback(static function (string $class) use ($tenantRepository, $userRepository, $productRepository, $membershipRepository, $playbookRepository) {
                 return match ($class) {
                     Tenant::class => $tenantRepository,
                     User::class => $userRepository,
                     Product::class => $productRepository,
+                    TenantMembership::class => $membershipRepository,
                     Playbook::class => $playbookRepository,
                     default => throw new \RuntimeException(sprintf('Unexpected repository %s', $class)),
                 };
             });
 
         $persisted = [];
-        $entityManager->expects(self::exactly(7))
+        $entityManager->expects(self::exactly(8))
             ->method('persist')
             ->willReturnCallback(static function (object $entity) use (&$persisted): void {
                 $persisted[] = $entity;
@@ -68,7 +72,15 @@ final class BootstrapDefaultDataCommandTest extends TestCase
         $exitCode = $tester->execute([]);
 
         self::assertSame(0, $exitCode);
-        self::assertCount(7, $persisted);
+        self::assertCount(8, $persisted);
+
+        $tenant = $persisted[0];
+        self::assertInstanceOf(Tenant::class, $tenant);
+        self::assertSame('federico-martin-demo', $tenant->getSlug());
+        self::assertSame('consultivo', $tenant->getTone());
+        self::assertArrayHasKey('positioning', $tenant->getSalesPolicy());
+        self::assertArrayHasKey('qualificationFocus', $tenant->getSalesPolicy());
+        self::assertArrayHasKey('handoffRules', $tenant->getSalesPolicy());
 
         $product = $persisted[1];
         self::assertInstanceOf(Product::class, $product);
@@ -92,18 +104,17 @@ final class BootstrapDefaultDataCommandTest extends TestCase
         $user = $persisted[4];
         self::assertInstanceOf(User::class, $user);
         self::assertSame('federicomartin2609@gmail.com', $user->getEmail());
+        self::assertContains('ROLE_SUPER_ADMIN', $user->getRoles());
         self::assertContains('ROLE_ADMIN', $user->getRoles());
         self::assertSame('hashed-password', $user->getPassword());
 
-        $tenant = $persisted[0];
-        self::assertInstanceOf(Tenant::class, $tenant);
-        self::assertSame('federico-martin-demo', $tenant->getSlug());
-        self::assertSame('consultivo', $tenant->getTone());
-        self::assertArrayHasKey('positioning', $tenant->getSalesPolicy());
-        self::assertArrayHasKey('qualificationFocus', $tenant->getSalesPolicy());
-        self::assertArrayHasKey('handoffRules', $tenant->getSalesPolicy());
+        $membership = $persisted[5];
+        self::assertInstanceOf(TenantMembership::class, $membership);
+        self::assertSame($user->getId()->toRfc4122(), $membership->getUser()->getId()->toRfc4122());
+        self::assertSame($tenant->getId()->toRfc4122(), $membership->getTenant()->getId()->toRfc4122());
+        self::assertSame('manager', $membership->getRole());
 
-        $generalPlaybook = $persisted[5];
+        $generalPlaybook = $persisted[6];
         self::assertInstanceOf(Playbook::class, $generalPlaybook);
         self::assertSame('Guía comercial de prueba', $generalPlaybook->getName());
         self::assertNull($generalPlaybook->getProduct());
@@ -112,7 +123,7 @@ final class BootstrapDefaultDataCommandTest extends TestCase
         self::assertArrayHasKey('scoring', $generalPlaybook->getConfig());
         self::assertArrayHasKey('allowedActions', $generalPlaybook->getConfig());
 
-        $productPlaybook = $persisted[6];
+        $productPlaybook = $persisted[7];
         self::assertInstanceOf(Playbook::class, $productPlaybook);
         self::assertSame('Guía comercial de WhatsApp Automation', $productPlaybook->getName());
         self::assertSame($product, $productPlaybook->getProduct());
@@ -134,10 +145,12 @@ final class BootstrapDefaultDataCommandTest extends TestCase
         $thirdProduct = new Product($tenant, 'Follow-up Assistant');
         $generalPlaybook = new Playbook($tenant, 'Guía comercial de prueba');
         $productPlaybook = new Playbook($tenant, 'Guía comercial de WhatsApp Automation', $product);
+        $membership = new TenantMembership($user, $tenant, 'manager');
 
         $tenantRepository = $this->createStub(EntityRepository::class);
         $userRepository = $this->createStub(EntityRepository::class);
         $productRepository = $this->createStub(EntityRepository::class);
+        $membershipRepository = $this->createStub(EntityRepository::class);
         $playbookRepository = $this->createStub(EntityRepository::class);
 
         $tenantRepository->method('findOneBy')->willReturn($tenant);
@@ -150,6 +163,7 @@ final class BootstrapDefaultDataCommandTest extends TestCase
                 default => null,
             };
         });
+        $membershipRepository->method('findOneBy')->willReturn($membership);
         $playbookRepository->method('findOneBy')->willReturnCallback(static function (array $criteria) use ($generalPlaybook, $productPlaybook) {
             return match ($criteria['name'] ?? null) {
                 'Guía comercial de prueba' => $generalPlaybook,
@@ -158,20 +172,21 @@ final class BootstrapDefaultDataCommandTest extends TestCase
             };
         });
 
-        $entityManager->expects(self::exactly(4))
+        $entityManager->expects(self::exactly(5))
             ->method('getRepository')
-            ->willReturnCallback(static function (string $class) use ($tenantRepository, $userRepository, $productRepository, $playbookRepository) {
+            ->willReturnCallback(static function (string $class) use ($tenantRepository, $userRepository, $productRepository, $membershipRepository, $playbookRepository) {
                 return match ($class) {
                     Tenant::class => $tenantRepository,
                     User::class => $userRepository,
                     Product::class => $productRepository,
+                    TenantMembership::class => $membershipRepository,
                     Playbook::class => $playbookRepository,
                     default => throw new \RuntimeException(sprintf('Unexpected repository %s', $class)),
                 };
             });
 
         $entityManager->expects(self::never())->method('persist');
-        $entityManager->expects(self::never())->method('flush');
+        $entityManager->expects(self::once())->method('flush');
         $passwordHasher->expects(self::never())->method('hashPassword');
 
         $command = new BootstrapDefaultDataCommand($entityManager, $passwordHasher);
@@ -179,6 +194,7 @@ final class BootstrapDefaultDataCommandTest extends TestCase
         $exitCode = $tester->execute([]);
 
         self::assertSame(0, $exitCode);
-        self::assertStringContainsString('Bootstrap data already exists.', $tester->getDisplay());
+        self::assertStringContainsString('Created bootstrap data: admin user role.', $tester->getDisplay());
+        self::assertContains('ROLE_SUPER_ADMIN', $user->getRoles());
     }
 }

@@ -1,5 +1,6 @@
 security:
   role_hierarchy:
+    ROLE_SUPER_ADMIN: [ROLE_ADMIN, ROLE_MANAGER, ROLE_AGENT]
     ROLE_MANAGER: [ROLE_AGENT]
     ROLE_ADMIN: [ROLE_MANAGER, ROLE_AGENT]
 
@@ -63,10 +64,12 @@ security:
     - { path: ^/$, roles: PUBLIC_ACCESS }
     - { path: ^/login, roles: PUBLIC_ACCESS }
     - { path: ^/(backend/)?logout$, roles: PUBLIC_ACCESS }
-    - { path: ^/(dashboard|profile), roles: [ROLE_AGENT, ROLE_MANAGER, ROLE_ADMIN] }
-    - { path: ^/(playbooks|tenants|products|api-health|channels|entry-points|tracking), roles: [ROLE_MANAGER, ROLE_ADMIN] }
-    - { path: ^/users, roles: ROLE_ADMIN }
-    - { path: ^/backend/configuration, roles: ROLE_ADMIN }
+    - { path: ^/(dashboard|profile), roles: [ROLE_AGENT, ROLE_MANAGER, ROLE_ADMIN, ROLE_SUPER_ADMIN] }
+    - { path: ^/(playbooks|tenants|products|api-health|channels|entry-points|tracking), roles: [ROLE_MANAGER, ROLE_ADMIN, ROLE_SUPER_ADMIN] }
+    - { path: ^/users, roles: ROLE_SUPER_ADMIN }
+    - { path: ^/backend/configuration, roles: ROLE_SUPER_ADMIN }
+    - { path: ^/external-tools, roles: ROLE_SUPER_ADMIN }
+    - { path: ^/api/tenants, roles: ROLE_SUPER_ADMIN }
     - { path: ^/api/internal, roles: ROLE_INTERNAL_SERVICE }
     - { path: ^/api/health, roles: PUBLIC_ACCESS }
     - { path: ^/api/login, roles: PUBLIC_ACCESS }

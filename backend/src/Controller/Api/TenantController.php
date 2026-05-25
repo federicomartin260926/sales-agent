@@ -9,6 +9,7 @@ use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\Routing\Attribute\Route;
+use Symfony\Bundle\SecurityBundle\Security;
 
 #[Route('/api/tenants')]
 final class TenantController extends AbstractApiController
@@ -16,12 +17,17 @@ final class TenantController extends AbstractApiController
     public function __construct(
         private readonly TenantRepository $tenants,
         private readonly EntityManagerInterface $em,
+        private readonly Security $security,
     ) {
     }
 
     #[Route('', methods: ['GET'])]
     public function index(): JsonResponse
     {
+        if (!$this->security->isGranted('ROLE_SUPER_ADMIN')) {
+            return $this->json(['message' => 'Forbidden'], JsonResponse::HTTP_FORBIDDEN);
+        }
+
         return $this->json(array_map(
             static fn (Tenant $tenant): array => $tenant->toArray(),
             $this->tenants->findAllOrdered()
@@ -31,6 +37,10 @@ final class TenantController extends AbstractApiController
     #[Route('', methods: ['POST'])]
     public function create(Request $request): JsonResponse
     {
+        if (!$this->security->isGranted('ROLE_SUPER_ADMIN')) {
+            return $this->json(['message' => 'Forbidden'], JsonResponse::HTTP_FORBIDDEN);
+        }
+
         $data = $this->readJson($request);
 
         if (($data['name'] ?? '') === '' || ($data['slug'] ?? '') === '') {
@@ -73,6 +83,10 @@ final class TenantController extends AbstractApiController
     #[Route('/{id}', methods: ['GET'])]
     public function show(string $id): JsonResponse
     {
+        if (!$this->security->isGranted('ROLE_SUPER_ADMIN')) {
+            return $this->json(['message' => 'Forbidden'], JsonResponse::HTTP_FORBIDDEN);
+        }
+
         $tenant = $this->tenants->find($id);
 
         if (!$tenant instanceof Tenant) {
@@ -85,6 +99,10 @@ final class TenantController extends AbstractApiController
     #[Route('/{id}', methods: ['PUT', 'PATCH'])]
     public function update(string $id, Request $request): JsonResponse
     {
+        if (!$this->security->isGranted('ROLE_SUPER_ADMIN')) {
+            return $this->json(['message' => 'Forbidden'], JsonResponse::HTTP_FORBIDDEN);
+        }
+
         $tenant = $this->tenants->find($id);
 
         if (!$tenant instanceof Tenant) {
@@ -152,6 +170,10 @@ final class TenantController extends AbstractApiController
     #[Route('/{id}', methods: ['DELETE'])]
     public function delete(string $id): JsonResponse
     {
+        if (!$this->security->isGranted('ROLE_SUPER_ADMIN')) {
+            return $this->json(['message' => 'Forbidden'], JsonResponse::HTTP_FORBIDDEN);
+        }
+
         $tenant = $this->tenants->find($id);
 
         if (!$tenant instanceof Tenant) {
