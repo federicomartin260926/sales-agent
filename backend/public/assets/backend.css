@@ -825,6 +825,17 @@ body.login-page .footer code {
   white-space: normal;
 }
 
+.request-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.request-action-form {
+  display: inline-flex;
+}
+
 .request-status {
   display: inline-flex;
   align-items: center;

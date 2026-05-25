@@ -503,6 +503,7 @@ final class BackendUiController
                           <input type="hidden" name="_csrf_token" value="%s">
                           <button class="secondary-action" type="submit" title="Entrar en el negocio" aria-label="Entrar en el negocio">Entrar</button>
                         </form>
+                        <a class="secondary-action" href="/backend/super-admin/tenants/%s/ai" title="IA del tenant" aria-label="IA del tenant">IA</a>
                         %s
                       </div>
                     </td>
@@ -515,6 +516,7 @@ final class BackendUiController
                 $status,
                 htmlspecialchars($enterUrl, ENT_QUOTES, 'UTF-8'),
                 htmlspecialchars($this->tenantTokenValue($enterUrl), ENT_QUOTES, 'UTF-8'),
+                htmlspecialchars($tenant->getId()->toRfc4122(), ENT_QUOTES, 'UTF-8'),
                 is_string($editUrl) ? sprintf(
                     '<a class="icon-action" href="%s" title="Editar negocio" aria-label="Editar negocio">%s</a>',
                     htmlspecialchars($editUrl, ENT_QUOTES, 'UTF-8'),
@@ -554,6 +556,7 @@ final class BackendUiController
                           <input type="hidden" name="_csrf_token" value="%s">
                           <button class="secondary-action" type="submit" title="Entrar en el negocio" aria-label="Entrar en el negocio">%s</button>
                         </form>
+                        <a class="secondary-action" href="/backend/super-admin/tenants/%s/ai" title="IA del tenant" aria-label="IA del tenant">IA</a>
                         <a class="icon-action" href="%s" title="Editar negocio" aria-label="Editar negocio">%s</a>
                         <form method="post" action="%s" onsubmit="return confirm(\'¿Eliminar este negocio?\');" style="display:inline-flex;">
                           <input type="hidden" name="_csrf_token" value="%s">
@@ -572,6 +575,7 @@ final class BackendUiController
                 htmlspecialchars($enterUrl, ENT_QUOTES, 'UTF-8'),
                 htmlspecialchars($this->tenantTokenValue($enterUrl), ENT_QUOTES, 'UTF-8'),
                 $isCurrentActive ? 'En sesión' : 'Entrar',
+                htmlspecialchars($tenant->getId()->toRfc4122(), ENT_QUOTES, 'UTF-8'),
                 htmlspecialchars($editUrl, ENT_QUOTES, 'UTF-8'),
                 self::iconEditSvg(),
                 htmlspecialchars($deleteUrl, ENT_QUOTES, 'UTF-8'),
@@ -903,6 +907,158 @@ final class BackendUiController
             $aiUsageEvents,
             $topUpRequests
         );
+    }
+
+    #[Route('/super-admin/tenants/{id}/ai', methods: ['GET', 'POST'])]
+    public function superAdminTenantAi(
+        string $id,
+        Request $request,
+        ?TenantRepository $tenants = null,
+        ?TenantAiUsagePolicyRepository $aiUsagePolicies = null,
+        ?AiUsageEventRepository $aiUsageEvents = null,
+        ?TenantAiTopUpRequestRepository $topUpRequests = null,
+    ): Response {
+        if (!$this->isSuperAdmin()) {
+            return new RedirectResponse('/backend/dashboard');
+        }
+
+        $tenant = $this->resolveTenantForSuperAdminAi($id, $tenants);
+        if (!$tenant instanceof Tenant) {
+            return new Response('', Response::HTTP_NOT_FOUND);
+        }
+
+        $policy = $this->loadTenantAiUsagePolicyForView($tenant, $aiUsagePolicies);
+        $values = $this->tenantAiUsagePolicyValues($policy);
+        $errors = [];
+
+        if ($request->isMethod('POST')) {
+            $actionUrl = '/backend/super-admin/tenants/'.$tenant->getId()->toRfc4122().'/ai';
+            if (!$this->isValidTenantAiSuperAdminToken($actionUrl, (string) $request->request->get('_csrf_token'))) {
+                $errors[] = 'La sesión del formulario ha expirado. Vuelve a intentarlo.';
+            } else {
+                $values = $this->tenantAiUsagePolicyFormValuesFromRequest($request);
+                $validationError = $this->validateTenantAiUsagePolicyForm($values);
+                if ($validationError !== null) {
+                    $errors[] = $validationError;
+                }
+
+                if ($errors === []) {
+                    $this->persistTenantAiUsagePolicy($tenant, $values, $aiUsagePolicies, true, $policy);
+                    $this->addFlashMessage($request, 'success', sprintf('IA del tenant actualizada para %s.', $tenant->getName()));
+
+                    return new RedirectResponse($actionUrl);
+                }
+            }
+        }
+
+        return $this->renderSuperAdminTenantAiPage(
+            $request,
+            $tenant,
+            $values,
+            $errors,
+            $policy,
+            $aiUsagePolicies,
+            $aiUsageEvents,
+            $topUpRequests
+        );
+    }
+
+    #[Route('/super-admin/tenants/{tenantId}/ai/top-up-requests/{requestId}/approve', methods: ['POST'])]
+    public function superAdminTenantAiTopUpRequestApprove(
+        string $tenantId,
+        string $requestId,
+        Request $request,
+        ?TenantRepository $tenants = null,
+        ?TenantAiTopUpRequestRepository $topUpRequests = null,
+    ): Response {
+        if (!$this->isSuperAdmin()) {
+            return new RedirectResponse('/backend/dashboard');
+        }
+
+        $tenant = $this->resolveTenantForSuperAdminAi($tenantId, $tenants);
+        if (!$tenant instanceof Tenant) {
+            return new Response('', Response::HTTP_NOT_FOUND);
+        }
+
+        $actionUrl = '/backend/super-admin/tenants/'.$tenant->getId()->toRfc4122().'/ai/top-up-requests/'.$requestId.'/approve';
+        if (!$this->isValidTenantAiSuperAdminToken($actionUrl, (string) $request->request->get('_csrf_token'))) {
+            $this->addFlashMessage($request, 'error', 'La sesión del formulario ha expirado. Vuelve a intentarlo.');
+
+            return new RedirectResponse('/backend/super-admin/tenants/'.$tenant->getId()->toRfc4122().'/ai');
+        }
+
+        $requestEntity = $this->resolveTenantAiTopUpRequestForTenant($tenant, $requestId, $topUpRequests);
+        if (!$requestEntity instanceof TenantAiTopUpRequest) {
+            return new Response('', Response::HTTP_NOT_FOUND);
+        }
+
+        if ($requestEntity->getStatus() !== TenantAiTopUpRequest::STATUS_PENDING) {
+            $this->addFlashMessage($request, 'error', 'La solicitud ya no está pendiente.');
+
+            return new RedirectResponse('/backend/super-admin/tenants/'.$tenant->getId()->toRfc4122().'/ai');
+        }
+
+        $currentUser = $this->currentUser();
+        if (!$currentUser instanceof User) {
+            return new RedirectResponse('/backend/dashboard');
+        }
+
+        $requestEntity->approve($currentUser);
+        $this->entityManager->persist($requestEntity);
+        $this->entityManager->flush();
+
+        $this->addFlashMessage($request, 'success', sprintf('Solicitud de ampliación aprobada para %s.', $tenant->getName()));
+
+        return new RedirectResponse('/backend/super-admin/tenants/'.$tenant->getId()->toRfc4122().'/ai');
+    }
+
+    #[Route('/super-admin/tenants/{tenantId}/ai/top-up-requests/{requestId}/reject', methods: ['POST'])]
+    public function superAdminTenantAiTopUpRequestReject(
+        string $tenantId,
+        string $requestId,
+        Request $request,
+        ?TenantRepository $tenants = null,
+        ?TenantAiTopUpRequestRepository $topUpRequests = null,
+    ): Response {
+        if (!$this->isSuperAdmin()) {
+            return new RedirectResponse('/backend/dashboard');
+        }
+
+        $tenant = $this->resolveTenantForSuperAdminAi($tenantId, $tenants);
+        if (!$tenant instanceof Tenant) {
+            return new Response('', Response::HTTP_NOT_FOUND);
+        }
+
+        $actionUrl = '/backend/super-admin/tenants/'.$tenant->getId()->toRfc4122().'/ai/top-up-requests/'.$requestId.'/reject';
+        if (!$this->isValidTenantAiSuperAdminToken($actionUrl, (string) $request->request->get('_csrf_token'))) {
+            $this->addFlashMessage($request, 'error', 'La sesión del formulario ha expirado. Vuelve a intentarlo.');
+
+            return new RedirectResponse('/backend/super-admin/tenants/'.$tenant->getId()->toRfc4122().'/ai');
+        }
+
+        $requestEntity = $this->resolveTenantAiTopUpRequestForTenant($tenant, $requestId, $topUpRequests);
+        if (!$requestEntity instanceof TenantAiTopUpRequest) {
+            return new Response('', Response::HTTP_NOT_FOUND);
+        }
+
+        if ($requestEntity->getStatus() !== TenantAiTopUpRequest::STATUS_PENDING) {
+            $this->addFlashMessage($request, 'error', 'La solicitud ya no está pendiente.');
+
+            return new RedirectResponse('/backend/super-admin/tenants/'.$tenant->getId()->toRfc4122().'/ai');
+        }
+
+        $currentUser = $this->currentUser();
+        if (!$currentUser instanceof User) {
+            return new RedirectResponse('/backend/dashboard');
+        }
+
+        $requestEntity->reject($currentUser);
+        $this->entityManager->persist($requestEntity);
+        $this->entityManager->flush();
+
+        $this->addFlashMessage($request, 'success', sprintf('Solicitud de ampliación rechazada para %s.', $tenant->getName()));
+
+        return new RedirectResponse('/backend/super-admin/tenants/'.$tenant->getId()->toRfc4122().'/ai');
     }
 
     #[Route('/users', methods: ['GET'])]
@@ -2664,6 +2820,53 @@ final class BackendUiController
     }
 
     /**
+     * @param array{aiEnabled: bool, dailyCostLimitEur: string, monthlyCostLimitEur: string, defaultModel: string, fallbackModel: string, limitAction: string} $values
+     * @param string[] $errors
+     */
+    private function renderSuperAdminTenantAiPage(
+        Request $request,
+        Tenant $tenant,
+        array $values,
+        array $errors,
+        ?TenantAiUsagePolicy $policy,
+        ?TenantAiUsagePolicyRepository $aiUsagePolicies,
+        ?AiUsageEventRepository $aiUsageEvents,
+        ?TenantAiTopUpRequestRepository $topUpRequests,
+    ): Response {
+        $dashboard = $this->tenantAiUsageDashboardData($tenant, $policy, $aiUsageEvents ?? $this->aiUsageEvents, $topUpRequests);
+        $errorHtml = '';
+        foreach ($errors as $error) {
+            $errorHtml .= $this->renderDismissibleAlert('alert-error', htmlspecialchars((string) $error, ENT_QUOTES, 'UTF-8'));
+        }
+
+        $policyValues = array_replace($this->tenantAiUsagePolicyValues($policy), $values);
+
+        $content = $this->twig->render('backend/super_admin/tenant_ai.html.twig', [
+            'tenant' => $this->superAdminTenantAiTenantView($tenant),
+            'policy_exists' => $policy instanceof TenantAiUsagePolicy,
+            'policy_updated_at' => $policy instanceof TenantAiUsagePolicy ? $policy->getUpdatedAt()->format('Y-m-d H:i') : '—',
+            'policy_action_url' => '/backend/super-admin/tenants/'.$tenant->getId()->toRfc4122().'/ai',
+            'policy_token' => $this->tenantAiSuperAdminTokenValue('/backend/super-admin/tenants/'.$tenant->getId()->toRfc4122().'/ai'),
+            'policy_values' => $policyValues,
+            'limit_action_options' => [
+                ['value' => 'handoff_human', 'label' => 'handoff_human'],
+                ['value' => 'block', 'label' => 'block'],
+            ],
+            'feedback_html' => $this->renderProfileFeedback($request),
+            'error_html' => $errorHtml,
+            'dashboard' => $dashboard,
+            'back_url' => '/backend/tenants',
+        ]);
+
+        return $this->renderBackendShell(
+            sprintf('IA del tenant - %s', $tenant->getName()),
+            'Configuración técnica de IA, consumo y solicitudes para un tenant concreto.',
+            'tenants',
+            $content
+        );
+    }
+
+    /**
      * @return array{
      *   status: array{label: string, class: string, detail: string},
      *   today: array{estimatedCostEur: string, totalTokens: string},
@@ -2851,11 +3054,18 @@ final class BackendUiController
     private function tenantAiUsageTopUpRequestView(TenantAiTopUpRequest $requestEntity): array
     {
         $requestedBy = $requestEntity->getRequestedBy();
+        $resolvedBy = $requestEntity->getResolvedBy();
+        $tenantId = $requestEntity->getTenant()->getId()->toRfc4122();
+        $requestId = $requestEntity->getId()->toRfc4122();
 
         return [
+            'id' => $requestId,
+            'tenant_id' => $tenantId,
+            'tenant_name' => $requestEntity->getTenant()->getName(),
             'createdAt' => $requestEntity->getCreatedAt()->format('Y-m-d H:i'),
             'amountEur' => $this->formatMoneyEur($requestEntity->getRequestedAmountEur()),
             'message' => $requestEntity->getMessage(),
+            'status_key' => $requestEntity->getStatus(),
             'status' => match ($requestEntity->getStatus()) {
                 TenantAiTopUpRequest::STATUS_APPROVED => 'Aprobada',
                 TenantAiTopUpRequest::STATUS_REJECTED => 'Rechazada',
@@ -2866,7 +3076,14 @@ final class BackendUiController
                 TenantAiTopUpRequest::STATUS_REJECTED => 'status-off',
                 default => 'status-warn',
             },
-            'requestedBy' => $requestedBy instanceof User ? $requestedBy->getName() !== '' ? $requestedBy->getName() : $requestedBy->getEmail() : 'Sistema',
+            'requestedBy' => $this->userDisplayLabel($requestedBy),
+            'resolvedAt' => $requestEntity->getResolvedAt()?->format('Y-m-d H:i') ?? '—',
+            'resolvedBy' => $this->userDisplayLabel($resolvedBy),
+            'adminNotes' => $requestEntity->getAdminNotes() ?? '—',
+            'approve_url' => '/backend/super-admin/tenants/'.$tenantId.'/ai/top-up-requests/'.$requestId.'/approve',
+            'reject_url' => '/backend/super-admin/tenants/'.$tenantId.'/ai/top-up-requests/'.$requestId.'/reject',
+            'approve_token' => $this->tenantAiSuperAdminTokenValue('/backend/super-admin/tenants/'.$tenantId.'/ai/top-up-requests/'.$requestId.'/approve'),
+            'reject_token' => $this->tenantAiSuperAdminTokenValue('/backend/super-admin/tenants/'.$tenantId.'/ai/top-up-requests/'.$requestId.'/reject'),
         ];
     }
 
@@ -2934,6 +3151,24 @@ final class BackendUiController
         return $this->csrfTokenManager->getToken('tenant_ai_top_up_request')->getValue();
     }
 
+    private function isValidTenantAiSuperAdminToken(string $actionUrl, string $value): bool
+    {
+        if ($this->csrfTokenManager === null) {
+            return true;
+        }
+
+        return $this->csrfTokenManager->isTokenValid(new CsrfToken($this->tenantAiSuperAdminTokenId($actionUrl), $value));
+    }
+
+    private function tenantAiSuperAdminTokenValue(string $actionUrl): string
+    {
+        if ($this->csrfTokenManager === null) {
+            return '';
+        }
+
+        return $this->csrfTokenManager->getToken($this->tenantAiSuperAdminTokenId($actionUrl))->getValue();
+    }
+
     private function loadTenantAiUsagePolicyForView(Tenant $tenant, ?TenantAiUsagePolicyRepository $aiUsagePolicies): ?TenantAiUsagePolicy
     {
         if ($aiUsagePolicies instanceof TenantAiUsagePolicyRepository) {
@@ -2941,6 +3176,64 @@ final class BackendUiController
         }
 
         return null;
+    }
+
+    /**
+     * @return array{id: string, name: string, slug: string, isActive: bool, status_label: string, status_class: string, edit_url: string}
+     */
+    private function superAdminTenantAiTenantView(Tenant $tenant): array
+    {
+        return [
+            'id' => $tenant->getId()->toRfc4122(),
+            'name' => $tenant->getName(),
+            'slug' => $tenant->getSlug(),
+            'isActive' => $tenant->isActive(),
+            'status_label' => $tenant->isActive() ? 'Activo' : 'Inactivo',
+            'status_class' => $tenant->isActive() ? 'status-ok' : 'status-off',
+            'edit_url' => '/backend/tenants/'.$tenant->getId()->toRfc4122().'/edit',
+        ];
+    }
+
+    /**
+     * @return array{aiEnabled: bool, dailyCostLimitEur: string, monthlyCostLimitEur: string, defaultModel: string, fallbackModel: string, limitAction: string}
+     */
+    private function tenantAiUsagePolicyFormValuesFromRequest(Request $request): array
+    {
+        return [
+            'aiEnabled' => $request->request->has('aiEnabled'),
+            'dailyCostLimitEur' => trim((string) $request->request->get('dailyCostLimitEur', '')),
+            'monthlyCostLimitEur' => trim((string) $request->request->get('monthlyCostLimitEur', '')),
+            'defaultModel' => trim((string) $request->request->get('defaultModel', '')),
+            'fallbackModel' => trim((string) $request->request->get('fallbackModel', '')),
+            'limitAction' => trim((string) $request->request->get('limitAction', 'handoff_human')),
+        ];
+    }
+
+    private function resolveTenantForSuperAdminAi(string $id, ?TenantRepository $tenants): ?Tenant
+    {
+        $repository = $tenants instanceof TenantRepository ? $tenants : $this->entityManager->getRepository(Tenant::class);
+        $tenant = $repository->find($id);
+
+        return $tenant instanceof Tenant ? $tenant : null;
+    }
+
+    private function resolveTenantAiTopUpRequestForTenant(Tenant $tenant, string $requestId, ?TenantAiTopUpRequestRepository $topUpRequests): ?TenantAiTopUpRequest
+    {
+        if (!$topUpRequests instanceof TenantAiTopUpRequestRepository) {
+            return null;
+        }
+
+        $requestEntity = $topUpRequests->find($requestId);
+        if (!$requestEntity instanceof TenantAiTopUpRequest) {
+            return null;
+        }
+
+        return $requestEntity->getTenant()->getId()->toRfc4122() === $tenant->getId()->toRfc4122() ? $requestEntity : null;
+    }
+
+    private function tenantAiSuperAdminTokenId(string $actionUrl): string
+    {
+        return 'tenant_ai_super_admin_'.md5($actionUrl);
     }
 
     private function parsePositiveFloat(mixed $value): ?float
@@ -2957,6 +3250,15 @@ final class BackendUiController
         $number = (float) $trimmed;
 
         return $number > 0 ? $number : null;
+    }
+
+    private function userDisplayLabel(?User $user): string
+    {
+        if (!$user instanceof User) {
+            return 'Sistema';
+        }
+
+        return $user->getName() !== '' ? $user->getName() : $user->getEmail();
     }
 
     /**

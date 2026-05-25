@@ -115,6 +115,7 @@ Rutas públicas a través de Nginx:
   - `GET /backend/profile`
   - `GET /backend/users` y `GET /backend/users/new` para plataforma global
   - `GET /backend/ai-usage` y `POST /backend/ai-usage/top-up-requests` para uso IA del tenant activo
+  - `GET /backend/super-admin/tenants/{id}/ai` para administración técnica IA por tenant como super admin
 - `GET /backend/api/health`
 - CRUD REST básico:
   - `/backend/api/tenants` para negocios
@@ -133,6 +134,7 @@ Rutas públicas a través de Nginx:
 El backend humano sigue un layout tipo CRM con sidebar, métricas, navegación por módulos y perfil editable para nombre y clave.
 La UI también mantiene un `negocio activo` en sesión para orientar secciones dependientes como productos, guías comerciales, puntos de entrada y servidores MCP.
 La plataforma también incluye una vista de `Uso IA` por tenant con consumo, límites y solicitudes de ampliación pendientes, visible sólo cuando el usuario puede gestionar el negocio activo.
+Para `ROLE_SUPER_ADMIN` existe además la vista técnica de IA por tenant en `/backend/super-admin/tenants/{id}/ai`, donde se edita la policy que consume el runtime y se resuelven solicitudes de ampliación.
 La UI heredada todavía conserva compatibilidad con piezas antiguas, pero el modelo canónico de routing ya es `EntryPoint -> EntryPointUtm -> Conversation`.
 El catálogo de productos puede importarse desde CRM con `externalSource = crm` y `externalReference = integration_key`.
 La configuración operativa de LLM y audio ahora vive en `runtime_settings` y se edita desde `GET /backend/configuration`.
@@ -200,6 +202,7 @@ Se mantiene el contrato conceptual del CRM:
 - `ROLE_AGENT`
 - `ROLE_MANAGER`
 - `ROLE_ADMIN`
+- `ROLE_SUPER_ADMIN`
 
 ## Integraciones previstas
 

@@ -69,6 +69,7 @@ security:
     - { path: ^/users, roles: ROLE_SUPER_ADMIN }
     - { path: ^/backend/configuration, roles: ROLE_SUPER_ADMIN }
     - { path: ^/external-tools, roles: ROLE_SUPER_ADMIN }
+    - { path: ^/backend/super-admin, roles: ROLE_SUPER_ADMIN }
     - { path: ^/(backend/)?api-health, roles: ROLE_SUPER_ADMIN }
     - { path: ^/api/tenants, roles: ROLE_SUPER_ADMIN }
     - { path: ^/api/internal, roles: ROLE_INTERNAL_SERVICE }

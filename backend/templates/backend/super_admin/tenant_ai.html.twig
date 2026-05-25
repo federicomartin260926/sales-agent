@@ -1,0 +1,266 @@
+<section class="hero-panel">
+  <div class="hero-copy">
+    <div class="eyebrow-dark">IA del tenant</div>
+    <h2>{{ tenant.name }}</h2>
+    <p>Gestiona la configuración técnica de IA, revisa consumo y resuelve solicitudes de ampliación para este tenant.</p>
+  </div>
+  <div class="hero-aside">
+    <div class="badge-live">{{ dashboard.status.label }}</div>
+    <div class="hero-aside-title">Estado IA</div>
+    <p>{{ dashboard.status.detail }}</p>
+    <p class="subtle">Vista exclusiva para super admin. La policy editada aquí es la que consume el runtime.</p>
+    <div class="hero-actions">
+      <a class="secondary-action" href="{{ back_url }}">Volver a negocios</a>
+      <a class="primary-action" href="{{ tenant.edit_url }}">Editar negocio</a>
+    </div>
+  </div>
+</section>
+
+{{ feedback_html|raw }}
+{{ error_html|raw }}
+
+<section class="stats-grid">
+  <article class="metric">
+    <div class="metric-label">Consumo hoy</div>
+    <div class="metric-value">{{ dashboard.today.estimatedCostEur }}</div>
+    <div class="metric-note">{{ dashboard.today.totalTokens }} tokens procesados hoy.</div>
+  </article>
+  <article class="metric">
+    <div class="metric-label">Consumo este mes</div>
+    <div class="metric-value">{{ dashboard.month.estimatedCostEur }}</div>
+    <div class="metric-note">{{ dashboard.month.totalTokens }} tokens procesados este mes.</div>
+  </article>
+  <article class="metric">
+    <div class="metric-label">{{ dashboard.daily_limit.label }}</div>
+    <div class="metric-value">{{ dashboard.daily_limit.value }}</div>
+    <div class="metric-note">Usado: {{ dashboard.daily_limit.used }} | Restante: {{ dashboard.daily_limit.remaining }}</div>
+  </article>
+  <article class="metric">
+    <div class="metric-label">{{ dashboard.monthly_limit.label }}</div>
+    <div class="metric-value">{{ dashboard.monthly_limit.value }}</div>
+    <div class="metric-note">Usado: {{ dashboard.monthly_limit.used }} | Restante: {{ dashboard.monthly_limit.remaining }}</div>
+  </article>
+</section>
+
+<section class="cards-grid mb-4">
+  <article class="usage-meter">
+    <div class="usage-meter-header">
+      <div class="usage-meter-title">{{ dashboard.daily_limit.label }}</div>
+      <span class="{{ dashboard.daily_limit.class }}">{{ dashboard.daily_limit.percent_label }}</span>
+    </div>
+    <div class="usage-meter-track" aria-hidden="true">
+      <div class="usage-meter-fill{{ dashboard.daily_limit.percent is not null and dashboard.daily_limit.percent >= 100 ? ' is-warn' : '' }}" style="width: {{ dashboard.daily_limit.percent is not null ? dashboard.daily_limit.percent : 0 }}%"></div>
+    </div>
+    <div class="usage-meter-meta">
+      <span><strong>Límite:</strong> {{ dashboard.daily_limit.value }}</span>
+      <span><strong>Usado:</strong> {{ dashboard.daily_limit.used }}</span>
+      <span><strong>Restante:</strong> {{ dashboard.daily_limit.remaining }}</span>
+    </div>
+  </article>
+
+  <article class="usage-meter">
+    <div class="usage-meter-header">
+      <div class="usage-meter-title">{{ dashboard.monthly_limit.label }}</div>
+      <span class="{{ dashboard.monthly_limit.class }}">{{ dashboard.monthly_limit.percent_label }}</span>
+    </div>
+    <div class="usage-meter-track" aria-hidden="true">
+      <div class="usage-meter-fill{{ dashboard.monthly_limit.percent is not null and dashboard.monthly_limit.percent >= 100 ? ' is-warn' : '' }}" style="width: {{ dashboard.monthly_limit.percent is not null ? dashboard.monthly_limit.percent : 0 }}%"></div>
+    </div>
+    <div class="usage-meter-meta">
+      <span><strong>Límite:</strong> {{ dashboard.monthly_limit.value }}</span>
+      <span><strong>Usado:</strong> {{ dashboard.monthly_limit.used }}</span>
+      <span><strong>Restante:</strong> {{ dashboard.monthly_limit.remaining }}</span>
+    </div>
+  </article>
+</section>
+
+<section class="profile-grid">
+  <article class="profile-card">
+    <div class="profile-card-header">
+      <h3>Policy IA</h3>
+      <span class="subtle">{{ policy_exists ? 'Configurada' : 'Sin policy' }}</span>
+    </div>
+    <div class="profile-card-body">
+      <p>Última actualización: <strong>{{ policy_updated_at }}</strong></p>
+      <p>IA habilitada: <strong>{{ policy_values.aiEnabled ? 'Sí' : 'No' }}</strong></p>
+      <p>Modelo por defecto: <strong>{{ policy_values.defaultModel is not empty ? policy_values.defaultModel : '—' }}</strong></p>
+      <p>Modelo fallback: <strong>{{ policy_values.fallbackModel is not empty ? policy_values.fallbackModel : '—' }}</strong></p>
+      <p>Acción al llegar al límite: <strong>{{ policy_values.limitAction }}</strong></p>
+      <p class="subtle">Sin secretos, tokens downstream ni prompts completos en esta vista.</p>
+    </div>
+  </article>
+
+  <article class="profile-card">
+    <div class="profile-card-header">
+      <h3>Periodo actual</h3>
+      <span class="subtle">{{ dashboard.period.current }}</span>
+    </div>
+    <div class="profile-card-body">
+      <p>Reinicio diario estimado: <strong>{{ dashboard.period.daily_reset }}</strong></p>
+      <p>Reinicio mensual estimado: <strong>{{ dashboard.period.monthly_reset }}</strong></p>
+      <p>Estado actual: <strong>{{ dashboard.status.label }}</strong></p>
+      <p class="subtle">{{ dashboard.status.detail }}</p>
+    </div>
+  </article>
+</section>
+
+<section class="table-card">
+  <div class="table-header">
+    <div>
+      <h3>Configuración técnica</h3>
+      <p>Modifica la policy que usa el runtime comercial para este tenant.</p>
+    </div>
+  </div>
+
+  <form method="post" action="{{ policy_action_url }}" class="tenant-form ai-policy-form">
+    <input type="hidden" name="_csrf_token" value="{{ policy_token }}">
+    <div class="form-grid">
+      <div class="field field-check">
+        <label for="tenant-ai-enabled">IA habilitada</label>
+        <label class="checkbox-inline" for="tenant-ai-enabled">
+          <input id="tenant-ai-enabled" name="aiEnabled" type="checkbox" value="1"{% if policy_values.aiEnabled %} checked{% endif %}>
+          <span>Permitir llamadas LLM para este tenant</span>
+        </label>
+      </div>
+      <div class="field">
+        <label for="tenant-daily-cost-limit">Límite diario estimado (€)</label>
+        <input id="tenant-daily-cost-limit" name="dailyCostLimitEur" type="number" min="0" step="0.000001" value="{{ policy_values.dailyCostLimitEur }}" placeholder="0.000001">
+      </div>
+      <div class="field">
+        <label for="tenant-monthly-cost-limit">Límite mensual estimado (€)</label>
+        <input id="tenant-monthly-cost-limit" name="monthlyCostLimitEur" type="number" min="0" step="0.000001" value="{{ policy_values.monthlyCostLimitEur }}" placeholder="0.000001">
+      </div>
+      <div class="field">
+        <label for="tenant-default-model">Modelo por defecto</label>
+        <input id="tenant-default-model" name="defaultModel" type="text" value="{{ policy_values.defaultModel }}" maxlength="100" placeholder="gpt-4.1-mini">
+      </div>
+      <div class="field">
+        <label for="tenant-fallback-model">Modelo fallback</label>
+        <input id="tenant-fallback-model" name="fallbackModel" type="text" value="{{ policy_values.fallbackModel }}" maxlength="100" placeholder="gpt-4.1-nano">
+      </div>
+      <div class="field">
+        <label for="tenant-limit-action">Acción al llegar al límite</label>
+        <select id="tenant-limit-action" name="limitAction">
+          {% for option in limit_action_options %}
+            <option value="{{ option.value }}"{% if policy_values.limitAction == option.value %} selected{% endif %}>{{ option.label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+
+    <div class="form-actions">
+      <button class="primary-action" type="submit">Guardar configuración</button>
+    </div>
+  </form>
+</section>
+
+<section class="table-card">
+  <div class="table-header">
+    <div>
+      <h3>Solicitudes de ampliación</h3>
+      <p>Aprueba o rechaza solicitudes pendientes para este tenant.</p>
+    </div>
+  </div>
+
+  <div class="table-responsive">
+    <table class="request-table">
+      <thead>
+        <tr>
+          <th scope="col">Fecha</th>
+          <th scope="col">Importe</th>
+          <th scope="col">Motivo</th>
+          <th scope="col">Estado</th>
+          <th scope="col">Solicitado por</th>
+          <th scope="col">Resolución</th>
+          <th scope="col" class="text-right">Acciones</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for request in dashboard.recentRequests %}
+          <tr>
+            <td class="subtle">{{ request.createdAt }}</td>
+            <td><strong>{{ request.amountEur }}</strong></td>
+            <td class="message-cell">
+              {{ request.message }}
+              {% if request.adminNotes != '—' %}
+                <div class="subtle">Notas admin: {{ request.adminNotes }}</div>
+              {% endif %}
+            </td>
+            <td><span class="request-status {{ request.status_class }}">{{ request.status }}</span></td>
+            <td>{{ request.requestedBy }}</td>
+            <td>
+              <div class="subtle">Resuelto: {{ request.resolvedAt }}</div>
+              <div class="subtle">Por: {{ request.resolvedBy }}</div>
+            </td>
+            <td class="text-right">
+              {% if request.status_key == 'pending' %}
+                <div class="request-actions">
+                  <form method="post" action="{{ request.approve_url }}" class="request-action-form">
+                    <input type="hidden" name="_csrf_token" value="{{ request.approve_token }}">
+                    <button class="secondary-action" type="submit">Aprobar</button>
+                  </form>
+                  <form method="post" action="{{ request.reject_url }}" class="request-action-form">
+                    <input type="hidden" name="_csrf_token" value="{{ request.reject_token }}">
+                    <button class="secondary-action" type="submit">Rechazar</button>
+                  </form>
+                </div>
+              {% else %}
+                <span class="subtle">Resuelta</span>
+              {% endif %}
+            </td>
+          </tr>
+        {% else %}
+          <tr>
+            <td colspan="7" class="empty-row">No hay solicitudes de ampliación todavía.</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section class="table-card">
+  <div class="table-header">
+    <div>
+      <h3>Eventos recientes</h3>
+      <p>Últimas señales de uso IA registradas para este tenant.</p>
+    </div>
+  </div>
+
+  <div class="table-responsive">
+    <table class="request-table">
+      <thead>
+        <tr>
+          <th scope="col">Fecha</th>
+          <th scope="col">Feature</th>
+          <th scope="col">Proveedor</th>
+          <th scope="col">Modelo</th>
+          <th scope="col">Tokens / coste</th>
+          <th scope="col">Estado</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for event in dashboard.recentEvents %}
+          <tr>
+            <td class="subtle">{{ event.createdAt }}</td>
+            <td>{{ event.feature }}</td>
+            <td>{{ event.provider }}</td>
+            <td>
+              <strong>{{ event.model }}</strong>
+              <div class="subtle">Input {{ event.inputTokens }} | Output {{ event.outputTokens }} | Cached {{ event.cachedTokens }}</div>
+            </td>
+            <td>
+              <strong>{{ event.totalTokens }}</strong>
+              <div class="subtle">{{ event.estimatedCostEur }} | {{ event.latencyMs }}</div>
+            </td>
+            <td><span class="{{ event.status_class }}">{{ event.status }}</span></td>
+          </tr>
+        {% else %}
+          <tr>
+            <td colspan="6" class="empty-row">No hay eventos IA recientes para este tenant.</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>

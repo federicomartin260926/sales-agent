@@ -12,6 +12,7 @@ Este directorio contiene el backend administrativo de `sales-agent`.
 - permite usar asistentes IA de borrador en la creación/edición de `negocios` y `guías comerciales` para rellenar formularios sin guardar automáticamente
 - mantiene un selector de negocios en sesión y una ficha del negocio activo para trabajar por contexto
 - incluye una vista tenant de `Uso IA` con consumo, límites y solicitudes de ampliación pendientes
+- incluye una vista super admin de `IA del tenant` para editar la policy técnica por tenant y resolver solicitudes de ampliación
 - permite editar la configuración operativa de LLM y audio desde `/backend/configuration`
 - usa Twig como base de render para el layout común y la primera pantalla migrada de configuración
 - sirve los estilos del panel desde `public/assets/backend.css` para evitar CSS embebido en Twig y en el login
@@ -69,6 +70,10 @@ Este directorio contiene el backend administrativo de `sales-agent`.
 - `GET /backend/users/new`
 - `GET /backend/ai-usage`
 - `POST /backend/ai-usage/top-up-requests`
+- `GET /backend/super-admin/tenants/{id}/ai`
+- `POST /backend/super-admin/tenants/{id}/ai`
+- `POST /backend/super-admin/tenants/{id}/ai/top-up-requests/{requestId}/approve`
+- `POST /backend/super-admin/tenants/{id}/ai/top-up-requests/{requestId}/reject`
 - `POST /backend/profile/name`
 - `POST /backend/profile/password`
 - `GET /backend/configuration`
@@ -196,7 +201,7 @@ El backend humano está pensado como un CRM clásico:
 ## Notas de seguridad
 
 - los roles lógicos se almacenan como `agent`, `manager` y `admin`
-- Symfony los expone como `ROLE_AGENT`, `ROLE_MANAGER` y `ROLE_ADMIN`
+- Symfony los expone como `ROLE_AGENT`, `ROLE_MANAGER`, `ROLE_ADMIN` y `ROLE_SUPER_ADMIN`
 - el patrón sigue la referencia del CRM existente
 
 ## Terminología visible
@@ -225,6 +230,7 @@ La UI del backend usa esta terminología para usuarios no técnicos:
 
 La política IA por tenant se edita desde la ficha de `Negocio` en `/backend/tenants/{id}/edit`, dentro del bloque `Uso IA`.
 Ese bloque incluye métricas de consumo de solo lectura basadas en `AiUsageEvent`: coste hoy/mes, tokens hoy/mes y los 5 eventos más recientes.
+La administración técnica para `ROLE_SUPER_ADMIN` vive en `/backend/super-admin/tenants/{id}/ai` y usa la misma `TenantAiUsagePolicy` que consume el runtime.
 
 El backend no gestiona ramas CRM como entidad propia. Solo conserva `crmBranchRef` como texto opaco cuando viene desde un entrypoint o una atribución externa.
 

@@ -934,6 +934,7 @@ final class BackendUiControllerTest extends TestCase
         self::assertStringContainsString('icon-action', $response->getContent());
         self::assertStringContainsString('aria-label="Editar negocio"', $response->getContent());
         self::assertStringContainsString('aria-label="Eliminar negocio"', $response->getContent());
+        self::assertStringContainsString('/backend/super-admin/tenants/'.$tenant->getId()->toRfc4122().'/ai', $response->getContent());
         self::assertStringContainsString('/backend/tenants/new', $response->getContent());
         self::assertStringContainsString('/backend/tenants/', $response->getContent());
         self::assertStringContainsString('Contexto:', $response->getContent());

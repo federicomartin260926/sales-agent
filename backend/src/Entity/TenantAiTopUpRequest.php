@@ -165,6 +165,22 @@ class TenantAiTopUpRequest
         $this->resolvedBy = null;
     }
 
+    public function approve(User $resolvedBy, ?string $adminNotes = null): void
+    {
+        $this->status = self::STATUS_APPROVED;
+        $this->resolvedBy = $resolvedBy;
+        $this->resolvedAt = new \DateTimeImmutable();
+        $this->setAdminNotes($adminNotes ?? 'Aprobada por super admin');
+    }
+
+    public function reject(User $resolvedBy, ?string $adminNotes = null): void
+    {
+        $this->status = self::STATUS_REJECTED;
+        $this->resolvedBy = $resolvedBy;
+        $this->resolvedAt = new \DateTimeImmutable();
+        $this->setAdminNotes($adminNotes ?? 'Rechazada por super admin');
+    }
+
     public function toArray(): array
     {
         return [
