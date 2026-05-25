@@ -10,6 +10,7 @@ use App\Entity\Playbook;
 use App\Entity\Product;
 use App\Entity\Tenant;
 use App\Entity\TenantAiUsagePolicy;
+use App\Entity\TenantMembership;
 use App\Entity\User;
 use App\Repository\AiUsageEventRepository;
 use App\Repository\PlaybookRepository;
@@ -819,9 +820,15 @@ final class BackendUiController
         $users = $this->entityManager->getRepository(User::class);
         $rows = array_map(
             static function (User $user): array {
+                $tenantNames = array_map(
+                    static fn (Tenant $tenant): string => $tenant->getName(),
+                    $user->getAccessibleTenants()
+                );
+
                 return [
                     'email' => $user->getEmail(),
                     'roles' => implode(', ', array_map(static fn (string $role): string => strtoupper($role), $user->getRoles())),
+                    'tenants' => $tenantNames !== [] ? implode(', ', $tenantNames) : 'Sin tenants',
                     'status_label' => $user->isActive() ? 'Activo' : 'Inactivo',
                     'status_class' => $user->isActive() ? 'status-ok' : 'status-off',
                     'created_at' => $user->getCreatedAt()->format('Y-m-d H:i'),
@@ -832,6 +839,85 @@ final class BackendUiController
         );
 
         return $this->renderUsersPage($rows);
+    }
+
+    #[Route('/users/new', methods: ['GET', 'POST'])]
+    public function userCreate(
+        Request $request,
+        ?UserRepository $users = null,
+        ?TenantRepository $tenants = null,
+    ): Response {
+        if (!$this->security->isGranted('ROLE_SUPER_ADMIN')) {
+            return new RedirectResponse('/backend/dashboard');
+        }
+
+        $values = $this->userCreateFormDefaults();
+        $errors = [];
+        $availableTenants = $this->activeTenantsForUserCreation($tenants);
+        $userRepository = $users ?? $this->entityManager->getRepository(User::class);
+
+        if ($request->isMethod('POST')) {
+            if (!$this->isValidUserCreateToken((string) $request->request->get('_csrf_token'))) {
+                $errors[] = 'La sesión del formulario ha expirado. Vuelve a intentarlo.';
+            } else {
+                $values = $this->userCreateFormValuesFromRequest($request);
+                $errors = $this->validateUserCreateForm($values, $userRepository, $availableTenants);
+
+                if ($errors === []) {
+                    $user = new User((string) $values['email'], [(string) $values['role']]);
+                    $user->setPassword($this->passwordHasher->hashPassword($user, (string) $values['password']));
+                    $user->setActive((bool) $values['isActive']);
+
+                    $this->entityManager->persist($user);
+                    foreach ($this->selectedTenantsForUserCreate((array) $values['tenantIds'], $availableTenants) as $tenant) {
+                        $membership = new TenantMembership($user, $tenant, (string) $values['membershipRole']);
+                        $membership->setActive(true);
+                        $this->entityManager->persist($membership);
+                    }
+                    $this->entityManager->flush();
+
+                    $this->addFlashMessage($request, 'success', sprintf('Usuario creado: %s.', $user->getEmail()));
+
+                    return new RedirectResponse('/backend/users');
+                }
+            }
+        }
+
+        $errorHtml = '';
+        foreach ($errors as $error) {
+            $errorHtml .= $this->renderDismissibleAlert('alert-error', htmlspecialchars($error, ENT_QUOTES, 'UTF-8'));
+        }
+
+        $content = $this->twig->render('backend/users/new.html.twig', [
+            'hero_title' => 'Nuevo usuario',
+            'page_subtitle' => 'Crea una cuenta global y asigna acceso a uno o varios tenants activos.',
+            'error_html' => $errorHtml,
+            'action_url' => '/backend/users/new',
+            'csrf_token' => $this->userCreateTokenValue(),
+            'values' => $values,
+            'available_tenants' => array_map(
+                static fn (Tenant $tenant): array => [
+                    'id' => $tenant->getId()->toRfc4122(),
+                    'name' => $tenant->getName(),
+                    'slug' => $tenant->getSlug(),
+                ],
+                $availableTenants
+            ),
+            'role_options' => [
+                ['value' => 'agent', 'label' => 'agent'],
+                ['value' => 'manager', 'label' => 'manager'],
+                ['value' => 'admin', 'label' => 'admin'],
+                ['value' => 'super_admin', 'label' => 'super_admin'],
+            ],
+            'membership_role_options' => [
+                ['value' => 'manager', 'label' => 'manager'],
+                ['value' => 'editor', 'label' => 'editor'],
+                ['value' => 'viewer', 'label' => 'viewer'],
+                ['value' => 'agent', 'label' => 'agent'],
+            ],
+        ]);
+
+        return $this->renderBackendShell('Nuevo usuario', 'Alta de una cuenta global con memberships de tenant.', 'admin-users', $content);
     }
 
     #[Route('/products', methods: ['GET'])]
@@ -1647,6 +1733,7 @@ final class BackendUiController
             'page_title' => 'Usuarios',
             'page_subtitle' => 'Cuentas y roles de acceso interno.',
             'active_nav' => 'admin-users',
+            'create_url' => '/backend/users/new',
             'users' => $users,
             ...$this->currentUserTemplateData(),
         ]));
@@ -1793,6 +1880,163 @@ final class BackendUiController
             'slug' => $tenant->getSlug(),
             'edit_url' => sprintf('/backend/tenants/%s/edit', rawurlencode($tenant->getId()->toRfc4122())),
         ];
+    }
+
+    /**
+     * @return Tenant[]
+     */
+    private function activeTenantsForUserCreation(?TenantRepository $tenants): array
+    {
+        if (!$tenants instanceof TenantRepository) {
+            $tenants = $this->entityManager->getRepository(Tenant::class);
+            if (!$tenants instanceof TenantRepository) {
+                return [];
+            }
+        }
+
+        return array_values(array_filter(
+            $tenants->findAllOrdered(),
+            static fn (Tenant $tenant): bool => $tenant->isActive()
+        ));
+    }
+
+    /**
+     * @return Tenant[]
+     */
+    private function selectedTenantsForUserCreate(array $selectedTenantIds, array $availableTenants): array
+    {
+        $availableById = [];
+        foreach ($availableTenants as $tenant) {
+            $availableById[$tenant->getId()->toRfc4122()] = $tenant;
+        }
+
+        $selected = [];
+        foreach ($selectedTenantIds as $tenantId) {
+            $tenantId = trim((string) $tenantId);
+            if ($tenantId === '' || !isset($availableById[$tenantId])) {
+                continue;
+            }
+
+            $selected[$tenantId] = $availableById[$tenantId];
+        }
+
+        return array_values($selected);
+    }
+
+    /**
+     * @param array<string, mixed> $values
+     * @param Tenant[] $availableTenants
+     *
+     * @return string[]
+     */
+    private function validateUserCreateForm(array $values, mixed $users, array $availableTenants): array
+    {
+        $errors = [];
+
+        $email = trim((string) ($values['email'] ?? ''));
+        if ($email === '' || !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            $errors[] = 'Debes indicar un email válido.';
+        } elseif (is_object($users) && method_exists($users, 'findOneByEmail') && $users->findOneByEmail($email) instanceof User) {
+            $errors[] = 'Ya existe un usuario con ese email.';
+        }
+
+        $password = trim((string) ($values['password'] ?? ''));
+        $passwordConfirmation = trim((string) ($values['passwordConfirmation'] ?? ''));
+        if ($password === '') {
+            $errors[] = 'La contraseña temporal es obligatoria.';
+        } elseif ($passwordConfirmation === '' || $password !== $passwordConfirmation) {
+            $errors[] = 'La repetición de contraseña no coincide.';
+        }
+
+        $role = (string) ($values['role'] ?? '');
+        if (!in_array($role, ['agent', 'manager', 'admin', 'super_admin'], true)) {
+            $errors[] = 'El rol global no es válido.';
+        }
+
+        $membershipRole = (string) ($values['membershipRole'] ?? '');
+        if (!in_array($membershipRole, ['manager', 'editor', 'viewer', 'agent'], true)) {
+            $errors[] = 'El rol de membership no es válido.';
+        }
+
+        $selectedTenants = $this->selectedTenantsForUserCreate((array) ($values['tenantIds'] ?? []), $availableTenants);
+        if ($role !== 'super_admin' && $selectedTenants === []) {
+            $errors[] = 'Debes asignar al menos un tenant a un usuario no-super-admin.';
+        }
+
+        $selectedTenantIds = array_map(static fn (Tenant $tenant): string => $tenant->getId()->toRfc4122(), $selectedTenants);
+        $submittedTenantIds = array_values(array_filter(array_map(
+            static fn (mixed $tenantId): string => trim((string) $tenantId),
+            (array) ($values['tenantIds'] ?? [])
+        )));
+        foreach ($submittedTenantIds as $tenantId) {
+            if (!in_array($tenantId, $selectedTenantIds, true)) {
+                $errors[] = 'Todos los tenants seleccionados deben existir y estar activos.';
+                break;
+            }
+        }
+
+        return array_values(array_unique($errors));
+    }
+
+    /**
+     * @return array{email: string, password: string, passwordConfirmation: string, role: string, membershipRole: string, isActive: bool, tenantIds: list<string>}
+     */
+    private function userCreateFormDefaults(): array
+    {
+        return [
+            'email' => '',
+            'password' => '',
+            'passwordConfirmation' => '',
+            'role' => 'agent',
+            'membershipRole' => 'manager',
+            'isActive' => true,
+            'tenantIds' => [],
+        ];
+    }
+
+    /**
+     * @return array{email: string, password: string, passwordConfirmation: string, role: string, membershipRole: string, isActive: bool, tenantIds: list<string>}
+     */
+    private function userCreateFormValuesFromRequest(Request $request): array
+    {
+        $submitted = $request->request->all();
+        $tenantIds = $submitted['tenantIds'] ?? [];
+        if (!is_array($tenantIds)) {
+            $tenantIds = [$tenantIds];
+        }
+
+        $tenantIds = array_values(array_unique(array_filter(array_map(
+            static fn (mixed $tenantId): string => trim((string) $tenantId),
+            $tenantIds
+        ))));
+
+        return [
+            'email' => trim((string) $request->request->get('email', '')),
+            'password' => (string) $request->request->get('password', ''),
+            'passwordConfirmation' => (string) $request->request->get('passwordConfirmation', ''),
+            'role' => strtolower(trim((string) $request->request->get('role', ''))),
+            'membershipRole' => strtolower(trim((string) $request->request->get('membershipRole', 'manager'))),
+            'isActive' => $request->request->getBoolean('isActive'),
+            'tenantIds' => $tenantIds,
+        ];
+    }
+
+    private function isValidUserCreateToken(string $value): bool
+    {
+        if ($this->csrfTokenManager === null) {
+            return true;
+        }
+
+        return $this->csrfTokenManager->isTokenValid(new CsrfToken('user_create', $value));
+    }
+
+    private function userCreateTokenValue(): string
+    {
+        if ($this->csrfTokenManager === null) {
+            return '';
+        }
+
+        return $this->csrfTokenManager->getToken('user_create')->getValue();
     }
 
     private function canManageActiveTenant(): bool

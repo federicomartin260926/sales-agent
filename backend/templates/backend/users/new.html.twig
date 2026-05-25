@@ -1,0 +1,106 @@
+<section class="hero-panel">
+  <div class="hero-copy">
+    <div class="eyebrow-dark">Usuarios globales</div>
+    <h2>{{ hero_title }}</h2>
+    <p>{{ page_subtitle }}</p>
+  </div>
+  <div class="hero-aside">
+    <div class="badge-live">Admin</div>
+    <div class="hero-aside-title">Alta de cuenta</div>
+    <p>Crea usuarios globales y asigna memberships a uno o varios tenants activos. Solo super admin puede acceder.</p>
+  </div>
+</section>
+
+<section class="table-card">
+  <div class="table-header">
+    <div>
+      <h3>Nuevo usuario</h3>
+      <p>Email, rol global, estado y acceso a tenants.</p>
+    </div>
+    <a class="secondary-action" href="/backend/users">Volver al listado</a>
+  </div>
+
+  {{ error_html|raw }}
+
+  <form method="post" action="{{ action_url }}" class="tenant-form">
+    <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
+
+    <div class="form-grid">
+      <div class="field">
+        <label for="user-email">Email</label>
+        <input id="user-email" name="email" type="email" value="{{ values.email }}" maxlength="255" required autocomplete="email">
+        <div class="field-note">El email identifica la cuenta de forma única.</div>
+      </div>
+
+      <div class="field">
+        <label for="user-role">Rol global</label>
+        <select id="user-role" name="role" required>
+          {% for option in role_options %}
+            <option value="{{ option.value }}"{{ values.role == option.value ? ' selected' : '' }}>{{ option.label }}</option>
+          {% endfor %}
+        </select>
+        <div class="field-note">Define el rol lógico de la cuenta en el sistema.</div>
+      </div>
+
+      <div class="field">
+        <label for="user-password">Contraseña temporal</label>
+        <input id="user-password" name="password" type="password" value="{{ values.password }}" required autocomplete="new-password">
+        <div class="field-note">Se guardará hasheada. Debe cambiarse fuera de esta fase si hace falta.</div>
+      </div>
+
+      <div class="field">
+        <label for="user-password-confirmation">Repetir contraseña</label>
+        <input id="user-password-confirmation" name="passwordConfirmation" type="password" value="{{ values.passwordConfirmation }}" required autocomplete="new-password">
+        <div class="field-note">Sirve para evitar errores al crear la cuenta.</div>
+      </div>
+
+      <div class="field field-check">
+        <label for="user-active">Estado</label>
+        <label class="checkbox-inline" for="user-active">
+          <input id="user-active" name="isActive" type="checkbox" value="1"{% if values.isActive %} checked{% endif %}>
+          <span>Usuario activo</span>
+        </label>
+      </div>
+
+      <div class="field field-full">
+        <label>Tenants asignados</label>
+        <div class="field-note">Selecciona uno o varios negocios activos. El usuario no-super-admin debe tener al menos uno.</div>
+
+        {% if available_tenants is not empty %}
+          <div class="checkbox-stack">
+            {% for tenant in available_tenants %}
+              <label class="checkbox-inline" for="tenant-{{ tenant.id }}">
+                <input
+                  id="tenant-{{ tenant.id }}"
+                  name="tenantIds[]"
+                  type="checkbox"
+                  value="{{ tenant.id }}"
+                  {% if tenant.id in values.tenantIds %} checked{% endif %}
+                >
+                <span>{{ tenant.name }} <span class="subtle">({{ tenant.slug }})</span></span>
+              </label>
+            {% endfor %}
+          </div>
+        {% else %}
+          <div class="alert alert-warning">
+            No hay tenants activos disponibles para asignar memberships.
+          </div>
+        {% endif %}
+      </div>
+
+      <div class="field">
+        <label for="user-membership-role">Rol dentro del tenant</label>
+        <select id="user-membership-role" name="membershipRole" required>
+          {% for option in membership_role_options %}
+            <option value="{{ option.value }}"{{ values.membershipRole == option.value ? ' selected' : '' }}>{{ option.label }}</option>
+          {% endfor %}
+        </select>
+        <div class="field-note">Se aplicará al membership de cada tenant seleccionado.</div>
+      </div>
+    </div>
+
+    <div class="form-actions">
+      <button class="primary-action" type="submit">Crear usuario</button>
+    </div>
+  </form>
+</section>
