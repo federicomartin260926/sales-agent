@@ -81,7 +81,7 @@ final class ExternalToolController extends AbstractController
             'active_tenant_name' => $activeTenant->getName(),
             'has_runtime_default' => $hasRuntimeDefault,
             'runtime_state' => $runtimeState,
-            ...$this->currentUserTemplateData(),
+            ...$this->backendLayoutTemplateData(),
         ]);
     }
 
@@ -314,7 +314,7 @@ final class ExternalToolController extends AbstractController
             'runtime_state' => $this->tenantMcpRuntimeState($activeTenant),
             'test_result' => $testResult,
             'active_tenant_name' => $activeTenant->getName(),
-            ...$this->currentUserTemplateData(),
+            ...$this->backendLayoutTemplateData(),
         ]);
     }
 
@@ -756,7 +756,7 @@ final class ExternalToolController extends AbstractController
             'can_test' => $tool === null ? false : $this->canTestTool($tool),
             'form_token' => $this->externalToolTokenValue($isEdit && $tool instanceof ExternalTool ? 'external_tool_form_'.$tool->getId()->toRfc4122() : 'external_tool_form_create'),
             'active_tenant_name' => $activeTenant instanceof Tenant ? $activeTenant->getName() : null,
-            ...$this->currentUserTemplateData(),
+            ...$this->backendLayoutTemplateData(),
         ]);
     }
 
@@ -784,7 +784,7 @@ final class ExternalToolController extends AbstractController
             'tools' => [],
             'filter_error' => null,
             'active_tenant_name' => null,
-            ...$this->currentUserTemplateData(),
+            ...$this->backendLayoutTemplateData(),
         ]);
     }
 
@@ -831,14 +831,22 @@ final class ExternalToolController extends AbstractController
     }
 
     /**
-     * @return array{current_user_display_name: string, current_user_initials: string, active_tenant: array{id: string, name: string, slug: string, edit_url: string}|null}
+     * @return array{
+     *     current_user_display_name: string,
+     *     current_user_initials: string,
+     *     active_tenant: array{id: string, name: string, slug: string, edit_url: string}|null,
+     *     can_manage_active_tenant: bool,
+     *     is_super_admin: bool
+     * }
      */
-    private function currentUserTemplateData(): array
+    private function backendLayoutTemplateData(): array
     {
         return [
             'current_user_display_name' => $this->currentUserDisplayName(),
             'current_user_initials' => $this->currentUserInitials(),
             'active_tenant' => $this->activeTenantTemplateData(),
+            'can_manage_active_tenant' => $this->canManageActiveTenant(),
+            'is_super_admin' => $this->isSuperAdmin(),
         ];
     }
 
@@ -865,6 +873,16 @@ final class ExternalToolController extends AbstractController
         $user = $this->security->getUser();
 
         return $user instanceof User ? $user : null;
+    }
+
+    private function isSuperAdmin(): bool
+    {
+        return $this->security->isGranted('ROLE_SUPER_ADMIN');
+    }
+
+    private function canManageActiveTenant(): bool
+    {
+        return $this->isSuperAdmin() && $this->activeTenantContext->getActiveTenant() instanceof Tenant;
     }
 
     private function isValidHttpUrl(string $value): bool

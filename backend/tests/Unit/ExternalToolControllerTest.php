@@ -256,6 +256,16 @@ final class ExternalToolControllerTest extends TestCase
         self::assertSame(Response::HTTP_OK, $response->getStatusCode());
         self::assertStringContainsString('Principal', $response->getContent());
         self::assertStringContainsString('Marcar principal', $response->getContent());
+        self::assertStringContainsString('Negocio activo', $response->getContent());
+        self::assertStringContainsString('Uso IA', $response->getContent());
+        self::assertStringContainsString('Administración técnica', $response->getContent());
+        self::assertStringContainsString('Servidores MCP', $response->getContent());
+        self::assertStringContainsString('Plataforma', $response->getContent());
+        self::assertStringContainsString('Negocios', $response->getContent());
+        self::assertStringContainsString('Usuarios', $response->getContent());
+        self::assertStringContainsString('Configuración', $response->getContent());
+        self::assertStringContainsString('API Health', $response->getContent());
+        self::assertStringContainsString('/backend/api-health', $response->getContent());
     }
 
     public function testIndexShowsDownstreamAuthorizationStatusWithoutExposingToken(): void
