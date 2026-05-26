@@ -4532,9 +4532,17 @@ final class BackendUiController
 
     private function renderDismissibleAlert(string $class, string $content): string
     {
+        $dismissibleClass = 'alert-dismissible fade show';
+        $alertClass = match ($class) {
+            'alert-success' => 'alert-success',
+            'alert-warning' => 'alert-warning',
+            default => 'alert-danger',
+        };
+
         return sprintf(
-            '<div class="alert %s">%s<button class="alert-dismiss" type="button" aria-label="Cerrar mensaje" onclick="this.parentElement.remove()">×</button></div>',
-            htmlspecialchars($class, ENT_QUOTES, 'UTF-8'),
+            '<div class="alert %s %s" role="alert">%s<button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Cerrar"></button></div>',
+            htmlspecialchars($alertClass, ENT_QUOTES, 'UTF-8'),
+            htmlspecialchars($dismissibleClass, ENT_QUOTES, 'UTF-8'),
             $content
         );
     }

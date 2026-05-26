@@ -2221,8 +2221,8 @@ final class BackendUiControllerTest extends TestCase
         );
         self::assertStringContainsString('type="url"', $response->getContent());
         self::assertStringContainsString('autocomplete="new-password"', $response->getContent());
-        self::assertStringContainsString('class="alert-dismiss"', $response->getContent());
-        self::assertStringContainsString('aria-label="Cerrar mensaje"', $response->getContent());
+        self::assertStringContainsString('class="btn-close"', $response->getContent());
+        self::assertStringContainsString('aria-label="Cerrar"', $response->getContent());
     }
 
     public function testConfigurationSaveRejectsInvalidRuntimeEndpoints(): void
