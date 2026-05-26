@@ -8,7 +8,7 @@
     <div class="badge-live">{{ status.label }}</div>
     <div class="hero-aside-title">Estado IA</div>
     <p>{{ status.detail }}</p>
-    <p class="subtle">La configuración técnica sigue reservada a super admin. Aquí sólo ves consumo, límites y solicitudes.</p>
+    <p class="subtle">La configuración técnica sigue reservada a super admin. Aquí sólo ves tokens, límites y solicitudes.</p>
   </div>
 </section>
 
@@ -17,24 +17,26 @@
 
 <section class="stats-grid">
   <article class="metric">
-    <div class="metric-label">Consumo hoy</div>
-    <div class="metric-value">{{ today.estimatedCostEur }}</div>
-    <div class="metric-note">{{ today.totalTokens }} tokens procesados hoy.</div>
+    <div class="metric-label">Tokens procesados hoy</div>
+    <div class="metric-value">{{ today.totalTokens }}</div>
+    <div class="metric-note">Coste estimado: {{ today.estimatedCostEur }}</div>
   </article>
   <article class="metric">
-    <div class="metric-label">Consumo este mes</div>
-    <div class="metric-value">{{ month.estimatedCostEur }}</div>
-    <div class="metric-note">{{ month.totalTokens }} tokens procesados este mes.</div>
+    <div class="metric-label">Tokens procesados este mes</div>
+    <div class="metric-value">{{ month.totalTokens }}</div>
+    <div class="metric-note">Coste estimado: {{ month.estimatedCostEur }}</div>
   </article>
   <article class="metric">
     <div class="metric-label">{{ daily_limit.label }}</div>
     <div class="metric-value">{{ daily_limit.value }}</div>
-    <div class="metric-note">Usado: {{ daily_limit.used }} | Restante: {{ daily_limit.remaining }}</div>
+    <div class="metric-note">Usado: {{ daily_limit.used }} tokens | Restante: {{ daily_limit.remaining }} tokens</div>
+    <div class="metric-note subtle">Coste estimado del periodo actual: {{ daily_limit.secondary }}</div>
   </article>
   <article class="metric">
     <div class="metric-label">{{ monthly_limit.label }}</div>
     <div class="metric-value">{{ monthly_limit.value }}</div>
-    <div class="metric-note">Usado: {{ monthly_limit.used }} | Restante: {{ monthly_limit.remaining }}</div>
+    <div class="metric-note">Usado: {{ monthly_limit.used }} tokens | Restante: {{ monthly_limit.remaining }} tokens</div>
+    <div class="metric-note subtle">Coste estimado del periodo actual: {{ monthly_limit.secondary }}</div>
   </article>
 </section>
 
@@ -48,9 +50,9 @@
       <div class="usage-meter-fill{{ daily_limit.percent is not null and daily_limit.percent >= 100 ? ' is-warn' : '' }}" style="width: {{ daily_limit.percent is not null ? daily_limit.percent : 0 }}%"></div>
     </div>
     <div class="usage-meter-meta">
-      <span><strong>Límite:</strong> {{ daily_limit.value }}</span>
-      <span><strong>Usado:</strong> {{ daily_limit.used }}</span>
-      <span><strong>Restante:</strong> {{ daily_limit.remaining }}</span>
+      <span><strong>Límite:</strong> {{ daily_limit.value }} tokens</span>
+      <span><strong>Usado:</strong> {{ daily_limit.used }} tokens</span>
+      <span><strong>Restante:</strong> {{ daily_limit.remaining }} tokens</span>
     </div>
   </article>
 
@@ -63,9 +65,9 @@
       <div class="usage-meter-fill{{ monthly_limit.percent is not null and monthly_limit.percent >= 100 ? ' is-warn' : '' }}" style="width: {{ monthly_limit.percent is not null ? monthly_limit.percent : 0 }}%"></div>
     </div>
     <div class="usage-meter-meta">
-      <span><strong>Límite:</strong> {{ monthly_limit.value }}</span>
-      <span><strong>Usado:</strong> {{ monthly_limit.used }}</span>
-      <span><strong>Restante:</strong> {{ monthly_limit.remaining }}</span>
+      <span><strong>Límite:</strong> {{ monthly_limit.value }} tokens</span>
+      <span><strong>Usado:</strong> {{ monthly_limit.used }} tokens</span>
+      <span><strong>Restante:</strong> {{ monthly_limit.remaining }} tokens</span>
     </div>
   </article>
 </section>
@@ -83,19 +85,19 @@
     </div>
   </article>
 
-  <article class="profile-card">
+  <article class="profile-card mb4">
     <div class="profile-card-header">
       <h3>Solicitar ampliación</h3>
       <span class="subtle">Estado pendiente</span>
     </div>
     <div class="profile-card-body">
-      <p>Envía una solicitud con importe y motivo. No modifica límites todavía.</p>
+      <p>Envía una solicitud con tokens y motivo. No modifica límites todavía.</p>
       <form method="post" action="{{ action_url }}" class="tenant-form">
         <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
         <div class="form-grid">
           <div class="field">
-            <label for="ai-usage-request-amount">Importe solicitado (€)</label>
-            <input id="ai-usage-request-amount" name="requestedAmountEur" type="number" min="0.01" step="0.01" value="{{ values.requestedAmountEur }}" required>
+            <label for="ai-usage-request-amount">Tokens solicitados</label>
+            <input id="ai-usage-request-amount" name="requestedTokens" type="number" min="1" step="1" value="{{ values.requestedTokens }}" required>
           </div>
           <div class="field field-full">
             <label for="ai-usage-request-message">Motivo</label>
@@ -123,7 +125,7 @@
       <thead>
         <tr>
           <th scope="col">Fecha</th>
-          <th scope="col">Importe</th>
+          <th scope="col">Tokens</th>
           <th scope="col">Motivo</th>
           <th scope="col">Estado</th>
           <th scope="col">Solicitado por</th>
@@ -133,7 +135,7 @@
         {% for request in recentRequests %}
           <tr>
             <td class="subtle">{{ request.createdAt }}</td>
-            <td><strong>{{ request.amountEur }}</strong></td>
+            <td><strong>{{ request.amountTokens }}</strong></td>
             <td class="message-cell">{{ request.message }}</td>
             <td><span class="request-status {{ request.status_class }}">{{ request.status }}</span></td>
             <td>{{ request.requestedBy }}</td>

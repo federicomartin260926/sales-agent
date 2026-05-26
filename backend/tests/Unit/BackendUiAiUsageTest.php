@@ -62,10 +62,11 @@ final class BackendUiAiUsageTest extends TestCase
 
         self::assertSame(Response::HTTP_OK, $response->getStatusCode());
         self::assertStringContainsString('Uso IA', $response->getContent());
-        self::assertStringContainsString('Consumo hoy', $response->getContent());
-        self::assertStringContainsString('Límite diario', $response->getContent());
+        self::assertStringContainsString('Tokens procesados hoy', $response->getContent());
+        self::assertStringContainsString('Límite diario de tokens', $response->getContent());
         self::assertStringContainsString('Periodo actual', $response->getContent());
         self::assertStringContainsString('Solicitar ampliación', $response->getContent());
+        self::assertStringContainsString('Tokens solicitados', $response->getContent());
         self::assertStringContainsString('/backend/ai-usage/top-up-requests', $response->getContent());
         self::assertStringContainsString('Pendiente', $response->getContent());
         self::assertStringNotContainsString('default_model', $response->getContent());
@@ -88,6 +89,7 @@ final class BackendUiAiUsageTest extends TestCase
         self::assertSame(Response::HTTP_OK, $response->getStatusCode());
         self::assertStringContainsString('Selecciona un negocio antes de consultar consumo, límites o solicitudes de ampliación.', $response->getContent());
         self::assertStringNotContainsString('Importe solicitado (€)', $response->getContent());
+        self::assertStringNotContainsString('Tokens solicitados', $response->getContent());
     }
 
     public function testTamperedActiveTenantResolvesToAccessibleTenant(): void
@@ -117,7 +119,7 @@ final class BackendUiAiUsageTest extends TestCase
 
         $request = Request::create('/backend/ai-usage/top-up-requests', 'POST', [
             '_csrf_token' => 'token',
-            'requestedAmountEur' => '25.50',
+            'requestedTokens' => '25',
             'message' => 'Necesitamos más cuota para el mes',
         ]);
         $request->setSession(new Session());
@@ -141,7 +143,7 @@ final class BackendUiAiUsageTest extends TestCase
         self::assertCount(1, $topUpRepository->saved);
         self::assertInstanceOf(TenantAiTopUpRequest::class, $topUpRepository->saved[0]);
         self::assertSame(TenantAiTopUpRequest::STATUS_PENDING, $topUpRepository->saved[0]->getStatus());
-        self::assertSame(25.5, $topUpRepository->saved[0]->getRequestedAmountEur());
+        self::assertSame(25.0, $topUpRepository->saved[0]->getRequestedAmountEur());
         self::assertSame('Necesitamos más cuota para el mes', $topUpRepository->saved[0]->getMessage());
         self::assertSame($user->getEmail(), $topUpRepository->saved[0]->getRequestedBy()?->getEmail());
     }
@@ -154,7 +156,7 @@ final class BackendUiAiUsageTest extends TestCase
 
         $request = Request::create('/backend/ai-usage/top-up-requests', 'POST', [
             '_csrf_token' => 'token',
-            'requestedAmountEur' => '25.50',
+            'requestedTokens' => '25',
             'message' => 'Necesitamos más cuota para el mes',
         ]);
         $request->setSession(new Session());

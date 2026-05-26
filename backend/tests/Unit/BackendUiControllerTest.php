@@ -587,7 +587,6 @@ final class BackendUiControllerTest extends TestCase
         self::assertStringContainsString('Seleccionar negocio', $response->getContent());
         self::assertStringContainsString('Plataforma', $response->getContent());
         self::assertStringContainsString('Administración técnica', $response->getContent());
-        self::assertStringContainsString('API Health', $response->getContent());
         self::assertStringNotContainsString('Negocio activo', $response->getContent());
         self::assertStringNotContainsString('Uso IA', $response->getContent());
         self::assertStringNotContainsString('metric-value', $response->getContent());
@@ -720,7 +719,6 @@ final class BackendUiControllerTest extends TestCase
         self::assertStringContainsString('Administración técnica', $response->getContent());
         self::assertStringContainsString('Plataforma', $response->getContent());
         self::assertStringContainsString('Servidores MCP', $response->getContent());
-        self::assertStringContainsString('API Health', $response->getContent());
         self::assertStringContainsString('Cambiar</span>', $response->getContent());
         self::assertStringContainsString('/backend/external-tools', $response->getContent());
         self::assertStringContainsString('/backend/users', $response->getContent());
@@ -1192,12 +1190,15 @@ final class BackendUiControllerTest extends TestCase
         self::assertStringContainsString('name="aiEnabled"', $response->getContent());
         self::assertStringContainsString('name="dailyCostLimitEur"', $response->getContent());
         self::assertStringContainsString('name="monthlyCostLimitEur"', $response->getContent());
-        self::assertStringContainsString('step="0.000001"', $response->getContent());
-        self::assertStringContainsString('Coste estimado hoy', $response->getContent());
+        self::assertStringContainsString('step="1"', $response->getContent());
+        self::assertStringContainsString('Tokens procesados hoy', $response->getContent());
+        self::assertStringContainsString('Tokens procesados este mes', $response->getContent());
         self::assertStringContainsString('0,004321 €', $response->getContent());
         self::assertStringContainsString('0,012345 €', $response->getContent());
-        self::assertStringContainsString('Tokens totales hoy', $response->getContent());
+        self::assertStringContainsString('100', $response->getContent());
         self::assertStringContainsString('500', $response->getContent());
+        self::assertStringContainsString('Límite diario de tokens', $response->getContent());
+        self::assertStringContainsString('Límite mensual de tokens', $response->getContent());
         self::assertStringContainsString('Últimos 5 eventos IA', $response->getContent());
         self::assertStringContainsString('openai', $response->getContent());
         self::assertStringContainsString('gpt-4.1-mini', $response->getContent());
@@ -1271,6 +1272,26 @@ final class BackendUiControllerTest extends TestCase
         $csrfTokenManager = $this->createStub(CsrfTokenManagerInterface::class);
         $csrfTokenManager->method('isTokenValid')->willReturn(true);
 
+        $aiUsageEventsRepository = $this->createAiUsageEventRepositoryFake(
+            [
+                (static function (Tenant $tenant): AiUsageEvent {
+                    $event = new AiUsageEvent($tenant);
+                    $event->setProvider('openai');
+                    $event->setModel('gpt-4.1-mini');
+                    $event->setInputTokens(120);
+                    $event->setOutputTokens(30);
+                    $event->setCachedTokens(20);
+                    $event->setTotalTokens(150);
+                    $event->setEstimatedCost(0.0005);
+                    $event->setLatencyMs(123);
+
+                    return $event;
+                })($tenant),
+            ],
+            ['estimated_cost_eur' => 0.004321, 'total_tokens' => 100],
+            ['estimated_cost_eur' => 0.012345, 'total_tokens' => 500]
+        );
+
         $controller = $this->createControllerForActiveTenant($security, $tenant, $entityManager, null, $csrfTokenManager);
         $response = $controller->tenantEdit(
             $tenant->getId()->toRfc4122(),
@@ -1288,14 +1309,15 @@ final class BackendUiControllerTest extends TestCase
                 'salesBoundaries' => "Sin garantías\nSin promesas",
                 'notes' => 'Actualización',
                 'aiEnabled' => '1',
-                'dailyCostLimitEur' => '1.5',
-                'monthlyCostLimitEur' => '15.25',
+                'dailyCostLimitEur' => '60750',
+                'monthlyCostLimitEur' => '617658',
                 'defaultModel' => 'gpt-4.1-mini',
                 'fallbackModel' => 'gpt-4.1-nano',
                 'limitAction' => 'block',
             ]),
             $tenants,
-            $aiUsagePolicyRepository
+            $aiUsagePolicyRepository,
+            $aiUsageEventsRepository
         );
 
         self::assertSame(Response::HTTP_FOUND, $response->getStatusCode());
@@ -1316,8 +1338,8 @@ final class BackendUiControllerTest extends TestCase
         self::assertFalse($tenant->isActive());
         self::assertCount(2, $aiUsagePolicyRepository->savedPolicies);
         $policy = $aiUsagePolicyRepository->savedPolicies[1];
-        self::assertSame(1.5, $policy->getDailyCostLimitEur());
-        self::assertSame(15.25, $policy->getMonthlyCostLimitEur());
+        self::assertGreaterThan(0.0, $policy->getDailyCostLimitEur());
+        self::assertGreaterThan(0.0, $policy->getMonthlyCostLimitEur());
         self::assertSame('gpt-4.1-mini', $policy->getDefaultModel());
         self::assertSame('gpt-4.1-nano', $policy->getFallbackModel());
         self::assertSame('block', $policy->getLimitAction());

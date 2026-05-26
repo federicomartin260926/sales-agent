@@ -246,7 +246,7 @@ final class BackendUiController
                 $this->metricCard('Guías comerciales', (string) $playbookCount, 'Estrategias opcionales del negocio'),
                 $this->metricCard('Puntos de entrada', (string) $entryPointCount, 'Rutas y campañas activas'),
                 $canSeeTenantTechnicalTools ? $this->metricCard('Servidores MCP', (string) $externalToolCount, 'Herramientas técnicas del negocio') : '',
-                $canSeeTenantTechnicalTools ? $this->metricCard('MCP runtime', $mcpState['value'], $mcpState['note']) : '',
+                //$canSeeTenantTechnicalTools ? $this->metricCard('MCP runtime', $mcpState['value'], $mcpState['note']) : '',
             ]),
             'info_cards_html' => implode('', [
                 $this->infoCard('Ficha del negocio', 'Edita contexto, tono y política comercial del tenant activo.', sprintf('/backend/tenants/%s/edit', rawurlencode($activeTenant->getId()->toRfc4122())), 'Editar'),
@@ -772,8 +772,10 @@ final class BackendUiController
         }
 
         $aiUsagePolicy = $this->loadTenantAiUsagePolicy($tenant, $aiUsagePolicies);
-        $aiUsageData = $this->tenantAiUsageDisplayData($tenant, $aiUsageEvents ?? $this->aiUsageEvents);
-        $values = $this->tenantFormDefaults($tenant, $aiUsagePolicy);
+        $aiUsageEventsRepository = $aiUsageEvents ?? $this->aiUsageEvents;
+        $aiUsageData = $this->tenantAiUsageDisplayData($tenant, $aiUsageEventsRepository);
+        $aiUsageTokenRate = $this->tenantAiUsageTokenRate($tenant, $aiUsagePolicy, $aiUsageEventsRepository);
+        $values = $this->tenantFormDefaults($tenant, $aiUsagePolicy, $aiUsageEventsRepository, $aiUsageTokenRate);
         $error = null;
 
         if ($request->isMethod('POST')) {
@@ -788,7 +790,7 @@ final class BackendUiController
 
                 if ($error === null) {
                     $this->hydrateTenantFromForm($tenant, $values);
-                    $this->persistTenantAiUsagePolicy($tenant, $values, $aiUsagePolicies, false, $aiUsagePolicy);
+                    $this->persistTenantAiUsagePolicy($tenant, $values, $aiUsagePolicies, false, $aiUsagePolicy, $aiUsageTokenRate);
                     $this->entityManager->persist($tenant);
                     $this->entityManager->flush();
 
@@ -877,7 +879,7 @@ final class BackendUiController
             $errors = $this->validateTenantAiUsageTopUpRequestForm($values);
 
             if ($errors === []) {
-                $requestedAmount = (float) $values['requestedAmountEur'];
+                $requestedAmount = (float) $values['requestedTokens'];
                 $message = (string) $values['message'];
                 $requestEntity = new TenantAiTopUpRequest($activeTenant, $requestedAmount, $message);
                 $currentUser = $this->currentUser();
@@ -928,7 +930,9 @@ final class BackendUiController
         }
 
         $policy = $this->loadTenantAiUsagePolicyForView($tenant, $aiUsagePolicies);
-        $values = $this->tenantAiUsagePolicyValues($policy);
+        $aiUsageEventsRepository = $aiUsageEvents ?? $this->aiUsageEvents;
+        $aiUsageTokenRate = $this->tenantAiUsageTokenRate($tenant, $policy, $aiUsageEventsRepository);
+        $values = $this->tenantAiUsagePolicyValues($policy, $aiUsageTokenRate);
         $errors = [];
 
         if ($request->isMethod('POST')) {
@@ -943,7 +947,7 @@ final class BackendUiController
                 }
 
                 if ($errors === []) {
-                    $this->persistTenantAiUsagePolicy($tenant, $values, $aiUsagePolicies, true, $policy);
+                    $this->persistTenantAiUsagePolicy($tenant, $values, $aiUsagePolicies, true, $policy, $aiUsageTokenRate);
                     $this->addFlashMessage($request, 'success', sprintf('IA del tenant actualizada para %s.', $tenant->getName()));
 
                     return new RedirectResponse($actionUrl);
@@ -2492,10 +2496,18 @@ final class BackendUiController
     /**
      * @return array{name: string, slug: string, businessContext: string, tone: string, whatsappPhoneNumberId: string, whatsappPublicPhone: string, positioning: string, qualificationFocus: string, handoffRules: string, salesBoundaries: string, notes: string, isActive: bool}
      */
-    private function tenantFormDefaults(?Tenant $tenant = null, ?TenantAiUsagePolicy $aiUsagePolicy = null): array
+    private function tenantFormDefaults(
+        ?Tenant $tenant = null,
+        ?TenantAiUsagePolicy $aiUsagePolicy = null,
+        ?AiUsageEventRepository $aiUsageEvents = null,
+        ?float $tokenRate = null,
+    ): array
     {
         $salesPolicy = $tenant?->getSalesPolicy() ?? [];
-        $aiPolicy = $this->tenantAiUsagePolicyValues($aiUsagePolicy);
+        $aiPolicy = $this->tenantAiUsagePolicyValues(
+            $aiUsagePolicy,
+            $tokenRate ?? $this->tenantAiUsageTokenRate($tenant, $aiUsagePolicy, $aiUsageEvents)
+        );
 
         return [
             'name' => $tenant?->getName() ?? '',
@@ -2653,11 +2665,11 @@ final class BackendUiController
             }
 
             if (!is_numeric($value)) {
-                return sprintf('El campo %s debe ser numérico o vacío.', $field);
+                return 'Los límites de tokens deben ser numéricos o vacíos.';
             }
 
             if ((float) $value < 0) {
-                return sprintf('El campo %s no puede ser negativo.', $field);
+                return 'Los límites de tokens no pueden ser negativos.';
             }
         }
 
@@ -2703,9 +2715,10 @@ final class BackendUiController
         ?TenantAiUsagePolicyRepository $aiUsagePolicies,
         bool $flush = false,
         ?TenantAiUsagePolicy $policy = null,
+        ?float $tokenRate = null,
     ): TenantAiUsagePolicy {
         $policy ??= $this->loadTenantAiUsagePolicy($tenant, $aiUsagePolicies);
-        $this->hydrateTenantAiUsagePolicyFromForm($policy, $values);
+        $this->hydrateTenantAiUsagePolicyFromForm($policy, $values, $tokenRate ?? $this->tenantAiUsageTokenRate($tenant, $policy, $this->aiUsageEvents));
 
         if ($aiUsagePolicies instanceof TenantAiUsagePolicyRepository) {
             $aiUsagePolicies->save($policy, $flush);
@@ -2722,12 +2735,13 @@ final class BackendUiController
     /**
      * @return array{aiEnabled: bool, dailyCostLimitEur: string, monthlyCostLimitEur: string, defaultModel: string, fallbackModel: string, limitAction: string}
      */
-    private function tenantAiUsagePolicyValues(?TenantAiUsagePolicy $policy = null): array
+    private function tenantAiUsagePolicyValues(?TenantAiUsagePolicy $policy = null, ?float $tokenRate = null): array
     {
+        $tokenRate ??= $this->tenantAiUsageModelAverageCostPerToken($policy?->getDefaultModel() ?? $policy?->getFallbackModel());
         return [
             'aiEnabled' => $policy?->isAiEnabled() ?? true,
-            'dailyCostLimitEur' => $this->formatNullableFloat($policy?->getDailyCostLimitEur()),
-            'monthlyCostLimitEur' => $this->formatNullableFloat($policy?->getMonthlyCostLimitEur()),
+            'dailyCostLimitEur' => $this->formatTokenInputFromCost($policy?->getDailyCostLimitEur(), $tokenRate),
+            'monthlyCostLimitEur' => $this->formatTokenInputFromCost($policy?->getMonthlyCostLimitEur(), $tokenRate),
             'defaultModel' => $policy?->getDefaultModel() ?? '',
             'fallbackModel' => $policy?->getFallbackModel() ?? '',
             'limitAction' => $policy?->getLimitAction() ?? 'handoff_human',
@@ -2772,12 +2786,12 @@ final class BackendUiController
 
         return [
             'today' => [
-                'estimatedCostEur' => $this->formatMoneyEur($todaySummary['estimated_cost_eur'] ?? 0.0),
                 'totalTokens' => $this->formatIntegerDisplay($todaySummary['total_tokens'] ?? 0),
+                'estimatedCostEur' => $this->formatMoneyEur($todaySummary['estimated_cost_eur'] ?? 0.0),
             ],
             'month' => [
-                'estimatedCostEur' => $this->formatMoneyEur($monthSummary['estimated_cost_eur'] ?? 0.0),
                 'totalTokens' => $this->formatIntegerDisplay($monthSummary['total_tokens'] ?? 0),
+                'estimatedCostEur' => $this->formatMoneyEur($monthSummary['estimated_cost_eur'] ?? 0.0),
             ],
             'recentEvents' => array_map(
                 fn (AiUsageEvent $event): array => $this->tenantAiUsageEventView($event),
@@ -2787,7 +2801,7 @@ final class BackendUiController
     }
 
     /**
-     * @param array{requestedAmountEur: string, message: string} $values
+     * @param array{requestedTokens: string, message: string} $values
      */
     private function renderAiUsageDashboardPage(
         Request $request,
@@ -2871,8 +2885,8 @@ final class BackendUiController
      *   status: array{label: string, class: string, detail: string},
      *   today: array{estimatedCostEur: string, totalTokens: string},
      *   month: array{estimatedCostEur: string, totalTokens: string},
-     *   daily_limit: array{label: string, value: string, used: string, remaining: string, percent: ?int, percent_label: string, class: string},
-     *   monthly_limit: array{label: string, value: string, used: string, remaining: string, percent: ?int, percent_label: string, class: string},
+     *   daily_limit: array{label: string, value: string, used: string, remaining: string, percent: ?int, percent_label: string, class: string, secondary: string},
+     *   monthly_limit: array{label: string, value: string, used: string, remaining: string, percent: ?int, percent_label: string, class: string, secondary: string},
      *   period: array{label: string, current: string, daily_reset: string, monthly_reset: string},
      *   recentEvents: array<int, array{
      *     createdAt: string,
@@ -2890,7 +2904,7 @@ final class BackendUiController
      *   }>,
      *   recentRequests: array<int, array{
      *     createdAt: string,
-     *     amountEur: string,
+     *     amountTokens: string,
      *     message: string,
      *     status: string,
      *     status_class: string,
@@ -2920,14 +2934,19 @@ final class BackendUiController
             'total_tokens' => 0,
         ];
 
-        $dailyLimit = $policy instanceof TenantAiUsagePolicy ? $policy->getDailyCostLimitEur() : null;
-        $monthlyLimit = $policy instanceof TenantAiUsagePolicy ? $policy->getMonthlyCostLimitEur() : null;
-        $dailyUsed = (float) ($todaySummary['estimated_cost_eur'] ?? 0.0);
-        $monthlyUsed = (float) ($monthSummary['estimated_cost_eur'] ?? 0.0);
-        $dailyRemaining = $dailyLimit !== null ? max(0.0, $dailyLimit - $dailyUsed) : null;
-        $monthlyRemaining = $monthlyLimit !== null ? max(0.0, $monthlyLimit - $monthlyUsed) : null;
-        $dailyPercent = $dailyLimit !== null && $dailyLimit > 0 ? min(100, (int) round(($dailyUsed / $dailyLimit) * 100)) : null;
-        $monthlyPercent = $monthlyLimit !== null && $monthlyLimit > 0 ? min(100, (int) round(($monthlyUsed / $monthlyLimit) * 100)) : null;
+        $tokenRate = $this->tenantAiUsageTokenRate($tenant, $policy, $aiUsageEvents);
+        $dailyLimitTokens = $policy instanceof TenantAiUsagePolicy ? $this->tokenAmountFromCost($policy->getDailyCostLimitEur(), $tokenRate) : null;
+        $monthlyLimitTokens = $policy instanceof TenantAiUsagePolicy ? $this->tokenAmountFromCost($policy->getMonthlyCostLimitEur(), $tokenRate) : null;
+        $dailyLimitCost = $policy instanceof TenantAiUsagePolicy ? $policy->getDailyCostLimitEur() : null;
+        $monthlyLimitCost = $policy instanceof TenantAiUsagePolicy ? $policy->getMonthlyCostLimitEur() : null;
+        $dailyUsedTokens = (int) ($todaySummary['total_tokens'] ?? 0);
+        $monthlyUsedTokens = (int) ($monthSummary['total_tokens'] ?? 0);
+        $dailyRemainingTokens = $dailyLimitTokens !== null ? max(0, $dailyLimitTokens - $dailyUsedTokens) : null;
+        $monthlyRemainingTokens = $monthlyLimitTokens !== null ? max(0, $monthlyLimitTokens - $monthlyUsedTokens) : null;
+        $dailyPercent = $dailyLimitTokens !== null && $dailyLimitTokens > 0 ? min(100, (int) round(($dailyUsedTokens / $dailyLimitTokens) * 100)) : null;
+        $monthlyPercent = $monthlyLimitTokens !== null && $monthlyLimitTokens > 0 ? min(100, (int) round(($monthlyUsedTokens / $monthlyLimitTokens) * 100)) : null;
+        $dailyUsedCost = (float) ($todaySummary['estimated_cost_eur'] ?? 0.0);
+        $monthlyUsedCost = (float) ($monthSummary['estimated_cost_eur'] ?? 0.0);
 
         $status = [
             'label' => 'Sin política',
@@ -2941,13 +2960,13 @@ final class BackendUiController
                     'class' => 'status-off',
                     'detail' => 'La política IA está desactivada para este negocio.',
                 ];
-            } elseif ($dailyLimit !== null && $dailyUsed >= $dailyLimit) {
+            } elseif ($dailyLimitCost !== null && $dailyUsedCost >= $dailyLimitCost) {
                 $status = [
                     'label' => 'Bloqueada por límite diario',
                     'class' => 'status-warn',
                     'detail' => 'El consumo diario ha alcanzado el límite configurado.',
                 ];
-            } elseif ($monthlyLimit !== null && $monthlyUsed >= $monthlyLimit) {
+            } elseif ($monthlyLimitCost !== null && $monthlyUsedCost >= $monthlyLimitCost) {
                 $status = [
                     'label' => 'Bloqueada por límite mensual',
                     'class' => 'status-warn',
@@ -2982,14 +3001,14 @@ final class BackendUiController
             'status' => $status,
             'today' => [
                 'estimatedCostEur' => $this->formatMoneyEur((float) ($todaySummary['estimated_cost_eur'] ?? 0.0)),
-                'totalTokens' => $this->formatIntegerDisplay((int) ($todaySummary['total_tokens'] ?? 0)),
+                'totalTokens' => $this->formatIntegerDisplay($dailyUsedTokens),
             ],
             'month' => [
                 'estimatedCostEur' => $this->formatMoneyEur((float) ($monthSummary['estimated_cost_eur'] ?? 0.0)),
-                'totalTokens' => $this->formatIntegerDisplay((int) ($monthSummary['total_tokens'] ?? 0)),
+                'totalTokens' => $this->formatIntegerDisplay($monthlyUsedTokens),
             ],
-            'daily_limit' => $this->tenantAiUsageLimitView('Límite diario', $dailyLimit, $dailyUsed, $dailyRemaining, $dailyPercent),
-            'monthly_limit' => $this->tenantAiUsageLimitView('Límite mensual', $monthlyLimit, $monthlyUsed, $monthlyRemaining, $monthlyPercent),
+            'daily_limit' => $this->tenantAiUsageLimitView('Límite diario de tokens', $dailyLimitTokens, $dailyUsedTokens, $dailyRemainingTokens, $dailyPercent, $this->formatMoneyEur($dailyUsedCost)),
+            'monthly_limit' => $this->tenantAiUsageLimitView('Límite mensual de tokens', $monthlyLimitTokens, $monthlyUsedTokens, $monthlyRemainingTokens, $monthlyPercent, $this->formatMoneyEur($monthlyUsedCost)),
             'period' => [
                 'label' => 'Periodo actual',
                 'current' => $month->format('Y-m'),
@@ -3004,30 +3023,32 @@ final class BackendUiController
                 'defaultModel' => $policy?->getDefaultModel() ?? '',
                 'fallbackModel' => $policy?->getFallbackModel() ?? '',
                 'limitAction' => $policy?->getLimitAction() ?? 'handoff_human',
-                'monthlyCostLimitEur' => $this->formatNullableFloat($policy?->getMonthlyCostLimitEur()),
-                'dailyCostLimitEur' => $this->formatNullableFloat($policy?->getDailyCostLimitEur()),
+                'monthlyCostLimitEur' => $this->formatTokenInputFromCost($policy?->getMonthlyCostLimitEur(), $tokenRate) ?? '',
+                'dailyCostLimitEur' => $this->formatTokenInputFromCost($policy?->getDailyCostLimitEur(), $tokenRate) ?? '',
             ],
         ];
     }
 
     /**
-     * @return array{label: string, value: string, used: string, remaining: string, percent: ?int, percent_label: string, class: string}
+     * @return array{label: string, value: string, used: string, remaining: string, percent: ?int, percent_label: string, class: string, secondary: string}
      */
     private function tenantAiUsageLimitView(
         string $label,
-        ?float $limitEur,
-        float $usedEur,
-        ?float $remainingEur,
+        ?int $limitTokens,
+        int $usedTokens,
+        ?int $remainingTokens,
         ?int $percent,
+        string $secondaryCost,
     ): array {
         return [
             'label' => $label,
-            'value' => $limitEur !== null ? $this->formatMoneyEur($limitEur) : 'Sin límite',
-            'used' => $this->formatMoneyEur($usedEur),
-            'remaining' => $remainingEur !== null ? $this->formatMoneyEur($remainingEur) : 'Sin límite',
+            'value' => $limitTokens !== null ? $this->formatIntegerDisplay($limitTokens) : 'Sin límite',
+            'used' => $this->formatIntegerDisplay($usedTokens),
+            'remaining' => $remainingTokens !== null ? $this->formatIntegerDisplay($remainingTokens) : 'Sin límite',
             'percent' => $percent,
             'percent_label' => $percent !== null ? sprintf('%d%%', $percent) : '—',
             'class' => $percent !== null && $percent >= 100 ? 'status-warn' : 'status-ok',
+            'secondary' => $limitTokens !== null ? $secondaryCost : '—',
         ];
     }
 
@@ -3063,7 +3084,7 @@ final class BackendUiController
             'tenant_id' => $tenantId,
             'tenant_name' => $requestEntity->getTenant()->getName(),
             'createdAt' => $requestEntity->getCreatedAt()->format('Y-m-d H:i'),
-            'amountEur' => $this->formatMoneyEur($requestEntity->getRequestedAmountEur()),
+            'amountTokens' => $this->formatIntegerDisplay((int) round($requestEntity->getRequestedAmountEur())),
             'message' => $requestEntity->getMessage(),
             'status_key' => $requestEntity->getStatus(),
             'status' => match ($requestEntity->getStatus()) {
@@ -3088,7 +3109,7 @@ final class BackendUiController
     }
 
     /**
-     * @param array{requestedAmountEur: string, message: string} $values
+     * @param array{requestedTokens: string, message: string} $values
      *
      * @return string[]
      */
@@ -3096,9 +3117,9 @@ final class BackendUiController
     {
         $errors = [];
 
-        $requestedAmount = $this->parsePositiveFloat($values['requestedAmountEur']);
-        if ($requestedAmount === null) {
-            $errors[] = 'Debes indicar un importe solicitado válido.';
+        $requestedTokens = $this->parsePositiveInt($values['requestedTokens']);
+        if ($requestedTokens === null) {
+            $errors[] = 'Debes indicar una cantidad de tokens solicitada válida.';
         }
 
         $message = trim((string) ($values['message'] ?? ''));
@@ -3112,23 +3133,23 @@ final class BackendUiController
     }
 
     /**
-     * @return array{requestedAmountEur: string, message: string}
+     * @return array{requestedTokens: string, message: string}
      */
     private function tenantAiUsageTopUpRequestFormDefaults(): array
     {
         return [
-            'requestedAmountEur' => '',
+            'requestedTokens' => '',
             'message' => '',
         ];
     }
 
     /**
-     * @return array{requestedAmountEur: string, message: string}
+     * @return array{requestedTokens: string, message: string}
      */
     private function tenantAiUsageTopUpRequestFormValuesFromRequest(Request $request): array
     {
         return [
-            'requestedAmountEur' => trim((string) $request->request->get('requestedAmountEur', '')),
+            'requestedTokens' => trim((string) $request->request->get('requestedTokens', $request->request->get('requestedAmountEur', ''))),
             'message' => trim((string) $request->request->get('message', '')),
         ];
     }
@@ -3279,11 +3300,13 @@ final class BackendUiController
         ];
     }
 
-    private function hydrateTenantAiUsagePolicyFromForm(TenantAiUsagePolicy $policy, array $values): void
+    private function hydrateTenantAiUsagePolicyFromForm(TenantAiUsagePolicy $policy, array $values, ?float $costPerToken = null): void
     {
         $policy->setAiEnabled($values['aiEnabled']);
-        $policy->setDailyCostLimitEur($this->parseNullableFloat($values['dailyCostLimitEur']));
-        $policy->setMonthlyCostLimitEur($this->parseNullableFloat($values['monthlyCostLimitEur']));
+        $dailyTokens = $this->parsePositiveInt($values['dailyCostLimitEur']);
+        $monthlyTokens = $this->parsePositiveInt($values['monthlyCostLimitEur']);
+        $policy->setDailyCostLimitEur($dailyTokens !== null ? $this->costAmountFromTokens($dailyTokens, $costPerToken) : null);
+        $policy->setMonthlyCostLimitEur($monthlyTokens !== null ? $this->costAmountFromTokens($monthlyTokens, $costPerToken) : null);
         $policy->setDefaultModel($values['defaultModel'] !== '' ? $values['defaultModel'] : null);
         $policy->setFallbackModel($values['fallbackModel'] !== '' ? $values['fallbackModel'] : null);
         $policy->setLimitAction($values['limitAction']);
@@ -3303,6 +3326,22 @@ final class BackendUiController
         return is_numeric($trimmed) ? (float) $trimmed : null;
     }
 
+    private function parsePositiveInt(mixed $value): ?int
+    {
+        if (!is_string($value)) {
+            return null;
+        }
+
+        $trimmed = trim($value);
+        if ($trimmed === '' || !is_numeric($trimmed)) {
+            return null;
+        }
+
+        $number = (int) round((float) $trimmed);
+
+        return $number >= 0 ? $number : null;
+    }
+
     private function formatNullableFloat(?float $value): string
     {
         if ($value === null) {
@@ -3317,6 +3356,117 @@ final class BackendUiController
     private function formatMoneyEur(?float $value): string
     {
         return sprintf('%s €', $this->formatMoneyValue($value));
+    }
+
+    private function formatTokenInputFromCost(?float $cost, ?float $costPerToken): ?string
+    {
+        $tokens = $this->tokenAmountFromCost($cost, $costPerToken);
+
+        return $tokens !== null ? (string) $tokens : null;
+    }
+
+    private function tokenAmountFromCost(?float $cost, ?float $costPerToken): ?int
+    {
+        if ($cost === null) {
+            return null;
+        }
+
+        if ($costPerToken === null || $costPerToken <= 0.0) {
+            return (int) round($cost);
+        }
+
+        return (int) round($cost / $costPerToken);
+    }
+
+    private function costAmountFromTokens(?int $tokens, ?float $costPerToken): ?float
+    {
+        if ($tokens === null) {
+            return null;
+        }
+
+        if ($costPerToken === null || $costPerToken <= 0.0) {
+            return (float) $tokens;
+        }
+
+        return round($tokens * $costPerToken, 8);
+    }
+
+    private function formatTokenRemainingFromCost(?float $limitCost, array $summary, ?float $costPerToken): ?int
+    {
+        $limitTokens = $this->tokenAmountFromCost($limitCost, $costPerToken);
+        if ($limitTokens === null) {
+            return null;
+        }
+
+        $usedTokens = (int) ($summary['total_tokens'] ?? 0);
+
+        return max(0, $limitTokens - $usedTokens);
+    }
+
+    private function tenantAiUsagePercentFromCost(?float $limitCost, array $summary, ?float $costPerToken): ?int
+    {
+        $limitTokens = $this->tokenAmountFromCost($limitCost, $costPerToken);
+        if ($limitTokens === null || $limitTokens <= 0) {
+            return null;
+        }
+
+        $usedTokens = (int) ($summary['total_tokens'] ?? 0);
+
+        return min(100, (int) round(($usedTokens / $limitTokens) * 100));
+    }
+
+    private function tenantAiUsageTokenRate(?Tenant $tenant, ?TenantAiUsagePolicy $policy, ?AiUsageEventRepository $aiUsageEvents): float
+    {
+        if ($tenant instanceof Tenant && $aiUsageEvents instanceof AiUsageEventRepository) {
+            $timezone = new \DateTimeZone(date_default_timezone_get() ?: 'UTC');
+            $month = new \DateTimeImmutable('first day of this month', $timezone);
+            $summary = $aiUsageEvents->summarizeSince($tenant, $month);
+            $tokens = (int) ($summary['total_tokens'] ?? 0);
+            $cost = (float) ($summary['estimated_cost_eur'] ?? 0.0);
+
+            if ($tokens > 0 && $cost > 0.0) {
+                return $cost / $tokens;
+            }
+        }
+
+        return $this->tenantAiUsageModelAverageCostPerToken($policy?->getDefaultModel() ?? $policy?->getFallbackModel());
+    }
+
+    private function tenantAiUsageModelAverageCostPerToken(?string $model): float
+    {
+        $pricing = $this->tenantAiModelPricing($model);
+        if ($pricing === null) {
+            return 0.000001;
+        }
+
+        return (($pricing['input'] + $pricing['output'] + $pricing['cached_input']) / 3) / 1_000_000;
+    }
+
+    private function tenantAiModelPricing(?string $model): ?array
+    {
+        $normalized = strtolower(trim((string) $model));
+        if ($normalized === '') {
+            return null;
+        }
+
+        $pricingTable = [
+            'gpt-4.1' => ['input' => 2.0, 'output' => 8.0, 'cached_input' => 0.5],
+            'gpt-4.1-mini' => ['input' => 0.4, 'output' => 1.6, 'cached_input' => 0.1],
+            'gpt-4o' => ['input' => 2.5, 'output' => 10.0, 'cached_input' => 0.625],
+            'gpt-4o-mini' => ['input' => 0.15, 'output' => 0.6, 'cached_input' => 0.0375],
+        ];
+
+        if (isset($pricingTable[$normalized])) {
+            return $pricingTable[$normalized];
+        }
+
+        foreach ($pricingTable as $key => $pricing) {
+            if (str_starts_with($normalized, $key)) {
+                return $pricing;
+            }
+        }
+
+        return null;
     }
 
     private function formatIntegerDisplay(?int $value): string

@@ -58,6 +58,10 @@ final class BackendUiSuperAdminTenantAiTest extends TestCase
         self::assertStringContainsString('Rechazar', $response->getContent());
         self::assertStringContainsString('gpt-4.1-mini', $response->getContent());
         self::assertStringContainsString('gpt-4.1-nano', $response->getContent());
+        self::assertStringContainsString('Tokens procesados hoy', $response->getContent());
+        self::assertStringContainsString('130', $response->getContent());
+        self::assertStringContainsString('424', $response->getContent());
+        self::assertStringContainsString('4240', $response->getContent());
         self::assertStringContainsString('0,25 €', $response->getContent());
         self::assertStringNotContainsString('openai_api_key', $response->getContent());
         self::assertStringNotContainsString('bearer', $response->getContent());
@@ -92,8 +96,8 @@ final class BackendUiSuperAdminTenantAiTest extends TestCase
         $request = Request::create('/backend/super-admin/tenants/'.$tenant->getId()->toRfc4122().'/ai', 'POST', [
             '_csrf_token' => 'token',
             'aiEnabled' => '1',
-            'dailyCostLimitEur' => '2.50',
-            'monthlyCostLimitEur' => '30.00',
+            'dailyCostLimitEur' => '1060',
+            'monthlyCostLimitEur' => '12720',
             'defaultModel' => 'gpt-4.1-mini',
             'fallbackModel' => 'gpt-4.1-nano',
             'limitAction' => 'block',
@@ -105,7 +109,7 @@ final class BackendUiSuperAdminTenantAiTest extends TestCase
             $request,
             $this->tenantRepository([$tenant], $tenant),
             $policyRepository,
-            $this->eventsRepository(),
+            $this->eventsRepository([], ['estimated_cost_eur' => 1.25, 'total_tokens' => 530], ['estimated_cost_eur' => 1.25, 'total_tokens' => 530]),
             $this->topUpRequestRepository()
         );
 

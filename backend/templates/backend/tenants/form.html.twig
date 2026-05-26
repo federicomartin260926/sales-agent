@@ -141,14 +141,14 @@
               </label>
             </div>
             <div class="field">
-              <label for="tenant-daily-cost-limit">Límite diario estimado (€)</label>
-              <input id="tenant-daily-cost-limit" name="dailyCostLimitEur" type="number" min="0" step="0.000001" value="{{ values.dailyCostLimitEur }}" placeholder="0.000001">
-              <div class="field-note">Vacío = sin límite diario.</div>
+              <label for="tenant-daily-cost-limit">Límite diario de tokens</label>
+              <input id="tenant-daily-cost-limit" name="dailyCostLimitEur" type="number" min="0" step="1" value="{{ values.dailyCostLimitEur }}" placeholder="100000">
+              <div class="field-note">Vacío = sin límite diario. La equivalencia interna se calcula al guardar.</div>
             </div>
             <div class="field">
-              <label for="tenant-monthly-cost-limit">Límite mensual estimado (€)</label>
-              <input id="tenant-monthly-cost-limit" name="monthlyCostLimitEur" type="number" min="0" step="0.000001" value="{{ values.monthlyCostLimitEur }}" placeholder="0.000001">
-              <div class="field-note">Vacío = sin límite mensual.</div>
+              <label for="tenant-monthly-cost-limit">Límite mensual de tokens</label>
+              <input id="tenant-monthly-cost-limit" name="monthlyCostLimitEur" type="number" min="0" step="1" value="{{ values.monthlyCostLimitEur }}" placeholder="1000000">
+              <div class="field-note">Vacío = sin límite mensual. La equivalencia interna se calcula al guardar.</div>
             </div>
             <div class="field">
               <label for="tenant-default-model">Modelo por defecto</label>
@@ -176,24 +176,24 @@
 
           <div class="stats-grid">
             <div class="metric">
-              <div class="metric-label">Coste estimado hoy</div>
-              <div class="metric-value">{{ ai_usage.today.estimatedCostEur|default('0,000000 €') }}</div>
-              <div class="metric-note">Total acumulado en el día actual.</div>
-            </div>
-            <div class="metric">
-              <div class="metric-label">Coste estimado este mes</div>
-              <div class="metric-value">{{ ai_usage.month.estimatedCostEur|default('0,000000 €') }}</div>
-              <div class="metric-note">Total acumulado desde el primer día del mes.</div>
-            </div>
-            <div class="metric">
-              <div class="metric-label">Tokens totales hoy</div>
+              <div class="metric-label">Tokens procesados hoy</div>
               <div class="metric-value">{{ ai_usage.today.totalTokens|default('0') }}</div>
-              <div class="metric-note">Suma de `total_tokens` registrada hoy.</div>
+              <div class="metric-note">Coste estimado: {{ ai_usage.today.estimatedCostEur|default('0,000000 €') }}</div>
             </div>
             <div class="metric">
-              <div class="metric-label">Tokens totales este mes</div>
+              <div class="metric-label">Tokens procesados este mes</div>
               <div class="metric-value">{{ ai_usage.month.totalTokens|default('0') }}</div>
-              <div class="metric-note">Suma de `total_tokens` registrada este mes.</div>
+              <div class="metric-note">Coste estimado: {{ ai_usage.month.estimatedCostEur|default('0,000000 €') }}</div>
+            </div>
+            <div class="metric">
+              <div class="metric-label">Límite diario de tokens</div>
+              <div class="metric-value">{{ values.dailyCostLimitEur|default('Sin límite') }}</div>
+              <div class="metric-note">Coste estimado hoy: {{ ai_usage.today.estimatedCostEur|default('0,000000 €') }}</div>
+            </div>
+            <div class="metric">
+              <div class="metric-label">Límite mensual de tokens</div>
+              <div class="metric-value">{{ values.monthlyCostLimitEur|default('Sin límite') }}</div>
+              <div class="metric-note">Coste estimado este mes: {{ ai_usage.month.estimatedCostEur|default('0,000000 €') }}</div>
             </div>
           </div>
 
@@ -213,7 +213,7 @@
                     <th>Proveedor</th>
                     <th>Modelo</th>
                     <th>Tokens</th>
-                    <th>Coste</th>
+                    <th>Coste estimado</th>
                     <th>Latency</th>
                   </tr>
                 </thead>

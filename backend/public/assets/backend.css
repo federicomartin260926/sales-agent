@@ -212,6 +212,11 @@ body.login-page .footer code {
   display: flex;
   flex-direction: column;
   gap: 18px;
+  position: sticky;
+  top: 0;
+  height: 100vh;
+  overflow-y: auto;
+  align-self: start;
 }
 
 .brand {
@@ -272,7 +277,7 @@ body.login-page .footer code {
 }
 
 .sidebar .nav a.nav-tenant-link {
-  font-weight: 800;
+  font-weight: 500;
 }
 
 .sidebar .nav a.active {
@@ -851,13 +856,16 @@ body.login-page .footer code {
 .cards-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
+  gap: 18px;
+  row-gap: 18px;
 }
 
 .profile-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
+  gap: 18px;
+  row-gap: 18px;
+  margin-bottom: 18px;
 }
 
 .profile-card {
@@ -1459,6 +1467,10 @@ body.ai-assistant-modal-open {
 
 .table-card {
   padding: 18px;
+}
+
+.table-card + .table-card {
+  margin-top: 18px;
 }
 
 .external-tools-filter-card {
