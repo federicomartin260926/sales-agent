@@ -63,7 +63,10 @@ final class BackendUiAiUsageTest extends TestCase
         self::assertSame(Response::HTTP_OK, $response->getStatusCode());
         self::assertStringContainsString('Uso IA', $response->getContent());
         self::assertStringContainsString('Tokens procesados hoy', $response->getContent());
-        self::assertStringContainsString('Límite diario de tokens', $response->getContent());
+        self::assertStringContainsString('Plan mensual base', $response->getContent());
+        self::assertStringContainsString('Recargas aprobadas este mes', $response->getContent());
+        self::assertStringContainsString('Cupo efectivo este mes', $response->getContent());
+        self::assertStringContainsString('Límite diario base', $response->getContent());
         self::assertStringContainsString('Periodo actual', $response->getContent());
         self::assertStringContainsString('Solicitar ampliación', $response->getContent());
         self::assertStringContainsString('Tokens solicitados', $response->getContent());
@@ -99,7 +102,7 @@ final class BackendUiAiUsageTest extends TestCase
         $resolver = $this->resolver($user, [$tenant], [$this->membership($user, $tenant, 'manager')]);
         $requestEntity = $this->topUpRequest($tenant, 25.0, 'Necesitamos más cuota');
         $requestEntity->setRequestedBy($user);
-        $requestEntity->approve($user, 30);
+        $requestEntity->approve($user, 30, (new \DateTimeImmutable('now', new \DateTimeZone('Europe/Madrid')))->format('Y-m'));
 
         $request = Request::create('/backend/ai-usage', 'GET');
         $request->setSession(new Session());
@@ -111,6 +114,36 @@ final class BackendUiAiUsageTest extends TestCase
         self::assertSame(Response::HTTP_OK, $response->getStatusCode());
         self::assertStringContainsString('Aprobada', $response->getContent());
         self::assertStringContainsString('Aprobados: 30 tokens', $response->getContent());
+        self::assertStringContainsString('Recargas aprobadas este mes', $response->getContent());
+    }
+
+    public function testManagerDashboardCountsOnlyCurrentPeriodTopUps(): void
+    {
+        $tenant = $this->tenant('Tech Investments', 'tech-investments');
+        $user = new User('manager@example.com', ['manager'], 'Manager');
+        $resolver = $this->resolver($user, [$tenant], [$this->membership($user, $tenant, 'manager')]);
+        $currentPeriodKey = (new \DateTimeImmutable('now', new \DateTimeZone('Europe/Madrid')))->format('Y-m');
+        $previousPeriodKey = (new \DateTimeImmutable('first day of last month', new \DateTimeZone('Europe/Madrid')))->format('Y-m');
+        $currentTopUp = $this->topUpRequest($tenant, 31.0, 'Recarga del periodo actual');
+        $currentTopUp->approve($user, 31, $currentPeriodKey);
+        $previousTopUp = $this->topUpRequest($tenant, 17.0, 'Recarga antigua');
+        $previousTopUp->approve($user, 17, $previousPeriodKey);
+
+        $request = Request::create('/backend/ai-usage', 'GET');
+        $request->setSession(new Session());
+        $context = $this->activeTenantContext($request, [$tenant], $tenant);
+
+        $controller = $this->controller($user, $context, $resolver);
+        $response = $controller->aiUsage(
+            $request,
+            $this->policyRepository($this->policy($tenant)),
+            $this->eventsRepository([], ['estimated_cost_eur' => 0.25, 'total_tokens' => 130], ['estimated_cost_eur' => 1.25, 'total_tokens' => 530]),
+            $this->topUpRequestRepository([$currentTopUp, $previousTopUp])
+        );
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        self::assertMatchesRegularExpression('/Recargas aprobadas este mes<\\/div>\\s*<div class="metric-value">31<\\/div>/', $response->getContent());
+        self::assertStringContainsString('Cupo efectivo este mes', $response->getContent());
     }
 
     public function testTamperedActiveTenantResolvesToAccessibleTenant(): void
@@ -408,6 +441,58 @@ final class BackendUiAiUsageTest extends TestCase
             public function findRecentByTenant(Tenant $tenant, int $limit = 5): array
             {
                 return array_slice($this->requests, 0, max(1, $limit));
+            }
+
+            public function findApprovedByTenantAndPeriod(Tenant $tenant, string $periodKey): array
+            {
+                return array_values(array_filter(
+                    $this->requests,
+                    static function (TenantAiTopUpRequest $request) use ($tenant, $periodKey): bool {
+                        if ($request->getTenant()->getId()->toRfc4122() !== $tenant->getId()->toRfc4122()) {
+                            return false;
+                        }
+
+                        if ($request->getStatus() !== TenantAiTopUpRequest::STATUS_APPROVED) {
+                            return false;
+                        }
+
+                        $approvedPeriodKey = $request->getApprovedPeriodKey();
+                        if ($approvedPeriodKey !== null && $approvedPeriodKey !== '') {
+                            return $approvedPeriodKey === $periodKey;
+                        }
+
+                        return $request->getResolvedAt()?->format('Y-m') === $periodKey;
+                    }
+                ));
+            }
+
+            public function sumApprovedTokensByTenantAndPeriod(Tenant $tenant, string $periodKey): int
+            {
+                $total = 0;
+                foreach ($this->findApprovedByTenantAndPeriod($tenant, $periodKey) as $request) {
+                    $approvedTokens = $request->getApprovedTokens();
+                    if ($approvedTokens === null) {
+                        $approvedTokens = max(0, (int) round($request->getRequestedAmountEur()));
+                    }
+
+                    $total += max(0, $approvedTokens);
+                }
+
+                return $total;
+            }
+
+            public function findLegacyApprovedWithoutPeriodByTenant(Tenant $tenant): array
+            {
+                return array_values(array_filter(
+                    $this->requests,
+                    static function (TenantAiTopUpRequest $request) use ($tenant): bool {
+                        if ($request->getTenant()->getId()->toRfc4122() !== $tenant->getId()->toRfc4122()) {
+                            return false;
+                        }
+
+                        return $request->getStatus() === TenantAiTopUpRequest::STATUS_APPROVED && $request->getApprovedPeriodKey() === null;
+                    }
+                ));
             }
         };
     }

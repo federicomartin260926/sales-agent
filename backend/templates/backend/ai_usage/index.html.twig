@@ -27,16 +27,26 @@
     <div class="metric-note">Coste estimado: {{ month.estimatedCostEur }}</div>
   </article>
   <article class="metric">
-    <div class="metric-label">{{ daily_limit.label }}</div>
-    <div class="metric-value">{{ daily_limit.value }}</div>
-    <div class="metric-note">Usado: {{ daily_limit.used }} tokens | Restante: {{ daily_limit.remaining }} tokens</div>
-    <div class="metric-note subtle">Coste estimado del periodo actual: {{ daily_limit.secondary }}</div>
+    <div class="metric-label">{{ monthly_base_limit.label }}</div>
+    <div class="metric-value">{{ monthly_base_limit.value }}</div>
+    <div class="metric-note">{{ monthly_base_limit.note }}</div>
   </article>
   <article class="metric">
-    <div class="metric-label">{{ monthly_limit.label }}</div>
-    <div class="metric-value">{{ monthly_limit.value }}</div>
-    <div class="metric-note">Usado: {{ monthly_limit.used }} tokens | Restante: {{ monthly_limit.remaining }} tokens</div>
-    <div class="metric-note subtle">Coste estimado del periodo actual: {{ monthly_limit.secondary }}</div>
+    <div class="metric-label">{{ monthly_top_ups.label }}</div>
+    <div class="metric-value">{{ monthly_top_ups.value }}</div>
+    <div class="metric-note">{{ monthly_top_ups.note }}</div>
+  </article>
+  <article class="metric">
+    <div class="metric-label">{{ monthly_effective_limit.label }}</div>
+    <div class="metric-value">{{ monthly_effective_limit.value }}</div>
+    <div class="metric-note">Usado: {{ monthly_effective_limit.used }} tokens | Disponible: {{ monthly_effective_limit.remaining }}</div>
+    <div class="metric-note subtle">{{ monthly_effective_limit.secondary }}</div>
+  </article>
+  <article class="metric">
+    <div class="metric-label">{{ daily_limit.label }}</div>
+    <div class="metric-value">{{ daily_limit.value }}</div>
+    <div class="metric-note">Usado: {{ daily_limit.used }} tokens | Restante: {{ daily_limit.remaining }}</div>
+    <div class="metric-note subtle">{{ daily_limit.secondary }}</div>
   </article>
 </section>
 
@@ -50,24 +60,24 @@
       <div class="usage-meter-fill{{ daily_limit.percent is not null and daily_limit.percent >= 100 ? ' is-warn' : '' }}" style="width: {{ daily_limit.percent is not null ? daily_limit.percent : 0 }}%"></div>
     </div>
     <div class="usage-meter-meta">
-      <span><strong>Límite:</strong> {{ daily_limit.value }} tokens</span>
+      <span><strong>Límite:</strong> {{ daily_limit.value }}</span>
       <span><strong>Usado:</strong> {{ daily_limit.used }} tokens</span>
-      <span><strong>Restante:</strong> {{ daily_limit.remaining }} tokens</span>
+      <span><strong>Restante:</strong> {{ daily_limit.remaining }}</span>
     </div>
   </article>
 
   <article class="usage-meter">
     <div class="usage-meter-header">
-      <div class="usage-meter-title">{{ monthly_limit.label }}</div>
-      <span class="{{ monthly_limit.class }}">{{ monthly_limit.percent_label }}</span>
+      <div class="usage-meter-title">{{ monthly_effective_limit.label }}</div>
+      <span class="{{ monthly_effective_limit.class }}">{{ monthly_effective_limit.percent_label }}</span>
     </div>
     <div class="usage-meter-track" aria-hidden="true">
-      <div class="usage-meter-fill{{ monthly_limit.percent is not null and monthly_limit.percent >= 100 ? ' is-warn' : '' }}" style="width: {{ monthly_limit.percent is not null ? monthly_limit.percent : 0 }}%"></div>
+      <div class="usage-meter-fill{{ monthly_effective_limit.percent is not null and monthly_effective_limit.percent >= 100 ? ' is-warn' : '' }}" style="width: {{ monthly_effective_limit.percent is not null ? monthly_effective_limit.percent : 0 }}%"></div>
     </div>
     <div class="usage-meter-meta">
-      <span><strong>Límite:</strong> {{ monthly_limit.value }} tokens</span>
-      <span><strong>Usado:</strong> {{ monthly_limit.used }} tokens</span>
-      <span><strong>Restante:</strong> {{ monthly_limit.remaining }} tokens</span>
+      <span><strong>Base:</strong> {{ monthly_base_limit.value }}</span>
+      <span><strong>Recargas:</strong> {{ monthly_top_ups.value }} tokens</span>
+      <span><strong>Efectivo:</strong> {{ monthly_effective_limit.value }}</span>
     </div>
   </article>
 </section>
@@ -129,6 +139,7 @@
           <th scope="col">Motivo</th>
           <th scope="col">Estado</th>
           <th scope="col">Solicitado por</th>
+          <th scope="col">Periodo</th>
         </tr>
       </thead>
       <tbody>
@@ -144,10 +155,11 @@
                 <div class="subtle">Aprobados: {{ request.approvedTokens }} tokens</div>
               {% endif %}
             </td>
+            <td class="subtle">{{ request.approvedPeriodKey }}</td>
           </tr>
         {% else %}
           <tr>
-            <td colspan="5" class="empty-row">No hay solicitudes de ampliación todavía.</td>
+            <td colspan="6" class="empty-row">No hay solicitudes de ampliación todavía.</td>
           </tr>
         {% endfor %}
       </tbody>

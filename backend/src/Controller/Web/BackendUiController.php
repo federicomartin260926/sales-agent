@@ -1020,9 +1020,7 @@ final class BackendUiController
             $tenant,
             $requestEntity,
             $approvedTokens,
-            $currentUser,
-            $aiUsagePolicies,
-            $aiUsageEvents
+            $currentUser
         );
 
         $this->entityManager->persist($requestEntity);
@@ -2904,7 +2902,9 @@ final class BackendUiController
      *   today: array{estimatedCostEur: string, totalTokens: string},
      *   month: array{estimatedCostEur: string, totalTokens: string},
      *   daily_limit: array{label: string, value: string, used: string, remaining: string, percent: ?int, percent_label: string, class: string, secondary: string},
-     *   monthly_limit: array{label: string, value: string, used: string, remaining: string, percent: ?int, percent_label: string, class: string, secondary: string},
+     *   monthly_base_limit: array{label: string, value: string, note: string},
+     *   monthly_top_ups: array{label: string, value: string, note: string},
+     *   monthly_effective_limit: array{label: string, value: string, used: string, remaining: string, percent: ?int, percent_label: string, class: string, secondary: string},
      *   period: array{label: string, current: string, daily_reset: string, monthly_reset: string},
      *   recentEvents: array<int, array{
      *     createdAt: string,
@@ -2937,9 +2937,10 @@ final class BackendUiController
         ?AiUsageEventRepository $aiUsageEvents,
         ?TenantAiTopUpRequestRepository $topUpRequests,
     ): array {
-        $timezone = new \DateTimeZone(date_default_timezone_get() ?: 'UTC');
+        $timezone = new \DateTimeZone('Europe/Madrid');
         $today = new \DateTimeImmutable('today', $timezone);
         $month = new \DateTimeImmutable('first day of this month', $timezone);
+        $periodKey = $this->tenantAiCurrentPeriodKey($month);
         $dailyReset = $today->modify('+1 day');
         $monthlyReset = $month->modify('+1 month');
 
@@ -2954,18 +2955,15 @@ final class BackendUiController
 
         $tokenRate = $this->tenantAiUsageTokenRate($tenant, $policy, $aiUsageEvents);
         $dailyLimitTokens = $policy instanceof TenantAiUsagePolicy ? $this->tokenAmountFromCost($policy->getDailyCostLimitEur(), $tokenRate) : null;
-        $monthlyLimitTokens = $policy instanceof TenantAiUsagePolicy ? $this->tokenAmountFromCost($policy->getMonthlyCostLimitEur(), $tokenRate) : null;
-        $dailyLimitCost = $policy instanceof TenantAiUsagePolicy ? $policy->getDailyCostLimitEur() : null;
-        $monthlyLimitCost = $policy instanceof TenantAiUsagePolicy ? $policy->getMonthlyCostLimitEur() : null;
+        $monthlyBaseLimitTokens = $policy instanceof TenantAiUsagePolicy ? $this->tokenAmountFromCost($policy->getMonthlyCostLimitEur(), $tokenRate) : null;
+        $approvedTopUpTokens = $topUpRequests instanceof TenantAiTopUpRequestRepository ? $topUpRequests->sumApprovedTokensByTenantAndPeriod($tenant, $periodKey) : 0;
+        $monthlyEffectiveLimitTokens = $monthlyBaseLimitTokens !== null ? $monthlyBaseLimitTokens + $approvedTopUpTokens : null;
         $dailyUsedTokens = (int) ($todaySummary['total_tokens'] ?? 0);
         $monthlyUsedTokens = (int) ($monthSummary['total_tokens'] ?? 0);
         $dailyRemainingTokens = $dailyLimitTokens !== null ? max(0, $dailyLimitTokens - $dailyUsedTokens) : null;
-        $monthlyRemainingTokens = $monthlyLimitTokens !== null ? max(0, $monthlyLimitTokens - $monthlyUsedTokens) : null;
+        $monthlyRemainingTokens = $monthlyEffectiveLimitTokens !== null ? max(0, $monthlyEffectiveLimitTokens - $monthlyUsedTokens) : null;
         $dailyPercent = $dailyLimitTokens !== null && $dailyLimitTokens > 0 ? min(100, (int) round(($dailyUsedTokens / $dailyLimitTokens) * 100)) : null;
-        $monthlyPercent = $monthlyLimitTokens !== null && $monthlyLimitTokens > 0 ? min(100, (int) round(($monthlyUsedTokens / $monthlyLimitTokens) * 100)) : null;
-        $dailyUsedCost = (float) ($todaySummary['estimated_cost_eur'] ?? 0.0);
-        $monthlyUsedCost = (float) ($monthSummary['estimated_cost_eur'] ?? 0.0);
-
+        $monthlyPercent = $monthlyEffectiveLimitTokens !== null && $monthlyEffectiveLimitTokens > 0 ? min(100, (int) round(($monthlyUsedTokens / $monthlyEffectiveLimitTokens) * 100)) : null;
         $status = [
             'label' => 'Sin política',
             'class' => 'status-warn',
@@ -2978,13 +2976,13 @@ final class BackendUiController
                     'class' => 'status-off',
                     'detail' => 'La política IA está desactivada para este negocio.',
                 ];
-            } elseif ($dailyLimitCost !== null && $dailyUsedCost >= $dailyLimitCost) {
+            } elseif ($dailyLimitTokens !== null && $dailyUsedTokens >= $dailyLimitTokens) {
                 $status = [
                     'label' => 'Bloqueada por límite diario',
                     'class' => 'status-warn',
                     'detail' => 'El consumo diario ha alcanzado el límite configurado.',
                 ];
-            } elseif ($monthlyLimitCost !== null && $monthlyUsedCost >= $monthlyLimitCost) {
+            } elseif ($monthlyEffectiveLimitTokens !== null && $monthlyUsedTokens >= $monthlyEffectiveLimitTokens) {
                 $status = [
                     'label' => 'Bloqueada por límite mensual',
                     'class' => 'status-warn',
@@ -3025,11 +3023,21 @@ final class BackendUiController
                 'estimatedCostEur' => $this->formatMoneyEur((float) ($monthSummary['estimated_cost_eur'] ?? 0.0)),
                 'totalTokens' => $this->formatIntegerDisplay($monthlyUsedTokens),
             ],
-            'daily_limit' => $this->tenantAiUsageLimitView('Límite diario de tokens', $dailyLimitTokens, $dailyUsedTokens, $dailyRemainingTokens, $dailyPercent, $this->formatMoneyEur($dailyUsedCost)),
-            'monthly_limit' => $this->tenantAiUsageLimitView('Límite mensual de tokens', $monthlyLimitTokens, $monthlyUsedTokens, $monthlyRemainingTokens, $monthlyPercent, $this->formatMoneyEur($monthlyUsedCost)),
+            'daily_limit' => $this->tenantAiUsageLimitView('Límite diario base', $dailyLimitTokens, $dailyUsedTokens, $dailyRemainingTokens, $dailyPercent, 'Cuota recurrente diaria del tenant.', $policy instanceof TenantAiUsagePolicy),
+            'monthly_base_limit' => [
+                'label' => 'Plan mensual base',
+                'value' => $monthlyBaseLimitTokens !== null ? $this->formatIntegerDisplay($monthlyBaseLimitTokens) : ($policy instanceof TenantAiUsagePolicy ? 'Sin límite' : 'Sin política'),
+                'note' => $policy instanceof TenantAiUsagePolicy ? 'Cupo recurrente del tenant.' : 'No hay policy base configurada.',
+            ],
+            'monthly_top_ups' => [
+                'label' => 'Recargas aprobadas este mes',
+                'value' => $this->formatIntegerDisplay($approvedTopUpTokens),
+                'note' => $approvedTopUpTokens > 0 ? sprintf('Aplicadas al periodo %s.', $periodKey) : 'No hay recargas aprobadas en el periodo actual.',
+            ],
+            'monthly_effective_limit' => $this->tenantAiUsageLimitView('Cupo efectivo este mes', $monthlyEffectiveLimitTokens, $monthlyUsedTokens, $monthlyRemainingTokens, $monthlyPercent, 'Base + recargas del periodo actual.', $policy instanceof TenantAiUsagePolicy),
             'period' => [
                 'label' => 'Periodo actual',
-                'current' => $month->format('Y-m'),
+                'current' => $periodKey,
                 'daily_reset' => $dailyReset->format('Y-m-d H:i'),
                 'monthly_reset' => $monthlyReset->format('Y-m-d H:i'),
             ],
@@ -3056,17 +3064,18 @@ final class BackendUiController
         int $usedTokens,
         ?int $remainingTokens,
         ?int $percent,
-        string $secondaryCost,
+        string $secondaryNote,
+        bool $hasPolicy = true,
     ): array {
         return [
             'label' => $label,
-            'value' => $limitTokens !== null ? $this->formatIntegerDisplay($limitTokens) : 'Sin límite',
+            'value' => $limitTokens !== null ? $this->formatIntegerDisplay($limitTokens) : ($hasPolicy ? 'Sin límite' : 'Sin política'),
             'used' => $this->formatIntegerDisplay($usedTokens),
-            'remaining' => $remainingTokens !== null ? $this->formatIntegerDisplay($remainingTokens) : 'Sin límite',
+            'remaining' => $remainingTokens !== null ? $this->formatIntegerDisplay($remainingTokens) : ($hasPolicy ? 'Sin límite' : 'Sin política'),
             'percent' => $percent,
             'percent_label' => $percent !== null ? sprintf('%d%%', $percent) : '—',
             'class' => $percent !== null && $percent >= 100 ? 'status-warn' : 'status-ok',
-            'secondary' => $limitTokens !== null ? $secondaryCost : '—',
+            'secondary' => $secondaryNote,
         ];
     }
 
@@ -3096,6 +3105,10 @@ final class BackendUiController
         $resolvedBy = $requestEntity->getResolvedBy();
         $tenantId = $requestEntity->getTenant()->getId()->toRfc4122();
         $requestId = $requestEntity->getId()->toRfc4122();
+        $approvedTokens = $requestEntity->getApprovedTokens();
+        if ($approvedTokens === null && $requestEntity->getStatus() === TenantAiTopUpRequest::STATUS_APPROVED) {
+            $approvedTokens = max(0, (int) round($requestEntity->getRequestedAmountEur()));
+        }
 
         return [
             'id' => $requestId,
@@ -3104,7 +3117,8 @@ final class BackendUiController
             'createdAt' => $requestEntity->getCreatedAt()->format('Y-m-d H:i'),
             'requestedTokensInput' => (string) (int) round($requestEntity->getRequestedAmountEur()),
             'amountTokens' => $this->formatIntegerDisplay((int) round($requestEntity->getRequestedAmountEur())),
-            'approvedTokens' => $requestEntity->getApprovedTokens() !== null ? $this->formatIntegerDisplay($requestEntity->getApprovedTokens()) : '—',
+            'approvedTokens' => $approvedTokens !== null ? $this->formatIntegerDisplay($approvedTokens) : '—',
+            'approvedPeriodKey' => $requestEntity->getApprovedPeriodKey() ?? ($requestEntity->getResolvedAt()?->format('Y-m') ?? '—'),
             'message' => $requestEntity->getMessage(),
             'status_key' => $requestEntity->getStatus(),
             'status' => match ($requestEntity->getStatus()) {
@@ -3280,47 +3294,22 @@ final class BackendUiController
         TenantAiTopUpRequest $requestEntity,
         int $approvedTokens,
         User $resolvedBy,
-        ?TenantAiUsagePolicyRepository $aiUsagePolicies,
-        ?AiUsageEventRepository $aiUsageEvents,
     ): string {
-        $policy = $aiUsagePolicies instanceof TenantAiUsagePolicyRepository
-            ? $aiUsagePolicies->findOneByTenant($tenant)
-            : null;
-        $policyCreated = !$policy instanceof TenantAiUsagePolicy;
-        $policy ??= new TenantAiUsagePolicy($tenant);
-
-        $tokenRate = $this->tenantAiUsageTokenRate($tenant, $policyCreated ? null : $policy, $aiUsageEvents);
+        $periodKey = $this->tenantAiCurrentPeriodKey();
         $messages = [];
 
-        if ($policyCreated) {
-            $policy->setAiEnabled(true);
-            $policy->setMonthlyCostLimitEur($this->costAmountFromTokens($approvedTokens, $tokenRate));
-            $messages[] = sprintf('Se creó la policy del tenant y se fijó un límite mensual inicial de %s tokens.', $this->formatIntegerDisplay($approvedTokens));
-        } else {
-            $monthlyLimitTokens = $this->tokenAmountFromCost($policy->getMonthlyCostLimitEur(), $tokenRate);
-            if ($monthlyLimitTokens === null) {
-                $messages[] = 'La solicitud se aprobó como registro, pero el tenant ya tenía límite mensual sin límite y no se modificó.';
-            } else {
-                $policy->setMonthlyCostLimitEur($this->costAmountFromTokens($monthlyLimitTokens + $approvedTokens, $tokenRate));
-                $messages[] = sprintf('Límite mensual ampliado en %s tokens.', $this->formatIntegerDisplay($approvedTokens));
-
-                $dailyLimitTokens = $this->tokenAmountFromCost($policy->getDailyCostLimitEur(), $tokenRate);
-                if ($dailyLimitTokens !== null) {
-                    $policy->setDailyCostLimitEur($this->costAmountFromTokens($dailyLimitTokens + $approvedTokens, $tokenRate));
-                    $messages[] = sprintf('Límite diario ampliado en %s tokens.', $this->formatIntegerDisplay($approvedTokens));
-                }
-            }
-        }
-
-        $requestEntity->approve($resolvedBy, $approvedTokens);
-
-        if ($aiUsagePolicies instanceof TenantAiUsagePolicyRepository) {
-            $aiUsagePolicies->save($policy, false);
-        } else {
-            $this->entityManager->persist($policy);
-        }
+        $requestEntity->approve($resolvedBy, $approvedTokens, $periodKey);
+        $messages[] = sprintf('Solicitud aprobada para el periodo %s.', $periodKey);
+        $messages[] = 'La recarga queda registrada para este periodo sin modificar el límite base del tenant.';
 
         return trim(implode(' ', $messages));
+    }
+
+    private function tenantAiCurrentPeriodKey(?\DateTimeImmutable $date = null): string
+    {
+        $date ??= new \DateTimeImmutable('now', new \DateTimeZone('Europe/Madrid'));
+
+        return $date->format('Y-m');
     }
 
     private function tenantAiSuperAdminTokenId(string $actionUrl): string

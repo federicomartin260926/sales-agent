@@ -31,16 +31,26 @@
     <div class="metric-note">Coste estimado: {{ dashboard.month.estimatedCostEur }}</div>
   </article>
   <article class="metric">
-    <div class="metric-label">{{ dashboard.daily_limit.label }}</div>
-    <div class="metric-value">{{ dashboard.daily_limit.value }}</div>
-    <div class="metric-note">Usado: {{ dashboard.daily_limit.used }} tokens | Restante: {{ dashboard.daily_limit.remaining }} tokens</div>
-    <div class="metric-note subtle">Coste estimado del periodo actual: {{ dashboard.daily_limit.secondary }}</div>
+    <div class="metric-label">{{ dashboard.monthly_base_limit.label }}</div>
+    <div class="metric-value">{{ dashboard.monthly_base_limit.value }}</div>
+    <div class="metric-note">{{ dashboard.monthly_base_limit.note }}</div>
   </article>
   <article class="metric">
-    <div class="metric-label">{{ dashboard.monthly_limit.label }}</div>
-    <div class="metric-value">{{ dashboard.monthly_limit.value }}</div>
-    <div class="metric-note">Usado: {{ dashboard.monthly_limit.used }} tokens | Restante: {{ dashboard.monthly_limit.remaining }} tokens</div>
-    <div class="metric-note subtle">Coste estimado del periodo actual: {{ dashboard.monthly_limit.secondary }}</div>
+    <div class="metric-label">{{ dashboard.monthly_top_ups.label }}</div>
+    <div class="metric-value">{{ dashboard.monthly_top_ups.value }}</div>
+    <div class="metric-note">{{ dashboard.monthly_top_ups.note }}</div>
+  </article>
+  <article class="metric">
+    <div class="metric-label">{{ dashboard.monthly_effective_limit.label }}</div>
+    <div class="metric-value">{{ dashboard.monthly_effective_limit.value }}</div>
+    <div class="metric-note">Usado: {{ dashboard.monthly_effective_limit.used }} tokens | Disponible: {{ dashboard.monthly_effective_limit.remaining }}</div>
+    <div class="metric-note subtle">{{ dashboard.monthly_effective_limit.secondary }}</div>
+  </article>
+  <article class="metric">
+    <div class="metric-label">{{ dashboard.daily_limit.label }}</div>
+    <div class="metric-value">{{ dashboard.daily_limit.value }}</div>
+    <div class="metric-note">Usado: {{ dashboard.daily_limit.used }} tokens | Restante: {{ dashboard.daily_limit.remaining }}</div>
+    <div class="metric-note subtle">{{ dashboard.daily_limit.secondary }}</div>
   </article>
 </section>
 
@@ -62,16 +72,16 @@
 
   <article class="usage-meter">
     <div class="usage-meter-header">
-      <div class="usage-meter-title">{{ dashboard.monthly_limit.label }}</div>
-      <span class="{{ dashboard.monthly_limit.class }}">{{ dashboard.monthly_limit.percent_label }}</span>
+      <div class="usage-meter-title">{{ dashboard.monthly_effective_limit.label }}</div>
+      <span class="{{ dashboard.monthly_effective_limit.class }}">{{ dashboard.monthly_effective_limit.percent_label }}</span>
     </div>
     <div class="usage-meter-track" aria-hidden="true">
-      <div class="usage-meter-fill{{ dashboard.monthly_limit.percent is not null and dashboard.monthly_limit.percent >= 100 ? ' is-warn' : '' }}" style="width: {{ dashboard.monthly_limit.percent is not null ? dashboard.monthly_limit.percent : 0 }}%"></div>
+      <div class="usage-meter-fill{{ dashboard.monthly_effective_limit.percent is not null and dashboard.monthly_effective_limit.percent >= 100 ? ' is-warn' : '' }}" style="width: {{ dashboard.monthly_effective_limit.percent is not null ? dashboard.monthly_effective_limit.percent : 0 }}%"></div>
     </div>
     <div class="usage-meter-meta">
-      <span><strong>Límite:</strong> {{ dashboard.monthly_limit.value }}</span>
-      <span><strong>Usado:</strong> {{ dashboard.monthly_limit.used }}</span>
-      <span><strong>Restante:</strong> {{ dashboard.monthly_limit.remaining }}</span>
+      <span><strong>Base:</strong> {{ dashboard.monthly_base_limit.value }}</span>
+      <span><strong>Recargas:</strong> {{ dashboard.monthly_top_ups.value }} tokens</span>
+      <span><strong>Efectivo:</strong> {{ dashboard.monthly_effective_limit.value }}</span>
     </div>
   </article>
 </section>
@@ -88,7 +98,7 @@
       <p>Modelo por defecto: <strong>{{ policy_values.defaultModel is not empty ? policy_values.defaultModel : '—' }}</strong></p>
       <p>Modelo fallback: <strong>{{ policy_values.fallbackModel is not empty ? policy_values.fallbackModel : '—' }}</strong></p>
       <p>Acción al llegar al límite: <strong>{{ policy_values.limitAction }}</strong></p>
-      <p class="subtle">Los límites visibles están expresados en tokens. El runtime sigue usando una equivalencia interna de coste.</p>
+      <p class="subtle">Los límites visibles están expresados en tokens. Las recargas se aplican sólo al periodo actual; el runtime sigue usando una equivalencia interna de coste.</p>
     </div>
   </article>
 
@@ -176,6 +186,7 @@
           <th scope="col">Estado</th>
           <th scope="col">Solicitado por</th>
           <th scope="col">Resolución</th>
+          <th scope="col">Periodo</th>
           <th scope="col" class="text-right">Acciones</th>
         </tr>
       </thead>
@@ -199,6 +210,7 @@
                 <div class="subtle">Aprobados: {{ request.approvedTokens }} tokens</div>
               {% endif %}
             </td>
+            <td class="subtle">{{ request.approvedPeriodKey }}</td>
             <td class="text-right">
               {% if request.status_key == 'pending' %}
                 <div class="request-actions">
@@ -220,7 +232,7 @@
           </tr>
         {% else %}
           <tr>
-            <td colspan="7" class="empty-row">No hay solicitudes de ampliación todavía.</td>
+            <td colspan="8" class="empty-row">No hay solicitudes de ampliación todavía.</td>
           </tr>
         {% endfor %}
       </tbody>

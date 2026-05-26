@@ -232,6 +232,20 @@ La política IA por tenant se edita desde la ficha de `Negocio` en `/backend/ten
 Ese bloque incluye métricas de consumo de solo lectura basadas en `AiUsageEvent`: coste hoy/mes, tokens hoy/mes y los 5 eventos más recientes.
 La administración técnica para `ROLE_SUPER_ADMIN` vive en `/backend/super-admin/tenants/{id}/ai` y usa la misma `TenantAiUsagePolicy` que consume el runtime.
 
+Para corregir datos legacy de desarrollo del módulo IA existe un comando idempotente:
+
+```bash
+php bin/console app:normalize-ai-top-ups
+```
+
+Ese comando:
+
+- asigna `approvedPeriodKey` a solicitudes `approved` que todavía no lo tengan
+- usa `resolvedAt` o `createdAt` para derivar el periodo `YYYY-MM`
+- en casos claros de recarga legacy aplicada al plan base, normaliza la policy mensual base sin tocar el cupo efectivo del periodo actual
+
+Se usa sólo como ajuste de dev.
+
 El backend no gestiona ramas CRM como entidad propia. Solo conserva `crmBranchRef` como texto opaco cuando viene desde un entrypoint o una atribución externa.
 
 Consulta el glosario oficial en [docs/glossary.md](../docs/glossary.md).

@@ -59,6 +59,9 @@ final class BackendUiSuperAdminTenantAiTest extends TestCase
         self::assertStringContainsString('gpt-4.1-mini', $response->getContent());
         self::assertStringContainsString('gpt-4.1-nano', $response->getContent());
         self::assertStringContainsString('Tokens procesados hoy', $response->getContent());
+        self::assertStringContainsString('Plan mensual base', $response->getContent());
+        self::assertStringContainsString('Recargas aprobadas este mes', $response->getContent());
+        self::assertStringContainsString('Cupo efectivo este mes', $response->getContent());
         self::assertStringContainsString('130', $response->getContent());
         self::assertStringContainsString('424', $response->getContent());
         self::assertStringContainsString('4240', $response->getContent());
@@ -157,12 +160,13 @@ final class BackendUiSuperAdminTenantAiTest extends TestCase
         self::assertSame('/backend/super-admin/tenants/'.$tenant->getId()->toRfc4122().'/ai', $response->headers->get('Location'));
         self::assertSame(TenantAiTopUpRequest::STATUS_APPROVED, $requestEntity->getStatus());
         self::assertSame(100, $requestEntity->getApprovedTokens());
+        self::assertSame((new \DateTimeImmutable('now', new \DateTimeZone('Europe/Madrid')))->format('Y-m'), $requestEntity->getApprovedPeriodKey());
         self::assertNotNull($requestEntity->getResolvedAt());
         self::assertSame('owner@example.com', $requestEntity->getResolvedBy()?->getEmail());
         self::assertNotEmpty($requestEntity->getAdminNotes());
-        self::assertCount(1, $policyRepository->savedPolicies);
-        self::assertSame(1.1, $policyRepository->savedPolicies[0]->getDailyCostLimitEur());
-        self::assertSame(10.1, $policyRepository->savedPolicies[0]->getMonthlyCostLimitEur());
+        self::assertCount(0, $policyRepository->savedPolicies);
+        self::assertSame(1.0, $policy->getDailyCostLimitEur());
+        self::assertSame(10.0, $policy->getMonthlyCostLimitEur());
     }
 
     public function testSuperAdminCanRejectTopUpRequest(): void
@@ -251,9 +255,10 @@ final class BackendUiSuperAdminTenantAiTest extends TestCase
         self::assertSame(Response::HTTP_FOUND, $response->getStatusCode());
         self::assertSame(TenantAiTopUpRequest::STATUS_APPROVED, $requestEntity->getStatus());
         self::assertSame(100, $requestEntity->getApprovedTokens());
-        self::assertCount(1, $policyRepository->savedPolicies);
-        self::assertSame(1.0, $policyRepository->savedPolicies[0]->getDailyCostLimitEur());
-        self::assertNull($policyRepository->savedPolicies[0]->getMonthlyCostLimitEur());
+        self::assertSame((new \DateTimeImmutable('now', new \DateTimeZone('Europe/Madrid')))->format('Y-m'), $requestEntity->getApprovedPeriodKey());
+        self::assertCount(0, $policyRepository->savedPolicies);
+        self::assertSame(1.0, $policy->getDailyCostLimitEur());
+        self::assertNull($policy->getMonthlyCostLimitEur());
     }
 
     public function testNonSuperAdminCannotApproveOrRejectTopUpRequests(): void
@@ -467,6 +472,58 @@ final class BackendUiSuperAdminTenantAiTest extends TestCase
                 return array_values(array_filter(
                     $this->requests,
                     static fn (TenantAiTopUpRequest $request): bool => $request->getTenant()->getId()->toRfc4122() === $tenant->getId()->toRfc4122()
+                ));
+            }
+
+            public function findApprovedByTenantAndPeriod(Tenant $tenant, string $periodKey): array
+            {
+                return array_values(array_filter(
+                    $this->requests,
+                    static function (TenantAiTopUpRequest $request) use ($tenant, $periodKey): bool {
+                        if ($request->getTenant()->getId()->toRfc4122() !== $tenant->getId()->toRfc4122()) {
+                            return false;
+                        }
+
+                        if ($request->getStatus() !== TenantAiTopUpRequest::STATUS_APPROVED) {
+                            return false;
+                        }
+
+                        $approvedPeriodKey = $request->getApprovedPeriodKey();
+                        if ($approvedPeriodKey !== null && $approvedPeriodKey !== '') {
+                            return $approvedPeriodKey === $periodKey;
+                        }
+
+                        return $request->getResolvedAt()?->format('Y-m') === $periodKey;
+                    }
+                ));
+            }
+
+            public function sumApprovedTokensByTenantAndPeriod(Tenant $tenant, string $periodKey): int
+            {
+                $total = 0;
+                foreach ($this->findApprovedByTenantAndPeriod($tenant, $periodKey) as $request) {
+                    $approvedTokens = $request->getApprovedTokens();
+                    if ($approvedTokens === null) {
+                        $approvedTokens = max(0, (int) round($request->getRequestedAmountEur()));
+                    }
+
+                    $total += max(0, $approvedTokens);
+                }
+
+                return $total;
+            }
+
+            public function findLegacyApprovedWithoutPeriodByTenant(Tenant $tenant): array
+            {
+                return array_values(array_filter(
+                    $this->requests,
+                    static function (TenantAiTopUpRequest $request) use ($tenant): bool {
+                        if ($request->getTenant()->getId()->toRfc4122() !== $tenant->getId()->toRfc4122()) {
+                            return false;
+                        }
+
+                        return $request->getStatus() === TenantAiTopUpRequest::STATUS_APPROVED && $request->getApprovedPeriodKey() === null;
+                    }
                 ));
             }
         };

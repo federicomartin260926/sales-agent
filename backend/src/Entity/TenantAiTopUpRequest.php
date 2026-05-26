@@ -12,6 +12,7 @@ use Symfony\Component\Uid\Uuid;
     indexes: [
         new ORM\Index(name: 'idx_tenant_ai_top_up_requests_tenant', columns: ['tenant_id']),
         new ORM\Index(name: 'idx_tenant_ai_top_up_requests_status', columns: ['status']),
+        new ORM\Index(name: 'idx_tenant_ai_top_up_requests_period', columns: ['tenant_id', 'status', 'approved_period_key']),
         new ORM\Index(name: 'idx_tenant_ai_top_up_requests_created_at', columns: ['created_at']),
     ]
 )]
@@ -38,6 +39,9 @@ class TenantAiTopUpRequest
 
     #[ORM\Column(name: 'approved_tokens', type: 'integer', nullable: true)]
     private ?int $approvedTokens = null;
+
+    #[ORM\Column(name: 'approved_period_key', length: 7, nullable: true)]
+    private ?string $approvedPeriodKey = null;
 
     #[ORM\Column(type: 'text')]
     private string $message;
@@ -116,6 +120,25 @@ class TenantAiTopUpRequest
         $this->approvedTokens = $approvedTokens;
     }
 
+    public function getApprovedPeriodKey(): ?string
+    {
+        return $this->approvedPeriodKey;
+    }
+
+    public function setApprovedPeriodKey(?string $approvedPeriodKey): void
+    {
+        $approvedPeriodKey = $approvedPeriodKey !== null ? trim($approvedPeriodKey) : null;
+        if ($approvedPeriodKey === '') {
+            $approvedPeriodKey = null;
+        }
+
+        if ($approvedPeriodKey !== null && !preg_match('/^\d{4}-\d{2}$/', $approvedPeriodKey)) {
+            $approvedPeriodKey = null;
+        }
+
+        $this->approvedPeriodKey = $approvedPeriodKey;
+    }
+
     public function getMessage(): string
     {
         return $this->message;
@@ -180,14 +203,17 @@ class TenantAiTopUpRequest
         $this->status = self::STATUS_PENDING;
         $this->resolvedAt = null;
         $this->resolvedBy = null;
+        $this->approvedTokens = null;
+        $this->approvedPeriodKey = null;
     }
 
-    public function approve(User $resolvedBy, ?int $approvedTokens = null, ?string $adminNotes = null): void
+    public function approve(User $resolvedBy, ?int $approvedTokens = null, ?string $approvedPeriodKey = null, ?string $adminNotes = null): void
     {
         $this->status = self::STATUS_APPROVED;
         $this->resolvedBy = $resolvedBy;
         $this->resolvedAt = new \DateTimeImmutable();
         $this->setApprovedTokens($approvedTokens);
+        $this->setApprovedPeriodKey($approvedPeriodKey);
         $this->setAdminNotes($adminNotes ?? 'Aprobada por super admin');
     }
 
@@ -197,6 +223,7 @@ class TenantAiTopUpRequest
         $this->resolvedBy = $resolvedBy;
         $this->resolvedAt = new \DateTimeImmutable();
         $this->setApprovedTokens(null);
+        $this->setApprovedPeriodKey(null);
         $this->setAdminNotes($adminNotes ?? 'Rechazada por super admin');
     }
 
@@ -208,6 +235,7 @@ class TenantAiTopUpRequest
             'requested_by_id' => $this->requestedBy?->getId()->toRfc4122(),
             'requested_amount_eur' => $this->requestedAmountEur,
             'approved_tokens' => $this->approvedTokens,
+            'approved_period_key' => $this->approvedPeriodKey,
             'message' => $this->message,
             'status' => $this->status,
             'created_at' => $this->createdAt->format(\DateTimeInterface::ATOM),
