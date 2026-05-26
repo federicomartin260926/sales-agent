@@ -36,6 +36,9 @@ class TenantAiTopUpRequest
     #[ORM\Column(name: 'requested_amount_eur', type: 'float')]
     private float $requestedAmountEur;
 
+    #[ORM\Column(name: 'approved_tokens', type: 'integer', nullable: true)]
+    private ?int $approvedTokens = null;
+
     #[ORM\Column(type: 'text')]
     private string $message;
 
@@ -97,6 +100,20 @@ class TenantAiTopUpRequest
     public function setRequestedAmountEur(float $requestedAmountEur): void
     {
         $this->requestedAmountEur = $requestedAmountEur;
+    }
+
+    public function getApprovedTokens(): ?int
+    {
+        return $this->approvedTokens;
+    }
+
+    public function setApprovedTokens(?int $approvedTokens): void
+    {
+        if ($approvedTokens !== null && $approvedTokens < 1) {
+            $approvedTokens = null;
+        }
+
+        $this->approvedTokens = $approvedTokens;
     }
 
     public function getMessage(): string
@@ -165,11 +182,12 @@ class TenantAiTopUpRequest
         $this->resolvedBy = null;
     }
 
-    public function approve(User $resolvedBy, ?string $adminNotes = null): void
+    public function approve(User $resolvedBy, ?int $approvedTokens = null, ?string $adminNotes = null): void
     {
         $this->status = self::STATUS_APPROVED;
         $this->resolvedBy = $resolvedBy;
         $this->resolvedAt = new \DateTimeImmutable();
+        $this->setApprovedTokens($approvedTokens);
         $this->setAdminNotes($adminNotes ?? 'Aprobada por super admin');
     }
 
@@ -178,6 +196,7 @@ class TenantAiTopUpRequest
         $this->status = self::STATUS_REJECTED;
         $this->resolvedBy = $resolvedBy;
         $this->resolvedAt = new \DateTimeImmutable();
+        $this->setApprovedTokens(null);
         $this->setAdminNotes($adminNotes ?? 'Rechazada por super admin');
     }
 
@@ -188,6 +207,7 @@ class TenantAiTopUpRequest
             'tenant_id' => $this->tenant->getId()->toRfc4122(),
             'requested_by_id' => $this->requestedBy?->getId()->toRfc4122(),
             'requested_amount_eur' => $this->requestedAmountEur,
+            'approved_tokens' => $this->approvedTokens,
             'message' => $this->message,
             'status' => $this->status,
             'created_at' => $this->createdAt->format(\DateTimeInterface::ATOM),

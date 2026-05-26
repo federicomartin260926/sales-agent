@@ -974,6 +974,8 @@ final class BackendUiController
         Request $request,
         ?TenantRepository $tenants = null,
         ?TenantAiTopUpRequestRepository $topUpRequests = null,
+        ?TenantAiUsagePolicyRepository $aiUsagePolicies = null,
+        ?AiUsageEventRepository $aiUsageEvents = null,
     ): Response {
         if (!$this->isSuperAdmin()) {
             return new RedirectResponse('/backend/dashboard');
@@ -1007,11 +1009,26 @@ final class BackendUiController
             return new RedirectResponse('/backend/dashboard');
         }
 
-        $requestEntity->approve($currentUser);
+        $approvedTokens = $this->parsePositiveInt((string) $request->request->get('approvedTokens', (string) round($requestEntity->getRequestedAmountEur())));
+        if ($approvedTokens === null || $approvedTokens < 1) {
+            $this->addFlashMessage($request, 'error', 'Indica una cantidad de tokens aprobada válida.');
+
+            return new RedirectResponse('/backend/super-admin/tenants/'.$tenant->getId()->toRfc4122().'/ai');
+        }
+
+        $flashMessage = $this->applyTenantAiTopUpRequestApproval(
+            $tenant,
+            $requestEntity,
+            $approvedTokens,
+            $currentUser,
+            $aiUsagePolicies,
+            $aiUsageEvents
+        );
+
         $this->entityManager->persist($requestEntity);
         $this->entityManager->flush();
 
-        $this->addFlashMessage($request, 'success', sprintf('Solicitud de ampliación aprobada para %s.', $tenant->getName()));
+        $this->addFlashMessage($request, 'success', $flashMessage);
 
         return new RedirectResponse('/backend/super-admin/tenants/'.$tenant->getId()->toRfc4122().'/ai');
     }
@@ -1023,6 +1040,7 @@ final class BackendUiController
         Request $request,
         ?TenantRepository $tenants = null,
         ?TenantAiTopUpRequestRepository $topUpRequests = null,
+        ?TenantAiUsagePolicyRepository $aiUsagePolicies = null,
     ): Response {
         if (!$this->isSuperAdmin()) {
             return new RedirectResponse('/backend/dashboard');
@@ -3084,7 +3102,9 @@ final class BackendUiController
             'tenant_id' => $tenantId,
             'tenant_name' => $requestEntity->getTenant()->getName(),
             'createdAt' => $requestEntity->getCreatedAt()->format('Y-m-d H:i'),
+            'requestedTokensInput' => (string) (int) round($requestEntity->getRequestedAmountEur()),
             'amountTokens' => $this->formatIntegerDisplay((int) round($requestEntity->getRequestedAmountEur())),
+            'approvedTokens' => $requestEntity->getApprovedTokens() !== null ? $this->formatIntegerDisplay($requestEntity->getApprovedTokens()) : '—',
             'message' => $requestEntity->getMessage(),
             'status_key' => $requestEntity->getStatus(),
             'status' => match ($requestEntity->getStatus()) {
@@ -3250,6 +3270,57 @@ final class BackendUiController
         }
 
         return $requestEntity->getTenant()->getId()->toRfc4122() === $tenant->getId()->toRfc4122() ? $requestEntity : null;
+    }
+
+    /**
+     * @return non-empty-string
+     */
+    private function applyTenantAiTopUpRequestApproval(
+        Tenant $tenant,
+        TenantAiTopUpRequest $requestEntity,
+        int $approvedTokens,
+        User $resolvedBy,
+        ?TenantAiUsagePolicyRepository $aiUsagePolicies,
+        ?AiUsageEventRepository $aiUsageEvents,
+    ): string {
+        $policy = $aiUsagePolicies instanceof TenantAiUsagePolicyRepository
+            ? $aiUsagePolicies->findOneByTenant($tenant)
+            : null;
+        $policyCreated = !$policy instanceof TenantAiUsagePolicy;
+        $policy ??= new TenantAiUsagePolicy($tenant);
+
+        $tokenRate = $this->tenantAiUsageTokenRate($tenant, $policyCreated ? null : $policy, $aiUsageEvents);
+        $messages = [];
+
+        if ($policyCreated) {
+            $policy->setAiEnabled(true);
+            $policy->setMonthlyCostLimitEur($this->costAmountFromTokens($approvedTokens, $tokenRate));
+            $messages[] = sprintf('Se creó la policy del tenant y se fijó un límite mensual inicial de %s tokens.', $this->formatIntegerDisplay($approvedTokens));
+        } else {
+            $monthlyLimitTokens = $this->tokenAmountFromCost($policy->getMonthlyCostLimitEur(), $tokenRate);
+            if ($monthlyLimitTokens === null) {
+                $messages[] = 'La solicitud se aprobó como registro, pero el tenant ya tenía límite mensual sin límite y no se modificó.';
+            } else {
+                $policy->setMonthlyCostLimitEur($this->costAmountFromTokens($monthlyLimitTokens + $approvedTokens, $tokenRate));
+                $messages[] = sprintf('Límite mensual ampliado en %s tokens.', $this->formatIntegerDisplay($approvedTokens));
+
+                $dailyLimitTokens = $this->tokenAmountFromCost($policy->getDailyCostLimitEur(), $tokenRate);
+                if ($dailyLimitTokens !== null) {
+                    $policy->setDailyCostLimitEur($this->costAmountFromTokens($dailyLimitTokens + $approvedTokens, $tokenRate));
+                    $messages[] = sprintf('Límite diario ampliado en %s tokens.', $this->formatIntegerDisplay($approvedTokens));
+                }
+            }
+        }
+
+        $requestEntity->approve($resolvedBy, $approvedTokens);
+
+        if ($aiUsagePolicies instanceof TenantAiUsagePolicyRepository) {
+            $aiUsagePolicies->save($policy, false);
+        } else {
+            $this->entityManager->persist($policy);
+        }
+
+        return trim(implode(' ', $messages));
     }
 
     private function tenantAiSuperAdminTokenId(string $actionUrl): string

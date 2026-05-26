@@ -130,6 +130,8 @@ final class BackendUiSuperAdminTenantAiTest extends TestCase
         $tenant = $this->tenant('Tech Investments', 'tech-investments');
         $requestEntity = $this->topUpRequest($tenant, 45.0, 'Ampliación para cerrar leads');
         $requestEntity->setRequestedBy($this->user('manager@example.com', ['manager'], 'Manager'));
+        $policy = $this->policy($tenant, true, 1.0, 10.0, 'gpt-4.1-mini', 'gpt-4.1-nano', 'handoff_human');
+        $policyRepository = $this->policyRepository($policy);
         $entityManager = $this->createMock(EntityManagerInterface::class);
         $entityManager->expects(self::once())->method('persist')->with(self::identicalTo($requestEntity));
         $entityManager->expects(self::once())->method('flush');
@@ -137,6 +139,7 @@ final class BackendUiSuperAdminTenantAiTest extends TestCase
         $controller = $this->controller($this->user('owner@example.com', ['super_admin'], 'Owner'), $entityManager, null, $this->csrfTokenManager(true));
         $request = Request::create('/backend/super-admin/tenants/'.$tenant->getId()->toRfc4122().'/ai/top-up-requests/'.$requestEntity->getId()->toRfc4122().'/approve', 'POST', [
             '_csrf_token' => 'token',
+            'approvedTokens' => '100',
         ]);
         $request->setSession(new Session());
 
@@ -145,21 +148,28 @@ final class BackendUiSuperAdminTenantAiTest extends TestCase
             $requestEntity->getId()->toRfc4122(),
             $request,
             $this->tenantRepository([$tenant], $tenant),
-            $this->topUpRequestRepository([$requestEntity])
+            $this->topUpRequestRepository([$requestEntity]),
+            $policyRepository,
+            $this->eventsRepository([], ['estimated_cost_eur' => 0.0, 'total_tokens' => 0], ['estimated_cost_eur' => 1.0, 'total_tokens' => 1000])
         );
 
         self::assertSame(Response::HTTP_FOUND, $response->getStatusCode());
         self::assertSame('/backend/super-admin/tenants/'.$tenant->getId()->toRfc4122().'/ai', $response->headers->get('Location'));
         self::assertSame(TenantAiTopUpRequest::STATUS_APPROVED, $requestEntity->getStatus());
+        self::assertSame(100, $requestEntity->getApprovedTokens());
         self::assertNotNull($requestEntity->getResolvedAt());
         self::assertSame('owner@example.com', $requestEntity->getResolvedBy()?->getEmail());
         self::assertNotEmpty($requestEntity->getAdminNotes());
+        self::assertCount(1, $policyRepository->savedPolicies);
+        self::assertSame(1.1, $policyRepository->savedPolicies[0]->getDailyCostLimitEur());
+        self::assertSame(10.1, $policyRepository->savedPolicies[0]->getMonthlyCostLimitEur());
     }
 
     public function testSuperAdminCanRejectTopUpRequest(): void
     {
         $tenant = $this->tenant('Tech Investments', 'tech-investments');
         $requestEntity = $this->topUpRequest($tenant, 45.0, 'Ampliación para cerrar leads');
+        $policyRepository = $this->policyRepository($this->policy($tenant, true, 1.0, 10.0, 'gpt-4.1-mini', 'gpt-4.1-nano', 'handoff_human'));
         $entityManager = $this->createMock(EntityManagerInterface::class);
         $entityManager->expects(self::once())->method('persist')->with(self::identicalTo($requestEntity));
         $entityManager->expects(self::once())->method('flush');
@@ -175,7 +185,8 @@ final class BackendUiSuperAdminTenantAiTest extends TestCase
             $requestEntity->getId()->toRfc4122(),
             $request,
             $this->tenantRepository([$tenant], $tenant),
-            $this->topUpRequestRepository([$requestEntity])
+            $this->topUpRequestRepository([$requestEntity]),
+            $policyRepository
         );
 
         self::assertSame(Response::HTTP_FOUND, $response->getStatusCode());
@@ -183,6 +194,7 @@ final class BackendUiSuperAdminTenantAiTest extends TestCase
         self::assertSame(TenantAiTopUpRequest::STATUS_REJECTED, $requestEntity->getStatus());
         self::assertNotNull($requestEntity->getResolvedAt());
         self::assertSame('owner@example.com', $requestEntity->getResolvedBy()?->getEmail());
+        self::assertCount(0, $policyRepository->savedPolicies);
     }
 
     public function testCannotApproveTopUpRequestFromAnotherTenant(): void
@@ -206,6 +218,82 @@ final class BackendUiSuperAdminTenantAiTest extends TestCase
 
         self::assertSame(Response::HTTP_NOT_FOUND, $response->getStatusCode());
         self::assertSame(TenantAiTopUpRequest::STATUS_PENDING, $requestEntity->getStatus());
+    }
+
+    public function testSuperAdminApprovalWithUnlimitedMonthlyLimitDoesNotChangePolicy(): void
+    {
+        $tenant = $this->tenant('Tech Investments', 'tech-investments');
+        $requestEntity = $this->topUpRequest($tenant, 45.0, 'Ampliación para cerrar leads');
+        $policy = $this->policy($tenant, true, 1.0, null, 'gpt-4.1-mini', 'gpt-4.1-nano', 'handoff_human');
+        $policyRepository = $this->policyRepository($policy);
+
+        $entityManager = $this->createMock(EntityManagerInterface::class);
+        $entityManager->expects(self::once())->method('persist')->with(self::identicalTo($requestEntity));
+        $entityManager->expects(self::once())->method('flush');
+
+        $controller = $this->controller($this->user('owner@example.com', ['super_admin'], 'Owner'), $entityManager, null, $this->csrfTokenManager(true));
+        $request = Request::create('/backend/super-admin/tenants/'.$tenant->getId()->toRfc4122().'/ai/top-up-requests/'.$requestEntity->getId()->toRfc4122().'/approve', 'POST', [
+            '_csrf_token' => 'token',
+            'approvedTokens' => '100',
+        ]);
+        $request->setSession(new Session());
+
+        $response = $controller->superAdminTenantAiTopUpRequestApprove(
+            $tenant->getId()->toRfc4122(),
+            $requestEntity->getId()->toRfc4122(),
+            $request,
+            $this->tenantRepository([$tenant], $tenant),
+            $this->topUpRequestRepository([$requestEntity]),
+            $policyRepository,
+            $this->eventsRepository([], ['estimated_cost_eur' => 0.0, 'total_tokens' => 0], ['estimated_cost_eur' => 1.0, 'total_tokens' => 1000])
+        );
+
+        self::assertSame(Response::HTTP_FOUND, $response->getStatusCode());
+        self::assertSame(TenantAiTopUpRequest::STATUS_APPROVED, $requestEntity->getStatus());
+        self::assertSame(100, $requestEntity->getApprovedTokens());
+        self::assertCount(1, $policyRepository->savedPolicies);
+        self::assertSame(1.0, $policyRepository->savedPolicies[0]->getDailyCostLimitEur());
+        self::assertNull($policyRepository->savedPolicies[0]->getMonthlyCostLimitEur());
+    }
+
+    public function testNonSuperAdminCannotApproveOrRejectTopUpRequests(): void
+    {
+        $tenant = $this->tenant('Tech Investments', 'tech-investments');
+        $requestEntity = $this->topUpRequest($tenant, 45.0, 'Ampliación para cerrar leads');
+        $controller = $this->controller($this->user('manager@example.com', ['manager'], 'Manager'));
+        $request = Request::create('/backend/super-admin/tenants/'.$tenant->getId()->toRfc4122().'/ai/top-up-requests/'.$requestEntity->getId()->toRfc4122().'/approve', 'POST', [
+            '_csrf_token' => 'token',
+            'approvedTokens' => '100',
+        ]);
+        $request->setSession(new Session());
+
+        $approveResponse = $controller->superAdminTenantAiTopUpRequestApprove(
+            $tenant->getId()->toRfc4122(),
+            $requestEntity->getId()->toRfc4122(),
+            $request,
+            $this->tenantRepository([$tenant], $tenant),
+            $this->topUpRequestRepository([$requestEntity])
+        );
+
+        self::assertSame(Response::HTTP_FOUND, $approveResponse->getStatusCode());
+        self::assertSame('/backend/dashboard', $approveResponse->headers->get('Location'));
+        self::assertSame(TenantAiTopUpRequest::STATUS_PENDING, $requestEntity->getStatus());
+
+        $rejectRequest = Request::create('/backend/super-admin/tenants/'.$tenant->getId()->toRfc4122().'/ai/top-up-requests/'.$requestEntity->getId()->toRfc4122().'/reject', 'POST', [
+            '_csrf_token' => 'token',
+        ]);
+        $rejectRequest->setSession(new Session());
+
+        $rejectResponse = $controller->superAdminTenantAiTopUpRequestReject(
+            $tenant->getId()->toRfc4122(),
+            $requestEntity->getId()->toRfc4122(),
+            $rejectRequest,
+            $this->tenantRepository([$tenant], $tenant),
+            $this->topUpRequestRepository([$requestEntity])
+        );
+
+        self::assertSame(Response::HTTP_FOUND, $rejectResponse->getStatusCode());
+        self::assertSame('/backend/dashboard', $rejectResponse->headers->get('Location'));
     }
 
     private function controller(

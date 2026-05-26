@@ -92,6 +92,27 @@ final class BackendUiAiUsageTest extends TestCase
         self::assertStringNotContainsString('Tokens solicitados', $response->getContent());
     }
 
+    public function testManagerSeesApprovedTopUpRequestInUsageDashboard(): void
+    {
+        $tenant = $this->tenant('Tech Investments', 'tech-investments');
+        $user = new User('manager@example.com', ['manager'], 'Manager');
+        $resolver = $this->resolver($user, [$tenant], [$this->membership($user, $tenant, 'manager')]);
+        $requestEntity = $this->topUpRequest($tenant, 25.0, 'Necesitamos más cuota');
+        $requestEntity->setRequestedBy($user);
+        $requestEntity->approve($user, 30);
+
+        $request = Request::create('/backend/ai-usage', 'GET');
+        $request->setSession(new Session());
+        $context = $this->activeTenantContext($request, [$tenant], $tenant);
+
+        $controller = $this->controller($user, $context, $resolver);
+        $response = $controller->aiUsage($request, $this->policyRepository($this->policy($tenant)), $this->eventsRepository(), $this->topUpRequestRepository([$requestEntity]));
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        self::assertStringContainsString('Aprobada', $response->getContent());
+        self::assertStringContainsString('Aprobados: 30 tokens', $response->getContent());
+    }
+
     public function testTamperedActiveTenantResolvesToAccessibleTenant(): void
     {
         $tenantA = $this->tenant('Tech Investments', 'tech-investments');

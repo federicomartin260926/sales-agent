@@ -719,7 +719,8 @@ final class BackendUiControllerTest extends TestCase
         self::assertStringContainsString('Administración técnica', $response->getContent());
         self::assertStringContainsString('Plataforma', $response->getContent());
         self::assertStringContainsString('Servidores MCP', $response->getContent());
-        self::assertStringContainsString('Cambiar</span>', $response->getContent());
+        self::assertStringContainsString('↺', $response->getContent());
+        self::assertStringContainsString('Cambiar negocio', $response->getContent());
         self::assertStringContainsString('/backend/external-tools', $response->getContent());
         self::assertStringContainsString('/backend/users', $response->getContent());
         self::assertStringContainsString('/backend/configuration', $response->getContent());

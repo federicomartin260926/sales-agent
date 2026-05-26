@@ -138,7 +138,12 @@
             <td><strong>{{ request.amountTokens }}</strong></td>
             <td class="message-cell">{{ request.message }}</td>
             <td><span class="request-status {{ request.status_class }}">{{ request.status }}</span></td>
-            <td>{{ request.requestedBy }}</td>
+            <td>
+              <div>{{ request.requestedBy }}</div>
+              {% if request.approvedTokens != '—' %}
+                <div class="subtle">Aprobados: {{ request.approvedTokens }} tokens</div>
+              {% endif %}
+            </td>
           </tr>
         {% else %}
           <tr>

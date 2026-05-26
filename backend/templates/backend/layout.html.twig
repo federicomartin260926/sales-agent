@@ -70,8 +70,11 @@
             {% if is_super_admin|default(false) %}
               <a class="tenant-chip tenant-chip-active tenant-chip-linkable" href="/backend/tenants">
                 <div class="tenant-chip-label">Negocio</div>
-                <div class="tenant-chip-name">{{ active_tenant.name }}</div>
-                <span class="tenant-chip-link">Cambiar</span>
+                <div class="tenant-chip-name-row">
+                  <div class="tenant-chip-name">{{ active_tenant.name }}</div>
+                  <span class="tenant-chip-link tenant-chip-link-icon" aria-hidden="true">↺</span>
+                  <span class="visually-hidden">Cambiar negocio</span>
+                </div>
               </a>
             {% elseif can_manage_active_tenant|default(false) %}
               <div class="tenant-chip tenant-chip-active">

@@ -195,12 +195,17 @@
             <td>
               <div class="subtle">Resuelto: {{ request.resolvedAt }}</div>
               <div class="subtle">Por: {{ request.resolvedBy }}</div>
+              {% if request.approvedTokens != '—' %}
+                <div class="subtle">Aprobados: {{ request.approvedTokens }} tokens</div>
+              {% endif %}
             </td>
             <td class="text-right">
               {% if request.status_key == 'pending' %}
                 <div class="request-actions">
-                  <form method="post" action="{{ request.approve_url }}" class="request-action-form">
+                  <form method="post" action="{{ request.approve_url }}" class="request-action-form request-action-form-stack">
                     <input type="hidden" name="_csrf_token" value="{{ request.approve_token }}">
+                    <label class="visually-hidden" for="request-approved-tokens-{{ request.id }}">Tokens aprobados</label>
+                    <input id="request-approved-tokens-{{ request.id }}" class="request-approve-input" name="approvedTokens" type="number" min="1" step="1" value="{{ request.requestedTokensInput }}" required>
                     <button class="secondary-action" type="submit">Aprobar</button>
                   </form>
                   <form method="post" action="{{ request.reject_url }}" class="request-action-form">

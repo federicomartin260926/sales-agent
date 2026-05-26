@@ -416,6 +416,14 @@ body.login-page .footer code {
   max-width: 220px;
 }
 
+.tenant-chip-name-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  white-space: nowrap;
+}
+
 .tenant-chip-empty {
   cursor: pointer;
 }
@@ -444,6 +452,16 @@ body.login-page .footer code {
   color: rgba(255, 255, 255, 0.82);
   text-decoration: underline;
   text-underline-offset: 2px;
+}
+
+.tenant-chip-link-icon {
+  margin-top: 0;
+  font-size: 16px;
+  line-height: 1;
+  font-weight: 700;
+  text-decoration: none;
+  text-decoration-line: none;
+  opacity: 0.9;
 }
 
 .tenant-chip-linkable {
@@ -839,6 +857,23 @@ body.login-page .footer code {
 
 .request-action-form {
   display: inline-flex;
+}
+
+.request-action-form-stack {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.request-approve-input {
+  width: 120px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--panel-soft);
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 700;
 }
 
 .request-status {
