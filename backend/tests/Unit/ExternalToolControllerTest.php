@@ -393,7 +393,13 @@ final class ExternalToolControllerTest extends TestCase
         $response = $controller->edit($tool->getId()->toRfc4122(), Request::create('/backend/external-tools/'.$tool->getId()->toRfc4122().'/edit'));
 
         self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        self::assertStringContainsString('Ficha', $response->getContent());
+        self::assertStringContainsString('Conexión', $response->getContent());
+        self::assertStringContainsString('Autorización', $response->getContent());
+        self::assertStringContainsString('MCP runtime', $response->getContent());
+        self::assertStringContainsString('Avanzado', $response->getContent());
         self::assertStringContainsString('Token CRM para n8n/MCP', $response->getContent());
+        self::assertStringContainsString('handoff_webhook', $response->getContent());
         self::assertStringContainsString('Estado: Configurado', $response->getContent());
         self::assertStringNotContainsString('super-secret-token', $response->getContent());
     }
