@@ -35,7 +35,7 @@ final class ExternalToolController extends AbstractController
     private const HANDOFF_TOOL_TYPE = 'handoff_webhook';
     private const MCP_PROVIDER = 'openai_remote_mcp';
     private const MCP_PROVIDER_ALTERNATE = 'mcp_remote';
-    private const MCP_TEST_MESSAGE = 'Busca el contexto del contacto con teléfono +34600000000 usando la herramienta contact_context_mock disponible.';
+    private const MCP_TEST_MESSAGE = 'Busca servicios amplios del catálogo usando services_search y devuelve solo 1 resultado con limit=1.';
 
     public function __construct(
         private readonly Security $security,

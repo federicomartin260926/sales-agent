@@ -17,6 +17,7 @@
       <div class="badge-live">Admin</div>
       <div class="hero-aside-title">Prueba MCP</div>
       <p>El botón ▶ ejecuta una prueba real del servidor MCP seleccionado usando el runtime de sales-agent.</p>
+      <p class="subtle">La prueba usa una búsqueda amplia de servicios con <code>services_search</code> y <code>limit=1</code>. Solo debería fallar si no hay servicios o si la tool <code>services_search</code> (o equivalente) no está activa.</p>
       <a class="primary-action" href="/backend/external-tools/new">Crear servidor MCP</a>
     </div>
   </section>
@@ -138,7 +139,7 @@
                   {% if tool.canTest %}
                     <form method="post" action="/backend/external-tools/{{ tool.id }}/test" style="display:inline-flex;">
                       <input type="hidden" name="_csrf_token" value="{{ tool.testToken }}">
-                      <button class="icon-action tool-action-icon-button" type="submit" title="Probar MCP" aria-label="Probar MCP">▶</button>
+                      <button class="icon-action tool-action-icon-button" type="submit" title="Probar búsqueda de servicios (services_search, limit=1)" aria-label="Probar búsqueda de servicios">▶</button>
                     </form>
                   {% else %}
                     <button class="icon-action tool-action-icon-button" type="button" title="Prueba MCP pendiente" aria-label="Prueba MCP pendiente" disabled>▶</button>

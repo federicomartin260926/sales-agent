@@ -784,7 +784,7 @@ final class ExternalToolControllerTest extends TestCase
 
             return new MockResponse(json_encode([
                 'found' => true,
-                'reply' => 'Tu próxima cita es mañana a las 10:00.',
+                'reply' => 'Tenemos un servicio de automatización que encaja con tu búsqueda.',
                 'provider' => 'openai_remote_mcp',
                 'model' => '',
                 'data_to_save' => [
@@ -792,9 +792,9 @@ final class ExternalToolControllerTest extends TestCase
                     'mcp_tool_traces' => [
                         [
                             'type' => 'mcp_call',
-                            'tool_name' => 'appointment_events',
+                            'tool_name' => 'services_search',
                             'status' => 'completed',
-                            'output' => ['found' => true],
+                            'output' => ['found' => true, 'count' => 1],
                         ],
                     ],
                 ],
@@ -879,8 +879,10 @@ final class ExternalToolControllerTest extends TestCase
         self::assertStringContainsString('Resultado de prueba', $body);
         self::assertStringContainsString('provider: openai | model: gpt-4.1-mini', $body);
         self::assertStringContainsString('mcp_response_id: resp_123', $body);
-        self::assertStringContainsString('appointment_events', $body);
+        self::assertStringContainsString('services_search', $body);
         self::assertStringNotContainsString('provider_not_supported', $body);
+        self::assertSame('Busca servicios amplios del catálogo usando services_search y devuelve solo 1 resultado con limit=1.', $requests[0]['options']['json']['message']['text']);
+        self::assertSame('ui_mcp_test', $requests[0]['options']['json']['raw_event']['source']);
     }
 
     public function testMcpTestReturnsProviderNotSupportedWhenRuntimeUsesOllama(): void
