@@ -39,8 +39,6 @@
 
     <form method="post" action="{{ action_url }}" class="tenant-form">
       <input type="hidden" name="_csrf_token" value="{{ form_token }}">
-      <input type="hidden" name="type" value="mcp_remote">
-      <input type="hidden" name="provider" value="openai_remote_mcp">
       <div class="form-grid">
         <div class="field field-full">
           <label for="tool-tenant">Negocio</label>
@@ -53,10 +51,30 @@
           <input id="tool-name" name="name" type="text" value="{{ values.name }}" maxlength="255" required>
         </div>
 
+        <div class="field">
+          <label for="tool-type">Tipo</label>
+          <select id="tool-type" name="type" required>
+            <option value="mcp_remote"{{ values.type == 'mcp_remote' ? ' selected' : '' }}>mcp_remote</option>
+            <option value="handoff_webhook"{{ values.type == 'handoff_webhook' ? ' selected' : '' }}>handoff_webhook</option>
+            <option value="contact_context"{{ values.type == 'contact_context' ? ' selected' : '' }}>contact_context</option>
+          </select>
+          <div class="field-note">`handoff_webhook` sirve para derivaciones a n8n. `contact_context` se mantiene sólo por compatibilidad antigua.</div>
+        </div>
+
+        <div class="field">
+          <label for="tool-provider">Provider</label>
+          <select id="tool-provider" name="provider" required>
+            <option value="n8n_webhook"{{ values.provider == 'n8n_webhook' ? ' selected' : '' }}>n8n_webhook</option>
+            <option value="openai_remote_mcp"{{ values.provider == 'openai_remote_mcp' ? ' selected' : '' }}>openai_remote_mcp</option>
+            <option value="mcp_remote"{{ values.provider == 'mcp_remote' ? ' selected' : '' }}>mcp_remote</option>
+          </select>
+          <div class="field-note">Para handoff webhook usa `n8n_webhook`. Para MCP remoto usa un provider MCP compatible.</div>
+        </div>
+
         <div class="field field-full">
           <label for="tool-webhook">Webhook URL</label>
           <input id="tool-webhook" name="webhookUrl" type="url" value="{{ values.webhookUrl }}" maxlength="2048" placeholder="http://host.docker.internal:5680/webhook/sales-agent/contact-context" required>
-          <div class="field-note">En MCP remoto apunta al servidor MCP. En Docker local puede necesitar <code>host.docker.internal</code>.</div>
+          <div class="field-note">En MCP remoto apunta al servidor MCP. Para handoff webhook apunta al endpoint n8n. En Docker local puede necesitar <code>host.docker.internal</code>.</div>
         </div>
 
         <div class="field">
@@ -65,6 +83,7 @@
             <option value="none"{{ values.authType == 'none' ? ' selected' : '' }}>none</option>
             <option value="bearer"{{ values.authType == 'bearer' ? ' selected' : '' }}>bearer</option>
           </select>
+          <div class="field-note">Para handoff webhook usa <code>none</code> en esta primera fase. El bearer se reserva para MCP/downstream.</div>
           <div class="field-note">Para autenticación downstream usa <code>Name=Authorization</code> y <code>Value=Bearer &lt;token&gt;</code>. Sales Agent guarda sólo el token, sin el prefijo Bearer.</div>
           <div class="field-note">Si pegas un token, el formulario lo tratará como <code>bearer</code> al guardar para que no se pierda.</div>
         </div>

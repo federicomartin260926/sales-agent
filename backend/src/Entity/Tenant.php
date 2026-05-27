@@ -43,6 +43,20 @@ class Tenant
     #[ORM\Column(name: 'whatsapp_public_phone', length: 50, nullable: true)]
     private ?string $whatsappPublicPhone = null;
 
+    #[ORM\Column(name: 'human_handoff_enabled', type: 'boolean')]
+    private bool $humanHandoffEnabled = false;
+
+    #[Assert\Length(max: 50)]
+    #[ORM\Column(name: 'human_handoff_whatsapp_public', length: 50, nullable: true)]
+    private ?string $humanHandoffWhatsappPublic = null;
+
+    #[Assert\Length(max: 4000)]
+    #[ORM\Column(name: 'human_handoff_message', type: 'text', nullable: true)]
+    private ?string $humanHandoffMessage = null;
+
+    #[ORM\Column(name: 'human_handoff_strategy', length: 50)]
+    private string $humanHandoffStrategy = 'disabled';
+
     #[Assert\Callback]
     public function validateSalesPolicy(ExecutionContextInterface $context): void
     {
@@ -134,6 +148,49 @@ class Tenant
         $this->whatsappPublicPhone = $whatsappPublicPhone;
     }
 
+    public function isHumanHandoffEnabled(): bool
+    {
+        return $this->humanHandoffEnabled;
+    }
+
+    public function setHumanHandoffEnabled(bool $humanHandoffEnabled): void
+    {
+        $this->humanHandoffEnabled = $humanHandoffEnabled;
+    }
+
+    public function getHumanHandoffWhatsappPublic(): ?string
+    {
+        return $this->humanHandoffWhatsappPublic;
+    }
+
+    public function setHumanHandoffWhatsappPublic(?string $humanHandoffWhatsappPublic): void
+    {
+        $trimmed = $humanHandoffWhatsappPublic !== null ? trim($humanHandoffWhatsappPublic) : null;
+        $this->humanHandoffWhatsappPublic = $trimmed !== '' ? $trimmed : null;
+    }
+
+    public function getHumanHandoffMessage(): ?string
+    {
+        return $this->humanHandoffMessage;
+    }
+
+    public function setHumanHandoffMessage(?string $humanHandoffMessage): void
+    {
+        $trimmed = $humanHandoffMessage !== null ? trim($humanHandoffMessage) : null;
+        $this->humanHandoffMessage = $trimmed !== '' ? $trimmed : null;
+    }
+
+    public function getHumanHandoffStrategy(): string
+    {
+        return $this->humanHandoffStrategy;
+    }
+
+    public function setHumanHandoffStrategy(string $humanHandoffStrategy): void
+    {
+        $strategy = trim($humanHandoffStrategy);
+        $this->humanHandoffStrategy = $strategy !== '' ? $strategy : 'disabled';
+    }
+
     public function getSalesPolicy(): array
     {
         return $this->salesPolicy;
@@ -174,6 +231,10 @@ class Tenant
             'tone' => $this->tone,
             'whatsappPhoneNumberId' => $this->whatsappPhoneNumberId,
             'whatsappPublicPhone' => $this->whatsappPublicPhone,
+            'humanHandoffEnabled' => $this->humanHandoffEnabled,
+            'humanHandoffWhatsappPublic' => $this->humanHandoffWhatsappPublic,
+            'humanHandoffMessage' => $this->humanHandoffMessage,
+            'humanHandoffStrategy' => $this->humanHandoffStrategy,
             'salesPolicy' => $this->salesPolicy,
             'isActive' => $this->isActive,
             'createdAt' => $this->createdAt->format(\DateTimeInterface::ATOM),

@@ -27,11 +27,12 @@ final class ExternalToolController extends AbstractController
 {
     private const SALES_AGENT_API_BASE_URL = 'http://sales-agent-api:8000';
     private const SALES_AGENT_API_RESPOND_PATH = '/agent/respond';
-    private const TOOL_TYPES = ['contact_context', 'mcp_remote'];
+    private const TOOL_TYPES = ['contact_context', 'mcp_remote', 'handoff_webhook'];
     private const PROVIDERS = ['n8n_webhook', 'openai_remote_mcp', 'mcp_remote'];
     private const AUTH_TYPES = ['none', 'bearer'];
     private const TEST_TOOL_TYPE = 'contact_context';
     private const MCP_TOOL_TYPE = 'mcp_remote';
+    private const HANDOFF_TOOL_TYPE = 'handoff_webhook';
     private const MCP_PROVIDER = 'openai_remote_mcp';
     private const MCP_PROVIDER_ALTERNATE = 'mcp_remote';
     private const MCP_TEST_MESSAGE = 'Busca el contexto del contacto con teléfono +34600000000 usando la herramienta contact_context_mock disponible.';
@@ -368,11 +369,12 @@ final class ExternalToolController extends AbstractController
     {
         $config = $tool?->getConfig() ?? [];
         $tenantRuntimeDefault = $tenant instanceof Tenant ? $this->externalTools->findRuntimeDefaultMcpByTenant($tenant) : null;
+        $type = $tool?->getType() ?? self::MCP_TOOL_TYPE;
         return [
             'name' => $tool?->getName() ?? '',
             'tenantId' => $tenant?->getId()->toRfc4122() ?? $tool?->getTenant()?->getId()->toRfc4122() ?? '',
-            'type' => $tool?->getType() ?? self::TEST_TOOL_TYPE,
-            'provider' => $tool?->getProvider() ?? self::PROVIDERS[0],
+            'type' => $type,
+            'provider' => $tool?->getProvider() ?? ($type === self::MCP_TOOL_TYPE ? self::MCP_PROVIDER : 'n8n_webhook'),
             'webhookUrl' => $tool?->getWebhookUrl() ?? '',
             'authType' => $tool?->getAuthType() ?? ($tool?->hasDownstreamAuthorizationToken() ? 'bearer' : 'none'),
             'bearerToken' => '',
@@ -436,12 +438,16 @@ final class ExternalToolController extends AbstractController
             $errors[] = 'El proveedor no es válido.';
         }
 
-        if ($values['type'] === self::TEST_TOOL_TYPE && $values['provider'] !== 'n8n_webhook') {
-            $errors[] = 'contact_context es legacy y sólo mantiene compatibilidad con n8n_webhook.';
+        if (in_array($values['type'], [self::TEST_TOOL_TYPE, self::HANDOFF_TOOL_TYPE], true) && $values['provider'] !== 'n8n_webhook') {
+            $errors[] = 'contact_context/handoff_webhook sólo mantienen compatibilidad con n8n_webhook.';
         }
 
         if ($values['type'] === self::MCP_TOOL_TYPE && !in_array($values['provider'], [self::MCP_PROVIDER, self::MCP_PROVIDER_ALTERNATE], true)) {
             $errors[] = 'mcp_remote sólo puede usar un proveedor MCP remoto.';
+        }
+
+        if ($values['type'] === self::HANDOFF_TOOL_TYPE && $values['authType'] !== 'none') {
+            $errors[] = 'handoff_webhook no usa autorización bearer todavía.';
         }
 
         if ($values['webhookUrl'] === '') {
@@ -483,6 +489,16 @@ final class ExternalToolController extends AbstractController
 
             if ($values['isRuntimeDefault'] && !$values['isActive']) {
                 $errors[] = 'El MCP principal debe estar activo.';
+            }
+        }
+
+        if ($values['type'] === self::HANDOFF_TOOL_TYPE) {
+            if ($values['provider'] !== 'n8n_webhook') {
+                $errors[] = 'handoff_webhook sólo puede usar el proveedor n8n_webhook.';
+            }
+
+            if ($values['authType'] !== 'none') {
+                $errors[] = 'handoff_webhook no admite bearer token en esta primera fase.';
             }
         }
 

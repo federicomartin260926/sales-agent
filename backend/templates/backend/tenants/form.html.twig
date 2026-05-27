@@ -58,6 +58,39 @@
             <div class="field-note">Cómo debe expresarse el agente en este negocio.</div>
           </div>
           <div class="field field-full">
+            <div class="section-label">Handoff humano</div>
+            <div class="section-note">Configura la derivación manual a una persona del equipo sin mezclarla con el número de WhatsApp Cloud del agente IA.</div>
+            <div class="form-grid">
+              <div class="field field-check">
+                <label for="tenant-human-handoff-enabled">Habilitar handoff humano</label>
+                <label class="checkbox-inline" for="tenant-human-handoff-enabled">
+                  <input id="tenant-human-handoff-enabled" name="humanHandoffEnabled" type="checkbox" value="1"{% if values.humanHandoffEnabled %} checked{% endif %}>
+                  <span>Permitir derivación manual</span>
+                </label>
+              </div>
+              <div class="field">
+                <label for="tenant-human-handoff-whatsapp-public">WhatsApp humano/de empresa</label>
+                <input id="tenant-human-handoff-whatsapp-public" name="humanHandoffWhatsappPublic" type="text" value="{{ values.humanHandoffWhatsappPublic }}" maxlength="50" placeholder="+34 612 345 678">
+                <div class="field-note">Este número se usará para derivar manualmente conversaciones a una persona mediante enlace wa.me.</div>
+              </div>
+              <div class="field">
+                <label for="tenant-human-handoff-strategy">Estrategia</label>
+                <select id="tenant-human-handoff-strategy" name="humanHandoffStrategy">
+                  <option value="disabled"{% if values.humanHandoffStrategy == 'disabled' %} selected{% endif %}>disabled</option>
+                  <option value="manual_wa_link"{% if values.humanHandoffStrategy == 'manual_wa_link' %} selected{% endif %}>manual_wa_link</option>
+                  <option value="n8n_webhook"{% if values.humanHandoffStrategy == 'n8n_webhook' %} selected{% endif %}>n8n_webhook</option>
+                  <option value="manual_wa_link_and_n8n"{% if values.humanHandoffStrategy == 'manual_wa_link_and_n8n' %} selected{% endif %}>manual_wa_link_and_n8n</option>
+                </select>
+                <div class="field-note">Controla si el handoff añade enlace manual, dispara webhook o hace ambas cosas.</div>
+              </div>
+              <div class="field field-full">
+                <label for="tenant-human-handoff-message">Mensaje de derivación</label>
+                <textarea id="tenant-human-handoff-message" name="humanHandoffMessage" rows="3" maxlength="4000" placeholder="Prefiero que esto lo revise una persona del equipo.">{{ values.humanHandoffMessage }}</textarea>
+                <div class="field-note">Se añade al mensaje final si el handoff humano está activo. Si lo dejas vacío se usa un fallback seguro.</div>
+              </div>
+            </div>
+          </div>
+          <div class="field field-full">
             <div class="section-label">WhatsApp Business</div>
             <div class="section-note">Completa estos campos si este negocio enruta tráfico o genera enlaces wa.me desde WhatsApp.</div>
             <div class="form-grid">

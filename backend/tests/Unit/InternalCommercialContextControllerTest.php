@@ -45,6 +45,36 @@ final class InternalCommercialContextControllerTest extends TestCase
         self::assertTrue($payload['product_selection']['needs_service_clarification']);
         self::assertNull($payload['playbook']);
         self::assertNull($payload['entry_point']);
+        self::assertSame([
+            'enabled' => false,
+            'strategy' => 'disabled',
+            'whatsapp_public' => null,
+            'message' => null,
+        ], $payload['tenant']['handoff']);
+    }
+
+    public function testTenantContextIncludesHandoffBlock(): void
+    {
+        $tenant = $this->tenant();
+        $tenant->setHumanHandoffEnabled(true);
+        $tenant->setHumanHandoffWhatsappPublic('+34 612 345 678');
+        $tenant->setHumanHandoffMessage('Prefiero que esto lo revise una persona del equipo.');
+        $tenant->setHumanHandoffStrategy('manual_wa_link_and_n8n');
+
+        $controller = $this->createController([$tenant->getId()->toRfc4122() => $tenant], [], [], [], []);
+
+        $response = $controller(Request::create('/api/internal/commercial-context?tenant_id='.$tenant->getId()->toRfc4122(), 'GET', server: [
+            'HTTP_AUTHORIZATION' => 'Bearer '.self::TOKEN,
+        ]));
+
+        self::assertSame(200, $response->getStatusCode());
+        $payload = json_decode((string) $response->getContent(), true);
+        self::assertSame([
+            'enabled' => true,
+            'strategy' => 'manual_wa_link_and_n8n',
+            'whatsapp_public' => '+34 612 345 678',
+            'message' => 'Prefiero que esto lo revise una persona del equipo.',
+        ], $payload['tenant']['handoff']);
     }
 
     public function testProductPlaybookAndEntryPointAreReturnedAsLegacyBlocks(): void

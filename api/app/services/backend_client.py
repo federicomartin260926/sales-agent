@@ -31,6 +31,7 @@ class BackendTenant(BaseModel):
     is_active: bool = Field(validation_alias=AliasChoices("isActive", "is_active"))
     whatsapp_phone_number_id: str | None = Field(default=None, validation_alias=AliasChoices("whatsappPhoneNumberId", "whatsapp_phone_number_id"))
     whatsapp_public_phone: str | None = Field(default=None, validation_alias=AliasChoices("whatsappPublicPhone", "whatsapp_public_phone"))
+    handoff: dict[str, Any] = Field(default_factory=dict, validation_alias=AliasChoices("handoff"))
     created_at: str | None = Field(default=None, validation_alias=AliasChoices("createdAt", "created_at"))
 
     @field_validator("sales_policy", mode="before")
@@ -44,6 +45,14 @@ class BackendTenant(BaseModel):
 
         if value is None:
             return {}
+
+        return {}
+
+    @field_validator("handoff", mode="before")
+    @classmethod
+    def normalize_handoff(cls, value: Any) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return value
 
         return {}
 

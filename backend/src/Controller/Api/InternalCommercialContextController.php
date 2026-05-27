@@ -247,6 +247,12 @@ final class InternalCommercialContextController extends AbstractApiController
             'is_active' => $tenant->isActive(),
             'whatsapp_phone_number_id' => $tenant->getWhatsappPhoneNumberId(),
             'whatsapp_public_phone' => $tenant->getWhatsappPublicPhone(),
+            'handoff' => [
+                'enabled' => $tenant->isHumanHandoffEnabled(),
+                'strategy' => $tenant->getHumanHandoffStrategy(),
+                'whatsapp_public' => $tenant->getHumanHandoffWhatsappPublic(),
+                'message' => $tenant->getHumanHandoffMessage(),
+            ],
         ];
     }
 

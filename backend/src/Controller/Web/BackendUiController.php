@@ -2511,7 +2511,7 @@ final class BackendUiController
     }
 
     /**
-     * @return array{name: string, slug: string, businessContext: string, tone: string, whatsappPhoneNumberId: string, whatsappPublicPhone: string, positioning: string, qualificationFocus: string, handoffRules: string, salesBoundaries: string, notes: string, isActive: bool}
+     * @return array{name: string, slug: string, businessContext: string, tone: string, whatsappPhoneNumberId: string, whatsappPublicPhone: string, humanHandoffEnabled: bool, humanHandoffWhatsappPublic: string, humanHandoffMessage: string, humanHandoffStrategy: string, positioning: string, qualificationFocus: string, handoffRules: string, salesBoundaries: string, notes: string, isActive: bool}
      */
     private function tenantFormDefaults(
         ?Tenant $tenant = null,
@@ -2533,6 +2533,10 @@ final class BackendUiController
             'tone' => $tenant?->getTone() ?? '',
             'whatsappPhoneNumberId' => $tenant?->getWhatsappPhoneNumberId() ?? '',
             'whatsappPublicPhone' => $tenant?->getWhatsappPublicPhone() ?? '',
+            'humanHandoffEnabled' => $tenant?->isHumanHandoffEnabled() ?? false,
+            'humanHandoffWhatsappPublic' => $tenant?->getHumanHandoffWhatsappPublic() ?? '',
+            'humanHandoffMessage' => $tenant?->getHumanHandoffMessage() ?? '',
+            'humanHandoffStrategy' => $tenant?->getHumanHandoffStrategy() ?? 'disabled',
             'positioning' => $this->tenantPolicyValue($salesPolicy, 'positioning'),
             'qualificationFocus' => $this->tenantPolicyValue($salesPolicy, 'qualificationFocus'),
             'handoffRules' => $this->tenantPolicyValue($salesPolicy, 'handoffRules'),
@@ -2549,7 +2553,7 @@ final class BackendUiController
     }
 
     /**
-     * @return array{name: string, slug: string, businessContext: string, tone: string, whatsappPhoneNumberId: string, whatsappPublicPhone: string, positioning: string, qualificationFocus: string, handoffRules: string, salesBoundaries: string, notes: string, isActive: bool, aiEnabled: bool, dailyCostLimitEur: string, monthlyCostLimitEur: string, defaultModel: string, fallbackModel: string, limitAction: string}
+     * @return array{name: string, slug: string, businessContext: string, tone: string, whatsappPhoneNumberId: string, whatsappPublicPhone: string, humanHandoffEnabled: bool, humanHandoffWhatsappPublic: string, humanHandoffMessage: string, humanHandoffStrategy: string, positioning: string, qualificationFocus: string, handoffRules: string, salesBoundaries: string, notes: string, isActive: bool, aiEnabled: bool, dailyCostLimitEur: string, monthlyCostLimitEur: string, defaultModel: string, fallbackModel: string, limitAction: string}
      */
     private function tenantFormValuesFromRequest(Request $request): array
     {
@@ -2560,6 +2564,10 @@ final class BackendUiController
             'tone' => trim((string) $request->request->get('tone', '')),
             'whatsappPhoneNumberId' => trim((string) $request->request->get('whatsappPhoneNumberId', '')),
             'whatsappPublicPhone' => trim((string) $request->request->get('whatsappPublicPhone', '')),
+            'humanHandoffEnabled' => $request->request->has('humanHandoffEnabled'),
+            'humanHandoffWhatsappPublic' => trim((string) $request->request->get('humanHandoffWhatsappPublic', '')),
+            'humanHandoffMessage' => trim((string) $request->request->get('humanHandoffMessage', '')),
+            'humanHandoffStrategy' => trim((string) $request->request->get('humanHandoffStrategy', 'disabled')),
             'positioning' => trim((string) $request->request->get('positioning', '')),
             'qualificationFocus' => trim((string) $request->request->get('qualificationFocus', '')),
             'handoffRules' => trim((string) $request->request->get('handoffRules', '')),
@@ -2656,6 +2664,18 @@ final class BackendUiController
             return 'El WhatsApp público no puede superar 50 caracteres.';
         }
 
+        if ($values['humanHandoffWhatsappPublic'] !== '' && mb_strlen($values['humanHandoffWhatsappPublic']) > 50) {
+            return 'El WhatsApp humano no puede superar 50 caracteres.';
+        }
+
+        if ($values['humanHandoffMessage'] !== '' && mb_strlen($values['humanHandoffMessage']) > 4000) {
+            return 'El mensaje de derivación no puede superar 4000 caracteres.';
+        }
+
+        if (!in_array($values['humanHandoffStrategy'], ['disabled', 'manual_wa_link', 'n8n_webhook', 'manual_wa_link_and_n8n'], true)) {
+            return 'La estrategia de handoff no es válida.';
+        }
+
         $salesPolicy = $this->tenantSalesPolicyFromForm($values);
         $error = CommercialDomainSchema::validateTenantSalesPolicy($salesPolicy);
         if ($error !== null) {
@@ -2714,6 +2734,10 @@ final class BackendUiController
         $tenant->setTone($values['tone'] !== '' ? $values['tone'] : null);
         $tenant->setWhatsappPhoneNumberId($values['whatsappPhoneNumberId'] !== '' ? $values['whatsappPhoneNumberId'] : null);
         $tenant->setWhatsappPublicPhone($values['whatsappPublicPhone'] !== '' ? $values['whatsappPublicPhone'] : null);
+        $tenant->setHumanHandoffEnabled($values['humanHandoffEnabled']);
+        $tenant->setHumanHandoffWhatsappPublic($values['humanHandoffWhatsappPublic'] !== '' ? $values['humanHandoffWhatsappPublic'] : null);
+        $tenant->setHumanHandoffMessage($values['humanHandoffMessage'] !== '' ? $values['humanHandoffMessage'] : null);
+        $tenant->setHumanHandoffStrategy($values['humanHandoffStrategy']);
         $tenant->setSalesPolicy($this->tenantSalesPolicyFromForm($values));
         $tenant->setActive($values['isActive']);
     }

@@ -24,6 +24,7 @@ El proyecto está preparado para integrarse más adelante con:
 - [Projects](../platform/projects.md)
 - [Networking](../platform/networking.md)
 - [Tokens](../platform/tokens.md)
+- [Handoff humano](docs/handoff.md)
 
 ## Arquitectura
 
@@ -140,6 +141,15 @@ El catálogo de productos puede importarse desde CRM con `externalSource = crm` 
 La configuración operativa de LLM y audio ahora vive en `runtime_settings` y se edita desde `GET /backend/configuration`.
 Los secretos de esa pantalla se cifran en base de datos y el runtime consulta la snapshot interna en `GET /api/internal/runtime-settings` con `Authorization: Bearer ...`.
 Todas las rutas `/api/internal/*` usan `Authorization: Bearer <SALES_AGENT_BEARER_TOKEN>` y no JWT de usuario.
+
+Handoff humano:
+
+- la política funcional vive en `Tenant`
+- el runtime puede añadir un enlace `wa.me` hacia un número humano configurado por tenant
+- el webhook operativo de n8n se configura como `ExternalTool` separado
+- el token downstream CRM/MCP sigue siendo tenant-scoped y cifrado; no se reutiliza como auth del webhook de handoff
+- `api/app/services/llm_client.py` sigue pasando la autorización downstream al MCP remoto como header seguro, sin llevar ese token al prompt ni al payload operativo
+- el evento de handoff es `sales_agent.handoff_requested` y viaja sin secretos; n8n decide si crea tareas, avisa por email/Telegram/WhatsApp o mapea a CRM
 
 ## Bootstrap inicial del backend
 

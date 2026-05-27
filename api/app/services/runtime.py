@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+import httpx
 import logging
+import uuid
 from typing import Any
 
 import time
@@ -159,6 +162,15 @@ class AgentRuntime:
         decision_latency_ms = int(round((time.perf_counter() - started_at) * 1000))
         latency_ms = response.latency_ms if response.latency_ms is not None else decision_latency_ms
 
+        response = await self._apply_handoff_policy(
+            response,
+            payload,
+            routing,
+            backend_context,
+            conversation_result,
+            mcp_config,
+        )
+
         if conversation_id is not None:
             outbound_result = await self.backend_client.create_conversation_message(
                 BackendConversationMessagePayload(
@@ -306,6 +318,344 @@ class AgentRuntime:
             metadata["mcp_errors"] = response.data_to_save["mcp_errors"]
 
         return metadata
+
+    async def _apply_handoff_policy(
+        self,
+        response: AgentResponse,
+        payload: AgentRequest,
+        routing: RoutingContext,
+        backend_context: CommercialContext | None,
+        conversation_result: dict[str, Any] | None,
+        mcp_config: McpRemoteConfig | None,
+    ) -> AgentResponse:
+        if not self._should_apply_handoff(response, backend_context):
+            return response
+
+        tenant = backend_context.tenant if backend_context is not None else None
+        handoff_config = self._handoff_config_from_tenant(tenant)
+
+        if handoff_config is None:
+            return response
+
+        updated_reply = response.reply
+        if self._handoff_allows_manual_link(handoff_config):
+            updated_reply = self._append_handoff_link(updated_reply, handoff_config)
+
+        if self._handoff_allows_webhook(handoff_config):
+            await self._send_handoff_webhook(
+                response,
+                payload,
+                routing,
+                backend_context,
+                conversation_result,
+                mcp_config,
+                handoff_config,
+            )
+
+        if updated_reply == response.reply:
+            return response
+
+        return AgentResponse(
+            reply=updated_reply,
+            intent=response.intent,
+            score=response.score,
+            action=response.action,
+            needs_human=response.needs_human,
+            data_to_save=response.data_to_save,
+            provider=response.provider,
+            model=response.model,
+            latency_ms=response.latency_ms,
+        )
+
+    def _should_apply_handoff(self, response: AgentResponse, backend_context: CommercialContext | None) -> bool:
+        if backend_context is None:
+            return False
+
+        if response.needs_human:
+            return True
+
+        return response.action in {"handoff_to_human", "ai_usage_limit_reached", "missing_routing_context"}
+
+    def _handoff_config_from_tenant(self, tenant: Any | None) -> dict[str, Any] | None:
+        if tenant is None:
+            return None
+
+        handoff = getattr(tenant, "handoff", None)
+        if not isinstance(handoff, dict):
+            return None
+
+        enabled = bool(handoff.get("enabled", False))
+        strategy = self._normalize_handoff_strategy(handoff.get("strategy"))
+        if not enabled or strategy == "disabled":
+            return None
+
+        return {
+            "enabled": enabled,
+            "strategy": strategy,
+            "whatsapp_public": self._normalize_handoff_phone(handoff.get("whatsapp_public")),
+            "message": self._normalize_text(handoff.get("message")),
+        }
+
+    def _handoff_allows_manual_link(self, handoff_config: dict[str, Any]) -> bool:
+        strategy = str(handoff_config.get("strategy") or "").strip().lower()
+        return strategy in {"manual_wa_link", "manual_wa_link_and_n8n"}
+
+    def _handoff_allows_webhook(self, handoff_config: dict[str, Any]) -> bool:
+        strategy = str(handoff_config.get("strategy") or "").strip().lower()
+        return strategy in {"n8n_webhook", "manual_wa_link_and_n8n"}
+
+    def _append_handoff_link(self, reply: str, handoff_config: dict[str, Any]) -> str:
+        phone = self._normalize_handoff_phone(handoff_config.get("whatsapp_public"))
+        if phone == "":
+            return reply
+
+        if "wa.me/" in reply:
+            return reply
+
+        message = self._normalize_text(handoff_config.get("message"))
+        if message == "":
+            message = "Prefiero que esto lo revise una persona del equipo. Te contactarán lo antes posible."
+
+        link = f"https://wa.me/{phone}"
+        if reply.strip() == "":
+            return f"{message} {link}"
+
+        separator = " " if not reply.endswith((" ", "\n")) else ""
+        return f"{reply}{separator}{message} {link}"
+
+    async def _send_handoff_webhook(
+        self,
+        response: AgentResponse,
+        payload: AgentRequest,
+        routing: RoutingContext,
+        backend_context: CommercialContext | None,
+        conversation_result: dict[str, Any] | None,
+        mcp_config: McpRemoteConfig | None,
+        handoff_config: dict[str, Any],
+    ) -> None:
+        if backend_context is None:
+            return
+
+        tenant_id = routing.tenant_id.strip()
+        tool = await self.backend_client.get_external_tool(tenant_id, "handoff_webhook")
+        if tool is None:
+            return
+
+        provider = (tool.provider or "").strip().lower()
+        webhook_url = (tool.webhook_url or "").strip()
+        if provider != "n8n_webhook" or webhook_url == "":
+            return
+
+        if (tool.auth_type or "").strip().lower() not in {"", "none"}:
+            logger.warning(
+                "Handoff webhook auth ignored tenant_id=%s tool_id=%s reason=unsupported_auth_type",
+                tenant_id,
+                tool.id,
+            )
+
+        event_id = str(uuid.uuid4())
+        started_at = time.perf_counter()
+        payload_data = self._handoff_webhook_payload(
+            event_id,
+            payload,
+            routing,
+            backend_context,
+            conversation_result,
+            response,
+        )
+
+        timeout_seconds = tool.timeout_seconds if tool.timeout_seconds > 0 else 5
+        timeout = httpx.Timeout(timeout_seconds, connect=2.0)
+        headers = {"Accept": "application/json"}
+
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                result = await client.post(webhook_url, json=payload_data, headers=headers)
+                result.raise_for_status()
+        except httpx.TimeoutException as exc:
+            latency_ms = self._handoff_latency_ms(started_at)
+            logger.warning(
+                "Handoff webhook failed event_id=%s tenant_id=%s conversation_id=%s status_code=%s latency_ms=%s error=%s",
+                event_id,
+                tenant_id,
+                self._conversation_id_from_result(conversation_result),
+                "timeout",
+                latency_ms,
+                exc.__class__.__name__,
+            )
+            return
+        except httpx.HTTPStatusError as exc:
+            latency_ms = self._handoff_latency_ms(started_at)
+            logger.warning(
+                "Handoff webhook failed event_id=%s tenant_id=%s conversation_id=%s status_code=%s latency_ms=%s error=%s",
+                event_id,
+                tenant_id,
+                self._conversation_id_from_result(conversation_result),
+                exc.response.status_code,
+                latency_ms,
+                exc.__class__.__name__,
+            )
+            return
+        except (httpx.HTTPError, ValueError) as exc:
+            latency_ms = self._handoff_latency_ms(started_at)
+            logger.warning(
+                "Handoff webhook failed event_id=%s tenant_id=%s conversation_id=%s status_code=%s latency_ms=%s error=%s",
+                event_id,
+                tenant_id,
+                self._conversation_id_from_result(conversation_result),
+                "error",
+                latency_ms,
+                exc.__class__.__name__,
+            )
+            return
+
+        latency_ms = self._handoff_latency_ms(started_at)
+        logger.info(
+            "Handoff webhook sent event_id=%s tenant_id=%s conversation_id=%s status_code=%s latency_ms=%s",
+            event_id,
+            tenant_id,
+            self._conversation_id_from_result(conversation_result),
+            200,
+            latency_ms,
+        )
+
+    def _handoff_webhook_payload(
+        self,
+        event_id: str,
+        payload: AgentRequest,
+        routing: RoutingContext,
+        backend_context: CommercialContext,
+        conversation_result: dict[str, Any] | None,
+        response: AgentResponse,
+    ) -> dict[str, Any]:
+        tenant = backend_context.tenant
+        product = backend_context.selected_product
+        entry_point = backend_context.entry_point
+        conversation_id = self._conversation_id_from_result(conversation_result)
+        last_messages = payload.conversation.last_messages[-8:]
+        if len(last_messages) > 8:
+            last_messages = last_messages[-8:]
+
+        decision_reason = self._handoff_reason(response)
+        decision_trigger = self._handoff_trigger(response)
+
+        return {
+            "event": "sales_agent.handoff_requested",
+            "event_id": event_id,
+            "occurred_at": datetime.now(timezone.utc).isoformat(),
+            "tenant": {
+                "id": tenant.id,
+                "name": tenant.name,
+                "slug": tenant.slug,
+            },
+            "conversation": {
+                "id": conversation_id,
+                "status": "pending_human",
+                "channel": payload.channel_type or "whatsapp",
+                "external_conversation_id": payload.conversation.external_id,
+                "last_messages": last_messages,
+            },
+            "contact": {
+                "name": payload.contact.name,
+                "phone": payload.contact.phone,
+                "email": None,
+                "external_id": None,
+            },
+            "entry_point": {
+                "id": entry_point.id if entry_point is not None else routing.entry_point_id,
+                "name": entry_point.name if entry_point is not None else None,
+                "channel": payload.channel_type or "whatsapp",
+                "external_ref": routing.entrypoint_ref,
+            },
+            "product": {
+                "id": product.id if product is not None else routing.product_id,
+                "name": product.name if product is not None else None,
+                "slug": product.slug if product is not None else None,
+                "external_ref": product.external_reference if product is not None else None,
+                "source": self._handoff_product_source(backend_context),
+            },
+            "decision": {
+                "intent": response.intent,
+                "action": response.action,
+                "needs_human": bool(response.needs_human),
+                "score": response.score,
+                "reason": decision_reason,
+                "trigger": decision_trigger,
+            },
+            "llm": {
+                "provider": response.provider,
+                "model": response.model,
+                "response_id": response.data_to_save.get("response_id"),
+                "latency_ms": response.latency_ms,
+            },
+            "metadata": {
+                "source": "sales-agent",
+                "wa_phone_number_id": routing.external_channel_id,
+                "wa_from": payload.contact.phone,
+                "wa_message_id": self._raw_event_field(payload.raw_event, "whatsapp_message_id", "whatsappMessageId", "message_id", "id"),
+            },
+        }
+
+    def _handoff_reason(self, response: AgentResponse) -> str:
+        if response.action == "missing_routing_context":
+            return "Missing routing context"
+        if response.action == "ai_usage_limit_reached":
+            return "AI usage limit reached"
+        if response.action == "handoff_to_human":
+            return "Human handoff requested"
+        return "Human handoff requested"
+
+    def _handoff_trigger(self, response: AgentResponse) -> str:
+        if response.action == "missing_routing_context":
+            return "missing_routing"
+        if response.action == "ai_usage_limit_reached":
+            return "ai_usage_limit"
+        if response.intent == "handoff":
+            return "user_requested_human"
+        if response.needs_human:
+            return "llm_requested"
+        return "unknown"
+
+    def _handoff_product_source(self, backend_context: CommercialContext) -> str:
+        product = backend_context.selected_product
+        if product is None:
+            return "unknown"
+
+        external_source = getattr(product, "external_source", None)
+        if isinstance(external_source, str) and external_source.strip() != "":
+            normalized = external_source.strip().lower()
+            if normalized in {"local", "mcp", "crm"}:
+                return normalized
+
+        if backend_context.selected_product_is_fallback:
+            return "local"
+
+        return "unknown"
+
+    def _normalize_handoff_strategy(self, value: Any) -> str:
+        if not isinstance(value, str):
+            return "disabled"
+
+        strategy = value.strip().lower()
+        if strategy in {"disabled", "manual_wa_link", "n8n_webhook", "manual_wa_link_and_n8n"}:
+            return strategy
+
+        return "disabled"
+
+    def _normalize_handoff_phone(self, value: Any) -> str:
+        if not isinstance(value, str):
+            return ""
+
+        return "".join(ch for ch in value if ch.isdigit())
+
+    def _normalize_text(self, value: Any) -> str:
+        if not isinstance(value, str):
+            return ""
+
+        return value.strip()
+
+    def _handoff_latency_ms(self, started_at: float) -> int:
+        return int(round((time.perf_counter() - started_at) * 1000))
 
     def _ai_usage_limit_response(self, decision: AiUsageGuardDecision) -> AgentResponse:
         data: dict[str, Any] = {
