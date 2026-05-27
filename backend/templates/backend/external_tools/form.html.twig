@@ -110,16 +110,16 @@
           <div class="field field-full">
             <div class="section-label">Endpoint</div>
             <div class="section-note">Indica la URL pública que resolverá la herramienta según su tipo.</div>
-            <div class="field">
-              <label for="tool-webhook">Webhook URL</label>
-              <input id="tool-webhook" name="webhookUrl" type="url" value="{{ values.webhookUrl }}" maxlength="2048" placeholder="http://host.docker.internal:5680/webhook/sales-agent/contact-context" required>
+              <div class="field">
+                <label for="tool-webhook">Webhook URL</label>
+              <input id="tool-webhook" name="webhookUrl" type="url" value="{{ values.webhookUrl }}" maxlength="2048" placeholder="http://host.docker.internal:5680/webhook/sales-agent/contact-context">
               <div class="field-note">Para `mcp_remote`: URL pública del servidor MCP remoto. En Docker local la URL visible desde navegador puede diferir de la que resuelve el contenedor.</div>
               <div class="field-note">Para `handoff_webhook`: endpoint n8n que recibirá eventos `sales_agent.handoff_requested`.</div>
               <div class="field-note">Para `contact_context`: compatibilidad antigua; usa la URL esperada por el flujo legado.</div>
             </div>
             <div class="field mt-4">
               <label for="tool-timeout">Timeout segundos</label>
-              <input id="tool-timeout" name="timeoutSeconds" type="number" min="1" max="30" step="1" value="{{ values.timeoutSeconds }}" required>
+              <input id="tool-timeout" name="timeoutSeconds" type="number" min="1" max="30" step="1" value="{{ values.timeoutSeconds }}">
               <div class="field-note">Tiempo máximo de espera para la llamada remota.</div>
             </div>
           </div>
@@ -132,7 +132,7 @@
             <div class="form-grid">
               <div class="field">
                 <label for="tool-auth">Auth type</label>
-                <select id="tool-auth" name="authType" required>
+                <select id="tool-auth" name="authType">
                   <option value="none"{{ values.authType == 'none' ? ' selected' : '' }}>none</option>
                   <option value="bearer"{{ values.authType == 'bearer' ? ' selected' : '' }}>bearer</option>
                 </select>
