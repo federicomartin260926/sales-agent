@@ -16,17 +16,17 @@
       </div>
       <nav class="nav">
         {% if active_tenant is not null %}
-          <div class="nav-section">
-            <div class="nav-section-title">Negocio activo</div>
-            <div class="nav-section-items">
-              <a class="{{ active_nav == 'dashboard' ? 'active' : '' }}" href="/backend/dashboard">Dashboard</a>
-              {% if can_manage_active_tenant|default(false) %}
-                <a class="{{ active_nav in ['tenants', 'tenant'] ? 'active' : '' }} nav-tenant-link" href="{{ active_tenant.edit_url }}">Negocio</a>
-              {% endif %}
-              <a class="{{ active_nav == 'playbooks' ? 'active' : '' }}" href="/backend/playbooks">Guías comerciales</a>
-              <a class="{{ active_nav == 'products' ? 'active' : '' }}" href="/backend/products">Productos / servicios</a>
-              <a class="{{ active_nav == 'entry-points' ? 'active' : '' }}" href="/backend/entry-points">Puntos de entrada</a>
-            </div>
+            <div class="nav-section">
+              <div class="nav-section-title">Negocio activo</div>
+              <div class="nav-section-items">
+                <a class="{{ active_nav == 'dashboard' ? 'active' : '' }}" href="/backend/dashboard">Dashboard</a>
+                {% if can_manage_active_tenant|default(false) %}
+                  <a class="{{ active_nav == 'tenant' ? 'active' : '' }} nav-tenant-link" href="{{ active_tenant.edit_url }}">Negocio</a>
+                {% endif %}
+                <a class="{{ active_nav == 'playbooks' ? 'active' : '' }}" href="/backend/playbooks">Guías comerciales</a>
+                <a class="{{ active_nav == 'products' ? 'active' : '' }}" href="/backend/products">Productos / servicios</a>
+                <a class="{{ active_nav == 'entry-points' ? 'active' : '' }}" href="/backend/entry-points">Puntos de entrada</a>
+              </div>
           </div>
 
           {% if can_manage_active_tenant|default(false) or is_super_admin|default(false) %}

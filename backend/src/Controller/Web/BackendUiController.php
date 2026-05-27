@@ -813,7 +813,8 @@ final class BackendUiController
             '/backend/tenants/'.$tenant->getId()->toRfc4122().'/edit',
             $values,
             $error,
-            $aiUsageData
+            $aiUsageData,
+            'tenant'
         );
     }
 
@@ -2583,6 +2584,7 @@ final class BackendUiController
         array $values,
         ?string $error = null,
         array $aiUsage = [],
+        string $activeNav = 'tenants',
     ): Response {
         $aiUsage = array_replace(
             [
@@ -2617,7 +2619,7 @@ final class BackendUiController
             'ai_usage' => $aiUsage,
         ]);
 
-        return $this->renderBackendShell($pageTitle, $pageSubtitle, 'tenants', $content);
+        return $this->renderBackendShell($pageTitle, $pageSubtitle, $activeNav, $content);
     }
 
     private function validateTenantForm(array $values, ?Tenant $tenant, ?TenantRepository $tenants): ?string

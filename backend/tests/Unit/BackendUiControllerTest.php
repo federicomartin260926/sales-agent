@@ -938,6 +938,8 @@ final class BackendUiControllerTest extends TestCase
         self::assertStringContainsString('/backend/super-admin/tenants/'.$tenant->getId()->toRfc4122().'/ai', $response->getContent());
         self::assertStringContainsString('/backend/tenants/new', $response->getContent());
         self::assertStringContainsString('/backend/tenants/', $response->getContent());
+        self::assertStringContainsString('<a class="active" href="/backend/tenants">Negocios</a>', $response->getContent());
+        self::assertStringNotContainsString('nav-tenant-link">Negocio</a>', $response->getContent());
         self::assertStringContainsString('Contexto:', $response->getContent());
         self::assertStringContainsString('Tono:', $response->getContent());
     }
@@ -1172,7 +1174,7 @@ final class BackendUiControllerTest extends TestCase
             static fn (string $id): CsrfToken => new CsrfToken($id, 'token-'.$id)
         );
 
-        $controller = $this->createController($security, null, null, $csrfTokenManager);
+        $controller = $this->createControllerForActiveTenant($security, $tenant, null, null, $csrfTokenManager);
         $response = $controller->tenantEdit(
             $tenant->getId()->toRfc4122(),
             Request::create('/backend/tenants/'.$tenant->getId()->toRfc4122().'/edit', 'GET'),
@@ -1213,6 +1215,10 @@ final class BackendUiControllerTest extends TestCase
         self::assertStringContainsString('value="123456789012345"', $response->getContent());
         self::assertStringContainsString('value="34612345678"', $response->getContent());
         self::assertStringContainsString('action="/backend/tenants/'.$tenant->getId()->toRfc4122().'/edit"', $response->getContent());
+        self::assertStringContainsString('nav-tenant-link', $response->getContent());
+        self::assertStringContainsString('href="/backend/tenants/'.$tenant->getId()->toRfc4122().'/edit"', $response->getContent());
+        self::assertStringContainsString('>Negocio</a>', $response->getContent());
+        self::assertStringNotContainsString('<a class="active" href="/backend/tenants">Negocios</a>', $response->getContent());
         self::assertCount(1, $aiUsagePolicyRepository->savedPolicies);
     }
 
