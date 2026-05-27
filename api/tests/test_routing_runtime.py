@@ -287,17 +287,7 @@ async def test_runtime_replaces_discovery_reply_for_explicit_handoff_request(mon
         return backend_context
 
     async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None):
-        return AgentResponse(
-            reply="¿Qué servicio necesitas?",
-            intent="open_question",
-            score=0.95,
-            action="handoff_to_human",
-            needs_human=True,
-            data_to_save={},
-            provider="openai",
-            model="gpt-4.1-mini",
-            latency_ms=42,
-        )
+        raise AssertionError("LLM should not be called for explicit handoff requests")
 
     class FakeResponse:
         def raise_for_status(self) -> None:
@@ -333,6 +323,8 @@ async def test_runtime_replaces_discovery_reply_for_explicit_handoff_request(mon
 
     assert response.needs_human is True
     assert response.intent == "handoff"
+    assert response.action == "handoff_to_human"
+    assert response.data_to_save["local_response_short_circuited"] is True
     assert "https://wa.me/34612345678" in response.reply
     assert "qué servicio" not in response.reply.lower()
     assert ("get_external_tool", ("tenant-1", "handoff_webhook")) in backend.calls

@@ -130,39 +130,50 @@ class AgentRuntime:
         if agenda_response is not None:
             return agenda_response
 
-        ai_usage_decision = await self.ai_usage_guard.evaluate(backend_context.tenant.id if backend_context is not None else None)
-        if not ai_usage_decision.allowed:
-            response = self._ai_usage_limit_response(ai_usage_decision)
-            if conversation_id is not None:
-                await self.backend_client.create_conversation_message(
-                    BackendConversationMessagePayload(
-                        conversation_id=conversation_id,
-                        direction="outbound",
-                        role="assistant",
-                        message_type="text",
-                        body=response.reply,
-                        intent=response.intent,
-                        score=self._score_to_integer(response.score),
-                        action=response.action,
-                        needs_human=response.needs_human,
-                        raw_payload=response.model_dump(),
-                        metadata=self._outbound_metadata(response, mcp_config),
-                    )
-                )
-            return response
-
-        started_at = time.perf_counter()
-        response = await self.decision_engine.decide(
-            payload,
-            routing=routing,
-            backend_context=backend_context,
-            contact_context=None,
-            mcp_config=mcp_config,
-        )
-        decision_latency_ms = int(round((time.perf_counter() - started_at) * 1000))
-        latency_ms = response.latency_ms if response.latency_ms is not None else decision_latency_ms
         explicit_handoff_request = self._is_explicit_handoff_request(payload)
-        response = self._normalize_handoff_response(response, explicit_handoff_request)
+        handoff_config = self._handoff_config_from_tenant(backend_context.tenant if backend_context is not None else None)
+        short_circuited_handoff = explicit_handoff_request and handoff_config is not None
+
+        if short_circuited_handoff:
+            response = self._build_local_handoff_response(handoff_config)
+            mcp_config = None
+            latency_ms = response.latency_ms if response.latency_ms is not None else 0
+        else:
+            mcp_config = await self.backend_client.fetch_mcp_config(routing.tenant_id)
+            self._log_mcp_config(routing.tenant_id, mcp_config)
+
+            ai_usage_decision = await self.ai_usage_guard.evaluate(backend_context.tenant.id if backend_context is not None else None)
+            if not ai_usage_decision.allowed:
+                response = self._ai_usage_limit_response(ai_usage_decision)
+                if conversation_id is not None:
+                    await self.backend_client.create_conversation_message(
+                        BackendConversationMessagePayload(
+                            conversation_id=conversation_id,
+                            direction="outbound",
+                            role="assistant",
+                            message_type="text",
+                            body=response.reply,
+                            intent=response.intent,
+                            score=self._score_to_integer(response.score),
+                            action=response.action,
+                            needs_human=response.needs_human,
+                            raw_payload=response.model_dump(),
+                            metadata=self._outbound_metadata(response, mcp_config),
+                        )
+                    )
+                return response
+
+            started_at = time.perf_counter()
+            response = await self.decision_engine.decide(
+                payload,
+                routing=routing,
+                backend_context=backend_context,
+                contact_context=None,
+                mcp_config=mcp_config,
+            )
+            decision_latency_ms = int(round((time.perf_counter() - started_at) * 1000))
+            latency_ms = response.latency_ms if response.latency_ms is not None else decision_latency_ms
+            response = self._normalize_handoff_response(response, explicit_handoff_request)
 
         response = await self._apply_handoff_policy(
             response,
@@ -446,6 +457,22 @@ class AgentRuntime:
             return message
 
         return f"{message} {link}"
+
+    def _build_local_handoff_response(self, handoff_config: dict[str, Any]) -> AgentResponse:
+        return AgentResponse(
+            reply=self._build_direct_handoff_reply(handoff_config),
+            intent="handoff",
+            score=1.0,
+            action="handoff_to_human",
+            needs_human=True,
+            data_to_save={
+                "local_response_short_circuited": True,
+                "handoff_short_circuited": True,
+            },
+            provider="rule_based",
+            model=None,
+            latency_ms=0,
+        )
 
     def _normalize_handoff_response(self, response: AgentResponse, explicit_handoff_request: bool) -> AgentResponse:
         if not explicit_handoff_request:
