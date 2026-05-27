@@ -123,7 +123,7 @@
       : introBase;
     const toneHint = tone !== '' ? ` Veo que ya tienes un tono definido como "${tone}".` : '';
 
-    return `${intro}${toneHint} Para empezar:
+    return `${intro}${toneHint} La ficha está separada en Ficha negocio, Canales, Handoff y Uso IA. Para empezar:
 1. ¿Cuál es el nombre comercial del negocio?
 2. ¿Qué vende u ofrece?
 3. ¿En qué ciudad o zona atiende?

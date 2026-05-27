@@ -35,6 +35,12 @@
         <button class="nav-link active" id="tenant-business-tab" data-bs-toggle="tab" data-bs-target="#tenant-business-panel" type="button" role="tab" aria-controls="tenant-business-panel" aria-selected="true">Ficha negocio</button>
       </li>
       <li class="nav-item" role="presentation">
+        <button class="nav-link" id="tenant-channels-tab" data-bs-toggle="tab" data-bs-target="#tenant-channels-panel" type="button" role="tab" aria-controls="tenant-channels-panel" aria-selected="false">Canales</button>
+      </li>
+      <li class="nav-item" role="presentation">
+        <button class="nav-link" id="tenant-handoff-tab" data-bs-toggle="tab" data-bs-target="#tenant-handoff-panel" type="button" role="tab" aria-controls="tenant-handoff-panel" aria-selected="false">Handoff</button>
+      </li>
+      <li class="nav-item" role="presentation">
         <button class="nav-link" id="tenant-ai-tab" data-bs-toggle="tab" data-bs-target="#tenant-ai-panel" type="button" role="tab" aria-controls="tenant-ai-panel" aria-selected="false">Uso IA</button>
       </li>
     </ul>
@@ -86,7 +92,7 @@
                 <div class="policy-tablist" role="tablist" aria-label="Política comercial">
                   <button class="policy-tab active" type="button" role="tab" aria-selected="true" data-policy-tab="positioning">Welcome</button>
                   <button class="policy-tab" type="button" role="tab" aria-selected="false" data-policy-tab="qualification">Qualification</button>
-                  <button class="policy-tab" type="button" role="tab" aria-selected="false" data-policy-tab="handoff">Handoff</button>
+                  <button class="policy-tab" type="button" role="tab" aria-selected="false" data-policy-tab="handoff">Criterios de derivación</button>
                   <button class="policy-tab" type="button" role="tab" aria-selected="false" data-policy-tab="boundaries">Límites</button>
                   <button class="policy-tab" type="button" role="tab" aria-selected="false" data-policy-tab="notes">Notas</button>
                 </div>
@@ -102,9 +108,9 @@
                     <div class="field-note">Lo que el agente debe averiguar para saber si hay encaje real.</div>
                   </div>
                   <div class="policy-panel" role="tabpanel" data-policy-panel="handoff" hidden>
-                    <label for="tenant-policy-handoff">Handoff / derivación</label>
+                    <label for="tenant-policy-handoff">Criterios de derivación</label>
                     <textarea id="tenant-policy-handoff" name="handoffRules" rows="4" maxlength="2000" required placeholder="Cuándo y cómo debe pasar el caso a una persona.">{{ values.handoffRules }}</textarea>
-                    <div class="field-note">Reglas para escalar a humano sin fricción.</div>
+                    <div class="field-note">Cuándo el agente debe derivar a humano. No configura el canal operativo de handoff.</div>
                   </div>
                   <div class="policy-panel" role="tabpanel" data-policy-panel="boundaries" hidden>
                     <label for="tenant-policy-boundaries">Sales boundaries / límites</label>
@@ -169,6 +175,61 @@
                 <textarea id="tenant-human-handoff-message" name="humanHandoffMessage" rows="3" maxlength="4000" placeholder="Prefiero que esto lo revise una persona del equipo.">{{ values.humanHandoffMessage }}</textarea>
                 <div class="field-note">Se añade al mensaje final si el handoff humano está activo. Si lo dejas vacío se usa un fallback seguro. No se mezcla con el token CRM/MCP ni con webhooks n8n.</div>
               </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="tab-pane fade" id="tenant-channels-panel" role="tabpanel" aria-labelledby="tenant-channels-tab" tabindex="0">
+        <div class="field field-full">
+          <div class="section-label">Canal WhatsApp del agente IA</div>
+          <div class="section-note">Configura el canal técnico de Meta y el número público del agente IA para enlaces wa.me.</div>
+          <div class="form-grid">
+            <div class="field">
+              <label for="tenant-whatsapp-phone-number-id">WhatsApp Phone Number ID</label>
+              <input id="tenant-whatsapp-phone-number-id" name="whatsappPhoneNumberId" type="text" value="{{ values.whatsappPhoneNumberId }}" maxlength="255" placeholder="123456789012345">
+              <div class="field-note">ID técnico de Meta WhatsApp Cloud API usado para enrutar mensajes entrantes al negocio correcto.</div>
+            </div>
+            <div class="field">
+              <label for="tenant-whatsapp-public-phone">WhatsApp público del agente IA</label>
+              <input id="tenant-whatsapp-public-phone" name="whatsappPublicPhone" type="text" value="{{ values.whatsappPublicPhone }}" maxlength="50" placeholder="34612345678">
+              <div class="field-note">Número internacional usado para generar enlaces wa.me hacia el agente IA o puntos de entrada. No es el número humano de atención manual.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="tab-pane fade" id="tenant-handoff-panel" role="tabpanel" aria-labelledby="tenant-handoff-tab" tabindex="0">
+        <div class="field field-full">
+          <div class="section-label">Handoff humano</div>
+          <div class="section-note">Derivación manual a una persona del equipo sin mezclarla con el canal WhatsApp del agente IA.</div>
+          <div class="form-grid">
+            <div class="field field-check">
+              <label for="tenant-human-handoff-enabled">Habilitar handoff humano</label>
+              <label class="checkbox-inline" for="tenant-human-handoff-enabled">
+                <input id="tenant-human-handoff-enabled" name="humanHandoffEnabled" type="checkbox" value="1"{% if values.humanHandoffEnabled %} checked{% endif %}>
+                <span>Permitir derivación manual</span>
+              </label>
+            </div>
+            <div class="field">
+              <label for="tenant-human-handoff-strategy">Estrategia de handoff</label>
+              <select id="tenant-human-handoff-strategy" name="humanHandoffStrategy">
+                <option value="disabled"{% if values.humanHandoffStrategy == 'disabled' %} selected{% endif %}>Desactivado</option>
+                <option value="manual_wa_link"{% if values.humanHandoffStrategy == 'manual_wa_link' %} selected{% endif %}>Enlace manual wa.me</option>
+                <option value="n8n_webhook"{% if values.humanHandoffStrategy == 'n8n_webhook' %} selected{% endif %}>Webhook n8n</option>
+                <option value="manual_wa_link_and_n8n"{% if values.humanHandoffStrategy == 'manual_wa_link_and_n8n' %} selected{% endif %}>Enlace wa.me + webhook n8n</option>
+              </select>
+              <div class="field-note">Controla si el handoff añade enlace manual, dispara webhook o hace ambas cosas.</div>
+            </div>
+            <div class="field">
+              <label for="tenant-human-handoff-whatsapp-public">WhatsApp humano para derivaciones</label>
+              <input id="tenant-human-handoff-whatsapp-public" name="humanHandoffWhatsappPublic" type="text" value="{{ values.humanHandoffWhatsappPublic }}" maxlength="50" placeholder="+34 612 345 678">
+              <div class="field-note">Este número es distinto del WhatsApp Cloud del agente IA. Se usa para derivar conversaciones a una persona mediante enlace wa.me.</div>
+            </div>
+            <div class="field field-full">
+              <label for="tenant-human-handoff-message">Mensaje de derivación</label>
+              <textarea id="tenant-human-handoff-message" name="humanHandoffMessage" rows="3" maxlength="4000" placeholder="Prefiero que esto lo revise una persona del equipo.">{{ values.humanHandoffMessage }}</textarea>
+              <div class="field-note">No se mezcla con el token CRM/MCP ni con webhooks n8n.</div>
             </div>
           </div>
         </div>

@@ -1080,6 +1080,7 @@ final class BackendUiControllerTest extends TestCase
         self::assertStringContainsString('WhatsApp público del agente IA', $response->getContent());
         self::assertStringContainsString('WhatsApp humano para derivaciones', $response->getContent());
         self::assertStringContainsString('Estrategia de handoff', $response->getContent());
+        self::assertStringContainsString('Criterios de derivación', $response->getContent());
         self::assertStringContainsString('name="businessContext"', $response->getContent());
         self::assertStringContainsString('name="positioning"', $response->getContent());
         self::assertStringContainsString('name="qualificationFocus"', $response->getContent());
@@ -1089,7 +1090,7 @@ final class BackendUiControllerTest extends TestCase
         self::assertStringContainsString('name="isActive"', $response->getContent());
         self::assertStringContainsString('Crear negocio', $response->getContent());
         self::assertStringContainsString('data-tenant-draft-assistant', $response->getContent());
-        self::assertStringContainsString('data-initial-message="Hola. Te ayudaré a completar la ficha del negocio con identidad, contexto, WhatsApp del agente IA, handoff humano y política comercial.', $response->getContent());
+        self::assertStringContainsString('Ficha negocio, Canales, Handoff y Uso IA', $response->getContent());
         self::assertStringContainsString('No se guardará hasta que pulses Crear negocio.', $response->getContent());
         self::assertStringNotContainsString('Modo borrador', $response->getContent());
     }
@@ -1197,14 +1198,18 @@ final class BackendUiControllerTest extends TestCase
         self::assertStringContainsString('federico-martin-demo', $response->getContent());
         self::assertStringContainsString('Profesional', $response->getContent());
         self::assertStringContainsString('Ficha negocio', $response->getContent());
+        self::assertStringContainsString('Canales', $response->getContent());
+        self::assertStringContainsString('Handoff', $response->getContent());
         self::assertStringContainsString('Uso IA', $response->getContent());
         self::assertStringContainsString('Identidad del negocio', $response->getContent());
         self::assertStringContainsString('Contexto comercial', $response->getContent());
         self::assertStringContainsString('Canal WhatsApp del agente IA', $response->getContent());
         self::assertStringContainsString('Handoff humano', $response->getContent());
         self::assertStringContainsString('data-bs-target="#tenant-business-panel"', $response->getContent());
+        self::assertStringContainsString('data-bs-target="#tenant-channels-panel"', $response->getContent());
+        self::assertStringContainsString('data-bs-target="#tenant-handoff-panel"', $response->getContent());
         self::assertStringContainsString('data-bs-target="#tenant-ai-panel"', $response->getContent());
-        self::assertStringContainsString('data-initial-message="Hola. Te ayudaré a completar la ficha del negocio con identidad, contexto, WhatsApp del agente IA, handoff humano y política comercial.', $response->getContent());
+        self::assertStringContainsString('Ficha negocio, Canales, Handoff y Uso IA', $response->getContent());
         self::assertStringContainsString('No se guardará hasta que pulses Guardar cambios.', $response->getContent());
         self::assertStringContainsString('name="aiEnabled"', $response->getContent());
         self::assertStringContainsString('name="dailyCostLimitEur"', $response->getContent());

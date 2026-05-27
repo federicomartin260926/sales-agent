@@ -2621,7 +2621,7 @@ final class BackendUiController
             'csrf_token' => $this->tenantTokenValue($actionUrl),
             'ai_assistant_endpoint' => '/backend/ai/tenant-draft-assistant',
             'ai_assistant_token' => $this->tenantDraftAssistantTokenValue(),
-            'ai_assistant_initial_message' => 'Hola. Te ayudaré a completar la ficha del negocio con identidad, contexto, WhatsApp del agente IA, handoff humano y política comercial. Si no estás seguro con un WhatsApp o con el handoff, déjalo en blanco y lo revisamos después.',
+            'ai_assistant_initial_message' => 'Hola. Te ayudaré a completar la ficha del negocio. La pantalla está separada en Ficha negocio, Canales, Handoff y Uso IA. Si no estás seguro con un WhatsApp o con el handoff, déjalo en blanco y lo revisamos después.',
             'ai_assistant_compose_note' => sprintf('La ficha se rellena en pantalla. No se guardará hasta que pulses %s.', $submitLabel),
             'values' => $values,
             'submit_label' => $submitLabel,
