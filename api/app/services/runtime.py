@@ -50,6 +50,16 @@ class AgentRuntime:
                 data_to_save=self._missing_routing_data(payload),
             )
 
+        if routing.status == "misconfigured_routing":
+            return AgentResponse(
+                reply="La configuración de routing es inconsistente: el entrypoint_ref y el phone_number_id apuntan a tenants distintos. Revisa qué negocio debe usar ese número.",
+                intent="routing",
+                score=0.0,
+                action="misconfigured_routing",
+                needs_human=True,
+                data_to_save=self._misconfigured_routing_data(payload, routing),
+            )
+
         backend_context = await self.backend_client.fetch_tenant_context(
             routing.tenant_id,
             routing.product_id,
@@ -223,6 +233,23 @@ class AgentRuntime:
             data["external_channel_id"] = payload.external_channel_id.strip()
         if payload.entrypoint_ref is not None and payload.entrypoint_ref.strip() != "":
             data["entrypoint_ref"] = payload.entrypoint_ref.strip()
+
+        return data
+
+    def _misconfigured_routing_data(self, payload: AgentRequest, routing: RoutingContext) -> dict[str, str]:
+        data = {
+            "topic": "misconfigured_routing",
+            "customer_phone": payload.contact.phone,
+            "tenant_id": routing.tenant_id,
+        }
+        if routing.tenant_slug is not None and routing.tenant_slug.strip() != "":
+            data["tenant_slug"] = routing.tenant_slug.strip()
+        if routing.external_channel_id is not None and routing.external_channel_id.strip() != "":
+            data["external_channel_id"] = routing.external_channel_id.strip()
+        if routing.entrypoint_ref is not None and routing.entrypoint_ref.strip() != "":
+            data["entrypoint_ref"] = routing.entrypoint_ref.strip()
+        if payload.channel_type is not None and payload.channel_type.strip() != "":
+            data["channel_type"] = payload.channel_type.strip()
 
         return data
 

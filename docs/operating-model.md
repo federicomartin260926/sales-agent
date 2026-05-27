@@ -218,6 +218,10 @@ El runtime resuelve en este orden:
 3. `tenant_id` explícito como fallback controlado
 4. error estructurado con `needs_human = true` si no hay contexto suficiente
 
+Si llegan a la vez `entrypoint_ref` y `phone_number_id`, el runtime debe comprobar que ambos apunten al mismo tenant. Si no coinciden, la respuesta debe cortar con un estado controlado de routing inconsistente (`misconfigured_routing`) en vez de enrutarse silenciosamente.
+
+Para WhatsApp Cloud real, `phone_number_id` es la señal principal de inbound orgánico y debe ser único por tenant configurado. En desarrollo o sandbox, cuando Meta solo ofrece un número de prueba, la forma segura de operar es dejar `whatsappPhoneNumberId` vacío en los tenants no usados y asignarlo manualmente solo al tenant que se esté probando.
+
 ### 5. Resolución de producto y playbook
 
 El orden de prioridad es:

@@ -41,9 +41,39 @@ class RuntimeRoutingResolver:
         if entrypoint_ref is not None:
             ref_context = await self.backend_client.resolve_entrypoint_ref(entrypoint_ref)
             if ref_context is not None:
+                external_channel_id = self._resolve_external_channel_id(payload)
+                if external_channel_id is not None:
+                    channel_context = await self.backend_client.resolve_whatsapp_phone(external_channel_id)
+                    if isinstance(channel_context, dict) and channel_context.get("tenant_id"):
+                        channel_tenant_id = str(channel_context["tenant_id"]).strip()
+                        if channel_tenant_id != "" and channel_tenant_id != ref_context.tenant_id:
+                            return RoutingContext(
+                                tenant_id=ref_context.tenant_id,
+                                tenant_slug=ref_context.tenant_slug,
+                                external_channel_id=external_channel_id,
+                                product_id=ref_context.product_id,
+                                product_name=ref_context.product_name,
+                                playbook_id=ref_context.playbook_id,
+                                entry_point_id=ref_context.entry_point_id,
+                                entry_point_code=ref_context.entry_point_code,
+                                entry_point_utm_id=ref_context.entry_point_utm_id,
+                                entrypoint_ref=entrypoint_ref,
+                                crm_branch_ref=ref_context.crm_branch_ref,
+                                utm_source=ref_context.utm_source,
+                                utm_medium=ref_context.utm_medium,
+                                utm_campaign=ref_context.utm_campaign,
+                                utm_term=ref_context.utm_term,
+                                utm_content=ref_context.utm_content,
+                                gclid=ref_context.gclid,
+                                fbclid=ref_context.fbclid,
+                                status="misconfigured_routing",
+                                source="entrypoint_ref",
+                            )
+
                 return RoutingContext(
                     tenant_id=ref_context.tenant_id,
                     tenant_slug=ref_context.tenant_slug,
+                    external_channel_id=external_channel_id,
                     product_id=ref_context.product_id,
                     product_name=ref_context.product_name,
                     playbook_id=ref_context.playbook_id,

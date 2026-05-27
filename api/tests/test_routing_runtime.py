@@ -132,7 +132,7 @@ async def test_runtime_resolves_entrypoint_ref_before_tenant_or_phone():
     assert routing.source == "entrypoint_ref"
     assert routing.tenant_id == "tenant-1"
     assert routing.entrypoint_ref == "abc123"
-    assert backend.calls == [("resolve_entrypoint_ref", ("abc123",))]
+    assert backend.calls == [("resolve_entrypoint_ref", ("abc123",)), ("resolve_whatsapp_phone", ("123",))]
 
 
 @pytest.mark.asyncio
@@ -152,6 +152,46 @@ async def test_runtime_resolves_whatsapp_phone_when_ref_is_missing():
     assert routing.source == "whatsapp_phone_number_id"
     assert routing.tenant_id == "tenant-1"
     assert backend.calls == [("resolve_entrypoint_ref", ("missing-ref",)), ("resolve_whatsapp_phone", ("phone-number-id-1",))]
+
+
+@pytest.mark.asyncio
+async def test_runtime_rejects_mismatched_entrypoint_and_whatsapp_phone():
+    backend = RecordingBackendClient(
+        ref_context=BackendRoutingEntryPointUtmContext.model_validate(
+            {
+                "entry_point_utm_id": "utm-1",
+                "ref": "abc123",
+                "entry_point_id": "entrypoint-1",
+                "entry_point_code": "crm-demo",
+                "tenant_id": "tenant-1",
+                "tenant_slug": "negocio-demo",
+                "product_id": "product-1",
+                "product_name": "CRM Automation",
+                "playbook_id": "playbook-1",
+                "crm_branch_ref": "branch-1",
+                "utm_source": "google",
+                "utm_medium": "cpc",
+                "utm_campaign": "crm_pymes",
+                "status": "matched",
+            }
+        ),
+        phone_context={"tenant_id": "tenant-2", "tenant_slug": "otro-negocio"},
+    )
+    runtime = AgentRuntime(backend, RuntimeRoutingResolver(backend), DecisionEngine(backend))  # type: ignore[arg-type]
+    payload = AgentRequest(
+        entrypoint_ref="abc123",
+        external_channel_id="phone-number-id-1",
+        message="Hola",
+        contact=Contact(phone="+34999999999"),
+    )
+
+    response = await runtime.respond(payload)
+
+    assert response.action == "misconfigured_routing"
+    assert response.intent == "routing"
+    assert response.needs_human is True
+    assert "inconsistente" in response.reply
+    assert backend.calls == [("resolve_entrypoint_ref", ("abc123",)), ("resolve_whatsapp_phone", ("phone-number-id-1",))]
 
 
 @pytest.mark.asyncio

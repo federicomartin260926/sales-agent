@@ -215,7 +215,11 @@ La UI del backend usa esta terminología para usuarios no técnicos:
 
 ## Routing y atribución
 
+- `entrypoint_ref` tiene prioridad sobre el resto de señales cuando existe y está alineado con el entrypoint/campaña
+- `phone_number_id` / `external_channel_id` es la señal principal para inbound orgánico de WhatsApp Cloud
+- `tenant_id` queda como fallback técnico para pruebas internas o payloads controlados
 - `Tenant.whatsappPhoneNumberId` resuelve el negocio cuando llega un mensaje desde Meta
+- el formulario de negocio valida que `whatsappPhoneNumberId` no se duplique entre tenants; si el campo está vacío se permite guardar
 - `Tenant.whatsappPublicPhone` define el número público usado en el `wa.me` redirect
 - `EntryPoint` representa una campaña, botón, QR o enlace y apunta a un `Product`
 - `EntryPointUtm` conserva UTMs, `gclid`, `fbclid` y el `ref` generado por click
@@ -228,6 +232,8 @@ La UI del backend usa esta terminología para usuarios no técnicos:
 - `Product.externalSource` y `Product.externalReference` permiten alinear catálogos importados con CRM sin usar UUIDs ajenos
 
 `AI_BILLING_MODE=byok|managed` se documenta como modo global de despliegue. En `managed` se recomienda una API key o proyecto OpenAI por instalación para aislar consumo y reporting; la limitación efectiva sigue siendo por tenant.
+
+Cuando el runtime recibe `entrypoint_ref` y `phone_number_id` a la vez, debe ser coherente: si cada señal apunta a un tenant distinto, la respuesta de routing se corta como configuración inconsistente en lugar de enrutar silenciosamente.
 
 La política IA por tenant se edita desde la ficha de `Negocio` en `/backend/tenants/{id}/edit`, dentro del bloque `Uso IA`.
 Ese bloque incluye métricas de consumo de solo lectura basadas en `AiUsageEvent`: coste hoy/mes, tokens hoy/mes y los 5 eventos más recientes.

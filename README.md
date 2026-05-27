@@ -256,10 +256,12 @@ El flujo esperado es:
 2. el backend crea un `EntryPointUtm` con `ref` corto y UTMs
 3. el redirect lleva al usuario a `wa.me` con `Ref: <ref>` dentro del mensaje
 4. `wa-gateway-api` recibe la respuesta entrante
-5. `sales-agent/api` resuelve `entrypoint_ref` o `phone_number_id`
-6. el runtime obtiene `Tenant` desde `EntryPoint -> Product` o desde `Tenant.whatsappPhoneNumberId`
+5. `sales-agent/api` resuelve primero `entrypoint_ref`, luego `phone_number_id` / `external_channel_id` y por último `tenant_id` como fallback técnico
+6. el runtime obtiene `Tenant` desde `EntryPoint -> Product` o desde `Tenant.whatsappPhoneNumberId`; si el `entrypoint_ref` y el `phone_number_id` apuntan a tenants distintos, el runtime corta con un error controlado de routing
 7. la conversación mínima queda persistida en `Conversation`
 8. los productos importados desde CRM usan `slug` como fallback local y `externalReference` como clave estable
+
+Para WhatsApp real, cada tenant debe tener un `whatsappPhoneNumberId` único. En pruebas con un único número de Meta, la forma operativa es dejar el campo vacío en los tenants no usados y asignarlo manualmente solo al tenant que se esté probando.
 
 ## Documentación adicional
 
