@@ -205,6 +205,9 @@ async def test_llm_client_uses_openai_responses_with_mcp_tools(monkeypatch):
     assert result.estimated_cost is not None
     assert len(result.tool_traces) == 1
     assert result.tool_traces[0].tool_name == "appointment_availability"
+    assert result.tool_traces[0].status == "completed"
+    assert result.tool_traces[0].output == {"found": True}
+    assert result.tool_traces[0].raw["output"] == {"found": True}
 
 
 @pytest.mark.asyncio
