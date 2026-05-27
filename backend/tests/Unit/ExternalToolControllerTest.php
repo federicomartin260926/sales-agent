@@ -984,4 +984,43 @@ final class ExternalToolControllerTest extends TestCase
         self::assertStringContainsString('provider_not_supported', $body);
         self::assertStringContainsString('provider: ollama', $body);
     }
+
+    public function testHandoffWebhookDoesNotPersistBearerTokenEvenIfToolHadOneBefore(): void
+    {
+        $tenant = new Tenant('Tech Investments', 'tech-investments');
+        $tool = new ExternalTool($tenant, 'Handoff webhook', 'handoff_webhook', 'n8n_webhook');
+        $tool->setBearerToken('should-not-survive');
+
+        $security = $this->createStub(Security::class);
+        $security->method('isGranted')->willReturn(true);
+        $controller = $this->createController($security);
+
+        $method = new \ReflectionMethod($controller, 'applyToolFormValues');
+        $method->setAccessible(true);
+        $method->invoke($controller, $tool, [
+            'name' => 'Handoff webhook',
+            'tenantId' => $tenant->getId()->toRfc4122(),
+            'type' => 'handoff_webhook',
+            'provider' => 'n8n_webhook',
+            'webhookUrl' => 'https://n8n.example.test/webhook/handoff',
+            'authType' => 'none',
+            'bearerToken' => '',
+            'clearBearerToken' => false,
+            'timeoutSeconds' => '5',
+            'isActive' => true,
+            'isRuntimeDefault' => false,
+            'config' => '{}',
+            'serverLabel' => '',
+            'allowedTools' => '',
+            'requireApproval' => 'auto',
+            'enabledForLlm' => false,
+            'notes' => '',
+        ], false, $tenant);
+
+        self::assertSame('handoff_webhook', $tool->getType());
+        self::assertSame('n8n_webhook', $tool->getProvider());
+        self::assertSame('https://n8n.example.test/webhook/handoff', $tool->getWebhookUrl());
+        self::assertNull($tool->getAuthType());
+        self::assertNull($tool->getBearerToken());
+    }
 }

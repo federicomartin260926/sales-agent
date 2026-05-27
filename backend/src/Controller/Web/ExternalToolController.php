@@ -370,13 +370,17 @@ final class ExternalToolController extends AbstractController
         $config = $tool?->getConfig() ?? [];
         $tenantRuntimeDefault = $tenant instanceof Tenant ? $this->externalTools->findRuntimeDefaultMcpByTenant($tenant) : null;
         $type = $tool?->getType() ?? self::MCP_TOOL_TYPE;
+        $authType = $tool?->getAuthType() ?? ($tool?->hasDownstreamAuthorizationToken() ? 'bearer' : 'none');
+        if ($type === self::HANDOFF_TOOL_TYPE) {
+            $authType = 'none';
+        }
         return [
             'name' => $tool?->getName() ?? '',
             'tenantId' => $tenant?->getId()->toRfc4122() ?? $tool?->getTenant()?->getId()->toRfc4122() ?? '',
             'type' => $type,
             'provider' => $tool?->getProvider() ?? ($type === self::MCP_TOOL_TYPE ? self::MCP_PROVIDER : 'n8n_webhook'),
             'webhookUrl' => $tool?->getWebhookUrl() ?? '',
-            'authType' => $tool?->getAuthType() ?? ($tool?->hasDownstreamAuthorizationToken() ? 'bearer' : 'none'),
+            'authType' => $authType,
             'bearerToken' => '',
             'clearBearerToken' => false,
             'timeoutSeconds' => (string) ($tool?->getTimeoutSeconds() ?? 5),
@@ -500,6 +504,10 @@ final class ExternalToolController extends AbstractController
             if ($values['authType'] !== 'none') {
                 $errors[] = 'handoff_webhook no admite bearer token en esta primera fase.';
             }
+
+            if ($values['bearerToken'] !== '') {
+                $errors[] = 'handoff_webhook no admite bearer token.';
+            }
         }
 
         if ($values['authType'] === 'bearer' && $tool === null && $values['bearerToken'] === '') {
@@ -521,7 +529,9 @@ final class ExternalToolController extends AbstractController
         $tool->setProvider($values['provider']);
         $tool->setWebhookUrl($values['webhookUrl'] !== '' ? $values['webhookUrl'] : null);
         $effectiveAuthType = $values['authType'];
-        if ($effectiveAuthType === 'none' && ($values['bearerToken'] !== '' || $tool->hasDownstreamAuthorizationToken())) {
+        if ($values['type'] === self::HANDOFF_TOOL_TYPE) {
+            $effectiveAuthType = 'none';
+        } elseif ($effectiveAuthType === 'none' && ($values['bearerToken'] !== '' || $tool->hasDownstreamAuthorizationToken())) {
             $effectiveAuthType = 'bearer';
         }
 
