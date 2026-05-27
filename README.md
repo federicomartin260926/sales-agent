@@ -147,7 +147,7 @@ Handoff humano:
 
 - la política funcional vive en `Tenant`
 - el handoff explícito rule-based añade un enlace `wa.me` hacia un número humano configurado por tenant y no llama al LLM
-- el handoff inferido por LLM queda preparado para usar la tool MCP `handoff_request` cuando exista en MCP y esté en `allowed_tools`
+- el handoff inferido por LLM usa la tool MCP `handoff_request` cuando está disponible en MCP y está en `allowed_tools`
 - el webhook operativo de n8n se mantiene como `ExternalTool` separado como alternativa/fallback
 - el token downstream CRM/MCP sigue siendo tenant-scoped y cifrado; no se reutiliza como auth del webhook de handoff
 - `api/app/services/llm_client.py` sigue pasando la autorización downstream al MCP remoto como header seguro, sin llevar ese token al prompt ni al payload operativo

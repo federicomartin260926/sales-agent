@@ -72,9 +72,9 @@ El runtime LLM mantiene la semántica actual de autorización downstream:
 
 Si una integración necesita proteger el webhook de handoff, debe usar una credencial separada y nombrada explícitamente.
 
-`handoff_request` es un requisito funcional futuro para la estrategia `n8n_webhook` o `manual_wa_link_and_n8n`, no una implementación incluida en esta tarea. Debe existir como tool MCP remota y estar en `allowed_tools` cuando se cablee.
+`handoff_request` es una tool MCP remota disponible para la estrategia `n8n_webhook` o `manual_wa_link_and_n8n`. Debe estar incluida en `allowed_tools` del MCP principal del tenant.
 
-La tool MCP `handoff_request` usará un contrato limpio y explícito para handoffs inferidos por LLM. Su body operativo será distinto del webhook legacy `handoff_webhook`, pero seguirá sin exponer secretos y conservará la separación entre auth de transporte y autorización downstream.
+La tool MCP `handoff_request` usa un contrato limpio y explícito para handoffs inferidos por LLM. Su body operativo es distinto del webhook legacy `handoff_webhook`, pero sigue sin exponer secretos y conserva la separación entre auth de transporte y autorización downstream.
 
 ## Payload n8n
 
