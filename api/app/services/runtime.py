@@ -161,6 +161,8 @@ class AgentRuntime:
         )
         decision_latency_ms = int(round((time.perf_counter() - started_at) * 1000))
         latency_ms = response.latency_ms if response.latency_ms is not None else decision_latency_ms
+        explicit_handoff_request = self._is_explicit_handoff_request(payload)
+        response = self._normalize_handoff_response(response, explicit_handoff_request)
 
         response = await self._apply_handoff_policy(
             response,
@@ -169,6 +171,7 @@ class AgentRuntime:
             backend_context,
             conversation_result,
             mcp_config,
+            explicit_handoff_request,
         )
 
         if conversation_id is not None:
@@ -327,6 +330,7 @@ class AgentRuntime:
         backend_context: CommercialContext | None,
         conversation_result: dict[str, Any] | None,
         mcp_config: McpRemoteConfig | None,
+        explicit_handoff_request: bool,
     ) -> AgentResponse:
         if not self._should_apply_handoff(response, backend_context):
             return response
@@ -339,7 +343,12 @@ class AgentRuntime:
 
         updated_reply = response.reply
         if self._handoff_allows_manual_link(handoff_config):
-            updated_reply = self._append_handoff_link(updated_reply, handoff_config)
+            if explicit_handoff_request:
+                updated_reply = self._build_direct_handoff_reply(handoff_config)
+            else:
+                updated_reply = self._append_handoff_link(updated_reply, handoff_config)
+        elif explicit_handoff_request:
+            updated_reply = self._build_direct_handoff_reply(handoff_config)
 
         if self._handoff_allows_webhook(handoff_config):
             await self._send_handoff_webhook(
@@ -422,6 +431,43 @@ class AgentRuntime:
 
         separator = " " if not reply.endswith((" ", "\n")) else ""
         return f"{reply}{separator}{message} {link}"
+
+    def _build_direct_handoff_reply(self, handoff_config: dict[str, Any]) -> str:
+        message = self._normalize_text(handoff_config.get("message"))
+        if message == "":
+            message = "Prefiero que esto lo revise una persona del equipo. Te contactarán lo antes posible."
+
+        phone = self._normalize_handoff_phone(handoff_config.get("whatsapp_public"))
+        if phone == "":
+            return message
+
+        link = f"https://wa.me/{phone}"
+        if link in message or "wa.me/" in message:
+            return message
+
+        return f"{message} {link}"
+
+    def _normalize_handoff_response(self, response: AgentResponse, explicit_handoff_request: bool) -> AgentResponse:
+        if not explicit_handoff_request:
+            return response
+
+        if response.action != "handoff_to_human" or not response.needs_human:
+            return response
+
+        if response.intent == "handoff":
+            return response
+
+        return AgentResponse(
+            reply=response.reply,
+            intent="handoff",
+            score=response.score,
+            action=response.action,
+            needs_human=response.needs_human,
+            data_to_save=response.data_to_save,
+            provider=response.provider,
+            model=response.model,
+            latency_ms=response.latency_ms,
+        )
 
     async def _send_handoff_webhook(
         self,
@@ -647,6 +693,30 @@ class AgentRuntime:
             return ""
 
         return "".join(ch for ch in value if ch.isdigit())
+
+    def _is_explicit_handoff_request(self, payload: AgentRequest) -> bool:
+        message = self._normalize_text(payload.message.text).lower()
+        if message == "":
+            return False
+
+        explicit_terms = (
+            "hablar con una persona",
+            "hablar con alguien",
+            "hablar con un humano",
+            "hablar con humano",
+            "quiero hablar con una persona",
+            "quiero hablar con alguien",
+            "quiero hablar con un humano",
+            "quiero hablar con humano",
+            "necesito una persona",
+            "necesito hablar con una persona",
+            "asesor",
+            "agente",
+            "comercial",
+            "humano",
+            "persona",
+        )
+        return any(term in message for term in explicit_terms)
 
     def _normalize_text(self, value: Any) -> str:
         if not isinstance(value, str):
