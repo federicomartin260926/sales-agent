@@ -76,6 +76,27 @@ Si una integración necesita proteger el webhook de handoff, debe usar una crede
 
 La tool MCP `handoff_request` usa un contrato limpio y explícito para handoffs inferidos por LLM. Su body operativo es distinto del webhook legacy `handoff_webhook`, pero sigue sin exponer secretos y conserva la separación entre auth de transporte y autorización downstream.
 
+## Payload recomendado para handoff_request
+
+Cuando el LLM invoque `handoff_request`, debe enviar contexto suficiente para que el agente humano pueda responder sin tener que reconstruir la conversación desde cero.
+
+Campos recomendados:
+
+- `tenant_id`
+- `reason`
+- `priority` si puede inferirse
+- `message` con el último mensaje relevante del usuario
+- `contact.name`
+- `contact.phone`
+- `contact.email` si existe
+- `conversation.id` si existe
+- `conversation.external_conversation_id` si existe
+- `conversation.channel` si existe
+- `conversation.summary` si existe
+- `conversation.last_messages` acotado a las últimas 6-8 interacciones relevantes
+
+No se debe mandar el historial completo. La idea es entregar contexto suficiente para que n8n pueda notificar por Gmail o preparar una tarea humana con material útil, y dejar preparado el mismo payload para un futuro alta de actividad en CRM.
+
 ## Payload n8n
 
 El evento estable es:
@@ -160,3 +181,5 @@ Cuando n8n quiera crear una tarea o handoff en CRM, el contrato esperado será:
 - `assignedOwnerId` opcional
 - `dueAt` opcional
 - `status=pending/open`
+
+El payload recomendado arriba ya está alineado con ese contrato futuro para no duplicar trabajo más adelante.

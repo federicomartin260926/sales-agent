@@ -234,14 +234,22 @@ def test_prompt_builder_includes_handoff_request_guidance_when_available():
         require_approval="never",
     )
 
-    system_prompt, _ = LLMPromptBuilder().build(payload, None, build_backend_context(), None, mcp_config)
+    backend_context = build_backend_context()
+    backend_context.tenant.handoff = {"enabled": True, "strategy": "n8n_webhook"}
+
+    system_prompt, _ = LLMPromptBuilder().build(payload, None, backend_context, None, mcp_config)
 
     assert "handoff_request" in system_prompt
-    assert "frustración" in system_prompt
     assert "priority='high'" in system_prompt
+    assert "contact.name" in system_prompt
+    assert "contact.phone" in system_prompt
+    assert "contact.email" in system_prompt
+    assert "conversation.last_messages" in system_prompt
+    assert "conversation.summary" in system_prompt
+    assert "6 a 8 mensajes recientes" in system_prompt
     assert "peticiones explícitas de hablar con una persona" in system_prompt
     assert "wa.me" in system_prompt
-    assert "no afirmes que has avisado a nadie" in system_prompt
+    assert "no afirmes que has avisado o registrado nada" in system_prompt
 
 
 def test_prompt_builder_shows_candidate_products_and_clarification():
