@@ -127,56 +127,6 @@
             </div>
           </div>
 
-          <div class="field field-full">
-            <div class="section-label">Canal WhatsApp del agente IA</div>
-            <div class="section-note">Configura el canal técnico de Meta y el número público del agente IA para enlaces wa.me.</div>
-            <div class="form-grid">
-              <div class="field">
-                <label for="tenant-whatsapp-phone-number-id">WhatsApp Phone Number ID</label>
-                <input id="tenant-whatsapp-phone-number-id" name="whatsappPhoneNumberId" type="text" value="{{ values.whatsappPhoneNumberId }}" maxlength="255" placeholder="123456789012345">
-                <div class="field-note">ID técnico de Meta WhatsApp Cloud API. Se usa para enrutar mensajes entrantes al negocio correcto.</div>
-              </div>
-              <div class="field">
-                <label for="tenant-whatsapp-public-phone">WhatsApp público del agente IA</label>
-                <input id="tenant-whatsapp-public-phone" name="whatsappPublicPhone" type="text" value="{{ values.whatsappPublicPhone }}" maxlength="50" placeholder="34612345678">
-                <div class="field-note">Número internacional del agente IA para generar enlaces wa.me. No es necesariamente el número humano de atención manual.</div>
-              </div>
-            </div>
-          </div>
-
-          <div class="field field-full">
-            <div class="section-label">Handoff humano</div>
-            <div class="section-note">Derivación manual a una persona del equipo sin mezclarla con el canal WhatsApp del agente IA.</div>
-            <div class="form-grid">
-              <div class="field field-check">
-                <label for="tenant-human-handoff-enabled">Habilitar handoff humano</label>
-                <label class="checkbox-inline" for="tenant-human-handoff-enabled">
-                  <input id="tenant-human-handoff-enabled" name="humanHandoffEnabled" type="checkbox" value="1"{% if values.humanHandoffEnabled %} checked{% endif %}>
-                  <span>Permitir derivación manual</span>
-                </label>
-              </div>
-              <div class="field">
-                <label for="tenant-human-handoff-strategy">Estrategia de handoff</label>
-                <select id="tenant-human-handoff-strategy" name="humanHandoffStrategy">
-                  <option value="disabled"{% if values.humanHandoffStrategy == 'disabled' %} selected{% endif %}>Desactivado</option>
-                  <option value="manual_wa_link"{% if values.humanHandoffStrategy == 'manual_wa_link' %} selected{% endif %}>Enlace manual wa.me</option>
-                  <option value="n8n_webhook"{% if values.humanHandoffStrategy == 'n8n_webhook' %} selected{% endif %}>Webhook n8n</option>
-                  <option value="manual_wa_link_and_n8n"{% if values.humanHandoffStrategy == 'manual_wa_link_and_n8n' %} selected{% endif %}>Enlace wa.me + webhook n8n</option>
-                </select>
-                <div class="field-note">Controla si el handoff añade enlace manual, dispara webhook o hace ambas cosas.</div>
-              </div>
-              <div class="field">
-                <label for="tenant-human-handoff-whatsapp-public">WhatsApp humano para derivaciones</label>
-                <input id="tenant-human-handoff-whatsapp-public" name="humanHandoffWhatsappPublic" type="text" value="{{ values.humanHandoffWhatsappPublic }}" maxlength="50" placeholder="+34 612 345 678">
-                <div class="field-note">Este número es distinto del WhatsApp Cloud del agente IA. Se usa para derivar manualmente conversaciones a una persona mediante enlace wa.me.</div>
-              </div>
-              <div class="field field-full">
-                <label for="tenant-human-handoff-message">Mensaje de derivación</label>
-                <textarea id="tenant-human-handoff-message" name="humanHandoffMessage" rows="3" maxlength="4000" placeholder="Prefiero que esto lo revise una persona del equipo.">{{ values.humanHandoffMessage }}</textarea>
-                <div class="field-note">Se añade al mensaje final si el handoff humano está activo. Si lo dejas vacío se usa un fallback seguro. No se mezcla con el token CRM/MCP ni con webhooks n8n.</div>
-              </div>
-            </div>
-          </div>
         </div>
       </div>
 
