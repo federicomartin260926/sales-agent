@@ -42,24 +42,105 @@
     <div class="tab-content pt-4">
       <div class="tab-pane fade show active" id="tenant-business-panel" role="tabpanel" aria-labelledby="tenant-business-tab" tabindex="0">
         <div class="form-grid">
-          <div class="field">
-            <label for="tenant-name">Nombre del negocio</label>
-            <input id="tenant-name" name="name" type="text" value="{{ values.name }}" maxlength="255" required>
-            <div class="field-note">Nombre visible para el equipo. Ejemplo: "Clínica Demo".</div>
+          <div class="field field-full">
+            <div class="section-label">Identidad del negocio</div>
+            <div class="section-note">Datos básicos para identificar el tenant y su estado operativo.</div>
+            <div class="form-grid">
+              <div class="field">
+                <label for="tenant-name">Nombre del negocio</label>
+                <input id="tenant-name" name="name" type="text" value="{{ values.name }}" maxlength="255" required>
+                <div class="field-note">Nombre visible para el equipo. Ejemplo: "Clínica Demo".</div>
+              </div>
+              <div class="field">
+                <label for="tenant-slug">Slug</label>
+                <input id="tenant-slug" name="slug" type="text" value="{{ values.slug }}" maxlength="180" required>
+                <div class="field-note">Identificador corto, en minúsculas y sin espacios. Ejemplo: "clinica-demo".</div>
+              </div>
+              <div class="field">
+                <label for="tenant-tone">Tono</label>
+                <input id="tenant-tone" name="tone" type="text" value="{{ values.tone }}" maxlength="120" placeholder="Cercano, profesional, directo...">
+                <div class="field-note">Cómo debe expresarse el agente en este negocio.</div>
+              </div>
+              <div class="field field-check">
+                <label for="tenant-active">Estado</label>
+                <label class="checkbox-inline" for="tenant-active">
+                  <input id="tenant-active" name="isActive" type="checkbox" value="1"{% if values.isActive %} checked{% endif %}>
+                  <span>Negocio activo</span>
+                </label>
+              </div>
+            </div>
           </div>
-          <div class="field">
-            <label for="tenant-slug">Slug</label>
-            <input id="tenant-slug" name="slug" type="text" value="{{ values.slug }}" maxlength="180" required>
-            <div class="field-note">Identificador corto, en minúsculas y sin espacios. Ejemplo: "clinica-demo".</div>
+
+          <div class="field field-full">
+            <div class="section-label">Contexto comercial</div>
+            <div class="section-note">Describe el negocio y su política comercial para que el agente actúe con criterio.</div>
+            <div class="field">
+              <label for="tenant-context">Contexto del negocio</label>
+              <textarea id="tenant-context" name="businessContext" rows="7" maxlength="5000" placeholder="Qué vende, a quién y cómo trabaja.">{{ values.businessContext }}</textarea>
+              <div class="field-note">Describe el negocio de forma simple para que el agente entienda el escenario comercial.</div>
+            </div>
+            <div class="field field-full mt-4">
+              <div class="section-label">Política comercial</div>
+              <div class="section-note">Define la forma de vender, cualificar y derivar a una persona cuando haga falta.</div>
+              <div class="policy-tabs" data-policy-tabs>
+                <div class="policy-tablist" role="tablist" aria-label="Política comercial">
+                  <button class="policy-tab active" type="button" role="tab" aria-selected="true" data-policy-tab="positioning">Welcome</button>
+                  <button class="policy-tab" type="button" role="tab" aria-selected="false" data-policy-tab="qualification">Qualification</button>
+                  <button class="policy-tab" type="button" role="tab" aria-selected="false" data-policy-tab="handoff">Handoff</button>
+                  <button class="policy-tab" type="button" role="tab" aria-selected="false" data-policy-tab="boundaries">Límites</button>
+                  <button class="policy-tab" type="button" role="tab" aria-selected="false" data-policy-tab="notes">Notas</button>
+                </div>
+                <div class="policy-panels">
+                  <div class="policy-panel active" role="tabpanel" data-policy-panel="positioning">
+                    <label for="tenant-policy-positioning">Welcome / posicionamiento</label>
+                    <textarea id="tenant-policy-positioning" name="positioning" rows="4" maxlength="2000" required placeholder="Cómo se presenta este negocio y cuál es su enfoque comercial.">{{ values.positioning }}</textarea>
+                    <div class="field-note">La idea principal de venta y cómo debe arrancar la conversación.</div>
+                  </div>
+                  <div class="policy-panel" role="tabpanel" data-policy-panel="qualification" hidden>
+                    <label for="tenant-policy-qualification">Qualification / cualificación</label>
+                    <textarea id="tenant-policy-qualification" name="qualificationFocus" rows="4" maxlength="2000" required placeholder="Qué datos o señales quiere descubrir el agente.">{{ values.qualificationFocus }}</textarea>
+                    <div class="field-note">Lo que el agente debe averiguar para saber si hay encaje real.</div>
+                  </div>
+                  <div class="policy-panel" role="tabpanel" data-policy-panel="handoff" hidden>
+                    <label for="tenant-policy-handoff">Handoff / derivación</label>
+                    <textarea id="tenant-policy-handoff" name="handoffRules" rows="4" maxlength="2000" required placeholder="Cuándo y cómo debe pasar el caso a una persona.">{{ values.handoffRules }}</textarea>
+                    <div class="field-note">Reglas para escalar a humano sin fricción.</div>
+                  </div>
+                  <div class="policy-panel" role="tabpanel" data-policy-panel="boundaries" hidden>
+                    <label for="tenant-policy-boundaries">Sales boundaries / límites</label>
+                    <textarea id="tenant-policy-boundaries" name="salesBoundaries" rows="4" maxlength="2000" placeholder="Una regla por línea.">{{ values.salesBoundaries }}</textarea>
+                    <div class="field-note">Límites de venta, promesas prohibidas o condiciones que no se pueden saltar.</div>
+                  </div>
+                  <div class="policy-panel" role="tabpanel" data-policy-panel="notes" hidden>
+                    <label for="tenant-policy-notes">Notas</label>
+                    <textarea id="tenant-policy-notes" name="notes" rows="4" maxlength="2000" placeholder="Cualquier matiz extra para el equipo.">{{ values.notes }}</textarea>
+                    <div class="field-note">Observaciones generales, ejemplos o aclaraciones adicionales.</div>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
-          <div class="field">
-            <label for="tenant-tone">Tono</label>
-            <input id="tenant-tone" name="tone" type="text" value="{{ values.tone }}" maxlength="120" placeholder="Cercano, profesional, directo...">
-            <div class="field-note">Cómo debe expresarse el agente en este negocio.</div>
+
+          <div class="field field-full">
+            <div class="section-label">Canal WhatsApp del agente IA</div>
+            <div class="section-note">Configura el canal técnico de Meta y el número público del agente IA para enlaces wa.me.</div>
+            <div class="form-grid">
+              <div class="field">
+                <label for="tenant-whatsapp-phone-number-id">WhatsApp Phone Number ID</label>
+                <input id="tenant-whatsapp-phone-number-id" name="whatsappPhoneNumberId" type="text" value="{{ values.whatsappPhoneNumberId }}" maxlength="255" placeholder="123456789012345">
+                <div class="field-note">ID técnico de Meta WhatsApp Cloud API. Se usa para enrutar mensajes entrantes al negocio correcto.</div>
+              </div>
+              <div class="field">
+                <label for="tenant-whatsapp-public-phone">WhatsApp público del agente IA</label>
+                <input id="tenant-whatsapp-public-phone" name="whatsappPublicPhone" type="text" value="{{ values.whatsappPublicPhone }}" maxlength="50" placeholder="34612345678">
+                <div class="field-note">Número internacional del agente IA para generar enlaces wa.me. No es necesariamente el número humano de atención manual.</div>
+              </div>
+            </div>
           </div>
+
           <div class="field field-full">
             <div class="section-label">Handoff humano</div>
-            <div class="section-note">Configura la derivación manual a una persona del equipo sin mezclarla con el número de WhatsApp Cloud del agente IA.</div>
+            <div class="section-note">Derivación manual a una persona del equipo sin mezclarla con el canal WhatsApp del agente IA.</div>
             <div class="form-grid">
               <div class="field field-check">
                 <label for="tenant-human-handoff-enabled">Habilitar handoff humano</label>
@@ -69,92 +150,24 @@
                 </label>
               </div>
               <div class="field">
-                <label for="tenant-human-handoff-whatsapp-public">WhatsApp humano/de empresa</label>
-                <input id="tenant-human-handoff-whatsapp-public" name="humanHandoffWhatsappPublic" type="text" value="{{ values.humanHandoffWhatsappPublic }}" maxlength="50" placeholder="+34 612 345 678">
-                <div class="field-note">Este número se usará para derivar manualmente conversaciones a una persona mediante enlace wa.me.</div>
-              </div>
-              <div class="field">
-                <label for="tenant-human-handoff-strategy">Estrategia</label>
+                <label for="tenant-human-handoff-strategy">Estrategia de handoff</label>
                 <select id="tenant-human-handoff-strategy" name="humanHandoffStrategy">
-                  <option value="disabled"{% if values.humanHandoffStrategy == 'disabled' %} selected{% endif %}>disabled</option>
-                  <option value="manual_wa_link"{% if values.humanHandoffStrategy == 'manual_wa_link' %} selected{% endif %}>manual_wa_link</option>
-                  <option value="n8n_webhook"{% if values.humanHandoffStrategy == 'n8n_webhook' %} selected{% endif %}>n8n_webhook</option>
-                  <option value="manual_wa_link_and_n8n"{% if values.humanHandoffStrategy == 'manual_wa_link_and_n8n' %} selected{% endif %}>manual_wa_link_and_n8n</option>
+                  <option value="disabled"{% if values.humanHandoffStrategy == 'disabled' %} selected{% endif %}>Desactivado</option>
+                  <option value="manual_wa_link"{% if values.humanHandoffStrategy == 'manual_wa_link' %} selected{% endif %}>Enlace manual wa.me</option>
+                  <option value="n8n_webhook"{% if values.humanHandoffStrategy == 'n8n_webhook' %} selected{% endif %}>Webhook n8n</option>
+                  <option value="manual_wa_link_and_n8n"{% if values.humanHandoffStrategy == 'manual_wa_link_and_n8n' %} selected{% endif %}>Enlace wa.me + webhook n8n</option>
                 </select>
                 <div class="field-note">Controla si el handoff añade enlace manual, dispara webhook o hace ambas cosas.</div>
+              </div>
+              <div class="field">
+                <label for="tenant-human-handoff-whatsapp-public">WhatsApp humano para derivaciones</label>
+                <input id="tenant-human-handoff-whatsapp-public" name="humanHandoffWhatsappPublic" type="text" value="{{ values.humanHandoffWhatsappPublic }}" maxlength="50" placeholder="+34 612 345 678">
+                <div class="field-note">Este número es distinto del WhatsApp Cloud del agente IA. Se usa para derivar manualmente conversaciones a una persona mediante enlace wa.me.</div>
               </div>
               <div class="field field-full">
                 <label for="tenant-human-handoff-message">Mensaje de derivación</label>
                 <textarea id="tenant-human-handoff-message" name="humanHandoffMessage" rows="3" maxlength="4000" placeholder="Prefiero que esto lo revise una persona del equipo.">{{ values.humanHandoffMessage }}</textarea>
-                <div class="field-note">Se añade al mensaje final si el handoff humano está activo. Si lo dejas vacío se usa un fallback seguro.</div>
-              </div>
-            </div>
-          </div>
-          <div class="field field-full">
-            <div class="section-label">WhatsApp Business</div>
-            <div class="section-note">Completa estos campos si este negocio enruta tráfico o genera enlaces wa.me desde WhatsApp.</div>
-            <div class="form-grid">
-              <div class="field">
-                <label for="tenant-whatsapp-phone-number-id">WhatsApp Phone Number ID</label>
-                <input id="tenant-whatsapp-phone-number-id" name="whatsappPhoneNumberId" type="text" value="{{ values.whatsappPhoneNumberId }}" maxlength="255" placeholder="123456789012345">
-                <div class="field-note">ID técnico de Meta WhatsApp Cloud API. Se usa para enrutar mensajes entrantes al negocio correcto.</div>
-              </div>
-              <div class="field">
-                <label for="tenant-whatsapp-public-phone">WhatsApp público para wa.me</label>
-                <input id="tenant-whatsapp-public-phone" name="whatsappPublicPhone" type="text" value="{{ values.whatsappPublicPhone }}" maxlength="50" placeholder="34612345678">
-                <div class="field-note">Número internacional sin + ni espacios. Se usa para generar enlaces wa.me en puntos de entrada. Ejemplo: 34612345678.</div>
-              </div>
-            </div>
-          </div>
-          <div class="field field-check">
-            <label for="tenant-active">Estado</label>
-            <label class="checkbox-inline" for="tenant-active">
-              <input id="tenant-active" name="isActive" type="checkbox" value="1"{% if values.isActive %} checked{% endif %}>
-              <span>Negocio activo</span>
-            </label>
-          </div>
-          <div class="field field-full">
-            <label for="tenant-context">Contexto del negocio</label>
-            <textarea id="tenant-context" name="businessContext" rows="7" maxlength="5000" placeholder="Qué vende, a quién y cómo trabaja.">{{ values.businessContext }}</textarea>
-            <div class="field-note">Describe el negocio de forma simple para que el agente entienda el escenario comercial.</div>
-          </div>
-          <div class="field field-full">
-            <div class="section-label">Política comercial</div>
-            <div class="section-note">Define aquí la forma de vender, de calificar y de derivar a una persona cuando haga falta. Puedes completar solo lo que necesites.</div>
-            <div class="policy-tabs" data-policy-tabs>
-              <div class="policy-tablist" role="tablist" aria-label="Política comercial">
-                <button class="policy-tab active" type="button" role="tab" aria-selected="true" data-policy-tab="positioning">Welcome</button>
-                <button class="policy-tab" type="button" role="tab" aria-selected="false" data-policy-tab="qualification">Qualification</button>
-                <button class="policy-tab" type="button" role="tab" aria-selected="false" data-policy-tab="handoff">Handoff</button>
-                <button class="policy-tab" type="button" role="tab" aria-selected="false" data-policy-tab="boundaries">Límites</button>
-                <button class="policy-tab" type="button" role="tab" aria-selected="false" data-policy-tab="notes">Notas</button>
-              </div>
-              <div class="policy-panels">
-                <div class="policy-panel active" role="tabpanel" data-policy-panel="positioning">
-                  <label for="tenant-policy-positioning">Welcome / posicionamiento</label>
-                  <textarea id="tenant-policy-positioning" name="positioning" rows="4" maxlength="2000" required placeholder="Cómo se presenta este negocio y cuál es su enfoque comercial.">{{ values.positioning }}</textarea>
-                  <div class="field-note">La idea principal de venta y cómo debe arrancar la conversación.</div>
-                </div>
-                <div class="policy-panel" role="tabpanel" data-policy-panel="qualification" hidden>
-                  <label for="tenant-policy-qualification">Qualification / cualificación</label>
-                  <textarea id="tenant-policy-qualification" name="qualificationFocus" rows="4" maxlength="2000" required placeholder="Qué datos o señales quiere descubrir el agente.">{{ values.qualificationFocus }}</textarea>
-                  <div class="field-note">Lo que el agente debe averiguar para saber si hay encaje real.</div>
-                </div>
-                <div class="policy-panel" role="tabpanel" data-policy-panel="handoff" hidden>
-                  <label for="tenant-policy-handoff">Handoff / derivación</label>
-                  <textarea id="tenant-policy-handoff" name="handoffRules" rows="4" maxlength="2000" required placeholder="Cuándo y cómo debe pasar el caso a una persona.">{{ values.handoffRules }}</textarea>
-                  <div class="field-note">Reglas para escalar a humano sin fricción.</div>
-                </div>
-                <div class="policy-panel" role="tabpanel" data-policy-panel="boundaries" hidden>
-                  <label for="tenant-policy-boundaries">Sales boundaries / límites</label>
-                  <textarea id="tenant-policy-boundaries" name="salesBoundaries" rows="4" maxlength="2000" placeholder="Una regla por línea.">{{ values.salesBoundaries }}</textarea>
-                  <div class="field-note">Límites de venta, promesas prohibidas o condiciones que no se pueden saltar.</div>
-                </div>
-                <div class="policy-panel" role="tabpanel" data-policy-panel="notes" hidden>
-                  <label for="tenant-policy-notes">Notas</label>
-                  <textarea id="tenant-policy-notes" name="notes" rows="4" maxlength="2000" placeholder="Cualquier matiz extra para el equipo.">{{ values.notes }}</textarea>
-                  <div class="field-note">Observaciones generales, ejemplos o aclaraciones adicionales.</div>
-                </div>
+                <div class="field-note">Se añade al mensaje final si el handoff humano está activo. Si lo dejas vacío se usa un fallback seguro. No se mezcla con el token CRM/MCP ni con webhooks n8n.</div>
               </div>
             </div>
           </div>

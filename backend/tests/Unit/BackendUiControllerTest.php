@@ -1073,7 +1073,13 @@ final class BackendUiControllerTest extends TestCase
         self::assertStringContainsString('name="tone"', $response->getContent());
         self::assertStringContainsString('name="whatsappPhoneNumberId"', $response->getContent());
         self::assertStringContainsString('name="whatsappPublicPhone"', $response->getContent());
-        self::assertStringContainsString('WhatsApp Business', $response->getContent());
+        self::assertStringContainsString('Identidad del negocio', $response->getContent());
+        self::assertStringContainsString('Contexto comercial', $response->getContent());
+        self::assertStringContainsString('Canal WhatsApp del agente IA', $response->getContent());
+        self::assertStringContainsString('Handoff humano', $response->getContent());
+        self::assertStringContainsString('WhatsApp público del agente IA', $response->getContent());
+        self::assertStringContainsString('WhatsApp humano para derivaciones', $response->getContent());
+        self::assertStringContainsString('Estrategia de handoff', $response->getContent());
         self::assertStringContainsString('name="businessContext"', $response->getContent());
         self::assertStringContainsString('name="positioning"', $response->getContent());
         self::assertStringContainsString('name="qualificationFocus"', $response->getContent());
@@ -1190,6 +1196,10 @@ final class BackendUiControllerTest extends TestCase
         self::assertStringContainsString('Profesional', $response->getContent());
         self::assertStringContainsString('Ficha negocio', $response->getContent());
         self::assertStringContainsString('Uso IA', $response->getContent());
+        self::assertStringContainsString('Identidad del negocio', $response->getContent());
+        self::assertStringContainsString('Contexto comercial', $response->getContent());
+        self::assertStringContainsString('Canal WhatsApp del agente IA', $response->getContent());
+        self::assertStringContainsString('Handoff humano', $response->getContent());
         self::assertStringContainsString('data-bs-target="#tenant-business-panel"', $response->getContent());
         self::assertStringContainsString('data-bs-target="#tenant-ai-panel"', $response->getContent());
         self::assertStringContainsString('name="aiEnabled"', $response->getContent());
