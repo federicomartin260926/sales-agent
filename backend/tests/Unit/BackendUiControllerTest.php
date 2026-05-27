@@ -1089,6 +1089,8 @@ final class BackendUiControllerTest extends TestCase
         self::assertStringContainsString('name="isActive"', $response->getContent());
         self::assertStringContainsString('Crear negocio', $response->getContent());
         self::assertStringContainsString('data-tenant-draft-assistant', $response->getContent());
+        self::assertStringContainsString('data-initial-message="Hola. Te ayudaré a completar la ficha del negocio con identidad, contexto, WhatsApp del agente IA, handoff humano y política comercial.', $response->getContent());
+        self::assertStringContainsString('No se guardará hasta que pulses Crear negocio.', $response->getContent());
         self::assertStringNotContainsString('Modo borrador', $response->getContent());
     }
 
@@ -1202,6 +1204,8 @@ final class BackendUiControllerTest extends TestCase
         self::assertStringContainsString('Handoff humano', $response->getContent());
         self::assertStringContainsString('data-bs-target="#tenant-business-panel"', $response->getContent());
         self::assertStringContainsString('data-bs-target="#tenant-ai-panel"', $response->getContent());
+        self::assertStringContainsString('data-initial-message="Hola. Te ayudaré a completar la ficha del negocio con identidad, contexto, WhatsApp del agente IA, handoff humano y política comercial.', $response->getContent());
+        self::assertStringContainsString('No se guardará hasta que pulses Guardar cambios.', $response->getContent());
         self::assertStringContainsString('name="aiEnabled"', $response->getContent());
         self::assertStringContainsString('name="dailyCostLimitEur"', $response->getContent());
         self::assertStringContainsString('name="monthlyCostLimitEur"', $response->getContent());

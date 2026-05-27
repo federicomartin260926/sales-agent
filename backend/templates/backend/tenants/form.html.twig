@@ -306,6 +306,7 @@
   data-endpoint="{{ ai_assistant_endpoint }}"
   data-csrf-token="{{ ai_assistant_token }}"
   data-initial-message="{{ ai_assistant_initial_message }}"
+  data-submit-label="{{ submit_label }}"
 >
   <div class="modal-dialog modal-lg modal-dialog-centered tenant-draft-assistant-dialog">
     <div class="modal-content tenant-draft-assistant-shell">
@@ -336,7 +337,7 @@
               <button type="button" class="secondary-action" data-send-button>Enviar</button>
             </div>
           </div>
-          <div class="tenant-draft-assistant-compose-note">La ficha se rellena en pantalla. No se guardará hasta que pulses Crear negocio.</div>
+          <div class="tenant-draft-assistant-compose-note">{{ ai_assistant_compose_note }}</div>
         </form>
       </div>
     </div>

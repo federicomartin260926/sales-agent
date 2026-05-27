@@ -41,6 +41,10 @@ final class TenantDraftAssistantControllerTest extends TestCase
                     'tone' => '',
                     'whatsappPhoneNumberId' => '',
                     'whatsappPublicPhone' => '',
+                    'humanHandoffEnabled' => false,
+                    'humanHandoffWhatsappPublic' => '+34 612 345 679',
+                    'humanHandoffMessage' => 'Te atiende una persona del equipo.',
+                    'humanHandoffStrategy' => 'manual_wa_link',
                     'positioning' => '',
                     'qualificationFocus' => '',
                     'handoffRules' => '',
@@ -64,7 +68,61 @@ final class TenantDraftAssistantControllerTest extends TestCase
         self::assertNotSame('', $payload['draft']['salesPolicyHandoff']);
         self::assertNotSame('', $payload['draft']['salesPolicyLimits']);
         self::assertNotSame('', $payload['draft']['salesPolicyNotes']);
+        self::assertSame('+34 612 345 679', $payload['draft']['humanHandoffWhatsappPublic']);
+        self::assertSame('Te atiende una persona del equipo.', $payload['draft']['humanHandoffMessage']);
+        self::assertSame('manual_wa_link', $payload['draft']['humanHandoffStrategy']);
+        self::assertTrue($payload['draft']['humanHandoffEnabled']);
         self::assertNotEmpty($payload['questions']);
+        self::assertContains('¿Cuál es el WhatsApp público del agente IA para enlaces wa.me, si ya lo tienes?', $payload['questions']);
+    }
+
+    public function testReturnsHumanHandoffQuestionWhenHumanWhatsappIsMissing(): void
+    {
+        $security = $this->createSecurity();
+        $service = new TenantDraftAssistantService(
+            $this->runtimeConfigurationService([]),
+            $this->createStub(HttpClientInterface::class),
+        );
+        $controller = new TenantDraftAssistantController($security, $service, $this->csrfTokenManager());
+
+        $request = Request::create(
+            '/backend/ai/tenant-draft-assistant',
+            'POST',
+            [],
+            [],
+            [],
+            ['CONTENT_TYPE' => 'application/json'],
+            json_encode([
+                '_csrf_token' => 'assistant-token',
+                'conversation' => [],
+                'currentMessage' => 'Necesito una ficha para una clínica dental.',
+                'currentFormValues' => [
+                    'name' => 'Clínica Dental Demo',
+                    'slug' => '',
+                    'businessContext' => '',
+                    'tone' => '',
+                    'whatsappPhoneNumberId' => '',
+                    'whatsappPublicPhone' => '',
+                    'humanHandoffEnabled' => false,
+                    'humanHandoffWhatsappPublic' => '',
+                    'humanHandoffMessage' => '',
+                    'humanHandoffStrategy' => 'disabled',
+                    'positioning' => '',
+                    'qualificationFocus' => '',
+                    'handoffRules' => '',
+                    'salesBoundaries' => '',
+                    'notes' => '',
+                    'isActive' => true,
+                ],
+            ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES)
+        );
+
+        $response = $controller->__invoke($request);
+
+        self::assertSame(200, $response->getStatusCode());
+        $payload = json_decode((string) $response->getContent(), true);
+        self::assertIsArray($payload);
+        self::assertContains('Si quieres derivación humana, ¿cuál es el WhatsApp humano para atender conversaciones manuales?', $payload['questions']);
     }
 
     private function createSecurity(): Security

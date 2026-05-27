@@ -217,6 +217,10 @@ final class TenantDraftAssistantService
             'tone' => $form['tone'] !== '' ? $form['tone'] : 'cercano, profesional y directo',
             'whatsappPhoneNumberId' => $form['whatsappPhoneNumberId'] ?? '',
             'whatsappPublicPhone' => $form['whatsappPublicPhone'] ?? '',
+            'humanHandoffEnabled' => false,
+            'humanHandoffWhatsappPublic' => $form['humanHandoffWhatsappPublic'] ?? '',
+            'humanHandoffMessage' => $form['humanHandoffMessage'] ?? '',
+            'humanHandoffStrategy' => 'disabled',
             'isActive' => (bool) ($form['isActive'] ?? true),
             'businessContext' => $this->buildBusinessContext($form, '', []),
             'salesPolicyWelcome' => '',
@@ -245,6 +249,8 @@ final class TenantDraftAssistantService
             'salesPolicyHandoff',
             'salesPolicyLimits',
             'salesPolicyNotes',
+            'humanHandoffWhatsappPublic',
+            'humanHandoffMessage',
         ];
 
         foreach ($textKeys as $key) {
@@ -260,6 +266,17 @@ final class TenantDraftAssistantService
 
         if (array_key_exists('isActive', $payloadDraft)) {
             $draft['isActive'] = (bool) $payloadDraft['isActive'];
+        }
+
+        if (array_key_exists('humanHandoffEnabled', $payloadDraft)) {
+            $draft['humanHandoffEnabled'] = (bool) $payloadDraft['humanHandoffEnabled'];
+        }
+
+        if (array_key_exists('humanHandoffStrategy', $payloadDraft)) {
+            $candidate = $this->cleanText((string) $payloadDraft['humanHandoffStrategy'], 50);
+            if (in_array($candidate, ['disabled', 'manual_wa_link', 'n8n_webhook', 'manual_wa_link_and_n8n'], true)) {
+                $draft['humanHandoffStrategy'] = $candidate;
+            }
         }
 
         if (($draft['slug'] ?? '') === '' && ($draft['name'] ?? '') !== '') {
@@ -285,6 +302,24 @@ final class TenantDraftAssistantService
             }
             if ($candidate !== '') {
                 $draft['whatsappPublicPhone'] = $candidate;
+            }
+        }
+
+        if (array_key_exists('humanHandoffWhatsappPublic', $payloadDraft)) {
+            $candidate = $this->cleanText((string) $payloadDraft['humanHandoffWhatsappPublic'], 50);
+            if ($draft['humanHandoffWhatsappPublic'] === '' && $candidate !== '') {
+                // No inventar números de WhatsApp humano.
+                $candidate = '';
+            }
+            if ($candidate !== '') {
+                $draft['humanHandoffWhatsappPublic'] = $candidate;
+            }
+        }
+
+        if (array_key_exists('humanHandoffMessage', $payloadDraft)) {
+            $candidate = $this->cleanText((string) $payloadDraft['humanHandoffMessage'], 4000);
+            if ($candidate !== '') {
+                $draft['humanHandoffMessage'] = $candidate;
             }
         }
 
@@ -327,6 +362,17 @@ final class TenantDraftAssistantService
 
         if (($draft['salesPolicyNotes'] ?? '') === '') {
             $draft['salesPolicyNotes'] = $this->buildNotesPolicy($draft, $context);
+        }
+
+        if (($draft['humanHandoffWhatsappPublic'] ?? '') !== '') {
+            $draft['humanHandoffEnabled'] = true;
+            if (($draft['humanHandoffStrategy'] ?? 'disabled') === 'disabled') {
+                $draft['humanHandoffStrategy'] = 'manual_wa_link';
+            }
+        }
+
+        if (($draft['humanHandoffEnabled'] ?? false) === true && ($draft['humanHandoffStrategy'] ?? 'disabled') === 'disabled') {
+            $draft['humanHandoffStrategy'] = 'manual_wa_link';
         }
 
         return $draft;
@@ -373,6 +419,10 @@ final class TenantDraftAssistantService
             'tone' => $this->cleanText((string) ($values['tone'] ?? ''), 120),
             'whatsappPhoneNumberId' => $this->cleanText((string) ($values['whatsappPhoneNumberId'] ?? ''), 255),
             'whatsappPublicPhone' => $this->cleanText((string) ($values['whatsappPublicPhone'] ?? ''), 50),
+            'humanHandoffEnabled' => array_key_exists('humanHandoffEnabled', $values) ? (bool) $values['humanHandoffEnabled'] : false,
+            'humanHandoffWhatsappPublic' => $this->cleanText((string) ($values['humanHandoffWhatsappPublic'] ?? ''), 50),
+            'humanHandoffMessage' => $this->cleanText((string) ($values['humanHandoffMessage'] ?? ''), 4000),
+            'humanHandoffStrategy' => $this->cleanText((string) ($values['humanHandoffStrategy'] ?? 'disabled'), 50),
             'businessContext' => $this->cleanText((string) ($values['businessContext'] ?? ''), 5000),
             'positioning' => $this->cleanText((string) ($values['positioning'] ?? ''), 2000),
             'qualificationFocus' => $this->cleanText((string) ($values['qualificationFocus'] ?? ''), 2000),
@@ -397,7 +447,7 @@ final class TenantDraftAssistantService
 
     private function systemPrompt(): string
     {
-        return 'Eres un asistente de configuración de Sales Agent. Tu objetivo es ayudar al usuario a completar la ficha de un nuevo negocio. Haz preguntas breves, pero agrupa de 3 a 5 cuando falte información. No inventes datos técnicos. No finalices con status ready cuando solo tengas nombre o actividad; espera a tener información suficiente para una ficha comercial útil. El borrador debe ser claro, comercial, práctico y completo. Intenta completar siempre name, slug, tone, businessContext, salesPolicyWelcome, salesPolicyQualification, salesPolicyHandoff, salesPolicyLimits y salesPolicyNotes con texto útil y prudente a partir de la información disponible. Nunca inventes phoneNumberId ni números de WhatsApp. Si faltan datos técnicos, déjalos vacíos. Devuelve solo JSON válido con las claves answer, status, questions y draft.';
+        return 'Eres un asistente de configuración de Sales Agent. Tu objetivo es ayudar al usuario a completar la ficha de un nuevo negocio. Haz preguntas breves, pero agrupa de 3 a 5 cuando falte información. No inventes datos técnicos. No finalices con status ready cuando solo tengas nombre o actividad; espera a tener información suficiente para una ficha comercial útil. El borrador debe ser claro, comercial, práctico y completo. Intenta completar siempre name, slug, tone, businessContext, salesPolicyWelcome, salesPolicyQualification, salesPolicyHandoff, salesPolicyLimits, salesPolicyNotes, whatsappPhoneNumberId, whatsappPublicPhone, humanHandoffEnabled, humanHandoffWhatsappPublic, humanHandoffMessage y humanHandoffStrategy con texto útil y prudente a partir de la información disponible. Nunca inventes phoneNumberId ni números de WhatsApp. Si faltan datos técnicos, déjalos vacíos. No confundas el WhatsApp público del agente IA con el WhatsApp humano para derivaciones. Devuelve solo JSON válido con las claves answer, status, questions y draft.';
     }
 
     private function extractOpenAiContent(array $payload): string
@@ -627,15 +677,23 @@ final class TenantDraftAssistantService
         }
 
         if (!$signals['audience']) {
-            $questions[] = '¿Qué tipo de cliente quieres captar principalmente?';
+            $questions[] = '¿Qué tipo de cliente quiere captar?';
         }
 
         if (!$signals['location']) {
             $questions[] = '¿En qué ciudad o zona atiende?';
         }
 
+        if (!$signals['tone']) {
+            $questions[] = '¿Qué tono debe usar el agente IA?';
+        }
+
         if (!$signals['whatsapp_public']) {
-            $questions[] = '¿Cuál es el WhatsApp público para clientes, si quieres configurarlo ahora?';
+            $questions[] = '¿Cuál es el WhatsApp público del agente IA para enlaces wa.me, si ya lo tienes?';
+        }
+
+        if (!$signals['human_whatsapp_public']) {
+            $questions[] = 'Si quieres derivación humana, ¿cuál es el WhatsApp humano para atender conversaciones manuales?';
         }
 
         if (!$signals['qualification']) {
@@ -643,7 +701,7 @@ final class TenantDraftAssistantService
         }
 
         if (!$signals['handoff']) {
-            $questions[] = '¿Cuándo debe derivar el agente a Mary o a una persona?';
+            $questions[] = '¿Qué mensaje quieres que use el agente cuando derive a una persona?';
         }
 
         if (!$signals['limits']) {
@@ -658,7 +716,7 @@ final class TenantDraftAssistantService
             $questions[] = '¿Hay alguna nota diferencial del negocio que deba quedar reflejada?';
         }
 
-        return array_values(array_slice(array_unique($questions), 0, 5));
+        return array_values(array_slice(array_unique($questions), 0, 7));
     }
 
     /**
@@ -694,6 +752,8 @@ final class TenantDraftAssistantService
             'audience' => $this->containsAny($normalized, ['mujer', 'hombre', 'empresa', 'pyme', 'famil', 'niñ', 'cliente', 'paciente', 'recurrent', 'nuevo']),
             'location' => $this->containsAny($normalized, ['madrid', 'barcelona', 'valencia', 'sevilla', 'villanueva', 'zona', 'barrio', 'local', 'ciudad', 'atiende en', 'ubicad', 'sede']),
             'whatsapp_public' => trim((string) ($draft['whatsappPublicPhone'] ?? '')) !== '',
+            'human_whatsapp_public' => trim((string) ($draft['humanHandoffWhatsappPublic'] ?? '')) !== '',
+            'tone' => trim((string) ($draft['tone'] ?? '')) !== '',
             'qualification' => $this->containsAny($normalized, ['qué debe pedir', 'pedir', 'cualif', 'cualificar', 'cita', 'siguiente paso', 'nuevo', 'recurrent', 'tratamiento', 'servicio', 'presupuesto', 'disponibilidad']),
             'handoff' => $this->containsAny($normalized, ['derivar', 'humano', 'mary', 'persona', 'responsable', 'validación', 'confirmar', 'escalar', 'seguimiento']),
             'limits' => $this->containsAny($normalized, ['precio', 'precios', 'diagnos', 'diagnóst', 'prometer', 'resultad', 'disponibilidad', 'agenda', 'sensib', 'salud', 'piel', 'contraindic', 'no dar']),

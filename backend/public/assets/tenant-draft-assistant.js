@@ -6,6 +6,8 @@
 
   const endpoint = root.dataset.endpoint || '';
   const csrfToken = root.dataset.csrfToken || '';
+  const initialMessageText = (root.dataset.initialMessage || '').trim();
+  const submitLabel = (root.dataset.submitLabel || 'Crear negocio').trim() || 'Crear negocio';
   const chatLog = root.querySelector('[data-chat-log]');
   const statusBox = root.querySelector('[data-chat-status]');
   const autoApplyNote = root.querySelector('[data-auto-apply-note]');
@@ -32,6 +34,10 @@
     tone: 'tone',
     whatsappPhoneNumberId: 'whatsappPhoneNumberId',
     whatsappPublicPhone: 'whatsappPublicPhone',
+    humanHandoffEnabled: 'humanHandoffEnabled',
+    humanHandoffWhatsappPublic: 'humanHandoffWhatsappPublic',
+    humanHandoffMessage: 'humanHandoffMessage',
+    humanHandoffStrategy: 'humanHandoffStrategy',
     businessContext: 'businessContext',
     salesPolicyWelcome: 'positioning',
     salesPolicyQualification: 'qualificationFocus',
@@ -109,19 +115,27 @@
   function buildInitialMessage() {
     const name = readValue('name');
     const tone = readValue('tone');
-    const intro = name !== ''
-      ? `Hola. Te ayudaré a completar la ficha de ${name}.`
+    const introBase = initialMessageText !== ''
+      ? initialMessageText
       : 'Hola. Te ayudaré a completar la ficha del negocio.';
+    const intro = name !== ''
+      ? `${introBase} Veo que estás trabajando en ${name}.`
+      : introBase;
     const toneHint = tone !== '' ? ` Veo que ya tienes un tono definido como "${tone}".` : '';
 
     return `${intro}${toneHint} Para empezar:
 1. ¿Cuál es el nombre comercial del negocio?
 2. ¿Qué vende u ofrece?
 3. ¿En qué ciudad o zona atiende?
-4. ¿Qué tipo de cliente quieres captar?
-5. ¿Cuál es el WhatsApp público para clientes, si quieres configurarlo ahora?
+4. ¿Qué tipo de cliente quiere captar?
+5. ¿Qué tono debe usar el agente IA?
+6. ¿Cuál es el WhatsApp público del agente IA para enlaces wa.me, si ya lo tienes?
+7. Si quieres derivación humana, ¿cuál es el WhatsApp humano para atender conversaciones manuales?
+8. ¿Qué mensaje quieres que use el agente cuando derive a una persona?
 
-Yo no guardo nada: tú revisarás y pulsarás "Crear negocio" al final.`;
+Si no estás seguro, deja los campos de WhatsApp y handoff sin completar.
+
+Yo no guardo nada: tú revisarás y pulsarás "${submitLabel}" al final.`;
   }
 
   function readCheckbox(name) {
@@ -153,6 +167,10 @@ Yo no guardo nada: tú revisarás y pulsarás "Crear negocio" al final.`;
       tone: readValue('tone'),
       whatsappPhoneNumberId: readValue('whatsappPhoneNumberId'),
       whatsappPublicPhone: readValue('whatsappPublicPhone'),
+      humanHandoffEnabled: readCheckbox('humanHandoffEnabled'),
+      humanHandoffWhatsappPublic: readValue('humanHandoffWhatsappPublic'),
+      humanHandoffMessage: readValue('humanHandoffMessage'),
+      humanHandoffStrategy: readValue('humanHandoffStrategy'),
       businessContext: readValue('businessContext'),
       positioning: readValue('positioning'),
       qualificationFocus: readValue('qualificationFocus'),
