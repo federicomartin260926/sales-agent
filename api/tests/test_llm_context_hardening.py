@@ -218,6 +218,32 @@ def test_prompt_builder_enriches_prompt_with_mcp_runtime():
     assert parsed["tenant"]["tone"] == "cercano"
 
 
+def test_prompt_builder_includes_handoff_request_guidance_when_available():
+    payload = AgentRequest(
+        tenant_id="tenant-1",
+        message="Estoy frustrado con esto",
+        contact=Contact(phone="+34600000000"),
+        conversation={"last_messages": []},
+    )
+
+    mcp_config = McpRemoteConfig(
+        enabled=True,
+        server_label="tenant_main_mcp",
+        server_url="https://mcp.example.test",
+        allowed_tools=["services_search", "handoff_request"],
+        require_approval="never",
+    )
+
+    system_prompt, _ = LLMPromptBuilder().build(payload, None, build_backend_context(), None, mcp_config)
+
+    assert "handoff_request" in system_prompt
+    assert "frustración" in system_prompt
+    assert "priority='high'" in system_prompt
+    assert "peticiones explícitas de hablar con una persona" in system_prompt
+    assert "wa.me" in system_prompt
+    assert "no afirmes que has avisado a nadie" in system_prompt
+
+
 def test_prompt_builder_shows_candidate_products_and_clarification():
     payload = AgentRequest(
         tenant_id="tenant-1",

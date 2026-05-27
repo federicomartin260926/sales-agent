@@ -1,6 +1,6 @@
 # Handoff Humano
 
-`sales-agent` distingue entre derivación manual al equipo humano y la autorización downstream usada por MCP/CRM.
+`sales-agent` distingue entre derivación manual al equipo humano, handoffs inferidos por LLM y la autorización downstream usada por MCP/CRM.
 
 ## Configuración funcional
 
@@ -20,6 +20,39 @@ Estrategias:
 - `n8n_webhook`
 - `manual_wa_link_and_n8n`
 
+## Matriz
+
+| Estrategia | LLM | MCP/tool externa | wa.me | Uso recomendado |
+| --- | --- | --- | --- | --- |
+| `disabled` | No | No | No | Desactivado; no aplica handoff operativo. |
+| `manual_wa_link` | No para explícitos | No | Sí | Derivación rápida, barata y determinista. |
+| `n8n_webhook` | Sí | Sí | No | Solo tool externa. El flujo pasa por LLM/MCP y no añade `wa.me` automáticamente. |
+| `manual_wa_link_and_n8n` | Sí | Sí | Sí | Tool externa + enlace `wa.me` al cliente cuando procede. |
+
+## Dos caminos de handoff
+
+### 1) Handoff explícito rule-based
+
+Cuando el usuario pide hablar con una persona de forma directa y la estrategia es `manual_wa_link`, el runtime corta sin invocar al LLM:
+
+- responde con `humanHandoffMessage` y un enlace `wa.me`
+- mantiene `provider = rule_based`
+- conserva `local_response_short_circuited = true`
+- no llama a MCP ni a OpenAI
+
+### 2) Handoff inferido por LLM
+
+Cuando la estrategia requiere tool externa (`n8n_webhook` o `manual_wa_link_and_n8n`) y el caso requiere revisión humana, el mensaje pasa por LLM.
+
+Reglas:
+
+- el LLM puede usar la tool MCP `handoff_request` si está disponible
+- el runtime no implementa `SA -> MCP directo` en esta fase
+- `handoff_request` debe estar en `allowed_tools` para que el LLM pueda usarla
+- si `handoff_request` no está disponible o falla, no se debe afirmar que se notificó o registró el handoff
+- `n8n_webhook` prioriza la tool externa y no añade `wa.me` automáticamente
+- `manual_wa_link_and_n8n` puede añadir `wa.me` además de la tool externa
+
 ## Autorización
 
 - `SA -> n8n`: credencial del webhook, si se usa, debe ser separada de cualquier token downstream.
@@ -38,6 +71,10 @@ El runtime LLM mantiene la semántica actual de autorización downstream:
 - Ese mismo token no debe reutilizarse como credencial del webhook de handoff `SA -> n8n`.
 
 Si una integración necesita proteger el webhook de handoff, debe usar una credencial separada y nombrada explícitamente.
+
+`handoff_request` es un requisito funcional futuro para la estrategia `n8n_webhook` o `manual_wa_link_and_n8n`, no una implementación incluida en esta tarea. Debe existir como tool MCP remota y estar en `allowed_tools` cuando se cablee.
+
+La tool MCP `handoff_request` usará un contrato limpio y explícito para handoffs inferidos por LLM. Su body operativo será distinto del webhook legacy `handoff_webhook`, pero seguirá sin exponer secretos y conservará la separación entre auth de transporte y autorización downstream.
 
 ## Payload n8n
 

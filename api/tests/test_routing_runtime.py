@@ -262,7 +262,7 @@ async def test_runtime_missing_routing_context_returns_human_handoff():
 
 
 @pytest.mark.asyncio
-async def test_runtime_replaces_discovery_reply_for_explicit_handoff_request(monkeypatch: pytest.MonkeyPatch):
+async def test_runtime_short_circuits_explicit_handoff_for_manual_wa_link(monkeypatch: pytest.MonkeyPatch):
     backend = RecordingBackendClient(
         ref_context=BackendRoutingEntryPointUtmContext.model_validate(
             {
@@ -282,19 +282,6 @@ async def test_runtime_replaces_discovery_reply_for_explicit_handoff_request(mon
                 "status": "matched",
             }
         ),
-        handoff_tool=BackendExternalTool.model_validate(
-            {
-                "id": "tool-1",
-                "tenantId": "tenant-1",
-                "name": "Handoff webhook",
-                "type": "handoff_webhook",
-                "provider": "n8n_webhook",
-                "webhookUrl": "https://n8n.example.test/webhook/handoff",
-                "authType": "none",
-                "timeoutSeconds": 3,
-                "config": {},
-            }
-        ),
     )
     tenant = BackendTenant.model_validate(
         {
@@ -307,7 +294,7 @@ async def test_runtime_replaces_discovery_reply_for_explicit_handoff_request(mon
             "isActive": True,
             "handoff": {
                 "enabled": True,
-                "strategy": "manual_wa_link_and_n8n",
+                "strategy": "manual_wa_link",
                 "whatsapp_public": "+34 612 345 678",
                 "message": "Prefiero que esto lo revise una persona del equipo.",
             },
@@ -329,27 +316,8 @@ async def test_runtime_replaces_discovery_reply_for_explicit_handoff_request(mon
     async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None):
         raise AssertionError("LLM should not be called for explicit handoff requests")
 
-    class FakeResponse:
-        def raise_for_status(self) -> None:
-            return None
-
-    class FakeAsyncClient:
-        def __init__(self, *args, **kwargs):
-            self.post_calls = []
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, exc_type, exc, tb):
-            return False
-
-        async def post(self, url, json=None, headers=None):
-            self.post_calls.append((url, json, headers))
-            return FakeResponse()
-
     monkeypatch.setattr(backend, "fetch_tenant_context", fake_fetch_tenant_context)
     monkeypatch.setattr(DecisionEngine, "decide", fake_decide)
-    monkeypatch.setattr("app.services.runtime.httpx.AsyncClient", FakeAsyncClient)
 
     runtime = AgentRuntime(backend, RuntimeRoutingResolver(backend), DecisionEngine(backend))  # type: ignore[arg-type]
     payload = AgentRequest(
@@ -367,7 +335,7 @@ async def test_runtime_replaces_discovery_reply_for_explicit_handoff_request(mon
     assert response.data_to_save["local_response_short_circuited"] is True
     assert "https://wa.me/34612345678" in response.reply
     assert "qué servicio" not in response.reply.lower()
-    assert ("get_external_tool", ("tenant-1", "handoff_webhook")) in backend.calls
+    assert ("get_external_tool", ("tenant-1", "handoff_webhook")) not in backend.calls
 
 
 @pytest.mark.asyncio
@@ -430,12 +398,15 @@ async def test_runtime_appends_handoff_wa_link_and_attempts_webhook(monkeypatch:
         selected_product=None,
         selected_playbook=None,
     )
+    decide_called = False
 
     async def fake_fetch_tenant_context(*args, **kwargs):
         backend.calls.append(("fetch_tenant_context", args))
         return backend_context
 
     async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None):
+        nonlocal decide_called
+        decide_called = True
         return AgentResponse(
             reply="¿Qué servicio necesitas?",
             intent="open_question",
@@ -480,6 +451,7 @@ async def test_runtime_appends_handoff_wa_link_and_attempts_webhook(monkeypatch:
 
     response = await runtime.respond(payload)
 
+    assert decide_called is True
     assert response.needs_human is True
     assert "qué servicio" in response.reply.lower()
     assert "https://wa.me/34612345678" in response.reply
@@ -546,12 +518,15 @@ async def test_runtime_webhook_failure_does_not_break_response(monkeypatch: pyte
         selected_product=None,
         selected_playbook=None,
     )
+    decide_called = False
 
     async def fake_fetch_tenant_context(*args, **kwargs):
         backend.calls.append(("fetch_tenant_context", args))
         return backend_context
 
     async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None):
+        nonlocal decide_called
+        decide_called = True
         return AgentResponse(
             reply="Perfecto, te paso con una persona del equipo.",
             intent="handoff",
@@ -591,6 +566,7 @@ async def test_runtime_webhook_failure_does_not_break_response(monkeypatch: pyte
 
     response = await runtime.respond(payload)
 
+    assert decide_called is True
     assert response.needs_human is True
     assert "https://wa.me/" not in response.reply
 
@@ -757,6 +733,133 @@ async def test_runtime_does_not_short_circuit_agenda_lookup_messages(monkeypatch
     assert outbound_payload["metadata"]["mcp_enabled"] is True
     assert outbound_payload["metadata"]["mcp_server_label"] == "tech_investments_mcp"
     assert outbound_payload["metadata"]["mcp_tool_traces"][0]["tool_name"] == "appointment_events"
+
+
+@pytest.mark.asyncio
+async def test_runtime_skips_legacy_handoff_webhook_when_llm_used_handoff_request(monkeypatch: pytest.MonkeyPatch):
+    backend = RecordingBackendClient(
+        ref_context=BackendRoutingEntryPointUtmContext.model_validate(
+            {
+                "entry_point_utm_id": "utm-1",
+                "ref": "abc123",
+                "entry_point_id": "entrypoint-1",
+                "entry_point_code": "crm-demo",
+                "tenant_id": "tenant-1",
+                "tenant_slug": "negocio-demo",
+                "product_id": "product-1",
+                "product_name": "CRM Automation",
+                "playbook_id": "playbook-1",
+                "crm_branch_ref": "branch-1",
+                "utm_source": "google",
+                "utm_medium": "cpc",
+                "utm_campaign": "crm_pymes",
+                "status": "matched",
+            }
+        ),
+        handoff_tool=BackendExternalTool.model_validate(
+            {
+                "id": "tool-1",
+                "tenantId": "tenant-1",
+                "name": "Handoff webhook",
+                "type": "handoff_webhook",
+                "provider": "n8n_webhook",
+                "webhookUrl": "https://n8n.example.test/webhook/handoff",
+                "authType": "none",
+                "timeoutSeconds": 3,
+                "config": {},
+            }
+        ),
+        mcp_config=McpRemoteConfig(
+            enabled=True,
+            server_label="tech_investments_mcp",
+            server_url="https://mcp.tech-investments.net/mcp",
+            allowed_tools=["services_search", "handoff_request"],
+            timeout_seconds=15,
+        ),
+    )
+    tenant = BackendTenant.model_validate(
+        {
+            "id": "tenant-1",
+            "name": "Negocio Demo",
+            "slug": "negocio-demo",
+            "businessContext": "Negocio especializado en automatización de WhatsApp.",
+            "tone": "consultivo",
+            "salesPolicy": {},
+            "isActive": True,
+            "handoff": {
+                "enabled": True,
+                "strategy": "n8n_webhook",
+                "whatsapp_public": "+34 612 345 678",
+                "message": "Prefiero que esto lo revise una persona del equipo.",
+            },
+            "createdAt": "2026-04-28T12:00:00+00:00",
+        }
+    )
+    backend_context = CommercialContext(
+        tenant=tenant,
+        products=[],
+        playbooks=[],
+        selected_product=None,
+        selected_playbook=None,
+    )
+
+    async def fake_fetch_tenant_context(*args, **kwargs):
+        backend.calls.append(("fetch_tenant_context", args))
+        return backend_context
+
+    async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None):
+        assert mcp_config is not None and mcp_config.enabled is True
+        return AgentResponse(
+            reply="He registrado el caso para revisión.",
+            intent="handoff",
+            score=0.96,
+            action="handoff_to_human",
+            needs_human=True,
+            data_to_save={
+                "topic": "handoff",
+                "mcp_enabled": True,
+                "mcp_server_label": "tech_investments_mcp",
+                "mcp_response_id": "resp_handoff_123",
+                "mcp_tool_traces": [
+                    {
+                        "type": "mcp_call",
+                        "server_label": "tech_investments_mcp",
+                        "tool_name": "handoff_request",
+                        "arguments": {
+                            "tenant_id": "tenant-1",
+                            "priority": "high",
+                        },
+                        "output": {
+                            "ok": True,
+                            "handoff_requested": True,
+                            "status": "requested",
+                            "message": "Handoff request queued.",
+                        },
+                        "status": "completed",
+                    }
+                ],
+            },
+            provider="openai",
+            model="gpt-4.1-mini",
+            latency_ms=102,
+        )
+
+    monkeypatch.setattr(backend, "fetch_tenant_context", fake_fetch_tenant_context)
+    monkeypatch.setattr(DecisionEngine, "decide", fake_decide)
+
+    runtime = AgentRuntime(backend, RuntimeRoutingResolver(backend), DecisionEngine(backend))  # type: ignore[arg-type]
+    payload = AgentRequest(
+        tenant_id="tenant-ignored",
+        entrypoint_ref="abc123",
+        message="Estoy muy frustrado con esto",
+        contact=Contact(phone="+34999999999"),
+    )
+
+    response = await runtime.respond(payload)
+
+    assert response.provider == "openai"
+    assert response.data_to_save["mcp_tool_traces"][0]["tool_name"] == "handoff_request"
+    assert ("get_external_tool", ("tenant-1", "handoff_webhook")) not in backend.calls
 
 
 @pytest.mark.asyncio

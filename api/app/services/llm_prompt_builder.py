@@ -82,6 +82,21 @@ class LLMPromptBuilder:
                 "responde usando esos resultados de forma breve, clara y comercial. "
                 "Si no devuelve resultados o falla, orienta de forma general y pide una aclaración breve."
             )
+            handoff_strategy = self._handoff_strategy(backend_context)
+            if "handoff_request" in [tool.strip() for tool in mcp_config.allowed_tools] and handoff_strategy in {"n8n_webhook", "manual_wa_link_and_n8n"}:
+                system_prompt += (
+                    " Si entre las herramientas autorizadas está handoff_request y la estrategia de handoff del tenant "
+                    "requiere tool externa, úsala cuando detectes frustración, queja, bloqueo, riesgo, caso sensible "
+                    "o una petición compleja que requiera intervención humana aunque el usuario no lo pida de forma "
+                    "explícita. Usa priority='high' para casos urgentes, sensibles o con riesgo, y priority='normal' "
+                    "por defecto. "
+                    "No uses handoff_request para peticiones explícitas de hablar con una persona: ese caso ya lo "
+                    "resuelve el runtime de forma rule-based con wa.me cuando la estrategia es manual_wa_link. "
+                    "Si la estrategia es n8n_webhook, prioriza la tool externa y no añadas wa.me automáticamente. "
+                    "Si la estrategia es manual_wa_link_and_n8n, además puedes incluir wa.me en la respuesta al cliente. "
+                    "Si handoff_request devuelve error, no afirmes que has avisado o registrado nada; explica de forma "
+                    "breve que no se pudo registrar el handoff y ofrece continuar o reintentar."
+                )
 
         user_payload = {
             "tenant": self._tenant_payload(backend_context),
@@ -109,6 +124,25 @@ class LLMPromptBuilder:
 
     def _current_madrid_time(self) -> datetime:
         return datetime.now(ZoneInfo("Europe/Madrid"))
+
+    def _handoff_strategy(self, backend_context: CommercialContext | None) -> str:
+        if backend_context is None:
+            return "disabled"
+
+        tenant = backend_context.tenant
+        handoff = getattr(tenant, "handoff", None)
+        if not isinstance(handoff, dict):
+            return "disabled"
+
+        strategy = handoff.get("strategy")
+        if not isinstance(strategy, str):
+            return "disabled"
+
+        normalized = strategy.strip().lower()
+        if normalized in {"disabled", "manual_wa_link", "n8n_webhook", "manual_wa_link_and_n8n"}:
+            return normalized
+
+        return "disabled"
 
     def _routing_payload(self, routing: RoutingContext | None) -> dict[str, Any] | None:
         if routing is None:

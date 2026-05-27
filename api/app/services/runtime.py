@@ -142,7 +142,11 @@ class AgentRuntime:
 
         explicit_handoff_request = self._is_explicit_handoff_request(payload)
         handoff_config = self._handoff_config_from_tenant(backend_context.tenant if backend_context is not None else None)
-        short_circuited_handoff = explicit_handoff_request and handoff_config is not None
+        short_circuited_handoff = (
+            explicit_handoff_request
+            and handoff_config is not None
+            and str(handoff_config.get("strategy") or "").strip().lower() == "manual_wa_link"
+        )
 
         if short_circuited_handoff:
             response = self._build_local_handoff_response(handoff_config)
@@ -380,15 +384,16 @@ class AgentRuntime:
             return response
 
         updated_reply = response.reply
-        if self._handoff_allows_manual_link(handoff_config):
+        strategy = str(handoff_config.get("strategy") or "").strip().lower()
+        if strategy == "manual_wa_link":
             if explicit_handoff_request:
                 updated_reply = self._build_direct_handoff_reply(handoff_config)
             else:
                 updated_reply = self._append_handoff_link(updated_reply, handoff_config)
-        elif explicit_handoff_request:
-            updated_reply = self._build_direct_handoff_reply(handoff_config)
+        elif strategy == "manual_wa_link_and_n8n" and (explicit_handoff_request or response.needs_human or response.action == "handoff_to_human"):
+            updated_reply = self._append_handoff_link(updated_reply, handoff_config)
 
-        if self._handoff_allows_webhook(handoff_config):
+        if self._handoff_allows_webhook(handoff_config) and not self._response_used_handoff_request_tool(response):
             await self._send_handoff_webhook(
                 response,
                 payload,
@@ -413,6 +418,21 @@ class AgentRuntime:
             model=response.model,
             latency_ms=response.latency_ms,
         )
+
+    def _response_used_handoff_request_tool(self, response: AgentResponse) -> bool:
+        traces = response.data_to_save.get("mcp_tool_traces")
+        if not isinstance(traces, list):
+            return False
+
+        for trace in traces:
+            if not isinstance(trace, dict):
+                continue
+
+            tool_name = trace.get("tool_name") or trace.get("toolName") or trace.get("name")
+            if isinstance(tool_name, str) and tool_name.strip() == "handoff_request":
+                return True
+
+        return False
 
     def _should_apply_handoff(self, response: AgentResponse, backend_context: CommercialContext | None) -> bool:
         if backend_context is None:

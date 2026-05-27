@@ -166,11 +166,13 @@
               <label for="tenant-human-handoff-strategy">Estrategia de handoff</label>
               <select id="tenant-human-handoff-strategy" name="humanHandoffStrategy">
                 <option value="disabled"{% if values.humanHandoffStrategy == 'disabled' %} selected{% endif %}>Desactivado</option>
-                <option value="manual_wa_link"{% if values.humanHandoffStrategy == 'manual_wa_link' %} selected{% endif %}>Enlace manual wa.me</option>
-                <option value="n8n_webhook"{% if values.humanHandoffStrategy == 'n8n_webhook' %} selected{% endif %}>Webhook n8n</option>
-                <option value="manual_wa_link_and_n8n"{% if values.humanHandoffStrategy == 'manual_wa_link_and_n8n' %} selected{% endif %}>Enlace wa.me + webhook n8n</option>
+                <option value="manual_wa_link"{% if values.humanHandoffStrategy == 'manual_wa_link' %} selected{% endif %}>Solo enlace manual wa.me</option>
+                <option value="n8n_webhook"{% if values.humanHandoffStrategy == 'n8n_webhook' %} selected{% endif %}>Solo tool externa</option>
+                <option value="manual_wa_link_and_n8n"{% if values.humanHandoffStrategy == 'manual_wa_link_and_n8n' %} selected{% endif %}>Enlace wa.me + tool externa</option>
               </select>
-              <div class="field-note">Controla si el handoff añade enlace manual, dispara webhook o hace ambas cosas.</div>
+              <div class="field-note">Solo enlace manual wa.me no ejecuta tool externa ni notificación background.</div>
+              <div class="field-note">Solo tool externa pasa por LLM/MCP y no añade wa.me automáticamente.</div>
+              <div class="field-note">Enlace wa.me + tool externa pasa por LLM/MCP y además puede entregar wa.me al cliente.</div>
             </div>
             <div class="field">
               <label for="tenant-human-handoff-whatsapp-public">WhatsApp humano para derivaciones</label>
