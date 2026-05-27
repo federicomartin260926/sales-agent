@@ -208,6 +208,8 @@ En esta fase:
 - `heuristic` sigue sin LLM
 - la configuración MCP se ignora si el proveedor activo no es compatible con Responses API
 
+El contrato histórico de `contact_context` con n8n, incluyendo la separación entre `Authorization` y `X-Downstream-Authorization`, está documentado en [docs/mcp-n8n-contact-context.md](../docs/mcp-n8n-contact-context.md).
+
 Prueba manual recomendada, una vez que `sales-agent` tenga un tenant con `mcp_remote` activo y `mcp-gateway` desplegado detrás de NPM:
 
 ```bash

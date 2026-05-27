@@ -25,6 +25,7 @@ El proyecto está preparado para integrarse más adelante con:
 - [Networking](../platform/networking.md)
 - [Tokens](../platform/tokens.md)
 - [Handoff humano](docs/handoff.md)
+- [MCP - n8n contact context](docs/mcp-n8n-contact-context.md)
 
 ## Arquitectura
 
@@ -264,6 +265,7 @@ El flujo esperado es:
 
 - [Modelo de dominio](docs/domain-model.md)
 - [Contrato de CRM](docs/crm-contract.md)
+- [MCP - n8n contact context](docs/mcp-n8n-contact-context.md)
 - [Matriz de acceso](docs/access-matrix.md)
 - [Guía funcional del sistema](docs/operating-model.md)
 - [Glosario oficial](docs/glossary.md)

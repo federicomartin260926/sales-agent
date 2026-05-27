@@ -154,6 +154,7 @@ La configuración MCP queda guardada en `ExternalTool.config` con campos como `s
 El token técnico downstream se guarda cifrado en `ExternalTool.bearer_token`, pero en UI y contrato interno se trata como autorización downstream para MCP/n8n. Si no se rellena, la configuración conserva el valor existente; si se marca la opción de borrado explícito, se elimina. Si se pega un token nuevo, el formulario lo trata como `bearer` automáticamente para evitar que se pierda al guardar.
 Además, `ExternalTool.is_runtime_default` marca el MCP principal del tenant para runtime. Si no hay un principal explícito, la API interna sólo cae a un único MCP activo; no elige arbitrariamente por fecha.
 Cuando el runtime usa un perfil no compatible con Responses API, el MCP se ignora y se registra la causa en la traza del mensaje.
+El contrato operativo de `contact_context` con n8n, incluyendo el uso separado de `Authorization` y `X-Downstream-Authorization`, está documentado en [../docs/mcp-n8n-contact-context.md](../docs/mcp-n8n-contact-context.md).
 
 Reglas operativas:
 
