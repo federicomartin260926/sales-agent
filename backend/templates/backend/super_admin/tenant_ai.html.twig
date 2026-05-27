@@ -98,7 +98,7 @@
       <p>Modelo por defecto: <strong>{{ policy_values.defaultModel is not empty ? policy_values.defaultModel : '—' }}</strong></p>
       <p>Modelo fallback: <strong>{{ policy_values.fallbackModel is not empty ? policy_values.fallbackModel : '—' }}</strong></p>
       <p>Acción al llegar al límite: <strong>{{ policy_values.limitAction }}</strong></p>
-      <p class="subtle">Los límites visibles están expresados en tokens. Las recargas se aplican sólo al periodo actual; el runtime sigue usando una equivalencia interna de coste.</p>
+      <p class="subtle">Los límites visibles están expresados en tokens. Las recargas se aplican sólo al periodo actual; el runtime sigue usando una equivalencia interna de coste basada en la tarifa del modelo.</p>
     </div>
   </article>
 

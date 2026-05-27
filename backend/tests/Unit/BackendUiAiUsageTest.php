@@ -76,6 +76,48 @@ final class BackendUiAiUsageTest extends TestCase
         self::assertStringNotContainsString('fallback_model', $response->getContent());
     }
 
+    public function testUsageDashboardKeepsBaseLimitsStableWhenConsumptionArrives(): void
+    {
+        $tenant = $this->tenant('Tech Investments', 'tech-investments');
+        $user = new User('manager@example.com', ['manager'], 'Manager');
+        $resolver = $this->resolver($user, [$tenant], [$this->membership($user, $tenant, 'manager')]);
+        $policy = $this->policy($tenant, true, 0.07, 0.35);
+        $policy->setDefaultModel('gpt-4.1-mini');
+        $policy->setFallbackModel('gpt-4.1-mini');
+
+        $event = new AiUsageEvent($tenant);
+        $event->setProvider('openai');
+        $event->setModel('gpt-4.1-mini');
+        $event->setInputTokens(4200);
+        $event->setOutputTokens(664);
+        $event->setCachedTokens(0);
+        $event->setTotalTokens(4864);
+        $event->setEstimatedCost(0.003405);
+        $event->setLatencyMs(111);
+
+        $request = Request::create('/backend/ai-usage', 'GET');
+        $request->setSession(new Session());
+        $context = $this->activeTenantContext($request, [$tenant], $tenant);
+
+        $controller = $this->controller($user, $context, $resolver);
+        $response = $controller->aiUsage(
+            $request,
+            $this->policyRepository($policy),
+            $this->eventsRepository([$event], ['estimated_cost_eur' => 0.003405, 'total_tokens' => 4864], ['estimated_cost_eur' => 0.003405, 'total_tokens' => 4864]),
+            $this->topUpRequestRepository([])
+        );
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        self::assertMatchesRegularExpression('/Límite diario base<\/div>\s*<div class="metric-value">100\.000<\/div>/', $response->getContent());
+        self::assertMatchesRegularExpression('/Plan mensual base<\/div>\s*<div class="metric-value">500\.000<\/div>/', $response->getContent());
+        self::assertMatchesRegularExpression('/Cupo efectivo este mes<\/div>\s*<div class="metric-value">500\.000<\/div>/', $response->getContent());
+        self::assertStringContainsString('4.864', $response->getContent());
+        self::assertStringContainsString('95.136', $response->getContent());
+        self::assertStringContainsString('495.136', $response->getContent());
+        self::assertStringContainsString('5%', $response->getContent());
+        self::assertStringContainsString('1%', $response->getContent());
+    }
+
     public function testNoAccessibleTenantShowsSelectionRequired(): void
     {
         $tenant = $this->tenant('Tech Investments', 'tech-investments');

@@ -774,7 +774,7 @@ final class BackendUiController
         $aiUsagePolicy = $this->loadTenantAiUsagePolicy($tenant, $aiUsagePolicies);
         $aiUsageEventsRepository = $aiUsageEvents ?? $this->aiUsageEvents;
         $aiUsageData = $this->tenantAiUsageDisplayData($tenant, $aiUsageEventsRepository);
-        $aiUsageTokenRate = $this->tenantAiUsageTokenRate($tenant, $aiUsagePolicy, $aiUsageEventsRepository);
+        $aiUsageTokenRate = $this->tenantAiUsageTokenRate($aiUsagePolicy);
         $values = $this->tenantFormDefaults($tenant, $aiUsagePolicy, $aiUsageEventsRepository, $aiUsageTokenRate);
         $error = null;
 
@@ -932,7 +932,7 @@ final class BackendUiController
 
         $policy = $this->loadTenantAiUsagePolicyForView($tenant, $aiUsagePolicies);
         $aiUsageEventsRepository = $aiUsageEvents ?? $this->aiUsageEvents;
-        $aiUsageTokenRate = $this->tenantAiUsageTokenRate($tenant, $policy, $aiUsageEventsRepository);
+        $aiUsageTokenRate = $this->tenantAiUsageTokenRate($policy);
         $values = $this->tenantAiUsagePolicyValues($policy, $aiUsageTokenRate);
         $errors = [];
 
@@ -2523,7 +2523,7 @@ final class BackendUiController
         $salesPolicy = $tenant?->getSalesPolicy() ?? [];
         $aiPolicy = $this->tenantAiUsagePolicyValues(
             $aiUsagePolicy,
-            $tokenRate ?? $this->tenantAiUsageTokenRate($tenant, $aiUsagePolicy, $aiUsageEvents)
+            $tokenRate ?? $this->tenantAiUsageTokenRate($aiUsagePolicy)
         );
 
         return [
@@ -2773,7 +2773,7 @@ final class BackendUiController
         ?float $tokenRate = null,
     ): TenantAiUsagePolicy {
         $policy ??= $this->loadTenantAiUsagePolicy($tenant, $aiUsagePolicies);
-        $this->hydrateTenantAiUsagePolicyFromForm($policy, $values, $tokenRate ?? $this->tenantAiUsageTokenRate($tenant, $policy, $this->aiUsageEvents));
+        $this->hydrateTenantAiUsagePolicyFromForm($policy, $values, $tokenRate ?? $this->tenantAiUsageTokenRate($policy));
 
         if ($aiUsagePolicies instanceof TenantAiUsagePolicyRepository) {
             $aiUsagePolicies->save($policy, $flush);
@@ -2992,7 +2992,7 @@ final class BackendUiController
             'total_tokens' => 0,
         ];
 
-        $tokenRate = $this->tenantAiUsageTokenRate($tenant, $policy, $aiUsageEvents);
+        $tokenRate = $this->tenantAiUsageTokenRate($policy);
         $dailyLimitTokens = $policy instanceof TenantAiUsagePolicy ? $this->tokenAmountFromCost($policy->getDailyCostLimitEur(), $tokenRate) : null;
         $monthlyBaseLimitTokens = $policy instanceof TenantAiUsagePolicy ? $this->tokenAmountFromCost($policy->getMonthlyCostLimitEur(), $tokenRate) : null;
         $approvedTopUpTokens = $topUpRequests instanceof TenantAiTopUpRequestRepository ? $topUpRequests->sumApprovedTokensByTenantAndPeriod($tenant, $periodKey) : 0;
@@ -3514,20 +3514,12 @@ final class BackendUiController
         return min(100, (int) round(($usedTokens / $limitTokens) * 100));
     }
 
-    private function tenantAiUsageTokenRate(?Tenant $tenant, ?TenantAiUsagePolicy $policy, ?AiUsageEventRepository $aiUsageEvents): float
+    private function tenantAiUsageTokenRate(?TenantAiUsagePolicy $policy): float
     {
-        if ($tenant instanceof Tenant && $aiUsageEvents instanceof AiUsageEventRepository) {
-            $timezone = new \DateTimeZone(date_default_timezone_get() ?: 'UTC');
-            $month = new \DateTimeImmutable('first day of this month', $timezone);
-            $summary = $aiUsageEvents->summarizeSince($tenant, $month);
-            $tokens = (int) ($summary['total_tokens'] ?? 0);
-            $cost = (float) ($summary['estimated_cost_eur'] ?? 0.0);
-
-            if ($tokens > 0 && $cost > 0.0) {
-                return $cost / $tokens;
-            }
-        }
-
+        // Use the model pricing table as the stable conversion source.
+        // Deriving the rate from the current month's usage makes the policy
+        // inputs drift with traffic and can make the "base" plan look like it
+        // changes as usage accumulates.
         return $this->tenantAiUsageModelAverageCostPerToken($policy?->getDefaultModel() ?? $policy?->getFallbackModel());
     }
 

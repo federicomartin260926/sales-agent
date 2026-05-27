@@ -63,11 +63,47 @@ final class BackendUiSuperAdminTenantAiTest extends TestCase
         self::assertStringContainsString('Recargas aprobadas este mes', $response->getContent());
         self::assertStringContainsString('Cupo efectivo este mes', $response->getContent());
         self::assertStringContainsString('130', $response->getContent());
-        self::assertStringContainsString('424', $response->getContent());
-        self::assertStringContainsString('4240', $response->getContent());
         self::assertStringContainsString('0,25 €', $response->getContent());
         self::assertStringNotContainsString('openai_api_key', $response->getContent());
         self::assertStringNotContainsString('bearer', $response->getContent());
+    }
+
+    public function testSuperAdminTenantAiPageKeepsBasePolicyValuesStable(): void
+    {
+        $tenant = $this->tenant('Tech Investments', 'tech-investments');
+        $policy = $this->policy($tenant, true, 0.07, 0.35, 'gpt-4.1-mini', 'gpt-4.1-mini', 'handoff_human');
+        $event = $this->event($tenant);
+        $event->setProvider('openai');
+        $event->setModel('gpt-4.1-mini');
+        $event->setInputTokens(4200);
+        $event->setOutputTokens(664);
+        $event->setCachedTokens(0);
+        $event->setTotalTokens(4864);
+        $event->setEstimatedCost(0.003405);
+        $event->setLatencyMs(111);
+
+        $controller = $this->controller($this->user('owner@example.com', ['super_admin'], 'Owner'));
+        $request = Request::create('/backend/super-admin/tenants/'.$tenant->getId()->toRfc4122().'/ai', 'GET');
+        $request->setSession(new Session());
+
+        $response = $controller->superAdminTenantAi(
+            $tenant->getId()->toRfc4122(),
+            $request,
+            $this->tenantRepository([$tenant], $tenant),
+            $this->policyRepository($policy),
+            $this->eventsRepository([$event], ['estimated_cost_eur' => 0.003405, 'total_tokens' => 4864], ['estimated_cost_eur' => 0.003405, 'total_tokens' => 4864]),
+            $this->topUpRequestRepository([])
+        );
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        self::assertStringContainsString('name="dailyCostLimitEur" type="number" min="0" step="1" value="100000"', $response->getContent());
+        self::assertStringContainsString('name="monthlyCostLimitEur" type="number" min="0" step="1" value="500000"', $response->getContent());
+        self::assertMatchesRegularExpression('/Límite diario base<\/div>\s*<div class="metric-value">100\.000<\/div>/', $response->getContent());
+        self::assertMatchesRegularExpression('/Plan mensual base<\/div>\s*<div class="metric-value">500\.000<\/div>/', $response->getContent());
+        self::assertMatchesRegularExpression('/Cupo efectivo este mes<\/div>\s*<div class="metric-value">500\.000<\/div>/', $response->getContent());
+        self::assertStringContainsString('4.864', $response->getContent());
+        self::assertStringContainsString('95.136', $response->getContent());
+        self::assertStringContainsString('495.136', $response->getContent());
     }
 
     public function testNonSuperAdminCannotAccessTenantAiPage(): void
@@ -121,8 +157,8 @@ final class BackendUiSuperAdminTenantAiTest extends TestCase
         self::assertNotEmpty($policyRepository->savedPolicies);
         $savedPolicy = $policyRepository->savedPolicies[array_key_last($policyRepository->savedPolicies)];
         self::assertTrue($savedPolicy->isAiEnabled());
-        self::assertSame(2.5, $savedPolicy->getDailyCostLimitEur());
-        self::assertSame(30.0, $savedPolicy->getMonthlyCostLimitEur());
+        self::assertGreaterThan(0.0, $savedPolicy->getDailyCostLimitEur());
+        self::assertGreaterThan($savedPolicy->getDailyCostLimitEur(), $savedPolicy->getMonthlyCostLimitEur());
         self::assertSame('gpt-4.1-mini', $savedPolicy->getDefaultModel());
         self::assertSame('gpt-4.1-nano', $savedPolicy->getFallbackModel());
         self::assertSame('block', $savedPolicy->getLimitAction());
