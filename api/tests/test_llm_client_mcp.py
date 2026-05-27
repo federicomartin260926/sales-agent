@@ -58,6 +58,113 @@ def mcp_transport_handler(request: httpx.Request) -> httpx.Response:
 
 
 @pytest.mark.asyncio
+async def test_llm_client_uses_dedicated_timeout_for_openai_responses(monkeypatch):
+    seen: dict[str, object] = {}
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            seen["base_url"] = kwargs.get("base_url")
+            seen["timeout"] = kwargs.get("timeout")
+            seen["transport"] = kwargs.get("transport")
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, json=None, headers=None):
+            seen["url"] = url
+            seen["headers"] = headers
+            request = httpx.Request("POST", f"{seen['base_url']}{url}")
+            return httpx.Response(
+                200,
+                request=request,
+                json={
+                    "id": "resp_1",
+                    "output_text": json_module.dumps({"reply": "ok", "intent": "open_question", "score": 0.1, "action": "ask_question", "needs_human": False, "data_to_save": {}}),
+                    "output": [],
+                },
+            )
+
+    json_module = json
+    monkeypatch.setattr("app.services.llm_client.httpx.AsyncClient", FakeAsyncClient)
+    monkeypatch.setenv("MCP_TEST_AUTHORIZATION", "")
+
+    client = LLMClient(
+        Settings(OPENAI_API_KEY="sk-test", OPENAI_TIMEOUT_SECONDS=15, OPENAI_RESPONSES_TIMEOUT_SECONDS=57),
+    )
+
+    await client.generate_with_mcp(
+        "openai",
+        "Eres un asistente de ventas.",
+        "Hola",
+        McpRemoteConfig(
+            enabled=True,
+            server_label="tenant_main_mcp",
+            server_url="https://mcp.example.test",
+            auth_type="bearer",
+            downstream_authorization_token="downstream-token",
+            allowed_tools=["search_properties"],
+            require_approval="auto",
+        ),
+        configuration={
+            "openai_base_url": "https://api.openai.com/v1",
+            "openai_model": "gpt-4.1-mini",
+            "openai_api_key": "sk-test",
+            "openai_timeout_seconds": "15",
+        },
+    )
+
+    assert seen["base_url"] == "https://api.openai.com/v1"
+    assert seen["url"] == "/responses"
+    assert seen["timeout"].read == 57
+    assert seen["timeout"].connect == 2.0
+    assert seen["headers"]["Authorization"] == "Bearer sk-test"
+
+
+@pytest.mark.asyncio
+async def test_llm_client_reports_openai_responses_http_error_details():
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            500,
+            request=request,
+            json={"error": "upstream failed"},
+        )
+
+    client = LLMClient(
+        Settings(OPENAI_API_KEY="sk-test", OPENAI_TIMEOUT_SECONDS=15, OPENAI_RESPONSES_TIMEOUT_SECONDS=57),
+        transport=httpx.MockTransport(handler),
+    )
+
+    with pytest.raises(RuntimeError) as exc_info:
+        await client._generate_openai_responses(
+            "Eres un asistente de ventas.",
+            "{\"reply\":\"ok\"}",
+            {
+                "openai_base_url": "https://api.openai.com/v1",
+                "openai_model": "gpt-4.1-mini",
+                "openai_api_key": "sk-test",
+                "openai_timeout_seconds": "15",
+            },
+            McpRemoteConfig(
+                enabled=True,
+                server_label="tenant_main_mcp",
+                server_url="https://mcp.example.test",
+                auth_type="bearer",
+                downstream_authorization_token="downstream-token",
+                allowed_tools=["search_properties"],
+                require_approval="auto",
+            ),
+        )
+
+    message = str(exc_info.value)
+    assert "HTTPStatusError" in message
+    assert "status_code=500" in message
+    assert "upstream failed" in message
+
+
+@pytest.mark.asyncio
 async def test_llm_client_uses_openai_responses_with_mcp_tools(monkeypatch):
     monkeypatch.setenv("MCP_TEST_AUTHORIZATION", "")
 

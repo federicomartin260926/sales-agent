@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     llm_provider: str = Field(default="openai", alias="LLM_PROVIDER")
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
     openai_timeout_seconds: int = Field(default=15, alias="OPENAI_TIMEOUT_SECONDS")
+    openai_responses_timeout_seconds: int = Field(default=60, alias="OPENAI_RESPONSES_TIMEOUT_SECONDS")
     ai_billing_mode: str = Field(default="byok", alias="AI_BILLING_MODE")
     ollama_base_url: str = Field(default="http://ollama-vpn-bridge:11434", alias="OLLAMA_BASE_URL")
     ollama_timeout_seconds: int = Field(default=15, alias="OLLAMA_TIMEOUT_SECONDS")

@@ -62,7 +62,8 @@ class LLMClient:
         except Exception as exc:
             self.last_mcp_error = f"responses_mcp_path_failed:{exc.__class__.__name__}"
             logger.warning(
-                "OpenAI Responses MCP path failed, falling back to legacy chat completions: %r",
+                "OpenAI Responses MCP path failed, falling back to legacy chat completions: type=%s repr=%r",
+                exc.__class__.__name__,
                 exc,
                 exc_info=True,
             )
@@ -122,7 +123,10 @@ class LLMClient:
         base_url = configuration.get("openai_base_url", "").strip().rstrip("/")
         model = configuration.get("openai_model", "").strip()
         api_key = configuration.get("openai_api_key", "").strip()
-        timeout_seconds = self._parse_timeout(configuration.get("openai_timeout_seconds"), self.settings.openai_timeout_seconds)
+        timeout_seconds = self._parse_timeout(
+            configuration.get("openai_responses_timeout_seconds"),
+            self.settings.openai_responses_timeout_seconds,
+        )
 
         if base_url == "" or model == "" or api_key == "":
             raise ValueError("OpenAI configuration is incomplete")
@@ -159,14 +163,26 @@ class LLMClient:
                 status_code,
                 response_body,
                 self._sanitize_openai_responses_payload(payload),
+                exc,
             )
 
-            raise RuntimeError(
-                f"OpenAI responses request failed: {exc}; "
-                f"status_code={status_code}; response_body={response_body}"
-            ) from exc
+            raise RuntimeError(self._format_openai_responses_error(exc, status_code, response_body)) from exc
+        except httpx.TimeoutException as exc:
+            self._log_openai_responses_error(
+                None,
+                None,
+                self._sanitize_openai_responses_payload(payload),
+                exc,
+            )
+            raise RuntimeError(self._format_openai_responses_error(exc)) from exc
         except (httpx.HTTPError, ValueError) as exc:
-            raise RuntimeError(f"OpenAI responses request failed: {exc}") from exc
+            self._log_openai_responses_error(
+                None,
+                None,
+                self._sanitize_openai_responses_payload(payload),
+                exc,
+            )
+            raise RuntimeError(self._format_openai_responses_error(exc)) from exc
 
         content = self._extract_responses_content(payload_json)
         if content is None:
@@ -559,9 +575,32 @@ class LLMClient:
         redacted = re.sub(r'(Bearer\\s+)[A-Za-z0-9._~-]+', r'\\1[REDACTED]', redacted, flags=re.IGNORECASE)
         return redacted
 
-    def _log_openai_responses_error(self, status_code: int | None, body: str | None, sanitized_payload: dict[str, Any]) -> None:
+    def _format_openai_responses_error(
+        self,
+        exc: Exception,
+        status_code: int | None = None,
+        body: str | None = None,
+    ) -> str:
+        parts = [
+            f"OpenAI responses request failed [{exc.__class__.__name__}]: {exc!r}",
+        ]
+        if status_code is not None:
+            parts.append(f"status_code={status_code}")
+        if body is not None:
+            parts.append(f"response_body={body}")
+        return "; ".join(parts)
+
+    def _log_openai_responses_error(
+        self,
+        status_code: int | None,
+        body: str | None,
+        sanitized_payload: dict[str, Any],
+        exc: Exception,
+    ) -> None:
         logger.warning(
-            "OpenAI Responses MCP request failed status_code=%s body=%s sanitized_payload=%s",
+            "OpenAI Responses MCP request failed exception_type=%s exception_repr=%r status_code=%s body=%s sanitized_payload=%s",
+            exc.__class__.__name__,
+            exc,
             status_code,
             body or "null",
             json.dumps(sanitized_payload, ensure_ascii=False, default=str),
