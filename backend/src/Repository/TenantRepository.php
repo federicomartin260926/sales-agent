@@ -44,4 +44,17 @@ class TenantRepository extends ServiceEntityRepository
             ->getQuery()
             ->getResult();
     }
+
+    /**
+     * @return Tenant[]
+     */
+    public function findByWhatsappPhoneNumberId(string $whatsappPhoneNumberId): array
+    {
+        return $this->createQueryBuilder('t')
+            ->andWhere('t.whatsappPhoneNumberId = :whatsappPhoneNumberId')
+            ->setParameter('whatsappPhoneNumberId', $whatsappPhoneNumberId)
+            ->orderBy('t.createdAt', 'DESC')
+            ->getQuery()
+            ->getResult();
+    }
 }

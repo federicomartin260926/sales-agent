@@ -2690,6 +2690,18 @@ final class BackendUiController
                     return 'Ya existe otro negocio con ese slug.';
                 }
             }
+
+            if ($values['whatsappPhoneNumberId'] !== '') {
+                foreach ($tenants->findByWhatsappPhoneNumberId($values['whatsappPhoneNumberId']) as $existingTenant) {
+                    if (!$existingTenant instanceof Tenant) {
+                        continue;
+                    }
+
+                    if ($tenant === null || $existingTenant->getId()->toRfc4122() !== $tenant->getId()->toRfc4122()) {
+                        return 'Este WhatsApp Phone Number ID ya está en uso por otro negocio.';
+                    }
+                }
+            }
         }
 
         return null;

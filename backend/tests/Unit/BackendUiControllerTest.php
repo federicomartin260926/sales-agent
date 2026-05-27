@@ -151,12 +151,72 @@ final class BackendUiControllerTest extends TestCase
 
             public function findOneBy(array $criteria, ?array $orderBy = null): ?object
             {
+                foreach ($this->orderedTenants as $tenant) {
+                    if ($this->matchesCriteria($tenant, $criteria)) {
+                        return $tenant;
+                    }
+                }
+
                 return null;
+            }
+
+            /**
+             * @return Tenant[]
+             */
+            public function findBy(array $criteria, ?array $orderBy = null, ?int $limit = null, ?int $offset = null): array
+            {
+                $matches = array_values(array_filter(
+                    $this->orderedTenants,
+                    fn (Tenant $tenant): bool => $this->matchesCriteria($tenant, $criteria)
+                ));
+
+                if ($offset !== null || $limit !== null) {
+                    $matches = array_slice(
+                        $matches,
+                        $offset ?? 0,
+                        $limit ?? null
+                    );
+                }
+
+                return $matches;
+            }
+
+            /**
+             * @return Tenant[]
+             */
+            public function findByWhatsappPhoneNumberId(string $whatsappPhoneNumberId): array
+            {
+                return array_values(array_filter(
+                    $this->orderedTenants,
+                    static fn (Tenant $tenant): bool => $tenant->getWhatsappPhoneNumberId() === $whatsappPhoneNumberId
+                ));
             }
 
             public function find($id, $lockMode = null, $lockVersion = null): ?object
             {
                 return $this->foundTenant;
+            }
+
+            /**
+             * @param array<string, mixed> $criteria
+             */
+            private function matchesCriteria(Tenant $tenant, array $criteria): bool
+            {
+                foreach ($criteria as $field => $expected) {
+                    if ($field === 'slug' && $tenant->getSlug() !== $expected) {
+                        return false;
+                    }
+
+                    if ($field === 'whatsappPhoneNumberId' && $tenant->getWhatsappPhoneNumberId() !== $expected) {
+                        return false;
+                    }
+
+                    if ($field === 'id' && $tenant->getId()->toRfc4122() !== (string) $expected) {
+                        return false;
+                    }
+                }
+
+                return true;
             }
         };
     }
@@ -1141,6 +1201,91 @@ final class BackendUiControllerTest extends TestCase
         self::assertSame('/backend/tenants/'.$createdTenant->getId()->toRfc4122().'/edit', $response->headers->get('Location'));
     }
 
+    public function testTenantCreateSubmissionAllowsEmptyWhatsappPhoneNumberId(): void
+    {
+        $security = $this->createStub(Security::class);
+        $security->method('getUser')->willReturn($this->createAuthenticatedUser('admin@example.com', ['super_admin'], 'María Manager'));
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role === 'ROLE_SUPER_ADMIN');
+
+        $entityManager = $this->createMock(EntityManagerInterface::class);
+        $createdTenant = null;
+        $entityManager->expects(self::exactly(2))->method('persist')->with(self::callback(static function (object $entity) use (&$createdTenant): bool {
+            if ($entity instanceof Tenant) {
+                $createdTenant = $entity;
+            }
+
+            return true;
+        }));
+        $entityManager->expects(self::once())->method('flush');
+
+        $tenants = $this->createTenantRepositoryFake();
+
+        $csrfTokenManager = $this->createStub(CsrfTokenManagerInterface::class);
+        $csrfTokenManager->method('isTokenValid')->willReturn(true);
+
+        $controller = $this->createControllerForActiveTenant($security, new Tenant('Tenant base', 'tenant-base'), $entityManager, null, $csrfTokenManager);
+        $response = $controller->tenantCreate(Request::create('/backend/tenants/new', 'POST', [
+            '_csrf_token' => 'token',
+            'name' => 'Academia Nova',
+            'slug' => 'academia-nova',
+            'businessContext' => 'Negocio demo',
+            'tone' => 'Cercano',
+            'whatsappPhoneNumberId' => '',
+            'whatsappPublicPhone' => '34612345678',
+            'positioning' => 'Demo comercial',
+            'qualificationFocus' => 'Identificar tipo de negocio',
+            'handoffRules' => 'Derivar cuando el lead pida demo',
+            'salesBoundaries' => "No prometer cierres automáticos\nNo inventar precios",
+            'notes' => 'Plantilla de pruebas',
+            'isActive' => '1',
+        ]), $tenants);
+
+        self::assertSame(Response::HTTP_FOUND, $response->getStatusCode());
+        self::assertInstanceOf(Tenant::class, $createdTenant);
+        self::assertNull($createdTenant->getWhatsappPhoneNumberId());
+        self::assertSame('/backend/tenants/'.$createdTenant->getId()->toRfc4122().'/edit', $response->headers->get('Location'));
+    }
+
+    public function testTenantCreateSubmissionRejectsDuplicateWhatsappPhoneNumberId(): void
+    {
+        $existingTenant = new Tenant('Mary', 'mary');
+        $existingTenant->setWhatsappPhoneNumberId('123456789012345');
+
+        $security = $this->createStub(Security::class);
+        $security->method('getUser')->willReturn($this->createAuthenticatedUser('admin@example.com', ['super_admin'], 'María Manager'));
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role === 'ROLE_SUPER_ADMIN');
+
+        $entityManager = $this->createMock(EntityManagerInterface::class);
+        $entityManager->expects(self::never())->method('persist');
+        $entityManager->expects(self::never())->method('flush');
+
+        $tenants = $this->createTenantRepositoryFake([$existingTenant]);
+
+        $csrfTokenManager = $this->createStub(CsrfTokenManagerInterface::class);
+        $csrfTokenManager->method('isTokenValid')->willReturn(true);
+
+        $controller = $this->createControllerForActiveTenant($security, new Tenant('Tenant base', 'tenant-base'), $entityManager, null, $csrfTokenManager);
+        $response = $controller->tenantCreate(Request::create('/backend/tenants/new', 'POST', [
+            '_csrf_token' => 'token',
+            'name' => 'Academia Nova',
+            'slug' => 'academia-nova',
+            'businessContext' => 'Negocio demo',
+            'tone' => 'Cercano',
+            'whatsappPhoneNumberId' => '123456789012345',
+            'whatsappPublicPhone' => '34612345678',
+            'positioning' => 'Demo comercial',
+            'qualificationFocus' => 'Identificar tipo de negocio',
+            'handoffRules' => 'Derivar cuando el lead pida demo',
+            'salesBoundaries' => "No prometer cierres automáticos\nNo inventar precios",
+            'notes' => 'Plantilla de pruebas',
+            'isActive' => '1',
+        ]), $tenants);
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        self::assertStringContainsString('Este WhatsApp Phone Number ID ya está en uso por otro negocio.', $response->getContent());
+        self::assertStringContainsString('name="whatsappPhoneNumberId"', $response->getContent());
+    }
+
     public function testTenantEditFormRendersCurrentValues(): void
     {
         $tenant = new Tenant('Federico Martin Demo', 'federico-martin-demo');
@@ -1233,6 +1378,7 @@ final class BackendUiControllerTest extends TestCase
         self::assertStringContainsString('name="whatsappPublicPhone"', $response->getContent());
         self::assertStringContainsString('value="123456789012345"', $response->getContent());
         self::assertStringContainsString('value="34612345678"', $response->getContent());
+        self::assertStringContainsString('Para WhatsApp real, usa un Phone Number ID único por tenant.', $response->getContent());
         self::assertStringContainsString('action="/backend/tenants/'.$tenant->getId()->toRfc4122().'/edit"', $response->getContent());
         self::assertStringContainsString('nav-tenant-link', $response->getContent());
         self::assertStringContainsString('href="/backend/tenants/'.$tenant->getId()->toRfc4122().'/edit"', $response->getContent());
