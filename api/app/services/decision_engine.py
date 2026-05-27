@@ -146,6 +146,9 @@ class DecisionEngine:
         if self._external_flag_enabled(contact_context, "needs_human") or self._external_flag_enabled(contact_context, "do_not_contact"):
             needs_human = True
 
+        if needs_human and action == "handoff_to_human":
+            intent = "handoff"
+
         return AgentResponse(
             reply=llm_decision.reply,
             intent=intent,

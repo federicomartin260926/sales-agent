@@ -7,7 +7,7 @@ from app.schemas.llm import McpRemoteConfig
 from app.services.decision_engine import DecisionEngine
 from app.services.routing_resolver import RoutingContext
 from app.services.llm_client import LLMClient
-from app.services.llm_decision_service import LLMDecisionService
+from app.services.llm_decision_service import LLMDecisionDraft, LLMDecisionService
 
 
 class FakeBackendClient:
@@ -399,3 +399,43 @@ async def test_decision_engine_handoff_uses_context():
     assert response.action == "handoff_to_human"
     assert response.needs_human is True
     assert response.data_to_save["playbook_id"] == "playbook-1"
+
+
+@pytest.mark.asyncio
+async def test_decision_engine_normalizes_handoff_intent_for_llm_responses(monkeypatch: pytest.MonkeyPatch):
+    payload = AgentRequest(
+        tenant_id="tenant-1",
+        message="Necesito que alguien revise mi caso",
+        contact=Contact(phone="+34999999999"),
+    )
+
+    async def fake_propose(self, *args, **kwargs):
+        return LLMDecisionDraft(
+            reply="Te paso con una persona del equipo.",
+            intent="open_question",
+            score=0.91,
+            action="handoff_to_human",
+            needs_human=True,
+            data_to_save={"local_response_short_circuited": False},
+            provider="openai",
+            model="gpt-4.1-mini",
+            latency_ms=321,
+            response_id="resp_123",
+        )
+
+    monkeypatch.setattr(LLMDecisionService, "propose", fake_propose)
+
+    response = await DecisionEngine(FakeBackendClient(build_backend_context())).decide(
+        payload,
+        backend_context=build_backend_context(),
+        mcp_config=McpRemoteConfig(
+            enabled=True,
+            server_label="tenant_main_mcp",
+            allowed_tools=["services_search", "handoff_request"],
+        ),
+    )
+
+    assert response.intent == "handoff"
+    assert response.action == "handoff_to_human"
+    assert response.needs_human is True
+    assert response.provider == "openai"
