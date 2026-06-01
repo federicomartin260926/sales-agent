@@ -2724,12 +2724,23 @@ final class BackendUiController
             }
         }
 
+        $maxAudioSeconds = $values['maxAudioTranscriptionSeconds'] ?? '';
+        if ($maxAudioSeconds !== '') {
+            if (!is_numeric($maxAudioSeconds) || (int) $maxAudioSeconds < 1) {
+                return 'El límite máximo de audio debe ser un entero mayor o igual que 1.';
+            }
+        }
+
         if ($values['defaultModel'] !== '' && mb_strlen($values['defaultModel']) > 100) {
             return 'El modelo por defecto no puede superar 100 caracteres.';
         }
 
         if ($values['fallbackModel'] !== '' && mb_strlen($values['fallbackModel']) > 100) {
             return 'El modelo alternativo no puede superar 100 caracteres.';
+        }
+
+        if ($values['audioLimitExceededMessage'] !== '' && mb_strlen($values['audioLimitExceededMessage']) > 2000) {
+            return 'El mensaje de audio no puede superar 2000 caracteres.';
         }
 
         if (!in_array($values['limitAction'], ['handoff_human', 'block'], true)) {
@@ -2788,7 +2799,7 @@ final class BackendUiController
     }
 
     /**
-     * @return array{aiEnabled: bool, dailyCostLimitEur: string, monthlyCostLimitEur: string, defaultModel: string, fallbackModel: string, limitAction: string}
+     * @return array{aiEnabled: bool, dailyCostLimitEur: string, monthlyCostLimitEur: string, defaultModel: string, fallbackModel: string, maxAudioTranscriptionSeconds: string, audioLimitExceededMessage: string, limitAction: string}
      */
     private function tenantAiUsagePolicyValues(?TenantAiUsagePolicy $policy = null, ?float $tokenRate = null): array
     {
@@ -2799,6 +2810,8 @@ final class BackendUiController
             'monthlyCostLimitEur' => $this->formatTokenInputFromCost($policy?->getMonthlyCostLimitEur(), $tokenRate),
             'defaultModel' => $policy?->getDefaultModel() ?? '',
             'fallbackModel' => $policy?->getFallbackModel() ?? '',
+            'maxAudioTranscriptionSeconds' => (string) ($policy?->getMaxAudioTranscriptionSeconds() ?? TenantAiUsagePolicy::DEFAULT_MAX_AUDIO_TRANSCRIPTION_SECONDS),
+            'audioLimitExceededMessage' => $policy?->getAudioLimitExceededMessage() ?? TenantAiUsagePolicy::DEFAULT_AUDIO_LIMIT_EXCEEDED_MESSAGE,
             'limitAction' => $policy?->getLimitAction() ?? 'handoff_human',
         ];
     }
@@ -3087,6 +3100,8 @@ final class BackendUiController
                 'aiEnabled' => $policy?->isAiEnabled() ?? true,
                 'defaultModel' => $policy?->getDefaultModel() ?? '',
                 'fallbackModel' => $policy?->getFallbackModel() ?? '',
+                'maxAudioTranscriptionSeconds' => (string) ($policy?->getMaxAudioTranscriptionSeconds() ?? TenantAiUsagePolicy::DEFAULT_MAX_AUDIO_TRANSCRIPTION_SECONDS),
+                'audioLimitExceededMessage' => $policy?->getAudioLimitExceededMessage() ?? TenantAiUsagePolicy::DEFAULT_AUDIO_LIMIT_EXCEEDED_MESSAGE,
                 'limitAction' => $policy?->getLimitAction() ?? 'handoff_human',
                 'monthlyCostLimitEur' => $this->formatTokenInputFromCost($policy?->getMonthlyCostLimitEur(), $tokenRate) ?? '',
                 'dailyCostLimitEur' => $this->formatTokenInputFromCost($policy?->getDailyCostLimitEur(), $tokenRate) ?? '',
@@ -3120,11 +3135,17 @@ final class BackendUiController
 
     private function tenantAiUsageDashboardEventView(AiUsageEvent $event): array
     {
-        return [
-            'createdAt' => $event->getCreatedAt()->format('Y-m-d H:i'),
-            'feature' => $event->getConversationMessage() instanceof \App\Entity\ConversationMessage
+        $feature = match ($event->getUsageType()) {
+            AiUsageEvent::USAGE_TYPE_AUDIO_TRANSCRIPTION => 'Transcripción audio',
+            AiUsageEvent::USAGE_TYPE_LLM_CHAT => 'Chat LLM',
+            default => $event->getConversationMessage() instanceof \App\Entity\ConversationMessage
                 ? 'Mensajería'
                 : ($event->getConversation() instanceof \App\Entity\Conversation ? 'Conversación' : 'Evento IA'),
+        };
+
+        return [
+            'createdAt' => $event->getCreatedAt()->format('Y-m-d H:i'),
+            'feature' => $feature,
             'provider' => $event->getProvider() !== null && $event->getProvider() !== '' ? $event->getProvider() : '—',
             'model' => $event->getModel() !== null && $event->getModel() !== '' ? $this->shortenListText($event->getModel(), 24, '—') : '—',
             'inputTokens' => $this->formatIntegerDisplay($event->getInputTokens()),
@@ -3289,7 +3310,7 @@ final class BackendUiController
     }
 
     /**
-     * @return array{aiEnabled: bool, dailyCostLimitEur: string, monthlyCostLimitEur: string, defaultModel: string, fallbackModel: string, limitAction: string}
+     * @return array{aiEnabled: bool, dailyCostLimitEur: string, monthlyCostLimitEur: string, defaultModel: string, fallbackModel: string, maxAudioTranscriptionSeconds: string, audioLimitExceededMessage: string, limitAction: string}
      */
     private function tenantAiUsagePolicyFormValuesFromRequest(Request $request): array
     {
@@ -3299,6 +3320,8 @@ final class BackendUiController
             'monthlyCostLimitEur' => trim((string) $request->request->get('monthlyCostLimitEur', '')),
             'defaultModel' => trim((string) $request->request->get('defaultModel', '')),
             'fallbackModel' => trim((string) $request->request->get('fallbackModel', '')),
+            'maxAudioTranscriptionSeconds' => trim((string) $request->request->get('maxAudioTranscriptionSeconds', '')),
+            'audioLimitExceededMessage' => trim((string) $request->request->get('audioLimitExceededMessage', '')),
             'limitAction' => trim((string) $request->request->get('limitAction', 'handoff_human')),
         ];
     }
@@ -3408,6 +3431,8 @@ final class BackendUiController
         $policy->setMonthlyCostLimitEur($monthlyTokens !== null ? $this->costAmountFromTokens($monthlyTokens, $costPerToken) : null);
         $policy->setDefaultModel($values['defaultModel'] !== '' ? $values['defaultModel'] : null);
         $policy->setFallbackModel($values['fallbackModel'] !== '' ? $values['fallbackModel'] : null);
+        $policy->setMaxAudioTranscriptionSeconds($values['maxAudioTranscriptionSeconds'] !== '' ? (int) round((float) $values['maxAudioTranscriptionSeconds']) : null);
+        $policy->setAudioLimitExceededMessage($values['audioLimitExceededMessage'] !== '' ? $values['audioLimitExceededMessage'] : null);
         $policy->setLimitAction($values['limitAction']);
     }
 

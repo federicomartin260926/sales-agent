@@ -37,13 +37,18 @@ class BlockedBackendClient:
         monthly_cost_limit_eur: float | None = None,
         daily_estimated_cost_eur: float = 0.0,
         monthly_estimated_cost_eur: float = 0.0,
+        max_audio_transcription_seconds: int | None = None,
+        audio_limit_exceeded_message: str | None = None,
     ) -> None:
         self.context = context
+        self.settings = get_settings()
         self.ai_enabled = ai_enabled
         self.daily_cost_limit_eur = daily_cost_limit_eur
         self.monthly_cost_limit_eur = monthly_cost_limit_eur
         self.daily_estimated_cost_eur = daily_estimated_cost_eur
         self.monthly_estimated_cost_eur = monthly_estimated_cost_eur
+        self.max_audio_transcription_seconds = max_audio_transcription_seconds
+        self.audio_limit_exceeded_message = audio_limit_exceeded_message
         self.ai_usage_event_payloads: list[dict[str, object]] = []
 
     async def fetch_tenant_context(self, tenant_id: str, *args):
@@ -59,6 +64,8 @@ class BlockedBackendClient:
             ai_enabled=self.ai_enabled,
             daily_cost_limit_eur=self.daily_cost_limit_eur,
             monthly_cost_limit_eur=self.monthly_cost_limit_eur,
+            max_audio_transcription_seconds=self.max_audio_transcription_seconds,
+            audio_limit_exceeded_message=self.audio_limit_exceeded_message,
         )
 
     async def fetch_ai_usage_snapshot(self, tenant_id: str):
@@ -158,6 +165,8 @@ def configure_environment() -> None:
     os.environ["SALES_AGENT_BEARER_TOKEN"] = "test-internal-token"
     os.environ["BACKEND_BASE_URL"] = ""
     os.environ["CRM_BASE_URL"] = ""
+    os.environ["OPENAI_AUDIO_TRANSCRIPTION_COST_PER_MINUTE_EUR"] = "0.02"
+    os.environ["AUDIO_LLM_FOLLOWUP_RESERVE_COST_EUR"] = "0.01"
     get_settings.cache_clear()
 
 
@@ -324,4 +333,134 @@ async def test_agent_respond_blocks_audio_before_download_when_tenant_ai_is_disa
     assert body["needs_human"] is True
     assert body["data_to_save"]["ai_usage_limit_reached"] is True
     assert body["data_to_save"]["ai_usage_limit_reason"] == "ai_disabled"
+    assert backend.ai_usage_event_payloads == []
+
+
+@pytest.mark.asyncio
+async def test_agent_respond_blocks_audio_when_duration_exceeds_tenant_limit(monkeypatch):
+    configure_environment()
+
+    backend = BlockedBackendClient(
+        build_context(),
+        ai_enabled=True,
+        max_audio_transcription_seconds=10,
+        audio_limit_exceeded_message="Audio demasiado largo para este tenant.",
+    )
+
+    async def fail_if_llm_is_called(*args, **kwargs):
+        raise AssertionError("LLM should not be called when audio exceeds the configured duration limit")
+
+    monkeypatch.setattr(LLMClient, "resolve_configuration", fail_if_llm_is_called)
+    monkeypatch.setattr(LLMClient, "generate", fail_if_llm_is_called)
+    monkeypatch.setattr(LLMDecisionService, "propose", fail_if_llm_is_called)
+
+    app = create_app()
+    app.dependency_overrides[get_backend_client] = lambda: backend
+    runtime = AgentRuntime(
+        backend,
+        RuntimeRoutingResolver(backend),  # type: ignore[arg-type]
+        DecisionEngine(backend),  # type: ignore[arg-type]
+        audio_gateway_client=FailingAudioGatewayClient(),  # type: ignore[arg-type]
+        audio_transcription_client=FailingAudioTranscriptionClient(),  # type: ignore[arg-type]
+    )
+    app.dependency_overrides[get_agent_runtime] = lambda: runtime
+    client = TestClient(app)
+
+    response = client.post(
+        "/agent/respond",
+        headers={"Authorization": "Bearer test-internal-token"},
+        json={
+            "tenant_id": "tenant-1",
+            "message": {
+                "type": "audio",
+                "media": {
+                    "provider": "whatsapp_cloud_api",
+                    "kind": "audio",
+                    "media_id": "media-123",
+                    "mime_type": "audio/ogg",
+                    "sha256": "abc123",
+                    "duration_seconds": 12,
+                },
+            },
+            "contact": {"phone": "+34999999999", "name": "Ana"},
+            "conversation": {"last_messages": ["mensaje 1", "mensaje 2"]},
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["action"] == "audio_duration_limit_exceeded"
+    assert body["needs_human"] is False
+    assert body["reply"] == "Audio demasiado largo para este tenant."
+    assert body["data_to_save"]["audio_duration_limit_exceeded"] is True
+    assert body["data_to_save"]["audio_duration_seconds"] == 12
+    assert body["data_to_save"]["max_audio_transcription_seconds"] == 10
+    assert body["data_to_save"]["audio_limit_exceeded_message"] == "Audio demasiado largo para este tenant."
+    assert backend.ai_usage_event_payloads == []
+
+
+@pytest.mark.asyncio
+async def test_agent_respond_blocks_audio_when_estimated_cost_plus_reserve_exceeds_remaining_budget(monkeypatch):
+    configure_environment()
+
+    backend = BlockedBackendClient(
+        build_context(),
+        ai_enabled=True,
+        daily_cost_limit_eur=0.02,
+        monthly_cost_limit_eur=None,
+        daily_estimated_cost_eur=0.0,
+        monthly_estimated_cost_eur=0.0,
+    )
+
+    async def fail_if_llm_is_called(*args, **kwargs):
+        raise AssertionError("LLM should not be called when audio pre-check fails on estimated cost")
+
+    monkeypatch.setattr(LLMClient, "resolve_configuration", fail_if_llm_is_called)
+    monkeypatch.setattr(LLMClient, "generate", fail_if_llm_is_called)
+    monkeypatch.setattr(LLMDecisionService, "propose", fail_if_llm_is_called)
+
+    app = create_app()
+    app.dependency_overrides[get_backend_client] = lambda: backend
+    runtime = AgentRuntime(
+        backend,
+        RuntimeRoutingResolver(backend),  # type: ignore[arg-type]
+        DecisionEngine(backend),  # type: ignore[arg-type]
+        audio_gateway_client=FailingAudioGatewayClient(),  # type: ignore[arg-type]
+        audio_transcription_client=FailingAudioTranscriptionClient(),  # type: ignore[arg-type]
+    )
+    app.dependency_overrides[get_agent_runtime] = lambda: runtime
+    client = TestClient(app)
+
+    response = client.post(
+        "/agent/respond",
+        headers={"Authorization": "Bearer test-internal-token"},
+        json={
+            "tenant_id": "tenant-1",
+            "message": {
+                "type": "audio",
+                "media": {
+                    "provider": "whatsapp_cloud_api",
+                    "kind": "audio",
+                    "media_id": "media-123",
+                    "mime_type": "audio/ogg",
+                    "sha256": "abc123",
+                    "duration_seconds": 12,
+                },
+            },
+            "contact": {"phone": "+34999999999", "name": "Ana"},
+            "conversation": {"last_messages": ["mensaje 1", "mensaje 2"]},
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["action"] == "audio_transcription_usage_limit_reached"
+    assert body["needs_human"] is True
+    assert body["reply"] == "Ahora mismo no puedo procesar audios. Por favor, envíame tu consulta por escrito."
+    assert body["data_to_save"]["audio_transcription_usage_limit_reached"] is True
+    assert body["data_to_save"]["audio_transcription_limit_reason"] == "daily_cost_limit_exceeded"
+    assert body["data_to_save"]["audio_transcription_limit_type"] == "daily"
+    assert body["data_to_save"]["estimated_audio_transcription_cost_eur"] == pytest.approx(0.02)
+    assert body["data_to_save"]["audio_llm_followup_reserve_cost_eur"] == pytest.approx(0.01)
+    assert body["data_to_save"]["required_audio_processing_cost_eur"] == pytest.approx(0.03)
     assert backend.ai_usage_event_payloads == []

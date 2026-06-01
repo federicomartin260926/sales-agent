@@ -272,6 +272,7 @@ def test_agent_respond_persists_prompt_limit_and_llm_telemetry(monkeypatch):
     assert len(fake_backend.ai_usage_event_payloads) == 1
     assert fake_backend.ai_usage_event_payloads[0]["provider"] == "openai"
     assert fake_backend.ai_usage_event_payloads[0]["response_id"] == "resp_123"
+    assert fake_backend.ai_usage_event_payloads[0]["usage_type"] == "llm_chat"
 
     response = client.post(
         "/agent/respond",
@@ -315,3 +316,4 @@ def test_agent_respond_persists_prompt_limit_and_llm_telemetry(monkeypatch):
     assert outbound_metadata["total_tokens"] is None
     assert outbound_metadata["estimated_cost"] is None
     assert len(fake_backend.ai_usage_event_payloads) == 2
+    assert fake_backend.ai_usage_event_payloads[1]["usage_type"] == "llm_chat"

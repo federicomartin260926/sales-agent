@@ -97,6 +97,8 @@
       <p>IA habilitada: <strong>{{ policy_values.aiEnabled ? 'Sí' : 'No' }}</strong></p>
       <p>Modelo por defecto: <strong>{{ policy_values.defaultModel is not empty ? policy_values.defaultModel : '—' }}</strong></p>
       <p>Modelo fallback: <strong>{{ policy_values.fallbackModel is not empty ? policy_values.fallbackModel : '—' }}</strong></p>
+      <p>Límite máximo de audio: <strong>{{ policy_values.maxAudioTranscriptionSeconds }} segundos</strong></p>
+      <p>Mensaje de audio excedido: <strong>{{ policy_values.audioLimitExceededMessage is not empty ? policy_values.audioLimitExceededMessage : '—' }}</strong></p>
       <p>Acción al llegar al límite: <strong>{{ policy_values.limitAction }}</strong></p>
       <p class="subtle">Los límites visibles están expresados en tokens. Las recargas se aplican sólo al periodo actual; el runtime sigue usando una equivalencia interna de coste basada en la tarifa del modelo.</p>
     </div>
@@ -151,6 +153,16 @@
       <div class="field">
         <label for="tenant-fallback-model">Modelo fallback</label>
         <input id="tenant-fallback-model" name="fallbackModel" type="text" value="{{ policy_values.fallbackModel }}" maxlength="100" placeholder="gpt-4.1-nano">
+      </div>
+      <div class="field">
+        <label for="tenant-max-audio-transcription-seconds">Límite máximo de audio para transcripción (segundos)</label>
+        <input id="tenant-max-audio-transcription-seconds" name="maxAudioTranscriptionSeconds" type="number" min="1" step="1" value="{{ policy_values.maxAudioTranscriptionSeconds }}" placeholder="60">
+        <div class="field-note">Recomendado: 60 segundos. Los audios largos aumentan coste y retardo de respuesta.</div>
+      </div>
+      <div class="field field-full">
+        <label for="tenant-audio-limit-exceeded-message">Mensaje cuando el audio supera el límite</label>
+        <textarea id="tenant-audio-limit-exceeded-message" name="audioLimitExceededMessage" rows="3" maxlength="2000" placeholder="El audio es demasiado largo para procesarlo automáticamente...">{{ policy_values.audioLimitExceededMessage }}</textarea>
+        <div class="field-note">Se enviará automáticamente cuando el audio recibido supere el límite configurado.</div>
       </div>
       <div class="field">
         <label for="tenant-limit-action">Acción al llegar al límite</label>

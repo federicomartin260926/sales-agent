@@ -112,6 +112,7 @@ final class InternalAiUsageController extends AbstractApiController
         $event->setTotalTokens(isset($data['total_tokens']) && is_numeric($data['total_tokens']) ? (int) $data['total_tokens'] : null);
         $event->setEstimatedCost(isset($data['estimated_cost']) && is_numeric($data['estimated_cost']) ? (float) $data['estimated_cost'] : null);
         $event->setLatencyMs(isset($data['latency_ms']) && is_numeric($data['latency_ms']) ? (int) $data['latency_ms'] : null);
+        $event->setUsageType($this->normalizeUsageType($data['usage_type'] ?? null));
 
         $this->events->save($event);
 
@@ -165,5 +166,19 @@ final class InternalAiUsageController extends AbstractApiController
         }
 
         return $conversationMessage;
+    }
+
+    private function normalizeUsageType(mixed $usageType): string
+    {
+        if (!is_string($usageType) || trim($usageType) === '') {
+            return AiUsageEvent::USAGE_TYPE_LLM_CHAT;
+        }
+
+        $normalized = strtolower(trim($usageType));
+        if (!in_array($normalized, [AiUsageEvent::USAGE_TYPE_LLM_CHAT, AiUsageEvent::USAGE_TYPE_AUDIO_TRANSCRIPTION], true)) {
+            return AiUsageEvent::USAGE_TYPE_LLM_CHAT;
+        }
+
+        return $normalized;
     }
 }

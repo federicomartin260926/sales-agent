@@ -33,6 +33,8 @@ final class BackendUiSuperAdminTenantAiTest extends TestCase
     {
         $tenant = $this->tenant('Tech Investments', 'tech-investments');
         $policy = $this->policy($tenant, true, 1.0, 10.0, 'gpt-4.1-mini', 'gpt-4.1-nano', 'handoff_human');
+        $policy->setMaxAudioTranscriptionSeconds(60);
+        $policy->setAudioLimitExceededMessage('El audio es demasiado largo para procesarlo automáticamente. Por favor, envíame un audio más corto o escríbeme el mensaje por texto.');
         $event = $this->event($tenant);
         $requestEntity = $this->topUpRequest($tenant, 40.0, 'Solicitamos ampliación para el trimestre');
         $requestEntity->setRequestedBy($this->user('manager@example.com', ['manager'], 'Manager'));
@@ -58,6 +60,9 @@ final class BackendUiSuperAdminTenantAiTest extends TestCase
         self::assertStringContainsString('Rechazar', $response->getContent());
         self::assertStringContainsString('gpt-4.1-mini', $response->getContent());
         self::assertStringContainsString('gpt-4.1-nano', $response->getContent());
+        self::assertStringContainsString('Límite máximo de audio', $response->getContent());
+        self::assertStringContainsString('name="maxAudioTranscriptionSeconds" type="number" min="1" step="1" value="60"', $response->getContent());
+        self::assertStringContainsString('name="audioLimitExceededMessage"', $response->getContent());
         self::assertStringContainsString('Tokens procesados hoy', $response->getContent());
         self::assertStringContainsString('Plan mensual base', $response->getContent());
         self::assertStringContainsString('Recargas aprobadas este mes', $response->getContent());
@@ -139,6 +144,8 @@ final class BackendUiSuperAdminTenantAiTest extends TestCase
             'monthlyCostLimitEur' => '12720',
             'defaultModel' => 'gpt-4.1-mini',
             'fallbackModel' => 'gpt-4.1-nano',
+            'maxAudioTranscriptionSeconds' => '75',
+            'audioLimitExceededMessage' => 'Audio demasiado largo. Envíame uno más corto.',
             'limitAction' => 'block',
         ]);
         $request->setSession(new Session());
@@ -161,6 +168,8 @@ final class BackendUiSuperAdminTenantAiTest extends TestCase
         self::assertGreaterThan($savedPolicy->getDailyCostLimitEur(), $savedPolicy->getMonthlyCostLimitEur());
         self::assertSame('gpt-4.1-mini', $savedPolicy->getDefaultModel());
         self::assertSame('gpt-4.1-nano', $savedPolicy->getFallbackModel());
+        self::assertSame(75, $savedPolicy->getMaxAudioTranscriptionSeconds());
+        self::assertSame('Audio demasiado largo. Envíame uno más corto.', $savedPolicy->getAudioLimitExceededMessage());
         self::assertSame('block', $savedPolicy->getLimitAction());
     }
 

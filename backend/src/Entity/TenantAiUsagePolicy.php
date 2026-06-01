@@ -18,6 +18,9 @@ use Symfony\Component\Uid\Uuid;
 )]
 class TenantAiUsagePolicy
 {
+    public const DEFAULT_MAX_AUDIO_TRANSCRIPTION_SECONDS = 60;
+    public const DEFAULT_AUDIO_LIMIT_EXCEEDED_MESSAGE = 'El audio es demasiado largo para procesarlo automáticamente. Por favor, envíame un audio más corto o escríbeme el mensaje por texto.';
+
     #[ORM\Id]
     #[ORM\Column(type: 'uuid')]
     private Uuid $id;
@@ -40,6 +43,12 @@ class TenantAiUsagePolicy
 
     #[ORM\Column(name: 'fallback_model', length: 100, nullable: true)]
     private ?string $fallbackModel = null;
+
+    #[ORM\Column(name: 'max_audio_transcription_seconds', type: 'integer', nullable: true)]
+    private ?int $maxAudioTranscriptionSeconds = null;
+
+    #[ORM\Column(name: 'audio_limit_exceeded_message', type: 'text', nullable: true)]
+    private ?string $audioLimitExceededMessage = null;
 
     #[ORM\Column(name: 'limit_action', length: 50)]
     private string $limitAction = 'handoff_human';
@@ -136,6 +145,46 @@ class TenantAiUsagePolicy
         $this->updatedAt = new \DateTimeImmutable();
     }
 
+    public function getMaxAudioTranscriptionSeconds(): int
+    {
+        return $this->maxAudioTranscriptionSeconds ?? self::DEFAULT_MAX_AUDIO_TRANSCRIPTION_SECONDS;
+    }
+
+    public function setMaxAudioTranscriptionSeconds(?int $maxAudioTranscriptionSeconds): void
+    {
+        if ($maxAudioTranscriptionSeconds === null) {
+            $this->maxAudioTranscriptionSeconds = null;
+            $this->updatedAt = new \DateTimeImmutable();
+
+            return;
+        }
+
+        $this->maxAudioTranscriptionSeconds = max(1, $maxAudioTranscriptionSeconds);
+        $this->updatedAt = new \DateTimeImmutable();
+    }
+
+    public function getAudioLimitExceededMessage(): string
+    {
+        $message = $this->audioLimitExceededMessage;
+        if ($message === null) {
+            return self::DEFAULT_AUDIO_LIMIT_EXCEEDED_MESSAGE;
+        }
+
+        $message = trim($message);
+        if ($message === '') {
+            return self::DEFAULT_AUDIO_LIMIT_EXCEEDED_MESSAGE;
+        }
+
+        return $message;
+    }
+
+    public function setAudioLimitExceededMessage(?string $audioLimitExceededMessage): void
+    {
+        $audioLimitExceededMessage = $audioLimitExceededMessage !== null ? trim($audioLimitExceededMessage) : null;
+        $this->audioLimitExceededMessage = $audioLimitExceededMessage !== '' ? $audioLimitExceededMessage : null;
+        $this->updatedAt = new \DateTimeImmutable();
+    }
+
     public function getLimitAction(): string
     {
         return $this->limitAction;
@@ -168,6 +217,8 @@ class TenantAiUsagePolicy
             'daily_cost_limit_eur' => $this->dailyCostLimitEur,
             'default_model' => $this->defaultModel,
             'fallback_model' => $this->fallbackModel,
+            'max_audio_transcription_seconds' => $this->getMaxAudioTranscriptionSeconds(),
+            'audio_limit_exceeded_message' => $this->getAudioLimitExceededMessage(),
             'limit_action' => $this->limitAction,
             'created_at' => $this->createdAt->format(\DateTimeInterface::ATOM),
             'updated_at' => $this->updatedAt->format(\DateTimeInterface::ATOM),

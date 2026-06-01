@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import math
 import logging
 import mimetypes
 from dataclasses import dataclass
@@ -80,6 +81,11 @@ class AudioTranscriptionClient:
     ) -> None:
         self.settings = settings
         self.runtime_settings_client = runtime_settings_client or RuntimeSettingsClient(settings)
+
+    def estimate_cost_eur(self, duration_seconds: int) -> float:
+        seconds = max(0, int(duration_seconds))
+        cost_per_minute = max(0.0, float(self.settings.openai_audio_transcription_cost_per_minute_eur))
+        return math.ceil(seconds / 60.0) * cost_per_minute
 
     async def transcribe(self, audio_bytes: bytes, content_type: str | None, media_id: str) -> AudioTranscriptionResult:
         configuration = await self.runtime_settings_client.effective_values()

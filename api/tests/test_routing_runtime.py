@@ -337,6 +337,11 @@ async def test_runtime_transcribes_audio_before_continuing_flow():
     assert inbound_payload["body"] == "Hola, quiero información"
     assert inbound_payload["metadata"]["message_original_type"] == "audio"
     assert inbound_payload["metadata"]["message_media"]["transcript"] == "Hola, quiero información"
+    usage_calls = [call for call in backend.calls if call[0] == "create_ai_usage_event"]
+    assert usage_calls
+    assert usage_calls[0][1][0]["usage_type"] == "audio_transcription"
+    if len(usage_calls) > 1:
+        assert usage_calls[1][1][0]["usage_type"] == "llm_chat"
     assert response.action in {"greet", "ask_question", "propose_meeting", "none"}
 
 

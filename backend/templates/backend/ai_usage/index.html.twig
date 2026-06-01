@@ -95,6 +95,20 @@
     </div>
   </article>
 
+  {% if policy.exists %}
+  <article class="profile-card">
+    <div class="profile-card-header">
+      <h3>Audio entrante</h3>
+      <span class="subtle">Configuración activa</span>
+    </div>
+    <div class="profile-card-body">
+      <p>Límite máximo de audio: <strong>{{ policy.maxAudioTranscriptionSeconds }} segundos</strong></p>
+      <p>Mensaje al superar el límite: <strong>{{ policy.audioLimitExceededMessage }}</strong></p>
+      <p class="subtle">Esta configuración se aplica antes de descargar o transcribir el audio.</p>
+    </div>
+  </article>
+  {% endif %}
+
   <article class="profile-card mb4">
     <div class="profile-card-header">
       <h3>Solicitar ampliación</h3>

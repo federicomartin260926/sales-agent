@@ -21,6 +21,55 @@ final class InternalAiUsageControllerTest extends TestCase
 {
     private const TOKEN = 'test-internal-token';
 
+    public function testPolicyDefaultsExposeAudioLimitSettingsWhenPolicyIsMissing(): void
+    {
+        $tenant = new Tenant('Negocio Demo', 'tenant-1');
+        $tenant->setActive(true);
+
+        $controller = new InternalAiUsageController(
+            new class($tenant) extends TenantRepository {
+                public function __construct(private readonly Tenant $tenant)
+                {
+                }
+
+                public function find($id, $lockMode = null, $lockVersion = null): ?object
+                {
+                    return $this->tenant;
+                }
+            },
+            new class extends TenantAiUsagePolicyRepository {
+                public function __construct()
+                {
+                }
+
+                public function findOneByTenant(Tenant $tenant): ?\App\Entity\TenantAiUsagePolicy
+                {
+                    return null;
+                }
+            },
+            $this->createStub(AiUsageEventRepository::class),
+            $this->createStub(ConversationRepository::class),
+            $this->createStub(ConversationMessageRepository::class),
+            new InternalBearerTokenValidator(self::TOKEN),
+        );
+        $controller->setContainer(new Container());
+
+        $response = $controller->policy(
+            $tenant->getId()->toRfc4122(),
+            Request::create('/api/internal/ai-usage/'.$tenant->getId()->toRfc4122().'/policy', 'GET', [], [], [], [
+                'HTTP_AUTHORIZATION' => 'Bearer '.self::TOKEN,
+            ])
+        );
+
+        self::assertSame(200, $response->getStatusCode());
+        $payload = json_decode((string) $response->getContent(), true);
+        self::assertSame(60, $payload['max_audio_transcription_seconds']);
+        self::assertSame(
+            'El audio es demasiado largo para procesarlo automáticamente. Por favor, envíame un audio más corto o escríbeme el mensaje por texto.',
+            $payload['audio_limit_exceeded_message']
+        );
+    }
+
     public function testCreateEventPersistsUsageEvent(): void
     {
         $tenant = new Tenant('Negocio Demo', 'tenant-1');
@@ -102,6 +151,7 @@ final class InternalAiUsageControllerTest extends TestCase
                 'total_tokens' => 152,
                 'estimated_cost' => 0.000123,
                 'latency_ms' => 200,
+                'usage_type' => 'audio_transcription',
             ])
         ));
 
@@ -110,5 +160,6 @@ final class InternalAiUsageControllerTest extends TestCase
         self::assertSame('openai', $eventsRepository->savedEvents[0]->getProvider());
         self::assertSame('gpt-4.1-mini', $eventsRepository->savedEvents[0]->getModel());
         self::assertSame(0.000123, $eventsRepository->savedEvents[0]->getEstimatedCost());
+        self::assertSame('audio_transcription', $eventsRepository->savedEvents[0]->getUsageType());
     }
 }

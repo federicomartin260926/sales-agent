@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import httpx
 import logging
+import math
 import uuid
 from typing import Any
 
@@ -27,6 +28,15 @@ logger = logging.getLogger(__name__)
 
 
 class AgentRuntime:
+    DEFAULT_AUDIO_LIMIT_EXCEEDED_MESSAGE = (
+        "El audio es demasiado largo para procesarlo automáticamente. Por favor, envíame un audio más corto o escríbeme el mensaje por texto."
+    )
+    DEFAULT_AUDIO_TRANSCRIPTION_COST_PER_MINUTE_EUR = 0.02
+    DEFAULT_AUDIO_LLM_FOLLOWUP_RESERVE_COST_EUR = 0.01
+    AUDIO_TRANSCRIPTION_USAGE_LIMIT_MESSAGE = (
+        "Ahora mismo no puedo procesar audios. Por favor, envíame tu consulta por escrito."
+    )
+
     def __init__(
         self,
         backend_client: BackendClient,
@@ -82,6 +92,50 @@ class AgentRuntime:
             ai_usage_decision = await self.ai_usage_guard.evaluate(routing.tenant_id)
             if not ai_usage_decision.allowed:
                 return self._ai_usage_limit_response(ai_usage_decision)
+
+            duration_seconds = self._audio_duration_seconds(payload)
+            max_audio_seconds = self._effective_audio_limit_seconds(ai_usage_decision.policy)
+            if duration_seconds is not None and duration_seconds > max_audio_seconds:
+                logger.info(
+                    "WhatsApp audio duration limit exceeded tenant_id=%s message_id=%s media_id=%s duration_seconds=%s max_seconds=%s",
+                    routing.tenant_id,
+                    payload.message.id or "-",
+                    self._audio_media_id(payload) or "-",
+                    duration_seconds,
+                    max_audio_seconds,
+                )
+                return self._audio_duration_limit_response(
+                    payload,
+                    routing,
+                    duration_seconds,
+                    max_audio_seconds,
+                    ai_usage_decision.policy,
+                )
+
+            transcription_cost_limit_decision = self._audio_transcription_cost_limit_decision(
+                ai_usage_decision.policy,
+                ai_usage_decision.usage,
+                duration_seconds,
+                max_audio_seconds,
+            )
+            if transcription_cost_limit_decision is not None:
+                logger.info(
+                    "WhatsApp audio transcription cost limit exceeded tenant_id=%s message_id=%s media_id=%s estimated_cost_eur=%.6f required_cost_eur=%.6f remaining_daily_cost_eur=%s remaining_monthly_cost_eur=%s reason=%s",
+                    routing.tenant_id,
+                    payload.message.id or "-",
+                    self._audio_media_id(payload) or "-",
+                    transcription_cost_limit_decision["estimated_cost_eur"],
+                    transcription_cost_limit_decision["required_cost_eur"],
+                    transcription_cost_limit_decision["remaining_daily_cost_eur"],
+                    transcription_cost_limit_decision["remaining_monthly_cost_eur"],
+                    transcription_cost_limit_decision["reason"],
+                )
+                return self._audio_transcription_usage_limit_response(
+                    payload,
+                    routing,
+                    max_audio_seconds,
+                    transcription_cost_limit_decision,
+                )
 
             try:
                 transcription_result = await self._transcribe_audio_message(payload)
@@ -155,6 +209,14 @@ class AgentRuntime:
                         "duplicate": True,
                         "reason": "inbound_message_already_processed",
                     },
+                )
+
+            if self._is_audio_message(payload):
+                await self._report_audio_transcription_event(
+                    routing,
+                    conversation_result,
+                    inbound_result,
+                    transcription_result,
                 )
 
         if isinstance(conversation_result, dict):
@@ -909,6 +971,36 @@ class AgentRuntime:
             data_to_save=data,
         )
 
+    def _audio_duration_limit_response(
+        self,
+        payload: AgentRequest,
+        routing: RoutingContext,
+        duration_seconds: int,
+        max_audio_seconds: int,
+        policy: Any | None,
+    ) -> AgentResponse:
+        message = self._audio_limit_exceeded_message(policy)
+        data: dict[str, Any] = {
+            "audio_duration_limit_exceeded": True,
+            "audio_message_id": payload.message.id,
+            "audio_media_id": self._audio_media_id(payload),
+            "audio_mime_type": self._audio_media_mime_type(payload),
+            "audio_duration_seconds": duration_seconds,
+            "max_audio_transcription_seconds": max_audio_seconds,
+            "audio_limit_exceeded_message": message,
+        }
+        if routing.tenant_id.strip() != "":
+            data["tenant_id"] = routing.tenant_id.strip()
+
+        return AgentResponse(
+            reply=message,
+            intent="audio",
+            score=0.0,
+            action="audio_duration_limit_exceeded",
+            needs_human=False,
+            data_to_save=data,
+        )
+
     def _audio_media_id(self, payload: AgentRequest) -> str | None:
         media = payload.message.media
         if not isinstance(media, dict):
@@ -920,6 +1012,127 @@ class AgentRuntime:
 
         return None
 
+    def _audio_duration_seconds(self, payload: AgentRequest) -> int | None:
+        media = payload.message.media
+        if not isinstance(media, dict):
+            return None
+
+        duration = media.get("duration_seconds")
+        if duration is None:
+            duration = media.get("durationSeconds")
+
+        if isinstance(duration, bool):
+            return None
+        if isinstance(duration, int):
+            return max(0, duration)
+        if isinstance(duration, float):
+            return max(0, int(round(duration)))
+        if isinstance(duration, str) and duration.strip().isdigit():
+            return max(0, int(duration.strip()))
+
+        return None
+
+    def _effective_audio_limit_seconds(self, policy: Any | None) -> int:
+        if policy is None:
+            return 60
+
+        value = getattr(policy, "max_audio_transcription_seconds", None)
+        if isinstance(value, int) and value >= 1:
+            return value
+
+        return 60
+
+    def _audio_limit_exceeded_message(self, policy: Any | None) -> str:
+        if policy is None:
+            return self.DEFAULT_AUDIO_LIMIT_EXCEEDED_MESSAGE
+
+        value = getattr(policy, "audio_limit_exceeded_message", None)
+        if isinstance(value, str):
+            trimmed = value.strip()
+            if trimmed != "":
+                return trimmed
+
+        return self.DEFAULT_AUDIO_LIMIT_EXCEEDED_MESSAGE
+
+    def _audio_transcription_cost_limit_decision(
+        self,
+        policy: Any | None,
+        usage: Any | None,
+        duration_seconds: int | None,
+        max_audio_seconds: int,
+    ) -> dict[str, Any] | None:
+        if policy is None or usage is None:
+            return None
+
+        estimated_duration_seconds = duration_seconds if duration_seconds is not None else max_audio_seconds
+        estimated_duration_seconds = max(0, int(estimated_duration_seconds))
+        estimated_audio_cost_eur = self._estimate_audio_transcription_cost_eur(estimated_duration_seconds)
+        reserve_cost_eur = self._audio_llm_followup_reserve_cost_eur()
+        required_cost_eur = estimated_audio_cost_eur + reserve_cost_eur
+
+        daily_remaining_cost_eur = self._remaining_cost_eur(getattr(policy, "daily_cost_limit_eur", None), getattr(getattr(usage, "daily", None), "estimated_cost_eur", None))
+        monthly_remaining_cost_eur = self._remaining_cost_eur(getattr(policy, "monthly_cost_limit_eur", None), getattr(getattr(usage, "monthly", None), "estimated_cost_eur", None))
+
+        if daily_remaining_cost_eur is not None and daily_remaining_cost_eur < required_cost_eur:
+            return {
+                "reason": "daily_cost_limit_exceeded",
+                "limit_type": "daily",
+                "estimated_duration_seconds": estimated_duration_seconds,
+                "estimated_cost_eur": estimated_audio_cost_eur,
+                "reserve_cost_eur": reserve_cost_eur,
+                "required_cost_eur": required_cost_eur,
+                "remaining_daily_cost_eur": daily_remaining_cost_eur,
+                "remaining_monthly_cost_eur": monthly_remaining_cost_eur,
+            }
+
+        if monthly_remaining_cost_eur is not None and monthly_remaining_cost_eur < required_cost_eur:
+            return {
+                "reason": "monthly_cost_limit_exceeded",
+                "limit_type": "monthly",
+                "estimated_duration_seconds": estimated_duration_seconds,
+                "estimated_cost_eur": estimated_audio_cost_eur,
+                "reserve_cost_eur": reserve_cost_eur,
+                "required_cost_eur": required_cost_eur,
+                "remaining_daily_cost_eur": daily_remaining_cost_eur,
+                "remaining_monthly_cost_eur": monthly_remaining_cost_eur,
+            }
+
+        return None
+
+    def _audio_transcription_usage_limit_response(
+        self,
+        payload: AgentRequest,
+        routing: RoutingContext,
+        max_audio_seconds: int,
+        decision: dict[str, Any],
+    ) -> AgentResponse:
+        data: dict[str, Any] = {
+            "audio_transcription_usage_limit_reached": True,
+            "audio_transcription_limit_reason": decision.get("reason"),
+            "audio_transcription_limit_type": decision.get("limit_type"),
+            "audio_message_id": payload.message.id,
+            "audio_media_id": self._audio_media_id(payload),
+            "audio_mime_type": self._audio_media_mime_type(payload),
+            "audio_duration_seconds": decision.get("estimated_duration_seconds"),
+            "estimated_audio_transcription_cost_eur": decision.get("estimated_cost_eur"),
+            "audio_llm_followup_reserve_cost_eur": decision.get("reserve_cost_eur"),
+            "required_audio_processing_cost_eur": decision.get("required_cost_eur"),
+            "remaining_daily_cost_eur": decision.get("remaining_daily_cost_eur"),
+            "remaining_monthly_cost_eur": decision.get("remaining_monthly_cost_eur"),
+            "max_audio_transcription_seconds": max_audio_seconds,
+        }
+        if routing.tenant_id.strip() != "":
+            data["tenant_id"] = routing.tenant_id.strip()
+
+        return AgentResponse(
+            reply=self.AUDIO_TRANSCRIPTION_USAGE_LIMIT_MESSAGE,
+            intent="handoff",
+            score=0.95,
+            action="audio_transcription_usage_limit_reached",
+            needs_human=True,
+            data_to_save=data,
+        )
+
     def _audio_media_mime_type(self, payload: AgentRequest) -> str | None:
         media = payload.message.media
         if not isinstance(media, dict):
@@ -930,6 +1143,55 @@ class AgentRuntime:
             return mime_type.strip()
 
         return None
+
+    def _estimate_audio_transcription_cost_eur(self, duration_seconds: int) -> float:
+        duration_seconds = max(0, int(duration_seconds))
+
+        estimator = getattr(self.audio_transcription_client, "estimate_cost_eur", None)
+        if callable(estimator):
+            try:
+                estimated = float(estimator(duration_seconds))
+                return max(0.0, estimated)
+            except Exception:
+                pass
+
+        cost_per_minute = self._audio_transcription_cost_per_minute_eur()
+        return math.ceil(duration_seconds / 60.0) * cost_per_minute
+
+    def _audio_transcription_cost_per_minute_eur(self) -> float:
+        settings = getattr(self.audio_transcription_client, "settings", None)
+        if settings is None:
+            settings = getattr(self.backend_client, "settings", None)
+
+        value = getattr(settings, "openai_audio_transcription_cost_per_minute_eur", None)
+        if isinstance(value, (int, float)):
+            return max(0.0, float(value))
+
+        return self.DEFAULT_AUDIO_TRANSCRIPTION_COST_PER_MINUTE_EUR
+
+    def _audio_llm_followup_reserve_cost_eur(self) -> float:
+        settings = getattr(self.audio_transcription_client, "settings", None)
+        if settings is None:
+            settings = getattr(self.backend_client, "settings", None)
+
+        value = getattr(settings, "audio_llm_followup_reserve_cost_eur", None)
+        if isinstance(value, (int, float)):
+            return max(0.0, float(value))
+
+        return self.DEFAULT_AUDIO_LLM_FOLLOWUP_RESERVE_COST_EUR
+
+    def _remaining_cost_eur(self, limit: Any, spent: Any) -> float | None:
+        if not isinstance(limit, (int, float)):
+            return None
+
+        if limit < 0:
+            return None
+
+        if not isinstance(spent, (int, float)):
+            spent = 0.0
+
+        remaining = float(limit) - float(spent)
+        return remaining
 
     def _handoff_latency_ms(self, started_at: float) -> int:
         return int(round((time.perf_counter() - started_at) * 1000))
@@ -954,6 +1216,35 @@ class AgentRuntime:
             needs_human=True,
             data_to_save=data,
         )
+
+    async def _report_audio_transcription_event(
+        self,
+        routing: RoutingContext,
+        conversation_result: dict[str, Any] | None,
+        inbound_result: object | None,
+        transcription_result: AudioTranscriptionResult,
+    ) -> None:
+        if routing.tenant_id.strip() == "":
+            return
+
+        conversation_id = self._conversation_id_from_result(conversation_result)
+        conversation_message_id = None
+        message = getattr(inbound_result, "message", None)
+        if message is not None:
+            message_id = getattr(message, "id", None)
+            if isinstance(message_id, str) and message_id.strip() != "":
+                conversation_message_id = message_id.strip()
+
+        payload = BackendAiUsageEventPayload(
+            tenant_id=routing.tenant_id.strip(),
+            conversation_id=conversation_id,
+            conversation_message_id=conversation_message_id,
+            provider="openai",
+            model=transcription_result.model,
+            usage_type="audio_transcription",
+        )
+
+        await self.backend_client.create_ai_usage_event(payload)
 
     async def _report_ai_usage_event(
         self,
@@ -991,6 +1282,7 @@ class AgentRuntime:
             total_tokens=self._normalize_int_telemetry(response.data_to_save.get("total_tokens")),
             estimated_cost=self._normalize_float_telemetry(response.data_to_save.get("estimated_cost")),
             latency_ms=self._normalize_int_telemetry(response.data_to_save.get("latency_ms")),
+            usage_type="llm_chat",
         )
 
         result = await self.backend_client.create_ai_usage_event(payload)

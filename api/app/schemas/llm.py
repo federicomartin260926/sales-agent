@@ -110,6 +110,14 @@ class BackendAiUsagePolicy(BaseModel):
     daily_cost_limit_eur: float | None = Field(default=None, validation_alias=AliasChoices("daily_cost_limit_eur", "dailyCostLimitEur"))
     default_model: str | None = Field(default=None, validation_alias=AliasChoices("default_model", "defaultModel"))
     fallback_model: str | None = Field(default=None, validation_alias=AliasChoices("fallback_model", "fallbackModel"))
+    max_audio_transcription_seconds: int | None = Field(
+        default=None,
+        validation_alias=AliasChoices("max_audio_transcription_seconds", "maxAudioTranscriptionSeconds"),
+    )
+    audio_limit_exceeded_message: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("audio_limit_exceeded_message", "audioLimitExceededMessage"),
+    )
     limit_action: str = Field(default="handoff_human", validation_alias=AliasChoices("limit_action", "limitAction"))
     created_at: str | None = Field(default=None, validation_alias=AliasChoices("created_at", "createdAt"))
     updated_at: str | None = Field(default=None, validation_alias=AliasChoices("updated_at", "updatedAt"))
@@ -148,6 +156,7 @@ class BackendAiUsageEventPayload(BaseModel):
     total_tokens: int | None = Field(default=None, alias="total_tokens")
     estimated_cost: float | None = Field(default=None, alias="estimated_cost")
     latency_ms: int | None = Field(default=None, alias="latency_ms")
+    usage_type: str = Field(default="llm_chat", alias="usage_type")
 
 
 class LLMResponseResult(BaseModel):

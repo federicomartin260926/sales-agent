@@ -72,6 +72,8 @@ final class BackendUiAiUsageTest extends TestCase
         self::assertStringContainsString('Tokens solicitados', $response->getContent());
         self::assertStringContainsString('/backend/ai-usage/top-up-requests', $response->getContent());
         self::assertStringContainsString('Pendiente', $response->getContent());
+        self::assertStringContainsString('Audio entrante', $response->getContent());
+        self::assertStringContainsString('Límite máximo de audio', $response->getContent());
         self::assertStringNotContainsString('default_model', $response->getContent());
         self::assertStringNotContainsString('fallback_model', $response->getContent());
     }

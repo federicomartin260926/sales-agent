@@ -16,6 +16,9 @@ use Symfony\Component\Uid\Uuid;
 )]
 class AiUsageEvent
 {
+    public const USAGE_TYPE_LLM_CHAT = 'llm_chat';
+    public const USAGE_TYPE_AUDIO_TRANSCRIPTION = 'audio_transcription';
+
     #[ORM\Id]
     #[ORM\Column(type: 'uuid')]
     private Uuid $id;
@@ -58,6 +61,9 @@ class AiUsageEvent
 
     #[ORM\Column(name: 'latency_ms', type: 'integer', nullable: true)]
     private ?int $latencyMs = null;
+
+    #[ORM\Column(name: 'usage_type', length: 50, nullable: true)]
+    private ?string $usageType = null;
 
     #[ORM\Column(type: 'datetime_immutable')]
     private \DateTimeImmutable $createdAt;
@@ -194,6 +200,25 @@ class AiUsageEvent
         $this->latencyMs = $latencyMs;
     }
 
+    public function getUsageType(): string
+    {
+        if (!is_string($this->usageType) || trim($this->usageType) === '') {
+            return self::USAGE_TYPE_LLM_CHAT;
+        }
+
+        return $this->usageType;
+    }
+
+    public function setUsageType(?string $usageType): void
+    {
+        $usageType = strtolower(trim((string) $usageType));
+        if (!in_array($usageType, [self::USAGE_TYPE_LLM_CHAT, self::USAGE_TYPE_AUDIO_TRANSCRIPTION], true)) {
+            $usageType = null;
+        }
+
+        $this->usageType = $usageType;
+    }
+
     public function getCreatedAt(): \DateTimeImmutable
     {
         return $this->createdAt;
@@ -215,6 +240,7 @@ class AiUsageEvent
             'total_tokens' => $this->totalTokens,
             'estimated_cost' => $this->estimatedCost,
             'latency_ms' => $this->latencyMs,
+            'usage_type' => $this->getUsageType(),
             'created_at' => $this->createdAt->format(\DateTimeInterface::ATOM),
         ];
     }
