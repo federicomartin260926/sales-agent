@@ -50,7 +50,7 @@ security:
       stateless: false
       provider: app_user_provider
       form_login:
-        login_path: /login
+        login_path: /backend/login
         check_path: /login-check
         username_parameter: email
         password_parameter: password
