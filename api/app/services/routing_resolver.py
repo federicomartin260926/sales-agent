@@ -123,7 +123,7 @@ class RuntimeRoutingResolver:
         if payload.entrypoint_ref is not None and payload.entrypoint_ref.strip() != "":
             return payload.entrypoint_ref.strip()
 
-        message_text = payload.message.text.strip()
+        message_text = (payload.message.text or "").strip()
         patterns = (
             r"\bref(?:[:\s]+)([A-Za-z0-9_-]{3,})",
             r"(?:^|\s)#([A-Za-z0-9_-]{3,})",

@@ -6,7 +6,7 @@ import os
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api.agent import get_backend_client
+from app.api.agent import get_agent_runtime, get_backend_client
 from app.config import get_settings
 from app.main import create_app
 from app.schemas.llm import BackendAiUsageWindow, McpRemoteConfig
@@ -20,8 +20,11 @@ from app.services.backend_client import (
     BackendTenant,
     CommercialContext,
 )
+from app.services.decision_engine import DecisionEngine
 from app.services.llm_decision_service import LLMDecisionService
 from app.services.llm_client import LLMClient
+from app.services.routing_resolver import RuntimeRoutingResolver
+from app.services.runtime import AgentRuntime
 
 
 class BlockedBackendClient:
@@ -82,6 +85,16 @@ class BlockedBackendClient:
     async def create_ai_usage_event(self, payload):
         self.ai_usage_event_payloads.append(payload.model_dump(by_alias=True))
         return type("BackendAiUsageEventResultStub", (), {"created": True, "event": {"id": "usage-event-1"}})()
+
+
+class FailingAudioGatewayClient:
+    async def download_whatsapp_media(self, media_id: str):
+        raise AssertionError("Audio download should not be attempted when AI is blocked")
+
+
+class FailingAudioTranscriptionClient:
+    async def transcribe(self, audio_bytes: bytes, content_type: str | None, media_id: str):
+        raise AssertionError("Audio transcription should not be attempted when AI is blocked")
 
 
 def build_context() -> CommercialContext:
@@ -162,6 +175,14 @@ def test_agent_respond_blocks_llm_when_tenant_ai_is_disabled(monkeypatch):
 
     app = create_app()
     app.dependency_overrides[get_backend_client] = lambda: backend
+    runtime = AgentRuntime(
+        backend,
+        RuntimeRoutingResolver(backend),  # type: ignore[arg-type]
+        DecisionEngine(backend),  # type: ignore[arg-type]
+        audio_gateway_client=FailingAudioGatewayClient(),  # type: ignore[arg-type]
+        audio_transcription_client=FailingAudioTranscriptionClient(),  # type: ignore[arg-type]
+    )
+    app.dependency_overrides[get_agent_runtime] = lambda: runtime
     client = TestClient(app)
 
     response = client.post(
@@ -220,6 +241,14 @@ def test_agent_respond_blocks_llm_when_tenant_ai_cost_limit_is_exceeded(
 
     app = create_app()
     app.dependency_overrides[get_backend_client] = lambda: backend
+    runtime = AgentRuntime(
+        backend,
+        RuntimeRoutingResolver(backend),  # type: ignore[arg-type]
+        DecisionEngine(backend),  # type: ignore[arg-type]
+        audio_gateway_client=FailingAudioGatewayClient(),  # type: ignore[arg-type]
+        audio_transcription_client=FailingAudioTranscriptionClient(),  # type: ignore[arg-type]
+    )
+    app.dependency_overrides[get_agent_runtime] = lambda: runtime
     client = TestClient(app)
 
     response = client.post(
@@ -240,4 +269,59 @@ def test_agent_respond_blocks_llm_when_tenant_ai_cost_limit_is_exceeded(
     assert body["data_to_save"]["ai_usage_limit_reached"] is True
     assert body["data_to_save"]["ai_usage_limit_reason"] == expected_reason
     assert body["data_to_save"]["ai_usage_limit_type"] == expected_type
+    assert backend.ai_usage_event_payloads == []
+
+
+@pytest.mark.asyncio
+async def test_agent_respond_blocks_audio_before_download_when_tenant_ai_is_disabled(monkeypatch):
+    configure_environment()
+
+    backend = BlockedBackendClient(build_context(), ai_enabled=False)
+
+    async def fail_if_llm_is_called(*args, **kwargs):
+        raise AssertionError("LLM should not be called when AI is disabled")
+
+    monkeypatch.setattr(LLMClient, "resolve_configuration", fail_if_llm_is_called)
+    monkeypatch.setattr(LLMClient, "generate", fail_if_llm_is_called)
+    monkeypatch.setattr(LLMDecisionService, "propose", fail_if_llm_is_called)
+
+    app = create_app()
+    app.dependency_overrides[get_backend_client] = lambda: backend
+    runtime = AgentRuntime(
+        backend,
+        RuntimeRoutingResolver(backend),  # type: ignore[arg-type]
+        DecisionEngine(backend),  # type: ignore[arg-type]
+        audio_gateway_client=FailingAudioGatewayClient(),  # type: ignore[arg-type]
+        audio_transcription_client=FailingAudioTranscriptionClient(),  # type: ignore[arg-type]
+    )
+    app.dependency_overrides[get_agent_runtime] = lambda: runtime
+    client = TestClient(app)
+
+    response = client.post(
+        "/agent/respond",
+        headers={"Authorization": "Bearer test-internal-token"},
+        json={
+            "tenant_id": "tenant-1",
+            "message": {
+                "type": "audio",
+                "media": {
+                    "provider": "whatsapp_cloud_api",
+                    "kind": "audio",
+                    "media_id": "media-123",
+                    "mime_type": "audio/ogg",
+                    "sha256": "abc123",
+                    "duration_seconds": 12,
+                },
+            },
+            "contact": {"phone": "+34999999999", "name": "Ana"},
+            "conversation": {"last_messages": ["mensaje 1", "mensaje 2"]},
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["action"] == "ai_usage_limit_reached"
+    assert body["needs_human"] is True
+    assert body["data_to_save"]["ai_usage_limit_reached"] is True
+    assert body["data_to_save"]["ai_usage_limit_reason"] == "ai_disabled"
     assert backend.ai_usage_event_payloads == []

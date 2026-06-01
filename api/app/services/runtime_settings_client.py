@@ -57,6 +57,7 @@ class RuntimeSettingsClient:
             "openai_api_key": self.settings.openai_api_key,
             "openai_base_url": "https://api.openai.com/v1",
             "openai_model": "gpt-4o-mini",
+            "openai_transcription_model": self.settings.openai_transcription_model,
             "openai_timeout_seconds": str(self.settings.openai_timeout_seconds),
             "ollama_base_url": self.settings.ollama_base_url,
             "ollama_model": "llama3.1",

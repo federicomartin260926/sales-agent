@@ -106,7 +106,7 @@ class LLMDecisionService:
                     return None
                 continue
 
-            agenda_action = self._agenda_action_from_context(payload.message.text, contact_context, draft)
+            agenda_action = self._agenda_action_from_context(payload.message.text or "", contact_context, draft)
             if agenda_action is not None and draft.intent in {"open_question", "unknown"}:
                 draft = LLMDecisionDraft(
                     reply=draft.reply,

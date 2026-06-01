@@ -39,31 +39,39 @@ class Message(BaseModel):
 
     id: str | None = None
     type: str = "text"
-    text: str = Field(validation_alias=AliasChoices("text", "body"), min_length=1)
+    text: str | None = Field(default=None, validation_alias=AliasChoices("text", "body"))
     timestamp: str | None = None
+    media: dict[str, Any] | None = None
 
     @model_validator(mode="before")
     @classmethod
     def normalize_message_payload(cls, data: Any) -> Any:
         if isinstance(data, str):
-            return {"text": data}
+            return {"type": "text", "text": data}
 
         if not isinstance(data, dict):
             return data
 
         normalized = dict(data)
-        if "text" not in normalized:
-            normalized["text"] = normalized.get("body") or ""
+        if "type" not in normalized or not isinstance(normalized.get("type"), str) or normalized.get("type", "").strip() == "":
+            normalized["type"] = "audio" if isinstance(normalized.get("media"), dict) else "text"
 
-        if "type" not in normalized:
-            normalized["type"] = "text"
+        if "text" not in normalized and isinstance(normalized.get("body"), str):
+            normalized["text"] = normalized["body"]
+
+        media = normalized.get("media")
+        if isinstance(media, dict):
+            normalized["media"] = dict(media)
 
         return normalized
 
     @model_validator(mode="after")
     def normalize_message_values(self) -> "Message":
-        self.text = self.text.strip()
         self.type = self.type.strip() or "text"
+        if self.text is not None:
+            self.text = self.text.strip()
+            if self.text == "":
+                self.text = None
         if self.id is not None:
             self.id = self.id.strip() or None
         if self.timestamp is not None:

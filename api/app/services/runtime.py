@@ -12,6 +12,7 @@ from app.schemas.agent import AgentRequest, AgentResponse
 from app.schemas.llm import BackendAiUsageEventPayload
 from app.schemas.llm import McpRemoteConfig
 from app.services.ai_usage_guard import AiUsageGuard, AiUsageGuardDecision
+from app.services.audio_clients import AudioGatewayClient, AudioTranscriptionClient, AudioTranscriptionResult
 from app.services.backend_client import (
     BackendClient,
     BackendConversationMessagePayload,
@@ -32,11 +33,20 @@ class AgentRuntime:
         routing_resolver: RuntimeRoutingResolver,
         decision_engine: DecisionEngine,
         ai_usage_guard: AiUsageGuard | None = None,
+        audio_gateway_client: AudioGatewayClient | None = None,
+        audio_transcription_client: AudioTranscriptionClient | None = None,
     ) -> None:
         self.backend_client = backend_client
         self.routing_resolver = routing_resolver
         self.decision_engine = decision_engine
         self.ai_usage_guard = ai_usage_guard or AiUsageGuard(backend_client)
+        backend_settings = getattr(backend_client, "settings", None)
+        self.audio_gateway_client = audio_gateway_client
+        if self.audio_gateway_client is None and backend_settings is not None:
+            self.audio_gateway_client = AudioGatewayClient(backend_settings)
+        self.audio_transcription_client = audio_transcription_client
+        if self.audio_transcription_client is None and backend_settings is not None:
+            self.audio_transcription_client = AudioTranscriptionClient(backend_settings)
 
     async def respond(self, payload: AgentRequest) -> AgentResponse:
         routing = await self.routing_resolver.resolve(payload)
@@ -60,6 +70,32 @@ class AgentRuntime:
                 data_to_save=self._misconfigured_routing_data(payload, routing),
             )
 
+        if self._is_audio_message(payload):
+            if self.audio_gateway_client is None or self.audio_transcription_client is None:
+                logger.error("Audio clients are not configured for WhatsApp audio processing")
+                return self._audio_transcription_failure_response(
+                    payload,
+                    routing,
+                    RuntimeError("Audio clients are not configured."),
+                )
+
+            ai_usage_decision = await self.ai_usage_guard.evaluate(routing.tenant_id)
+            if not ai_usage_decision.allowed:
+                return self._ai_usage_limit_response(ai_usage_decision)
+
+            try:
+                transcription_result = await self._transcribe_audio_message(payload)
+            except Exception as exc:
+                logger.exception(
+                    "Failed to transcribe WhatsApp audio message_id=%s wa_id=%s sender=%s",
+                    payload.message.id,
+                    payload.contact.wa_id or payload.contact.phone,
+                    payload.contact.sender or payload.contact.phone,
+                )
+                return self._audio_transcription_failure_response(payload, routing, exc)
+
+            payload.message.text = transcription_result.text
+
         backend_context = await self.backend_client.fetch_tenant_context(
             routing.tenant_id,
             routing.product_id,
@@ -68,7 +104,7 @@ class AgentRuntime:
             routing.entrypoint_ref,
             payload.contact.phone,
             routing.external_channel_id or payload.external_channel_id,
-            payload.message.text,
+            payload.message.text or "",
         )
         mcp_config = await self.backend_client.fetch_mcp_config(routing.tenant_id)
         self._log_mcp_config(routing.tenant_id, mcp_config)
@@ -81,7 +117,7 @@ class AgentRuntime:
                 entry_point_utm_id=routing.entry_point_utm_id,
                 customer_phone=payload.contact.phone,
                 customer_name=payload.contact.name,
-                first_message=payload.message.text,
+                first_message=payload.message.text or "",
                 utm_source=routing.utm_source,
                 utm_medium=routing.utm_medium,
                 utm_campaign=routing.utm_campaign,
@@ -100,17 +136,12 @@ class AgentRuntime:
                     conversation_id=conversation_id,
                     direction="inbound",
                     role="user",
-                    message_type="text",
-                    body=payload.message.text,
+                    message_type=payload.message.type,
+                    body=payload.message.text or "",
                     external_message_id=self._raw_event_field(payload.raw_event, "whatsapp_message_id", "whatsappMessageId", "message_id", "id"),
                     external_timestamp=self._raw_event_field(payload.raw_event, "timestamp"),
                     raw_payload=payload.raw_event,
-                    metadata={
-                        "channel_type": payload.channel_type,
-                        "external_channel_id": payload.external_channel_id,
-                        "entrypoint_ref": payload.entrypoint_ref,
-                        "contact": payload.contact.model_dump(),
-                    },
+                    metadata=self._inbound_metadata(payload, routing),
                 )
             )
             if inbound_result is not None and inbound_result.duplicate:
@@ -270,6 +301,61 @@ class AgentRuntime:
             return conversation_id.strip()
 
         return None
+
+    def _is_audio_message(self, payload: AgentRequest) -> bool:
+        if str(payload.message.type or "").strip().lower() == "audio":
+            return True
+
+        media = payload.message.media
+        if isinstance(media, dict):
+            return str(media.get("kind") or "").strip().lower() == "audio"
+
+        return False
+
+    async def _transcribe_audio_message(self, payload: AgentRequest) -> AudioTranscriptionResult:
+        media = payload.message.media if isinstance(payload.message.media, dict) else None
+        media_id = ""
+        if isinstance(media, dict):
+            media_id = str(media.get("media_id") or media.get("mediaId") or "").strip()
+
+        if media_id == "":
+            raise RuntimeError("Audio message does not include a media reference.")
+
+        download_result = await self.audio_gateway_client.download_whatsapp_media(media_id)
+        transcription_result = await self.audio_transcription_client.transcribe(
+            download_result.content,
+            download_result.content_type,
+            download_result.media_id,
+        )
+
+        payload.message.text = transcription_result.text
+        if isinstance(payload.message.media, dict):
+            payload.message.media["transcript"] = transcription_result.text
+            payload.message.media["transcription_model"] = transcription_result.model
+            payload.message.media.setdefault("media_id", download_result.media_id)
+            if download_result.content_type is not None:
+                payload.message.media.setdefault("content_type", download_result.content_type)
+
+        return transcription_result
+
+    def _inbound_metadata(self, payload: AgentRequest, routing: RoutingContext) -> dict[str, Any]:
+        metadata: dict[str, Any] = {
+            "channel_type": payload.channel_type,
+            "external_channel_id": payload.external_channel_id,
+            "entrypoint_ref": payload.entrypoint_ref,
+            "contact": payload.contact.model_dump(),
+        }
+
+        if payload.message.media is not None:
+            metadata["message_media"] = payload.message.media
+
+        if self._is_audio_message(payload):
+            metadata["message_original_type"] = "audio"
+
+        if routing.entrypoint_ref is not None and routing.entrypoint_ref.strip() != "":
+            metadata["routing_entrypoint_ref"] = routing.entrypoint_ref.strip()
+
+        return metadata
 
     def _raw_event_field(self, raw_event: Any | None, *names: str) -> str | None:
         if not isinstance(raw_event, dict):
@@ -797,6 +883,53 @@ class AgentRuntime:
             return ""
 
         return value.strip()
+
+    def _audio_transcription_failure_response(
+        self,
+        payload: AgentRequest,
+        routing: RoutingContext,
+        error: Exception,
+    ) -> AgentResponse:
+        data: dict[str, Any] = {
+            "audio_transcription_failed": True,
+            "audio_transcription_error": error.__class__.__name__,
+            "audio_message_id": payload.message.id,
+            "audio_media_id": self._audio_media_id(payload),
+            "audio_mime_type": self._audio_media_mime_type(payload),
+        }
+        if routing.tenant_id.strip() != "":
+            data["tenant_id"] = routing.tenant_id.strip()
+
+        return AgentResponse(
+            reply="He recibido tu audio, pero no he podido transcribirlo ahora mismo. Te paso con una persona del equipo.",
+            intent="handoff",
+            score=0.6,
+            action="audio_transcription_failed",
+            needs_human=True,
+            data_to_save=data,
+        )
+
+    def _audio_media_id(self, payload: AgentRequest) -> str | None:
+        media = payload.message.media
+        if not isinstance(media, dict):
+            return None
+
+        media_id = media.get("media_id") or media.get("mediaId")
+        if isinstance(media_id, str) and media_id.strip() != "":
+            return media_id.strip()
+
+        return None
+
+    def _audio_media_mime_type(self, payload: AgentRequest) -> str | None:
+        media = payload.message.media
+        if not isinstance(media, dict):
+            return None
+
+        mime_type = media.get("mime_type") or media.get("mimeType")
+        if isinstance(mime_type, str) and mime_type.strip() != "":
+            return mime_type.strip()
+
+        return None
 
     def _handoff_latency_ms(self, started_at: float) -> int:
         return int(round((time.perf_counter() - started_at) * 1000))

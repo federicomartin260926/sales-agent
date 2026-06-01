@@ -84,6 +84,39 @@ class RecordingBackendClient:
             },
         )()
 
+
+class RecordingAudioGatewayClient:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, tuple[object, ...]]] = []
+
+    async def download_whatsapp_media(self, media_id: str):
+        self.calls.append(("download_whatsapp_media", (media_id,)))
+        return type(
+            "AudioDownloadResultStub",
+            (),
+            {
+                "content": b"fake-ogg-bytes",
+                "content_type": "audio/ogg",
+                "media_id": media_id,
+            },
+        )()
+
+
+class RecordingAudioTranscriptionClient:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, tuple[object, ...]]] = []
+
+    async def transcribe(self, audio_bytes: bytes, content_type: str | None, media_id: str):
+        self.calls.append(("transcribe", (audio_bytes, content_type, media_id)))
+        return type(
+            "AudioTranscriptionResultStub",
+            (),
+            {
+                "text": "Hola, quiero información",
+                "model": "gpt-4o-mini-transcribe",
+            },
+        )()
+
 @pytest.fixture(autouse=True)
 def force_heuristic_llm(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _skip_llm(*args, **kwargs):
@@ -259,6 +292,52 @@ async def test_runtime_missing_routing_context_returns_human_handoff():
     assert response.action == "missing_routing_context"
     assert response.intent == "routing"
     assert backend.calls == []
+
+
+@pytest.mark.asyncio
+async def test_runtime_transcribes_audio_before_continuing_flow():
+    backend = RecordingBackendClient(
+        phone_context={"tenant_id": "tenant-1", "tenant_slug": "negocio-demo"},
+    )
+    audio_gateway = RecordingAudioGatewayClient()
+    audio_transcription = RecordingAudioTranscriptionClient()
+    runtime = AgentRuntime(
+        backend,
+        RuntimeRoutingResolver(backend),
+        DecisionEngine(backend),
+        audio_gateway_client=audio_gateway,  # type: ignore[arg-type]
+        audio_transcription_client=audio_transcription,  # type: ignore[arg-type]
+    )
+    payload = AgentRequest(
+        external_channel_id="phone-number-id-1",
+        message={
+            "type": "audio",
+            "media": {
+                "provider": "whatsapp_cloud_api",
+                "kind": "audio",
+                "media_id": "media-123",
+                "mime_type": "audio/ogg",
+                "sha256": "abc123",
+                "duration_seconds": 12,
+            },
+        },
+        contact=Contact(phone="+34999999999"),
+    )
+
+    response = await runtime.respond(payload)
+
+    assert audio_gateway.calls == [("download_whatsapp_media", ("media-123",))]
+    assert audio_transcription.calls == [("transcribe", (b"fake-ogg-bytes", "audio/ogg", "media-123"))]
+    inbound_calls = [
+        call for call in backend.calls if call[0] == "create_conversation_message" and call[1][0]["direction"] == "inbound"
+    ]
+    assert inbound_calls
+    inbound_payload = inbound_calls[0][1][0]
+    assert inbound_payload["message_type"] == "audio"
+    assert inbound_payload["body"] == "Hola, quiero información"
+    assert inbound_payload["metadata"]["message_original_type"] == "audio"
+    assert inbound_payload["metadata"]["message_media"]["transcript"] == "Hola, quiero información"
+    assert response.action in {"greet", "ask_question", "propose_meeting", "none"}
 
 
 @pytest.mark.asyncio

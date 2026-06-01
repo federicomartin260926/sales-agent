@@ -123,7 +123,7 @@ class LLMPromptBuilder:
                 "external_id": self.context_helper.sanitize_text(payload.conversation.external_id, max_chars=128),
                 **self.context_helper.build_conversation_payload(payload.conversation.summary, payload.conversation.last_messages),
             },
-            "current_message": self.context_helper.sanitize_text(payload.message.text, max_chars=2000),
+            "current_message": self.context_helper.sanitize_text(payload.message.text or "", max_chars=2000),
         }
 
         return system_prompt, json.dumps(user_payload, ensure_ascii=False, indent=2)

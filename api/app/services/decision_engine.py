@@ -39,7 +39,7 @@ class DecisionEngine:
                     payload.message.text,
                 )
 
-        message = payload.message.text.lower().strip()
+        message = (payload.message.text or "").lower().strip()
         should_defer_to_llm = self._should_defer_to_llm(backend_context, mcp_config)
 
         llm_response = await self.resolve_llm_response(
@@ -69,7 +69,7 @@ class DecisionEngine:
         backend_context: CommercialContext | None,
         contact_context: dict | None,
     ) -> AgentResponse | None:
-        message = payload.message.text.lower().strip()
+        message = (payload.message.text or "").lower().strip()
         if self._agenda_message_kind(message) != "booking":
             return None
 
@@ -124,7 +124,7 @@ class DecisionEngine:
         contact_context: dict | None,
         llm_decision: LLMDecisionDraft,
     ) -> AgentResponse:
-        agenda_context = self._should_promote_agenda_response(payload.message.text, contact_context)
+        agenda_context = self._should_promote_agenda_response(payload.message.text or "", contact_context)
         intent = llm_decision.intent
         action = llm_decision.action
         topic = self._topic_from_intent(intent)
