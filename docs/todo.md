@@ -1,503 +1,596 @@
 # TODO del proyecto sales-agent
 
-Lista ordenada de trabajo para llevar `sales-agent` desde el hito actual hasta un runtime comercial funcional integrado con WhatsApp, CRM, n8n, RAG y observabilidad.
+Lista ordenada y actualizada de trabajo para llevar `sales-agent` desde el hito actual hasta un runtime comercial funcional integrado con WhatsApp, CRM, n8n/MCP, RAG, planes comerciales, Stripe y observabilidad.
 
 ## Estado actual del hito
 
-Completado o validado recientemente:
+Completado/validado recientemente:
 
 - [x] Integración LLM con OpenAI como proveedor principal.
+- [x] Fallback seguro a heurística cuando aplica; Ollama queda fuera del fallback automático y limitado a uso manual/dev.
 - [x] `commercial-context` interno funcionando para cargar contexto comercial desde backend Symfony.
-- [x] Routing de proveedor LLM validado.
-- [x] Postman validado para el flujo principal.
-- [x] Opciones de Ollama corregidas para evitar uso accidental pesado.
-- [x] `auto` cambiado a flujo seguro: OpenAI → heurística, sin Ollama como fallback automático.
-- [x] Ollama limitado a uso manual/dev, con `llama3.2:3b` y timeout bajo recomendado de 10-15s.
+- [x] Resolución comercial de producto antes de playbook, con fallback MCP controlado cuando no hay catálogo local.
+- [x] MCP remoto validado end-to-end con OpenAI Responses API y downstream authorization tenant-scoped.
+- [x] ExternalTools/MCP configurables por tenant, con token downstream cifrado y no expuesto en prompt/payload/logs.
+- [x] MCP principal de Mary validado con `services_search`.
+- [x] Handoff humano implementado:
+  - short-circuit por petición explícita de humano.
+  - estrategias `manual_wa_link`, `n8n_webhook`, `manual_wa_link_and_n8n`.
+  - tool MCP `handoff_request`.
+  - separación correcta entre downstream authorization y token propio de webhook.
+- [x] Routing multi-tenant por prioridad:
+  - `entrypoint_ref`.
+  - `phone_number_id` / canal externo.
+  - `tenant_id` explícito.
+  - error controlado ante routing inconsistente.
+- [x] Audio WhatsApp implementado a nivel SA/wa-gateway-api:
+  - normalización de mensajes audio.
+  - descarga segura de media vía endpoint interno.
+  - transcripción OpenAI.
+  - billing/uso IA para `audio_transcription`.
+  - límite de duración configurable.
+  - bloqueo por plan comercial si `audio_transcription=false`.
+- [x] Gestión IA/tokens:
+  - modelos IA desde `Modelos IA`, no hardcodeados.
+  - costes IA editables.
+  - conversión estable € ↔ tokens por modelo.
+  - límites diario/mensual por tenant.
+  - top-ups/recargas manuales aprobadas.
+  - tokens de plan + top-ups del mes actual.
+- [x] Planes comerciales completados:
+  - catálogo Starter/Growth/Pro en PLATAFORMA.
+  - asignación de plan al tenant.
+  - suscripción manual y periodo.
+  - features/limits JSON.
+  - tokens/mes visibles.
+  - Stripe preparado en modelo/UI pero no implementado.
+  - enforcement básico de productos, guías, entry points, MCP y audio.
+- [x] Commits recientes:
+  - `4744ca1 Add commercial plans management`.
+  - `30f0430 Add commercial plans and AI token entitlements`.
+  - `e07960f Enforce commercial plan limits`.
 
-Pendiente inmediato:
+Pendiente inmediato recomendado:
 
-- [ ] Commit + push del hito actual.
+- [ ] Push de los commits recientes a `origin/main`.
+- [ ] Revisión manual final de planes comerciales:
+  - Starter bloquea audio y MCP.
+  - Growth permite audio y hasta 3 MCP.
+  - límites de productos, guías y puntos de entrada aplican al crear.
+- [ ] Definir próxima prioridad: Stripe, WhatsApp real, conversación persistente o CRM/agenda.
 
 ---
 
-## 1. Commit + push del hito actual
+## 1. Push y cierre del hito de planes comerciales
 
-Objetivo: cerrar el hito técnico actual antes de avanzar con integración WhatsApp real.
+Objetivo: dejar el hito actual respaldado en remoto antes de abrir nuevas fases.
 
-Incluye:
+Tareas:
 
-- OpenAI como proveedor principal.
-- Fallback seguro a heurística cuando `provider=auto` y OpenAI falla.
-- Ollama excluido del fallback automático para no saturar el VPS.
-- Ollama disponible solo como proveedor explícito/manual/dev.
-- `commercial-context` interno funcionando.
-- Routing LLM corregido.
-- Pruebas Postman validadas.
-- Configuración Ollama corregida.
+- [ ] Ejecutar `git status --short`.
+- [ ] Confirmar que la rama `main` contiene:
+  - `4744ca1 Add commercial plans management`.
+  - `30f0430 Add commercial plans and AI token entitlements`.
+  - `e07960f Enforce commercial plan limits`.
+- [ ] Ejecutar `git push origin main`.
+- [ ] Registrar en README/TODO el hito funcional cerrado.
 
 Comandos sugeridos:
 
 ```bash
-git status
-git add .
-git commit -m "feat: integrate OpenAI LLM routing and internal commercial context"
-git push
+cd ~/www/sales-agent
+git status --short
+git log --oneline -5
+git push origin main
 ```
 
 ---
 
-## 2. Conectar `wa-gateway-api` → `sales-agent` con webhook simulado
+## 2. Stripe para planes comerciales y tokens IA
 
-Objetivo: cerrar el primer circuito conversacional sin depender todavía de WhatsApp real.
+Objetivo: preparar e implementar, en fase futura, la monetización real de Sales Agent con suscripción mensual/anual por plan y recargas de tokens IA.
 
-Flujo objetivo:
+Estado actual:
+
+- [x] `CommercialPlan` existe.
+- [x] Planes Starter/Growth/Pro existen.
+- [x] Cada plan tiene precio mensual/anual, moneda y campos Stripe futuros.
+- [x] El tenant tiene plan asignado, estado de suscripción y periodo manual.
+- [x] Los tokens IA incluidos por plan se usan como base mensual efectiva.
+- [x] Los top-ups aprobados del mes se suman como extra temporal.
+- [ ] Stripe todavía no está implementado.
+- [ ] No existe checkout.
+- [ ] No existen webhooks Stripe.
+- [ ] No existe sincronización automática de estado de suscripción.
+
+Modelo comercial objetivo:
 
 ```text
-Payload tipo WhatsApp
-→ wa-gateway-api
-→ sales-agent /agent/respond
-→ wa-gateway-api
-→ respuesta simulada/logueada
+Plan base mensual/anual
++ tokens IA incluidos por plan
++ recargas/top-ups puntuales
++ posible overage o ampliación manual/automática futura
 ```
+
+Tareas fase Stripe 1: configuración y catálogo
+
+- [ ] Añadir configuración segura:
+  - `STRIPE_SECRET_KEY`.
+  - `STRIPE_WEBHOOK_SECRET`.
+  - `STRIPE_SUCCESS_URL`.
+  - `STRIPE_CANCEL_URL`.
+  - modo test/live.
+- [ ] Validar que `CommercialPlan` tiene:
+  - `stripeProductId`.
+  - `stripeMonthlyPriceId`.
+  - `stripeYearlyPriceId`.
+- [ ] Añadir validación/UI para que PLATAFORMA pueda completar IDs Stripe por plan.
+- [ ] Decidir si el catálogo Stripe se crea manualmente en Stripe Dashboard o con comando sync.
+- [ ] Si se automatiza, crear comando:
+  - `app:stripe:sync-plans`.
+  - crear/actualizar product y prices.
+  - nunca borrar precios antiguos si ya hay suscripciones.
+- [ ] Documentar workflow test mode.
+
+Tareas fase Stripe 2: checkout de suscripción
+
+- [ ] Crear endpoint interno para iniciar checkout de suscripción por tenant y plan.
+- [ ] Soportar mensual/anual.
+- [ ] Asociar metadata:
+  - `tenant_id`.
+  - `plan_code`.
+  - `billing_interval`.
+- [ ] Crear entidad opcional `Subscription` o ampliar tenant si basta:
+  - `stripeCustomerId`.
+  - `stripeSubscriptionId`.
+  - `subscriptionStatus`.
+  - `currentPeriodStart`.
+  - `currentPeriodEnd`.
+  - `cancelAtPeriodEnd`.
+- [ ] No mezclar todavía la compra de tokens con checkout de plan salvo decisión explícita.
+- [ ] UI mínima en PLATAFORMA para lanzar checkout o registrar manualmente datos de Stripe.
+
+Tareas fase Stripe 3: webhooks
+
+- [ ] Crear endpoint webhook Stripe.
+- [ ] Validar firma con `STRIPE_WEBHOOK_SECRET`.
+- [ ] Procesar eventos mínimos:
+  - `checkout.session.completed`.
+  - `customer.subscription.created`.
+  - `customer.subscription.updated`.
+  - `customer.subscription.deleted`.
+  - `invoice.payment_failed`.
+  - `invoice.payment_succeeded`.
+- [ ] Actualizar estado de suscripción del tenant.
+- [ ] Actualizar plan asignado cuando corresponda.
+- [ ] No degradar/eliminar recursos existentes automáticamente ante downgrade.
+- [ ] Registrar eventos recibidos para idempotencia.
+- [ ] Añadir tests con payloads firmados/mocks.
+
+Tareas fase Stripe 4: recargas/top-ups IA
+
+- [ ] Definir productos/precios Stripe para paquetes de tokens:
+  - 1M.
+  - 5M.
+  - 10M.
+  - custom/manual.
+- [ ] Mantener la regla ya decidida:
+  - top-up aprobado se suma solo al mes/periodo actual.
+  - no modifica el plan.
+  - no se arrastra al mes siguiente.
+- [ ] Crear checkout puntual para top-ups.
+- [ ] Webhook `checkout.session.completed` para acreditar tokens extra al tenant.
+- [ ] Mostrar en UI:
+  - tokens base por plan.
+  - tokens extra comprados/aprobados este mes.
+  - límite mensual efectivo.
+  - consumo actual.
+- [ ] Mantener aprobación manual disponible para casos comerciales.
+
+Decisiones pendientes antes de implementar Stripe:
+
+- [ ] ¿Stripe será visible para clientes/tenant admins o solo operado por Super Admin/PLATAFORMA?
+- [ ] ¿Habrá self-service checkout público o alta manual asistida?
+- [ ] ¿Downgrade inmediato o al fin de periodo?
+- [ ] ¿Qué ocurre si el tenant supera límites de recursos tras bajar de plan?
+- [ ] ¿Se permitirá overage automático o solo top-ups prepagados?
+- [ ] ¿Se factura por organización/tenant o por cuenta de usuario?
+- [ ] ¿La promoción/free trial se gestiona manualmente como en CRM o con Stripe trial?
+
+---
+
+## 3. Planes comerciales: mejoras posteriores no-Stripe
+
+Objetivo: cerrar detalles operativos alrededor del enforcement de planes sin abrir facturación.
+
+Ya completado:
+
+- [x] Guard común `PlanUsageGuard`.
+- [x] Bloqueo de creación si no hay plan comercial.
+- [x] Enforcement de:
+  - productos.
+  - guías/playbooks.
+  - puntos de entrada.
+  - MCP/ExternalTools.
+  - audio transcription.
+- [x] Policy interna expone `audio_transcription_enabled_by_plan`.
+- [x] FastAPI corta audio antes de transcribir si el plan no lo permite.
+
+Pendiente posible:
+
+- [ ] Añadir contadores visibles en listados:
+  - productos usados / límite.
+  - guías usadas / límite.
+  - entry points usados / límite.
+  - MCP usados / límite.
+- [ ] Mejorar mensajes de upgrade en UI.
+- [ ] Añadir estado visual del plan actual en dashboard del tenant.
+- [ ] Definir comportamiento ante downgrade:
+  - no borrar recursos.
+  - permitir editar existentes.
+  - impedir crear nuevos.
+  - impedir activar recursos bloqueados por plan.
+- [ ] Aplicar `monthly_conversations` cuando la persistencia de conversaciones esté estable.
+- [ ] Aplicar `whatsapp_numbers` cuando la gestión real de números/canales esté cerrada.
+- [ ] Aplicar `conversation_history_days` cuando exista política de retención.
+- [ ] Aplicar `advanced_analytics` cuando exista vista de analítica avanzada.
+- [ ] Aplicar `priority_support` solo como flag comercial/interno.
+
+---
+
+## 4. WhatsApp real: `wa-gateway-api` → `sales-agent` → WhatsApp
+
+Objetivo: cerrar el circuito real de WhatsApp Cloud API con Sales Agent.
+
+Estado conocido:
+
+- `wa-gateway-api` es adaptador técnico.
+- Sales Agent no debe enviar WhatsApp directamente.
+- Flujo correcto:
+  - WhatsApp Cloud API → `wa-gateway-api`.
+  - `wa-gateway-api` → `sales-agent`.
+  - `sales-agent` devuelve decisión/respuesta.
+  - `wa-gateway-api` envía físicamente a WhatsApp.
 
 Tareas:
 
-- [ ] Añadir/configurar `SALES_AGENT_URL` en `wa-gateway-api`.
-- [ ] En el inbound normalizado de `wa-gateway-api`, llamar a `POST /agent/respond`.
-- [ ] Mapear mensaje entrante de WhatsApp a contrato de SA:
-  - `tenant_id` o identificador técnico para resolver tenant.
-  - `message`.
-  - `contact`.
-  - `conversation.last_messages` cuando existan.
-  - metadatos mínimos del canal.
-- [ ] Recibir respuesta estructurada de SA:
-  - `reply`.
-  - `intent`.
-  - `score`.
-  - `action`.
-  - `needs_human`.
-  - `data_to_save`.
-- [ ] Loguear respuesta sin enviar todavía WhatsApp real.
-- [ ] Probar con Postman/cURL contra `wa-gateway-api`, no directamente contra SA.
-- [ ] Documentar payload simulado.
+- [ ] Validar webhook público HTTPS de Meta apuntando a `wa-gateway-api`.
+- [ ] Añadir/configurar `SALES_AGENT_URL`.
+- [ ] Mapear inbound normalizado a `/agent/respond`.
+- [ ] Resolver tenant por:
+  - `entrypoint_ref`.
+  - `phone_number_id`.
+  - tenant explícito si aplica.
+- [ ] Enviar respuesta real por `/messages/send`.
+- [ ] Manejar duplicados por `wamid`.
+- [ ] Manejar errores de Meta y de SA.
+- [ ] Loguear por `message_id`, tenant y conversación.
+- [ ] Probar texto real.
+- [ ] Probar audio real.
+- [ ] Documentar payload final.
 
 ---
 
-## 3. Persistencia completa de conversación
+## 5. Persistencia completa de conversación
 
-Objetivo: guardar conversaciones reales antes de conectar el canal WhatsApp productivo.
+Objetivo: guardar conversaciones reales antes de escalar el canal WhatsApp.
 
 Tareas:
 
 - [ ] Revisar modelo actual de `Conversation`.
-- [ ] Completar persistencia de `ConversationMessage` para mensajes inbound.
-- [ ] Completar persistencia de `ConversationMessage` para mensajes outbound.
-- [ ] Guardar relación con tenant, producto/playbook si aplica y canal.
-- [ ] Guardar identificadores externos del canal:
-  - `whatsapp_message_id`.
+- [ ] Completar persistencia inbound/outbound.
+- [ ] Guardar:
+  - tenant.
+  - contacto.
+  - canal.
+  - `wamid`.
   - `wa_id` / teléfono normalizado.
   - `phone_number_id`.
-  - `conversation_reference` si aplica.
-- [ ] Guardar trazabilidad mínima por mensaje/respuesta:
-  - provider LLM usado.
+  - `entrypoint_ref`.
+  - producto/playbook si aplica.
+- [ ] Guardar trazabilidad:
+  - provider LLM.
   - modelo.
   - latencia.
+  - tokens/coste estimado.
   - intent.
   - score.
   - action.
   - `needs_human`.
   - errores.
-- [ ] Evitar que solo se cree una conversación mínima sin mensajes asociados.
-- [ ] Definir idempotencia para no duplicar inbound si WhatsApp reintenta webhooks.
+  - MCP/tool traces.
+- [ ] Evitar conversación sin mensajes asociados.
+- [ ] Implementar idempotencia de inbound.
 - [ ] Añadir tests de persistencia inbound/outbound.
+- [ ] Exponer estado de conversación en UI:
+  - activa.
+  - pendiente humano.
+  - cerrada.
+  - error.
 
 ---
 
-## 4. WhatsApp real: inbound → SA → outbound
+## 6. Runtime y resolución tenant/producto/playbook
 
-Objetivo: salir de Postman y cerrar el circuito real con WhatsApp Cloud API.
+Objetivo: mantener robusta la selección de tenant y contexto comercial.
 
-Flujo objetivo:
+Ya avanzado:
 
-```text
-WhatsApp Cloud API
-→ wa-gateway-api /webhooks/whatsapp
-→ sales-agent /agent/respond
-→ wa-gateway-api /messages/send
-→ WhatsApp Cloud API
-```
+- [x] Resolución de producto antes de playbook.
+- [x] No depender exclusivamente de catálogo local.
+- [x] Fallback MCP cuando no hay catálogo local y está permitido/configurado.
+- [x] Routing por `entrypoint_ref`, canal y tenant explícito.
+
+Pendiente:
+
+- [ ] Añadir más tests de resolución de tenant por `phone_number_id`.
+- [ ] Añadir tests de routing inconsistente.
+- [ ] Revisar comportamiento cuando no hay producto local y MCP está caído.
+- [ ] Revisar selección de playbook cuando hay múltiples candidatos.
+- [ ] Mejorar trazas de `product_selection`.
+- [ ] Documentar contrato final de `/agent/respond`.
+
+---
+
+## 7. MCP / herramientas externas / n8n
+
+Objetivo: usar MCP/n8n como capa de herramientas externas sin convertir SA en CRM/ERP.
+
+Ya avanzado:
+
+- [x] ExternalTools configurables por tenant.
+- [x] MCP remoto con OpenAI Responses API validado.
+- [x] Downstream authorization tenant-scoped.
+- [x] Tool `contact_context`.
+- [x] Tool `services_search`.
+- [x] Tools de agenda CRM disponibles a través de MCP/n8n.
+- [x] Tool `handoff_request`.
+- [x] Gestión UI de servidores MCP en Administración técnica.
+- [x] Enforcement de plan para MCP.
+
+Pendiente:
+
+- [ ] Revisar y limpiar legacy:
+  - `crm_client.py` si ya no se usa.
+  - variables antiguas CRM si quedaron obsoletas.
+- [ ] Añadir vista de trazas MCP más cómoda.
+- [ ] Añadir test de tools MCP con mock de n8n/CRM.
+- [ ] Mejorar mensajes cuando MCP no está configurado o falla.
+- [ ] Definir catálogo/inventario externo como tool MCP/n8n genérica.
+- [ ] Mantener separación de tokens:
+  - downstream authorization ≠ webhook token ≠ tokens OpenAI.
+
+---
+
+## 8. Handoff humano
+
+Objetivo: derivar a humano de forma controlada cuando el usuario lo pide o cuando el agente detecta necesidad comercial/riesgo.
+
+Ya avanzado:
+
+- [x] Petición explícita de humano con short-circuit rule-based.
+- [x] Estrategias:
+  - `manual_wa_link`.
+  - `n8n_webhook`.
+  - `manual_wa_link_and_n8n`.
+- [x] Handoff webhook separado de downstream authorization.
+- [x] MCP tool `handoff_request`.
+- [x] Documentación `docs/handoff.md`.
+
+Pendiente:
+
+- [ ] Probar manualmente estrategia final de Mary con n8n publicado.
+- [ ] Afinar señales automáticas de handoff por riesgo/queja/cierre.
+- [ ] Evitar que SA siga contestando si la conversación quedó en estado humano pendiente.
+- [ ] Crear aviso/tarea en CRM cuando aplique.
+- [ ] Registrar motivo de handoff en conversación.
+- [ ] Añadir tests e2e con conversación persistente.
+
+---
+
+## 9. CRM contact-context y agenda/citas
+
+Objetivo: enriquecer conversación y permitir reservas sin duplicar en SA la fuente maestra.
+
+Ya avanzado:
+
+- [x] `contact_context` vía n8n/MCP implementado previamente.
+- [x] Downstream authorization validado.
+- [x] Tools de servicios y agenda existen en MCP/n8n/CRM.
+- [x] Sales Agent puede usar catálogo externo cuando no hay productos locales.
+
+Pendiente:
+
+- [ ] Revisar si queda algún 401 legacy real o si está desfasado.
+- [ ] Validar flujo completo:
+  - usuario pide cita.
+  - SA consulta disponibilidad.
+  - SA ofrece slots.
+  - usuario elige.
+  - SA confirma o genera link/invitación.
+- [ ] Integrar waitlist CRM como posible fallback cuando no hay huecos.
+- [ ] Registrar `lead_id`, `customer_id`, cita o booking invitation en conversación.
+- [ ] Añadir fallback a handoff si CRM/n8n falla.
+- [ ] Documentar contratos MCP/n8n definitivos.
+
+---
+
+## 10. RAG por tenant/producto
+
+Objetivo: consultar documentación comercial solo cuando aporte valor real.
 
 Tareas:
 
-- [ ] Validar que `wa-gateway-api` recibe webhooks reales de Meta.
-- [ ] Normalizar eventos entrantes de texto.
-- [ ] Ignorar eventos no soportados o duplicados.
-- [ ] Llamar a SA con el contrato definitivo.
-- [ ] Enviar `reply` real usando `/messages/send`.
-- [ ] Persistir inbound y outbound.
-- [ ] Manejar errores de Meta y de SA de forma segura.
-- [ ] Añadir logs por `message_id` / conversación.
-- [ ] Documentar el flujo real.
-
----
-
-## 5. Resolver contexto del tenant en runtime
-
-Objetivo: asegurar que cada mensaje entra en el tenant correcto y no se seleccionan productos/playbooks de forma implícita o frágil.
-
-Tareas:
-
-- [ ] Buscar `Tenant` por `tenant_id` cuando venga explícito.
-- [ ] Buscar `Tenant` por `whatsappPhoneNumberId` cuando llegue tráfico desde Meta.
-- [ ] Validar tenant activo.
-- [ ] Cargar productos activos del tenant.
-- [ ] Cargar playbooks activos del tenant.
-- [ ] Elegir playbook aplicable por tenant y, si existe, por producto.
-- [ ] Eliminar cualquier selección implícita de producto por orden de lista.
-- [ ] Devolver error estructurado si el tenant no existe o está inactivo.
-- [ ] Añadir tests de resolución de tenant por canal.
-
----
-
-## 6. Revisar y cerrar modelo de dominio administrativo
-
-Objetivo: dejar estable la configuración comercial administrada desde Symfony.
-
-Tareas:
-
-- [ ] Revisar esquema final de `Tenant.salesPolicy`.
-- [ ] Revisar esquema final de `Product.salesPolicy`.
-- [ ] Revisar esquema final de `Playbook.config`.
-- [ ] Confirmar campos obligatorios y opcionales en cada entidad.
-- [ ] Añadir validaciones de dominio donde falten.
-- [ ] Mejorar gestión de tenants, products y playbooks.
-- [ ] Asegurar que el panel humano refleja el estado real del modelo.
-- [ ] Añadir validación estricta de formato internacional para `whatsappPublicPhone` cuando se endurezca la captura de canales.
-- [ ] Añadir validación del identificador técnico de Meta cuando sea necesario.
-
----
-
-## 7. CRM contact-context y resolver 401
-
-Objetivo: enriquecer la respuesta con historial real del lead/contacto sin duplicar en SA la fuente maestra del CRM.
-
-Tareas:
-
-- [ ] Resolver el 401 actual al consultar CRM.
-- [ ] Definir contrato de lectura contra CRM.
-- [ ] Consultar contacto/lead por teléfono, email o referencia externa.
-- [ ] Recuperar:
-  - datos de contacto.
-  - estado del lead.
-  - pipeline.
-  - actividad previa.
-  - próxima cita si existe.
-  - owner/agente asignado si existe.
-- [ ] Evitar duplicar en `sales-agent` la fuente maestra del negocio.
-- [ ] Definir qué datos se cachean temporalmente y cuáles se consultan siempre.
-- [ ] Relacionar conversación con `lead_id`, `customer_id` o referencia externa cuando aplique.
-- [ ] Preparar fallback si CRM no está contratado por el tenant.
-
----
-
-## 8. Funcionalidad genérica de inventario/catálogo externo vía n8n
-
-Objetivo: permitir consultas a inventario o catálogo vivo sin convertir `sales-agent` en ERP, ecommerce ni catálogo universal.
-
-Principio arquitectónico:
-
-- SA mantiene el enfoque comercial: tenant, producto/servicio, guía, playbook, objeciones, scoring y tono.
-- El inventario real vive fuera de SA.
-- n8n actúa como adaptador hacia la DB/API/sistema externo del cliente.
-- SA envía una intención de búsqueda abstracta y recibe resultados normalizados.
-
-Flujo objetivo:
-
-```text
-Usuario pregunta por disponibilidad, stock, precio, unidades, alternativas o similares
-→ SA detecta intent external_catalog_search
-→ SA construye consulta abstracta normalizada
-→ SA llama ExternalTool configurada para tenant/product/playbook
-→ n8n adapta la consulta al sistema real del cliente
-→ n8n consulta DB/API externa
-→ n8n devuelve resultados normalizados
-→ SA responde comercialmente usando esos resultados
-```
-
-Tareas de modelo/configuración:
-
-- [ ] Crear soporte para `ExternalTool` configurable por tenant.
-- [ ] Permitir asociar una `ExternalTool` a producto o playbook cuando aplique.
-- [ ] Definir tipo inicial `n8n_webhook`.
-- [ ] Guardar configuración segura:
-  - nombre.
-  - tipo.
-  - webhook URL.
-  - secret/token.
-  - timeout.
-  - enabled.
+- [ ] Definir contrato contra `ai-stack/rag-api`.
+- [ ] Soportar scoping por:
   - tenant.
-  - product/playbook opcional.
-- [ ] Evitar exponer secretos en vistas o logs.
-- [ ] Añadir CRUD administrativo mínimo.
-
-Tareas de runtime:
-
-- [ ] Detectar intención de búsqueda externa:
-  - disponibilidad.
-  - stock.
-  - precio actual.
-  - unidades reales.
-  - productos similares.
-  - alternativas.
-  - búsqueda por presupuesto o características.
-- [ ] Construir payload abstracto para n8n.
-- [ ] Incluir contexto mínimo:
-  - `tenant_id`.
-  - `product_id` si aplica.
-  - `playbook_id` si aplica.
-  - mensaje original.
-  - filtros inferidos.
-  - presupuesto si se detecta.
-  - ubicación si se detecta.
-  - preferencias.
-  - conversation/contact metadata.
-- [ ] Llamar webhook n8n con timeout bajo y errores controlados.
-- [ ] Procesar respuesta normalizada de n8n.
-- [ ] Permitir que SA responda con resultados, alternativas o solicitud de más datos.
-- [ ] Definir fallback cuando n8n no responde o no hay resultados.
-- [ ] Registrar la llamada externa en trazas de decisión.
-
-Contrato sugerido de request a n8n:
-
-```json
-{
-  "tenant_id": "...",
-  "product_id": "...",
-  "playbook_id": "...",
-  "conversation_id": "...",
-  "contact": {
-    "name": "...",
-    "phone": "...",
-    "email": "..."
-  },
-  "query": {
-    "intent": "external_catalog_search",
-    "original_message": "Busco un coche automático por menos de 15000 euros",
-    "filters": {
-      "category": "vehicle",
-      "budget_max": 15000,
-      "features": ["automatic"]
-    }
-  }
-}
-```
-
-Contrato sugerido de respuesta desde n8n:
-
-```json
-{
-  "ok": true,
-  "results": [
-    {
-      "external_id": "veh_123",
-      "title": "Toyota Corolla 1.8 Hybrid Automatic",
-      "description": "Vehículo híbrido automático en buen estado",
-      "price": 14500,
-      "currency": "EUR",
-      "availability": "available",
-      "url": "https://...",
-      "metadata": {
-        "year": 2019,
-        "km": 82000
-      }
-    }
-  ],
-  "summary": "Encontré 1 vehículo compatible con el presupuesto y preferencia automática.",
-  "source": "client_inventory"
-}
-```
-
-Ejemplo de uso:
-
-- En SA existe el producto/servicio comercial: `Venta de vehículos de ocasión`.
-- La guía comercial vive en SA.
-- El inventario real vive en una base/API externa.
-- n8n traduce la intención abstracta a la consulta real del cliente.
-
----
-
-## 9. Handoff humano
-
-Objetivo: derivar a humano cuando el agente detecta intención de cierre, riesgo, falta de confianza o necesidad comercial.
-
-Tareas:
-
-- [ ] Definir umbrales de derivación a humano.
-- [ ] Detectar señales de intención de cierre.
-- [ ] Detectar señales de queja, riesgo o usuario molesto.
-- [ ] Detectar petición explícita de hablar con una persona.
-- [ ] Incluir reglas por producto y por tenant.
-- [ ] Entregar motivo de handoff de forma estructurada.
-- [ ] Si `needs_human=true`, marcar conversación como pendiente.
-- [ ] Crear aviso/tarea en CRM si el tenant usa CRM.
-- [ ] Permitir alternativa vía n8n si el tenant no usa CRM.
-- [ ] Evaluar aviso a WhatsApp personal mediante canal permitido/plantilla si aplica.
-- [ ] Evitar que SA siga contestando sin control cuando la conversación está en estado humano pendiente.
-
----
-
-## 10. Agenda/citas CRM vía n8n/CRM
-
-Objetivo: permitir que SA ofrezca disponibilidad y genere link de reserva sin acoplarse obligatoriamente al CRM propio.
-
-Tareas:
-
-- [ ] Detectar intención de cita/reunión/demo.
-- [ ] Definir contrato de disponibilidad.
-- [ ] Consultar disponibilidad vía n8n o CRM según configuración del tenant.
-- [ ] Ofrecer slots concretos.
-- [ ] Generar link de reserva.
-- [ ] Registrar intención de cita en conversación.
-- [ ] Guardar datos necesarios en `data_to_save`.
-- [ ] Manejar respuesta del usuario eligiendo slot.
-- [ ] Crear evento/cita mediante CRM/n8n.
-- [ ] Añadir fallback a handoff humano si no hay disponibilidad o falla la integración.
-
----
-
-## 11. RAG por tenant/producto
-
-Objetivo: consultar documentación comercial solo cuando aporte valor real a la respuesta.
-
-Tareas:
-
-- [ ] Definir contrato de consulta documental contra `ai-stack/rag-api`.
-- [ ] Soportar scoping por tenant/producto/knowledge base.
+  - product.
+  - knowledge base.
 - [ ] Indexar FAQs, objeciones y material comercial.
-- [ ] Recuperar contexto semántico por tenant/producto.
-- [ ] Usar RAG solo para preguntas específicas o información documental.
-- [ ] No usar RAG para inventario vivo/stock/precios rotativos.
-- [ ] Añadir trazabilidad de fuentes recuperadas.
+- [ ] Recuperar contexto semántico cuando el usuario pregunta por información documental.
+- [ ] No usar RAG para stock, precios rotativos o inventario vivo.
+- [ ] Añadir trazabilidad de fuentes.
 - [ ] Controlar latencia y fallback.
+- [ ] Respetar límites de plan si RAG se convierte en feature comercial futura.
 
 ---
 
-## 12. Audio WhatsApp
+## 11. Audio WhatsApp
 
-Objetivo: soportar audio entrante de WhatsApp convirtiéndolo a texto antes de enviarlo a SA.
+Objetivo: consolidar audio real en canal WhatsApp.
 
-Primera versión:
+Ya avanzado:
 
-```text
-Audio entrante
-→ wa-gateway-api descarga media
-→ transcripción OpenAI
-→ sales-agent recibe texto
-→ respuesta texto por WhatsApp
-```
+- [x] `wa-gateway-api` normaliza audio y reenvía media metadata.
+- [x] Endpoint interno seguro de media en `wa-gateway-api`.
+- [x] SA descarga y transcribe audio con OpenAI.
+- [x] Uso/coste de audio registrado como `audio_transcription`.
+- [x] Límite de duración configurable.
+- [x] Bloqueo por plan comercial.
+- [x] Tests focalizados en runtime/policy.
 
-Tareas:
+Pendiente:
 
-- [ ] Detectar mensajes de audio en webhook de WhatsApp.
-- [ ] Descargar media desde Meta.
-- [ ] Enviar audio a transcripción OpenAI.
-- [ ] Guardar transcripción como inbound message.
-- [ ] Enviar texto transcrito a SA.
-- [ ] Responder en texto.
-- [ ] Registrar coste/latencia de transcripción.
-- [ ] Manejar errores de audio no descargable o transcripción fallida.
-
-Fuera de alcance inicial:
-
-- Respuesta por voz.
-- Conversación telefónica realtime.
+- [ ] Prueba real con WhatsApp Cloud API y audio de móvil.
+- [ ] Revisar UX del mensaje cuando audio supera límite.
+- [ ] Revisar UX del mensaje cuando plan no permite audio.
+- [ ] Persistir audio/transcripción como mensaje inbound cuando conversación esté cerrada.
+- [ ] Decidir si permitir respuesta por voz en fase futura.
+- [ ] Mantener fuera de alcance conversación telefónica realtime.
 
 ---
 
-## 13. Observabilidad avanzada
+## 12. Observabilidad avanzada
 
 Objetivo: poder auditar decisiones, controlar coste y diagnosticar errores por conversación/tenant.
 
-Tareas:
+Ya avanzado parcialmente:
+
+- [x] Telemetría LLM y traces MCP básicas.
+- [x] Registro de uso IA/tokens/costes.
+- [x] Uso IA visible por tenant.
+- [x] Policy interna expone límites efectivos.
+
+Pendiente:
 
 - [ ] Registrar `conversation_id` en todos los logs relevantes.
-- [ ] Registrar `tenant_id`, `product_id`, `playbook_id` si aplican.
-- [ ] Registrar proveedor LLM usado.
-- [ ] Registrar modelo.
-- [ ] Registrar latencia total y latencias parciales.
-- [ ] Registrar tokens y coste estimado cuando sea posible.
-- [ ] Registrar intent, score, action y `needs_human`.
+- [ ] Registrar `tenant_id`, `product_id`, `playbook_id`.
+- [ ] Registrar latencias parciales:
+  - backend context.
+  - OpenAI.
+  - MCP/tools.
+  - CRM/n8n.
+  - audio.
 - [ ] Registrar errores clasificados.
-- [ ] Registrar llamadas a herramientas externas, incluyendo n8n inventario, CRM, agenda y RAG.
-- [ ] Preparar vista mínima de trazas en panel interno o logs consultables.
-- [ ] Evaluar integración posterior con Langfuse si aporta valor.
+- [ ] Crear vista mínima de trazas por conversación.
+- [ ] Evaluar Langfuse solo si aporta valor real y no complica dev/prod.
 
 ---
 
-## 14. Endpoints y contratos
+## 13. Endpoints y contratos
 
-Objetivo: estabilizar contratos públicos/internos para que los proyectos conectados no rompan.
+Objetivo: estabilizar contratos públicos/internos para evitar roturas entre proyectos.
 
 Tareas:
 
 - [ ] Estabilizar contrato de `POST /agent/respond`.
-- [ ] Documentar payloads normalizados de `wa-gateway-api`.
-- [ ] Documentar respuesta estructurada de SA.
+- [ ] Documentar payload normalizado de `wa-gateway-api`.
+- [ ] Documentar respuesta estructurada SA.
+- [ ] Documentar `/api/internal/ai-usage/{tenantId}/policy` con campos de plan:
+  - `commercial_plan_code`.
+  - `commercial_plan_name`.
+  - `plan_monthly_ai_tokens`.
+  - `approved_extra_tokens_current_month`.
+  - `effective_monthly_ai_token_limit`.
+  - `monthly_limit_source`.
+  - `audio_transcription_enabled_by_plan`.
 - [ ] Definir contratos de error.
-- [ ] Añadir healthchecks y endpoints de soporte si faltan.
+- [ ] Añadir/versionar ejemplos Postman/cURL.
 - [ ] Versionar contratos si empieza a haber clientes reales.
-- [ ] Mantener ejemplos Postman/cURL actualizados.
 
 ---
 
-## 15. Administración y UX interna
+## 14. Administración y UX interna
 
-Objetivo: hacer operable el sistema desde panel sin depender de edición manual de DB.
+Objetivo: hacer operable el sistema desde panel sin depender de DB manual.
 
-Tareas:
+Ya avanzado:
 
-- [ ] Mejorar gestión de tenants, products y playbooks.
-- [ ] Completar CRUD administrativo para `EntryPoint`, `EntryPointUtm` y `Conversation`.
-- [ ] Afinar UX del importador de catálogo CRM para revisión masiva y errores por fila.
-- [ ] Mantener el importador de catálogo CRM alineado con `integration_key` y `externalReference`.
-- [ ] Definir sincronización opcional con CRM para `crmBranchRef` y atribución externa.
-- [ ] Completar edición de perfiles y roles internos.
-- [ ] Añadir UI para ExternalTools/n8n webhooks.
-- [ ] Mostrar estado de conversación: activa, pendiente humano, cerrada, error, etc.
+- [x] Tenants/negocios.
+- [x] Productos/servicios.
+- [x] Guías comerciales/playbooks.
+- [x] Puntos de entrada.
+- [x] Servidores MCP.
+- [x] Uso IA.
+- [x] Modelos IA.
+- [x] Planes comerciales.
+- [x] Configuración básica.
+- [x] Sidebar PLATAFORMA colapsable.
+
+Pendiente:
+
+- [ ] Completar CRUD administrativo para conversaciones.
+- [ ] Mostrar estado de conversación:
+  - activa.
+  - pendiente humano.
+  - cerrada.
+  - error.
+- [ ] Mejorar contadores de límites por plan.
+- [ ] Afinar importador/sync de catálogo CRM si sigue siendo necesario.
+- [ ] Completar edición de perfiles y roles internos si queda pendiente.
+- [ ] Añadir ayudas/empty states para tenants sin plan comercial.
+- [ ] Añadir vista resumen de plan/consumo en dashboard.
 
 ---
 
-## 16. Calidad y tests
+## 15. Calidad y tests
 
 Objetivo: evitar regresiones conforme el runtime se vuelve multi-sistema.
 
-Tareas:
+Ya avanzado:
 
-- [ ] Añadir tests de integración del runtime por tenant.
-- [ ] Añadir tests de resolución de tenant por `tenant_id` y por `whatsappPhoneNumberId`.
-- [ ] Añadir tests de regresión para scoring y handoff.
-- [ ] Cubrir validaciones de entidades y contratos de API.
-- [ ] Testear fallback OpenAI → heurística.
-- [ ] Testear que Ollama no se ejecuta en modo auto.
-- [ ] Testear persistencia inbound/outbound.
-- [ ] Testear ExternalTool/n8n con mock.
-- [ ] Testear CRM contact-context con mock y con errores 401/500.
-- [ ] Automatizar el flujo principal en Docker.
+- [x] Tests de planes comerciales.
+- [x] Tests de límites IA por plan.
+- [x] Tests de enforcement de productos/MCP/audio.
+- [x] Tests de audio policy.
+- [x] Tests focalizados backend + FastAPI en cada fase.
+
+Pendiente:
+
+- [ ] Tests e2e de runtime por tenant.
+- [ ] Tests de resolución por `tenant_id`, `entrypoint_ref` y `phone_number_id`.
+- [ ] Tests de persistencia inbound/outbound.
+- [ ] Tests de CRM contact-context con mocks 401/500.
+- [ ] Tests de agenda/citas con mock MCP/n8n.
+- [ ] Tests de handoff con conversación persistente.
+- [ ] Automatizar flujo principal en Docker.
+- [ ] Revisar warnings/deprecations PHPUnit cuando sea oportuno.
 
 ---
 
-## 17. Operación y despliegue
+## 16. Operación y despliegue
 
-Objetivo: mantener un flujo claro de dev/prod y evitar saturar recursos del VPS.
+Objetivo: mantener flujo claro de dev/prod y evitar saturar VPS.
 
 Tareas:
 
 - [ ] Revisar workflow de producción y bootstrap.
-- [ ] Confirmar separación final entre dev y prod.
-- [ ] Documentar variables de entorno críticas.
-- [ ] Mantener `make` como entrada principal para operar el proyecto.
-- [ ] Revisar límites/timeouts de OpenAI, Ollama, CRM, n8n y RAG.
+- [ ] Confirmar separación dev/prod.
+- [ ] Documentar variables críticas:
+  - OpenAI.
+  - MCP.
+  - CRM downstream auth.
+  - n8n webhooks.
+  - WhatsApp/Meta.
+  - Stripe futuro.
+- [ ] Mantener `make` como entrada principal.
+- [ ] Revisar límites/timeouts de:
+  - OpenAI.
+  - MCP.
+  - CRM.
+  - n8n.
+  - RAG.
+  - audio.
 - [ ] Evitar puertos públicos innecesarios.
 - [ ] Confirmar redes Docker internas/externas.
 - [ ] Documentar perfiles dev/manual para Ollama.
@@ -505,24 +598,25 @@ Tareas:
 
 ---
 
-## Orden resumido recomendado
+## Orden resumido recomendado actualizado
 
 ```text
-1. Commit + push del hito actual
-2. wa-gateway-api → sales-agent con webhook simulado
-3. Persistencia completa ConversationMessage inbound/outbound
-4. WhatsApp real inbound → SA → outbound
-5. Resolver tenant runtime por tenant_id / whatsappPhoneNumberId
-6. Cerrar modelo administrativo Tenant/Product/Playbook
-7. CRM contact-context y resolver 401
-8. Inventario/catálogo externo vía n8n
-9. Handoff humano
-10. Agenda/citas CRM vía n8n/CRM
-11. RAG tenant/producto
-12. Audio WhatsApp
-13. Observabilidad avanzada
-14. Endpoints/contratos
-15. Administración/UX interna
-16. Calidad/tests
-17. Operación/despliegue
+1. Push de commits actuales.
+2. Pruebas manuales finales de planes Starter/Growth/Pro.
+3. Decidir si el siguiente frente es Stripe o WhatsApp real.
+4. Si Stripe:
+   4.1 configurar IDs Stripe en planes.
+   4.2 checkout suscripción.
+   4.3 webhooks.
+   4.4 top-ups IA vía Stripe.
+5. Si WhatsApp:
+   5.1 conectar wa-gateway-api → SA.
+   5.2 texto real.
+   5.3 audio real.
+   5.4 persistencia inbound/outbound.
+6. Conversaciones y observabilidad.
+7. CRM/agenda/waitlist end-to-end.
+8. RAG tenant/producto.
+9. Calidad/tests e2e.
+10. Operación/despliegue.
 ```
