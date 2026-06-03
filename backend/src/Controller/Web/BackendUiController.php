@@ -2835,7 +2835,8 @@ final class BackendUiController
             return 'El modelo alternativo no puede superar 100 caracteres.';
         }
 
-        if ($values['audioLimitExceededMessage'] !== '' && mb_strlen($values['audioLimitExceededMessage']) > 2000) {
+        $audioLimitExceededMessage = $values['audioLimitExceededMessage'] ?? '';
+        if ($audioLimitExceededMessage !== '' && mb_strlen($audioLimitExceededMessage) > 2000) {
             return 'El mensaje de audio no puede superar 2000 caracteres.';
         }
 
@@ -3653,8 +3654,10 @@ final class BackendUiController
         $policy->setMonthlyCostLimitEur($monthlyTokens !== null ? $this->costAmountFromTokens($monthlyTokens, $costPerToken) : null);
         $policy->setDefaultModel($values['defaultModel'] !== '' ? $values['defaultModel'] : null);
         $policy->setFallbackModel($values['fallbackModel'] !== '' ? $values['fallbackModel'] : null);
-        $policy->setMaxAudioTranscriptionSeconds($values['maxAudioTranscriptionSeconds'] !== '' ? (int) round((float) $values['maxAudioTranscriptionSeconds']) : null);
-        $policy->setAudioLimitExceededMessage($values['audioLimitExceededMessage'] !== '' ? $values['audioLimitExceededMessage'] : null);
+        $maxAudioTranscriptionSeconds = $values['maxAudioTranscriptionSeconds'] ?? '';
+        $audioLimitExceededMessage = $values['audioLimitExceededMessage'] ?? '';
+        $policy->setMaxAudioTranscriptionSeconds($maxAudioTranscriptionSeconds !== '' ? (int) round((float) $maxAudioTranscriptionSeconds) : null);
+        $policy->setAudioLimitExceededMessage($audioLimitExceededMessage !== '' ? $audioLimitExceededMessage : null);
         $policy->setLimitAction($values['limitAction']);
     }
 
