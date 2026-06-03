@@ -3,6 +3,7 @@
 namespace App\Command;
 
 use App\Entity\Playbook;
+use App\Entity\AiModelCostReference;
 use App\Entity\Product;
 use App\Entity\TenantMembership;
 use App\Entity\Tenant;
@@ -91,6 +92,8 @@ final class BootstrapDefaultDataCommand extends Command
         $playbookRepository = $this->entityManager->getRepository(Playbook::class);
         /** @var ObjectRepository<TenantMembership> $membershipRepository */
         $membershipRepository = $this->entityManager->getRepository(TenantMembership::class);
+        /** @var ObjectRepository<AiModelCostReference> $aiCostRepository */
+        $aiCostRepository = $this->entityManager->getRepository(AiModelCostReference::class);
 
         $tenant = $tenantRepository->findOneBy(['slug' => self::TENANT_SLUG]);
         if (!$tenant instanceof Tenant) {
@@ -271,6 +274,66 @@ final class BootstrapDefaultDataCommand extends Command
         } elseif ($productPlaybook->getProduct() === null) {
             $productPlaybook->setProduct($product);
             $changes[] = 'product playbook link';
+        }
+
+        $aiCostSeeds = [
+            [
+                'usageType' => AiModelCostReference::USAGE_TYPE_LLM_CHAT,
+                'model' => 'gpt-4.1-mini',
+                'input' => 0.40,
+                'cached' => 0.10,
+                'output' => 1.60,
+                'currency' => 'USD',
+                'notes' => 'Referencia recomendada para chat LLM.',
+                'active' => true,
+            ],
+            [
+                'usageType' => AiModelCostReference::USAGE_TYPE_LLM_CHAT,
+                'model' => 'gpt-5.4-mini',
+                'input' => 0.75,
+                'cached' => 0.075,
+                'output' => 4.50,
+                'currency' => 'USD',
+                'notes' => 'Referencia opcional para chat LLM de mayor coste.',
+                'active' => true,
+            ],
+            [
+                'usageType' => AiModelCostReference::USAGE_TYPE_AUDIO_TRANSCRIPTION,
+                'model' => 'gpt-4o-mini-transcribe',
+                'costUnit' => AiModelCostReference::COST_UNIT_MINUTE,
+                'costPerUnit' => 0.02,
+                'currency' => 'EUR',
+                'notes' => 'Referencia recomendada para transcripción de audio.',
+                'active' => true,
+            ],
+        ];
+
+        foreach ($aiCostSeeds as $seed) {
+            $existingReference = $aiCostRepository->findOneBy([
+                'usageType' => $seed['usageType'],
+                'model' => $seed['model'],
+            ]);
+
+            if ($existingReference instanceof AiModelCostReference) {
+                continue;
+            }
+
+            $reference = new AiModelCostReference($seed['usageType'], $seed['model']);
+            $reference->setCurrency($seed['currency']);
+            $reference->setNotes($seed['notes']);
+            $reference->setActive($seed['active']);
+
+            if ($seed['usageType'] === AiModelCostReference::USAGE_TYPE_LLM_CHAT) {
+                $reference->setInputCostPerMillion($seed['input']);
+                $reference->setCachedInputCostPerMillion($seed['cached']);
+                $reference->setOutputCostPerMillion($seed['output']);
+            } else {
+                $reference->setCostUnit($seed['costUnit']);
+                $reference->setCostPerUnit($seed['costPerUnit']);
+            }
+
+            $this->entityManager->persist($reference);
+            $changes[] = sprintf('ai cost reference %s', $seed['model']);
         }
 
         if ($changes !== []) {

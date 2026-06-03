@@ -6,6 +6,7 @@ use App\Domain\CommercialDomainSchema;
 use App\Entity\EntryPoint;
 use App\Entity\ExternalTool;
 use App\Entity\AiUsageEvent;
+use App\Entity\AiModelCostReference;
 use App\Entity\Playbook;
 use App\Entity\Product;
 use App\Entity\Tenant;
@@ -14,6 +15,7 @@ use App\Entity\TenantAiTopUpRequest;
 use App\Entity\TenantMembership;
 use App\Entity\User;
 use App\Repository\AiUsageEventRepository;
+use App\Repository\AiModelCostReferenceRepository;
 use App\Repository\PlaybookRepository;
 use App\Repository\ProductRepository;
 use App\Repository\EntryPointRepository;
@@ -23,6 +25,7 @@ use App\Repository\TenantAiTopUpRequestRepository;
 use App\Repository\TenantRepository;
 use App\Repository\UserRepository;
 use App\Service\ActiveTenantContext;
+use App\Service\CommercialTokenFormatter;
 use App\Service\RuntimeConfigurationService;
 use App\Service\TenantAccessResolver;
 use App\Service\ProductCatalogImportResult;
@@ -50,6 +53,7 @@ final class BackendUiController
         private readonly ActiveTenantContext $activeTenantContext,
         private readonly Environment $twig,
         private readonly ?AiUsageEventRepository $aiUsageEvents = null,
+        private readonly ?AiModelCostReferenceRepository $aiModelCosts = null,
         private readonly ?ProductCatalogImportService $productCatalogImportService = null,
         private readonly ?CsrfTokenManagerInterface $csrfTokenManager = null,
         private readonly ?TenantAccessResolver $tenantAccessResolver = null,
@@ -880,7 +884,7 @@ final class BackendUiController
             $errors = $this->validateTenantAiUsageTopUpRequestForm($values);
 
             if ($errors === []) {
-                $requestedAmount = (float) $values['requestedTokens'];
+                $requestedAmount = (int) $values['requestedTokens'];
                 $message = (string) $values['message'];
                 $requestEntity = new TenantAiTopUpRequest($activeTenant, $requestedAmount, $message);
                 $currentUser = $this->currentUser();
@@ -1010,8 +1014,8 @@ final class BackendUiController
             return new RedirectResponse('/backend/dashboard');
         }
 
-        $approvedTokens = $this->parsePositiveInt((string) $request->request->get('approvedTokens', (string) round($requestEntity->getRequestedAmountEur())));
-        if ($approvedTokens === null || $approvedTokens < 1) {
+        $approvedTokens = $this->parseCommercialBlockAmount($request->request->get('approvedTokens', (string) round($requestEntity->getRequestedAmountEur())));
+        if ($approvedTokens === null) {
             $this->addFlashMessage($request, 'error', 'Indica una cantidad de tokens aprobada válida.');
 
             return new RedirectResponse('/backend/super-admin/tenants/'.$tenant->getId()->toRfc4122().'/ai');
@@ -2624,6 +2628,12 @@ final class BackendUiController
             'ai_assistant_initial_message' => 'Hola. Te ayudaré a completar la ficha del negocio. La pantalla está separada en Ficha negocio, Canales, Handoff y Uso IA. Si no estás seguro con un WhatsApp o con el handoff, déjalo en blanco y lo revisamos después.',
             'ai_assistant_compose_note' => sprintf('La ficha se rellena en pantalla. No se guardará hasta que pulses %s.', $submitLabel),
             'values' => $values,
+            'commercial_daily_limit_options' => $this->commercialMillionOptionsWithCurrent([0.1, 0.25, 0.5, 1, 2, 5], $values['dailyCostLimitEur'] ?? ''),
+            'commercial_monthly_limit_options' => $this->commercialMillionOptionsWithCurrent([0.5, 1, 3, 5, 10, 15, 25, 50, 100], $values['monthlyCostLimitEur'] ?? ''),
+            'default_model_options' => $this->tenantAiModelOptionsWithCurrent(AiModelCostReference::USAGE_TYPE_LLM_CHAT, $values['defaultModel'] ?? ''),
+            'fallback_model_options' => $this->tenantAiModelOptionsWithCurrent(AiModelCostReference::USAGE_TYPE_LLM_CHAT, $values['fallbackModel'] ?? ''),
+            'daily_limit_display' => $this->formatCommercialTokenValue($values['dailyCostLimitEur'] ?? ''),
+            'monthly_limit_display' => $this->formatCommercialTokenValue($values['monthlyCostLimitEur'] ?? ''),
             'submit_label' => $submitLabel,
             'ai_usage' => $aiUsage,
         ]);
@@ -2715,12 +2725,8 @@ final class BackendUiController
                 continue;
             }
 
-            if (!is_numeric($value)) {
-                return 'Los límites de tokens deben ser numéricos o vacíos.';
-            }
-
-            if ((float) $value < 0) {
-                return 'Los límites de tokens no pueden ser negativos.';
+            if ($this->parseCommercialTokenAmount($value) === null) {
+                return 'Los límites de tokens deben ser cantidades comerciales positivas o vacíos.';
             }
         }
 
@@ -2810,6 +2816,8 @@ final class BackendUiController
             'monthlyCostLimitEur' => $this->formatTokenInputFromCost($policy?->getMonthlyCostLimitEur(), $tokenRate),
             'defaultModel' => $policy?->getDefaultModel() ?? '',
             'fallbackModel' => $policy?->getFallbackModel() ?? '',
+            'defaultModelOptions' => $this->tenantAiModelOptionsWithCurrent(AiModelCostReference::USAGE_TYPE_LLM_CHAT, $policy?->getDefaultModel()),
+            'fallbackModelOptions' => $this->tenantAiModelOptionsWithCurrent(AiModelCostReference::USAGE_TYPE_LLM_CHAT, $policy?->getFallbackModel()),
             'maxAudioTranscriptionSeconds' => (string) ($policy?->getMaxAudioTranscriptionSeconds() ?? TenantAiUsagePolicy::DEFAULT_MAX_AUDIO_TRANSCRIPTION_SECONDS),
             'audioLimitExceededMessage' => $policy?->getAudioLimitExceededMessage() ?? TenantAiUsagePolicy::DEFAULT_AUDIO_LIMIT_EXCEEDED_MESSAGE,
             'limitAction' => $policy?->getLimitAction() ?? 'handoff_human',
@@ -2854,11 +2862,11 @@ final class BackendUiController
 
         return [
             'today' => [
-                'totalTokens' => $this->formatIntegerDisplay($todaySummary['total_tokens'] ?? 0),
+                'totalTokens' => CommercialTokenFormatter::formatCommercialMillionTokens((int) ($todaySummary['total_tokens'] ?? 0)),
                 'estimatedCostEur' => $this->formatMoneyEur($todaySummary['estimated_cost_eur'] ?? 0.0),
             ],
             'month' => [
-                'totalTokens' => $this->formatIntegerDisplay($monthSummary['total_tokens'] ?? 0),
+                'totalTokens' => CommercialTokenFormatter::formatCommercialMillionTokens((int) ($monthSummary['total_tokens'] ?? 0)),
                 'estimatedCostEur' => $this->formatMoneyEur($monthSummary['estimated_cost_eur'] ?? 0.0),
             ],
             'recentEvents' => array_map(
@@ -2895,6 +2903,7 @@ final class BackendUiController
             'action_url' => '/backend/ai-usage/top-up-requests',
             'csrf_token' => $this->aiUsageTopUpRequestTokenValue(),
             'values' => $values,
+            'commercial_token_options' => $this->commercialMillionOptionsWithCurrent([1, 5, 10, 25, 50, 100], $values['requestedTokens'] ?? ''),
             ...$dashboard,
         ]);
 
@@ -2930,6 +2939,8 @@ final class BackendUiController
             'policy_action_url' => '/backend/super-admin/tenants/'.$tenant->getId()->toRfc4122().'/ai',
             'policy_token' => $this->tenantAiSuperAdminTokenValue('/backend/super-admin/tenants/'.$tenant->getId()->toRfc4122().'/ai'),
             'policy_values' => $policyValues,
+            'commercial_limit_options' => $this->commercialMillionOptionsWithCurrent([0.1, 0.25, 0.5, 1, 2, 5], $policyValues['dailyCostLimitEur'] ?? ''),
+            'commercial_monthly_limit_options' => $this->commercialMillionOptionsWithCurrent([0.5, 1, 3, 5, 10, 15, 25, 50, 100], $policyValues['monthlyCostLimitEur'] ?? ''),
             'limit_action_options' => [
                 ['value' => 'handoff_human', 'label' => 'handoff_human'],
                 ['value' => 'block', 'label' => 'block'],
@@ -2953,10 +2964,10 @@ final class BackendUiController
      *   status: array{label: string, class: string, detail: string},
      *   today: array{estimatedCostEur: string, totalTokens: string},
      *   month: array{estimatedCostEur: string, totalTokens: string},
-     *   daily_limit: array{label: string, value: string, used: string, remaining: string, percent: ?int, percent_label: string, class: string, secondary: string},
+     *   daily_limit: array{label: string, value: array{primary: string, secondary: string|null}, used: array{primary: string, secondary: string|null}, remaining: array{primary: string, secondary: string|null}, percent: ?int, percent_label: string, class: string, secondary: string},
      *   monthly_base_limit: array{label: string, value: string, note: string},
      *   monthly_top_ups: array{label: string, value: string, note: string},
-     *   monthly_effective_limit: array{label: string, value: string, used: string, remaining: string, percent: ?int, percent_label: string, class: string, secondary: string},
+     *   monthly_effective_limit: array{label: string, value: array{primary: string, secondary: string|null}, used: array{primary: string, secondary: string|null}, remaining: array{primary: string, secondary: string|null}, percent: ?int, percent_label: string, class: string, secondary: string},
      *   period: array{label: string, current: string, daily_reset: string, monthly_reset: string},
      *   recentEvents: array<int, array{
      *     createdAt: string,
@@ -3069,21 +3080,21 @@ final class BackendUiController
             'status' => $status,
             'today' => [
                 'estimatedCostEur' => $this->formatMoneyEur((float) ($todaySummary['estimated_cost_eur'] ?? 0.0)),
-                'totalTokens' => $this->formatIntegerDisplay($dailyUsedTokens),
+                'totalTokens' => CommercialTokenFormatter::formatCommercialDual($dailyUsedTokens),
             ],
             'month' => [
                 'estimatedCostEur' => $this->formatMoneyEur((float) ($monthSummary['estimated_cost_eur'] ?? 0.0)),
-                'totalTokens' => $this->formatIntegerDisplay($monthlyUsedTokens),
+                'totalTokens' => CommercialTokenFormatter::formatCommercialDual($monthlyUsedTokens),
             ],
             'daily_limit' => $this->tenantAiUsageLimitView('Límite diario base', $dailyLimitTokens, $dailyUsedTokens, $dailyRemainingTokens, $dailyPercent, 'Cuota recurrente diaria del tenant.', $policy instanceof TenantAiUsagePolicy),
             'monthly_base_limit' => [
                 'label' => 'Plan mensual base',
-                'value' => $monthlyBaseLimitTokens !== null ? $this->formatIntegerDisplay($monthlyBaseLimitTokens) : ($policy instanceof TenantAiUsagePolicy ? 'Sin límite' : 'Sin política'),
+                'value' => CommercialTokenFormatter::formatCommercialDual($monthlyBaseLimitTokens),
                 'note' => $policy instanceof TenantAiUsagePolicy ? 'Cupo recurrente del tenant.' : 'No hay policy base configurada.',
             ],
             'monthly_top_ups' => [
                 'label' => 'Recargas aprobadas este mes',
-                'value' => $this->formatIntegerDisplay($approvedTopUpTokens),
+                'value' => CommercialTokenFormatter::formatCommercialDual($approvedTopUpTokens),
                 'note' => $approvedTopUpTokens > 0 ? sprintf('Aplicadas al periodo %s.', $periodKey) : 'No hay recargas aprobadas en el periodo actual.',
             ],
             'monthly_effective_limit' => $this->tenantAiUsageLimitView('Cupo efectivo este mes', $monthlyEffectiveLimitTokens, $monthlyUsedTokens, $monthlyRemainingTokens, $monthlyPercent, 'Base + recargas del periodo actual.', $policy instanceof TenantAiUsagePolicy),
@@ -3100,6 +3111,8 @@ final class BackendUiController
                 'aiEnabled' => $policy?->isAiEnabled() ?? true,
                 'defaultModel' => $policy?->getDefaultModel() ?? '',
                 'fallbackModel' => $policy?->getFallbackModel() ?? '',
+                'defaultModelOptions' => $this->tenantAiModelOptions(AiModelCostReference::USAGE_TYPE_LLM_CHAT),
+                'fallbackModelOptions' => $this->tenantAiModelOptions(AiModelCostReference::USAGE_TYPE_LLM_CHAT),
                 'maxAudioTranscriptionSeconds' => (string) ($policy?->getMaxAudioTranscriptionSeconds() ?? TenantAiUsagePolicy::DEFAULT_MAX_AUDIO_TRANSCRIPTION_SECONDS),
                 'audioLimitExceededMessage' => $policy?->getAudioLimitExceededMessage() ?? TenantAiUsagePolicy::DEFAULT_AUDIO_LIMIT_EXCEEDED_MESSAGE,
                 'limitAction' => $policy?->getLimitAction() ?? 'handoff_human',
@@ -3123,9 +3136,9 @@ final class BackendUiController
     ): array {
         return [
             'label' => $label,
-            'value' => $limitTokens !== null ? $this->formatIntegerDisplay($limitTokens) : ($hasPolicy ? 'Sin límite' : 'Sin política'),
-            'used' => $this->formatIntegerDisplay($usedTokens),
-            'remaining' => $remainingTokens !== null ? $this->formatIntegerDisplay($remainingTokens) : ($hasPolicy ? 'Sin límite' : 'Sin política'),
+            'value' => CommercialTokenFormatter::formatCommercialDual($limitTokens),
+            'used' => CommercialTokenFormatter::formatCommercialDual($usedTokens),
+            'remaining' => CommercialTokenFormatter::formatCommercialDual($remainingTokens),
             'percent' => $percent,
             'percent_label' => $percent !== null ? sprintf('%d%%', $percent) : '—',
             'class' => $percent !== null && $percent >= 100 ? 'status-warn' : 'status-ok',
@@ -3148,10 +3161,10 @@ final class BackendUiController
             'feature' => $feature,
             'provider' => $event->getProvider() !== null && $event->getProvider() !== '' ? $event->getProvider() : '—',
             'model' => $event->getModel() !== null && $event->getModel() !== '' ? $this->shortenListText($event->getModel(), 24, '—') : '—',
-            'inputTokens' => $this->formatIntegerDisplay($event->getInputTokens()),
-            'outputTokens' => $this->formatIntegerDisplay($event->getOutputTokens()),
-            'cachedTokens' => $this->formatIntegerDisplay($event->getCachedTokens()),
-            'totalTokens' => $this->formatIntegerDisplay($event->getTotalTokens()),
+            'inputTokens' => CommercialTokenFormatter::formatCommercialMillionTokens($event->getInputTokens()),
+            'outputTokens' => CommercialTokenFormatter::formatCommercialMillionTokens($event->getOutputTokens()),
+            'cachedTokens' => CommercialTokenFormatter::formatCommercialMillionTokens($event->getCachedTokens()),
+            'totalTokens' => CommercialTokenFormatter::formatCommercialMillionTokens($event->getTotalTokens()),
             'estimatedCostEur' => $this->formatMoneyEur($event->getEstimatedCost()),
             'latencyMs' => $event->getLatencyMs() !== null ? $this->formatIntegerDisplay($event->getLatencyMs()).' ms' : '—',
             'status' => $event->getTotalTokens() !== null || $event->getEstimatedCost() !== null ? 'Registrado' : 'Sin datos',
@@ -3175,9 +3188,11 @@ final class BackendUiController
             'tenant_id' => $tenantId,
             'tenant_name' => $requestEntity->getTenant()->getName(),
             'createdAt' => $requestEntity->getCreatedAt()->format('Y-m-d H:i'),
-            'requestedTokensInput' => (string) (int) round($requestEntity->getRequestedAmountEur()),
-            'amountTokens' => $this->formatIntegerDisplay((int) round($requestEntity->getRequestedAmountEur())),
-            'approvedTokens' => $approvedTokens !== null ? $this->formatIntegerDisplay($approvedTokens) : '—',
+            'requestedTokensInput' => (string) max(0, (int) round($requestEntity->getRequestedAmountEur())),
+            'requestedTokens' => CommercialTokenFormatter::formatCommercialMillionTokens((int) round($requestEntity->getRequestedAmountEur())),
+            'amountTokens' => CommercialTokenFormatter::formatCommercialMillionTokens((int) round($requestEntity->getRequestedAmountEur())),
+            'approvedTokens' => $approvedTokens !== null ? CommercialTokenFormatter::formatCommercialMillionTokens($approvedTokens) : '—',
+            'approve_token_options' => $this->commercialMillionOptionsWithCurrent([1, 5, 10, 25, 50, 100], (string) max(0, (int) round($requestEntity->getRequestedAmountEur()))),
             'approvedPeriodKey' => $requestEntity->getApprovedPeriodKey() ?? ($requestEntity->getResolvedAt()?->format('Y-m') ?? '—'),
             'message' => $requestEntity->getMessage(),
             'status_key' => $requestEntity->getStatus(),
@@ -3211,9 +3226,9 @@ final class BackendUiController
     {
         $errors = [];
 
-        $requestedTokens = $this->parsePositiveInt($values['requestedTokens']);
+        $requestedTokens = $this->parseCommercialBlockAmount($values['requestedTokens']);
         if ($requestedTokens === null) {
-            $errors[] = 'Debes indicar una cantidad de tokens solicitada válida.';
+            $errors[] = 'Debes indicar una cantidad de tokens solicitada válida en bloques de 1M.';
         }
 
         $message = trim((string) ($values['message'] ?? ''));
@@ -3232,7 +3247,7 @@ final class BackendUiController
     private function tenantAiUsageTopUpRequestFormDefaults(): array
     {
         return [
-            'requestedTokens' => '',
+            'requestedTokens' => '1000000',
             'message' => '',
         ];
     }
@@ -3425,8 +3440,8 @@ final class BackendUiController
     private function hydrateTenantAiUsagePolicyFromForm(TenantAiUsagePolicy $policy, array $values, ?float $costPerToken = null): void
     {
         $policy->setAiEnabled($values['aiEnabled']);
-        $dailyTokens = $this->parsePositiveInt($values['dailyCostLimitEur']);
-        $monthlyTokens = $this->parsePositiveInt($values['monthlyCostLimitEur']);
+        $dailyTokens = $this->parseCommercialTokenAmount($values['dailyCostLimitEur']);
+        $monthlyTokens = $this->parseCommercialTokenAmount($values['monthlyCostLimitEur']);
         $policy->setDailyCostLimitEur($dailyTokens !== null ? $this->costAmountFromTokens($dailyTokens, $costPerToken) : null);
         $policy->setMonthlyCostLimitEur($monthlyTokens !== null ? $this->costAmountFromTokens($monthlyTokens, $costPerToken) : null);
         $policy->setDefaultModel($values['defaultModel'] !== '' ? $values['defaultModel'] : null);
@@ -3466,6 +3481,26 @@ final class BackendUiController
         return $number >= 0 ? $number : null;
     }
 
+    private function parseCommercialTokenAmount(mixed $value): ?int
+    {
+        $amount = $this->parsePositiveInt($value);
+        if ($amount === null || $amount < 1) {
+            return null;
+        }
+
+        return $amount;
+    }
+
+    private function parseCommercialBlockAmount(mixed $value): ?int
+    {
+        $amount = $this->parsePositiveInt($value);
+        if ($amount === null || $amount < 1 || $amount % 1_000_000 !== 0) {
+            return null;
+        }
+
+        return $amount;
+    }
+
     private function formatNullableFloat(?float $value): string
     {
         if ($value === null) {
@@ -3480,6 +3515,24 @@ final class BackendUiController
     private function formatMoneyEur(?float $value): string
     {
         return sprintf('%s €', $this->formatMoneyValue($value));
+    }
+
+    private function formatCommercialTokenValue(mixed $value): string
+    {
+        if (!is_string($value)) {
+            return 'Sin límite';
+        }
+
+        $trimmed = trim($value);
+        if ($trimmed === '') {
+            return 'Sin límite';
+        }
+
+        if (!is_numeric($trimmed)) {
+            return $trimmed;
+        }
+
+        return CommercialTokenFormatter::formatCommercialMillionTokens((int) round((float) $trimmed));
     }
 
     private function formatTokenInputFromCost(?float $cost, ?float $costPerToken): ?string
@@ -3541,10 +3594,6 @@ final class BackendUiController
 
     private function tenantAiUsageTokenRate(?TenantAiUsagePolicy $policy): float
     {
-        // Use the model pricing table as the stable conversion source.
-        // Deriving the rate from the current month's usage makes the policy
-        // inputs drift with traffic and can make the "base" plan look like it
-        // changes as usage accumulates.
         return $this->tenantAiUsageModelAverageCostPerToken($policy?->getDefaultModel() ?? $policy?->getFallbackModel());
     }
 
@@ -3565,11 +3614,23 @@ final class BackendUiController
             return null;
         }
 
+        if ($this->aiModelCosts instanceof AiModelCostReferenceRepository) {
+            $reference = $this->aiModelCosts->findOneByUsageTypeAndModel(AiModelCostReference::USAGE_TYPE_LLM_CHAT, $normalized);
+            if ($reference instanceof AiModelCostReference && $reference->isActive()) {
+                return [
+                    'input' => $reference->getInputCostPerMillion() ?? 0.0,
+                    'output' => $reference->getOutputCostPerMillion() ?? 0.0,
+                    'cached_input' => $reference->getCachedInputCostPerMillion() ?? 0.0,
+                ];
+            }
+        }
+
         $pricingTable = [
             'gpt-4.1' => ['input' => 2.0, 'output' => 8.0, 'cached_input' => 0.5],
             'gpt-4.1-mini' => ['input' => 0.4, 'output' => 1.6, 'cached_input' => 0.1],
             'gpt-4o' => ['input' => 2.5, 'output' => 10.0, 'cached_input' => 0.625],
             'gpt-4o-mini' => ['input' => 0.15, 'output' => 0.6, 'cached_input' => 0.0375],
+            'gpt-5.4-mini' => ['input' => 0.75, 'output' => 4.5, 'cached_input' => 0.075],
         ];
 
         if (isset($pricingTable[$normalized])) {
@@ -3583,6 +3644,124 @@ final class BackendUiController
         }
 
         return null;
+    }
+
+    /**
+     * @return array<int, array{value: string, label: string}>
+     */
+    private function tenantAiModelOptions(string $usageType): array
+    {
+        if ($this->aiModelCosts instanceof AiModelCostReferenceRepository) {
+            $references = $this->aiModelCosts->findActiveByUsageType($usageType);
+            if ($references !== []) {
+                return array_map(
+                    function (AiModelCostReference $reference): array {
+                        $label = $reference->getModel();
+                        if ($reference->getUsageType() === AiModelCostReference::USAGE_TYPE_LLM_CHAT) {
+                            $label .= sprintf(
+                                ' (%s/%s/%s %s)',
+                                $this->formatPricingAmount($reference->getInputCostPerMillion()),
+                                $this->formatPricingAmount($reference->getCachedInputCostPerMillion()),
+                                $this->formatPricingAmount($reference->getOutputCostPerMillion()),
+                                $reference->getCurrency()
+                            );
+                        } else {
+                            $label .= sprintf(
+                                ' (%s / %s %s)',
+                                $this->formatPricingAmount($reference->getCostPerUnit()),
+                                $reference->getCostUnit() ?? 'minute',
+                                $reference->getCurrency()
+                            );
+                        }
+
+                        return [
+                            'value' => $reference->getModel(),
+                            'label' => $label,
+                        ];
+                    },
+                    $references
+                );
+            }
+        }
+
+        if ($usageType === AiModelCostReference::USAGE_TYPE_LLM_CHAT) {
+            return [
+                ['value' => 'gpt-4.1', 'label' => 'gpt-4.1 (2/0.5/8 USD)'],
+                ['value' => 'gpt-4.1-mini', 'label' => 'gpt-4.1-mini (0.4/0.1/1.6 USD)'],
+                ['value' => 'gpt-4o', 'label' => 'gpt-4o (2.5/0.625/10 USD)'],
+                ['value' => 'gpt-4o-mini', 'label' => 'gpt-4o-mini (0.15/0.0375/0.6 USD)'],
+                ['value' => 'gpt-5.4-mini', 'label' => 'gpt-5.4-mini (0.75/0.075/4.5 USD)'],
+            ];
+        }
+
+        return [
+            ['value' => 'gpt-4o-mini-transcribe', 'label' => 'gpt-4o-mini-transcribe (0.02 EUR / minute)'],
+        ];
+    }
+
+    private function formatPricingAmount(?float $value): string
+    {
+        if ($value === null) {
+            return '—';
+        }
+
+        $formatted = rtrim(rtrim(number_format($value, 3, '.', ''), '0'), '.');
+
+        return $formatted === '' ? '0' : $formatted;
+    }
+
+    /**
+     * @return array<int, array{value: string, label: string}>
+     */
+    private function tenantAiModelOptionsWithCurrent(string $usageType, ?string $currentModel): array
+    {
+        $options = $this->tenantAiModelOptions($usageType);
+        $current = strtolower(trim((string) $currentModel));
+        if ($current === '') {
+            return $options;
+        }
+
+        foreach ($options as $option) {
+            if (($option['value'] ?? '') === $current) {
+                return $options;
+            }
+        }
+
+        array_unshift($options, [
+            'value' => $current,
+            'label' => $current,
+        ]);
+
+        return $options;
+    }
+
+    /**
+     * @param array<int, int|float> $millionValues
+     *
+     * @return array<int, array{value: string, label: string}>
+     */
+    private function commercialMillionOptionsWithCurrent(array $millionValues, mixed $currentValue): array
+    {
+        $options = CommercialTokenFormatter::millionOptions($millionValues);
+
+        $currentTokens = $this->parsePositiveInt($currentValue);
+        if ($currentTokens === null) {
+            return $options;
+        }
+
+        $currentValueString = (string) $currentTokens;
+        foreach ($options as $option) {
+            if (($option['value'] ?? '') === $currentValueString) {
+                return $options;
+            }
+        }
+
+        array_unshift($options, [
+            'value' => $currentValueString,
+            'label' => CommercialTokenFormatter::formatCommercialMillionTokens($currentTokens),
+        ]);
+
+        return $options;
     }
 
     private function formatIntegerDisplay(?int $value): string

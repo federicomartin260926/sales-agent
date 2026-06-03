@@ -1,0 +1,90 @@
+{% extends 'backend/layout.html.twig' %}
+
+{% block content %}
+  <section class="hero-panel">
+    <div class="hero-copy">
+      <div class="eyebrow-dark">Modelos IA</div>
+      <h2>{{ page_title }}</h2>
+      <p>Define una referencia global de coste. Chat usa tokens por 1M; audio usa coste por unidad.</p>
+    </div>
+    <div class="hero-aside">
+      <div class="badge-live">Admin</div>
+      <div class="hero-aside-title">Validación</div>
+      <p>El tipo de uso determina qué campos son relevantes. Las referencias activas son las que puede seleccionar el tenant.</p>
+    </div>
+  </section>
+
+  {{ errors_html|raw }}
+
+  <section class="table-card">
+    <div class="table-header">
+      <div>
+        <h3>Ficha de referencia</h3>
+        <p>Completa el modelo, su uso y la tarifa global.</p>
+      </div>
+      <a class="secondary-action" href="/backend/ai-costs">Volver al listado</a>
+    </div>
+
+    <form method="post" action="{{ action_url }}" class="tenant-form">
+      <input type="hidden" name="_csrf_token" value="{{ form_token }}">
+      <div class="form-grid">
+        <div class="field">
+          <label for="ai-cost-usage-type">Uso</label>
+          <select id="ai-cost-usage-type" name="usageType" required>
+            {% for option in usage_type_options %}
+              <option value="{{ option.value }}"{% if values.usageType == option.value %} selected{% endif %}>{{ option.label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="field">
+          <label for="ai-cost-model">Modelo</label>
+          <input id="ai-cost-model" name="model" type="text" value="{{ values.model }}" maxlength="100" required placeholder="gpt-4.1-mini">
+        </div>
+        <div class="field">
+          <label for="ai-cost-currency">Moneda</label>
+          <input id="ai-cost-currency" name="currency" type="text" value="{{ values.currency }}" maxlength="10" required placeholder="USD">
+        </div>
+        <div class="field field-check">
+          <label for="ai-cost-active">Estado</label>
+          <label class="checkbox-inline" for="ai-cost-active">
+            <input id="ai-cost-active" name="active" type="checkbox" value="1"{% if values.active %} checked{% endif %}>
+            <span>Referencia activa</span>
+          </label>
+        </div>
+
+        <div class="field">
+          <label for="ai-cost-input">Coste input / 1M tokens</label>
+          <input id="ai-cost-input" name="inputCostPerMillion" type="text" value="{{ values.inputCostPerMillion }}" placeholder="0.40">
+        </div>
+        <div class="field">
+          <label for="ai-cost-cached">Coste cached input / 1M tokens</label>
+          <input id="ai-cost-cached" name="cachedInputCostPerMillion" type="text" value="{{ values.cachedInputCostPerMillion }}" placeholder="0.10">
+        </div>
+        <div class="field">
+          <label for="ai-cost-output">Coste output / 1M tokens</label>
+          <input id="ai-cost-output" name="outputCostPerMillion" type="text" value="{{ values.outputCostPerMillion }}" placeholder="1.60">
+        </div>
+        <div class="field">
+          <label for="ai-cost-unit">Unidad de audio</label>
+          <select id="ai-cost-unit" name="costUnit">
+            {% for option in cost_unit_options %}
+              <option value="{{ option.value }}"{% if values.costUnit == option.value %} selected{% endif %}>{{ option.label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="field">
+          <label for="ai-cost-per-unit">Coste por unidad</label>
+          <input id="ai-cost-per-unit" name="costPerUnit" type="text" value="{{ values.costPerUnit }}" placeholder="0.02">
+        </div>
+        <div class="field field-full">
+          <label for="ai-cost-notes">Notas</label>
+          <textarea id="ai-cost-notes" name="notes" rows="4" maxlength="2000" placeholder="Contexto, fuente de precio, observaciones de uso">{{ values.notes }}</textarea>
+        </div>
+      </div>
+
+      <div class="form-actions">
+        <button class="primary-action" type="submit">{{ submit_label }}</button>
+      </div>
+    </form>
+  </section>
+{% endblock %}

@@ -1537,10 +1537,6 @@ body.ai-assistant-modal-open {
   padding: 18px;
 }
 
-.table-card + .table-card {
-  margin-top: 18px;
-}
-
 .external-tools-filter-card {
   margin-bottom: 24px;
 }

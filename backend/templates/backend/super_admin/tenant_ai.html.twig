@@ -22,34 +22,34 @@
 <section class="stats-grid">
   <article class="metric">
     <div class="metric-label">Tokens procesados hoy</div>
-    <div class="metric-value">{{ dashboard.today.totalTokens }}</div>
+    <div class="metric-value">{{ dashboard.today.totalTokens.primary }}</div>
     <div class="metric-note">Coste estimado: {{ dashboard.today.estimatedCostEur }}</div>
   </article>
   <article class="metric">
     <div class="metric-label">Tokens procesados este mes</div>
-    <div class="metric-value">{{ dashboard.month.totalTokens }}</div>
+    <div class="metric-value">{{ dashboard.month.totalTokens.primary }}</div>
     <div class="metric-note">Coste estimado: {{ dashboard.month.estimatedCostEur }}</div>
   </article>
   <article class="metric">
     <div class="metric-label">{{ dashboard.monthly_base_limit.label }}</div>
-    <div class="metric-value">{{ dashboard.monthly_base_limit.value }}</div>
+    <div class="metric-value">{{ dashboard.monthly_base_limit.value.primary }}</div>
     <div class="metric-note">{{ dashboard.monthly_base_limit.note }}</div>
   </article>
   <article class="metric">
     <div class="metric-label">{{ dashboard.monthly_top_ups.label }}</div>
-    <div class="metric-value">{{ dashboard.monthly_top_ups.value }}</div>
+    <div class="metric-value">{{ dashboard.monthly_top_ups.value.primary }}</div>
     <div class="metric-note">{{ dashboard.monthly_top_ups.note }}</div>
   </article>
   <article class="metric">
     <div class="metric-label">{{ dashboard.monthly_effective_limit.label }}</div>
-    <div class="metric-value">{{ dashboard.monthly_effective_limit.value }}</div>
-    <div class="metric-note">Usado: {{ dashboard.monthly_effective_limit.used }} tokens | Disponible: {{ dashboard.monthly_effective_limit.remaining }}</div>
+    <div class="metric-value">{{ dashboard.monthly_effective_limit.value.primary }}</div>
+    <div class="metric-note">Usado: {{ dashboard.monthly_effective_limit.used.primary }} | Disponible: {{ dashboard.monthly_effective_limit.remaining.primary }}</div>
     <div class="metric-note subtle">{{ dashboard.monthly_effective_limit.secondary }}</div>
   </article>
   <article class="metric">
     <div class="metric-label">{{ dashboard.daily_limit.label }}</div>
-    <div class="metric-value">{{ dashboard.daily_limit.value }}</div>
-    <div class="metric-note">Usado: {{ dashboard.daily_limit.used }} tokens | Restante: {{ dashboard.daily_limit.remaining }}</div>
+    <div class="metric-value">{{ dashboard.daily_limit.value.primary }}</div>
+    <div class="metric-note">Usado: {{ dashboard.daily_limit.used.primary }} | Restante: {{ dashboard.daily_limit.remaining.primary }}</div>
     <div class="metric-note subtle">{{ dashboard.daily_limit.secondary }}</div>
   </article>
 </section>
@@ -64,9 +64,9 @@
       <div class="usage-meter-fill{{ dashboard.daily_limit.percent is not null and dashboard.daily_limit.percent >= 100 ? ' is-warn' : '' }}" style="width: {{ dashboard.daily_limit.percent is not null ? dashboard.daily_limit.percent : 0 }}%"></div>
     </div>
     <div class="usage-meter-meta">
-      <span><strong>Límite:</strong> {{ dashboard.daily_limit.value }}</span>
-      <span><strong>Usado:</strong> {{ dashboard.daily_limit.used }}</span>
-      <span><strong>Restante:</strong> {{ dashboard.daily_limit.remaining }}</span>
+      <span><strong>Límite:</strong> {{ dashboard.daily_limit.value.primary }}</span>
+      <span><strong>Usado:</strong> {{ dashboard.daily_limit.used.primary }}</span>
+      <span><strong>Restante:</strong> {{ dashboard.daily_limit.remaining.primary }}</span>
     </div>
   </article>
 
@@ -79,9 +79,9 @@
       <div class="usage-meter-fill{{ dashboard.monthly_effective_limit.percent is not null and dashboard.monthly_effective_limit.percent >= 100 ? ' is-warn' : '' }}" style="width: {{ dashboard.monthly_effective_limit.percent is not null ? dashboard.monthly_effective_limit.percent : 0 }}%"></div>
     </div>
     <div class="usage-meter-meta">
-      <span><strong>Base:</strong> {{ dashboard.monthly_base_limit.value }}</span>
-      <span><strong>Recargas:</strong> {{ dashboard.monthly_top_ups.value }} tokens</span>
-      <span><strong>Efectivo:</strong> {{ dashboard.monthly_effective_limit.value }}</span>
+      <span><strong>Base:</strong> {{ dashboard.monthly_base_limit.value.primary }}</span>
+      <span><strong>Recargas:</strong> {{ dashboard.monthly_top_ups.value.primary }}</span>
+      <span><strong>Efectivo:</strong> {{ dashboard.monthly_effective_limit.value.primary }}</span>
     </div>
   </article>
 </section>
@@ -128,32 +128,52 @@
 
   <form method="post" action="{{ policy_action_url }}" class="tenant-form ai-policy-form">
     <input type="hidden" name="_csrf_token" value="{{ policy_token }}">
-    <div class="form-grid">
-      <div class="field field-check">
+      <div class="form-grid">
+        <div class="field field-check">
         <label for="tenant-ai-enabled">IA habilitada</label>
         <label class="checkbox-inline" for="tenant-ai-enabled">
           <input id="tenant-ai-enabled" name="aiEnabled" type="checkbox" value="1"{% if policy_values.aiEnabled %} checked{% endif %}>
           <span>Permitir llamadas LLM para este tenant</span>
         </label>
-      </div>
-      <div class="field">
-        <label for="tenant-daily-cost-limit">Límite diario de tokens</label>
-        <input id="tenant-daily-cost-limit" name="dailyCostLimitEur" type="number" min="0" step="1" value="{{ policy_values.dailyCostLimitEur }}" placeholder="100000">
-        <div class="field-note">La equivalencia interna se calcula al guardar.</div>
-      </div>
-      <div class="field">
-        <label for="tenant-monthly-cost-limit">Límite mensual de tokens</label>
-        <input id="tenant-monthly-cost-limit" name="monthlyCostLimitEur" type="number" min="0" step="1" value="{{ policy_values.monthlyCostLimitEur }}" placeholder="1000000">
-        <div class="field-note">La equivalencia interna se calcula al guardar.</div>
-      </div>
-      <div class="field">
-        <label for="tenant-default-model">Modelo por defecto</label>
-        <input id="tenant-default-model" name="defaultModel" type="text" value="{{ policy_values.defaultModel }}" maxlength="100" placeholder="gpt-4.1-mini">
-      </div>
-      <div class="field">
-        <label for="tenant-fallback-model">Modelo fallback</label>
-        <input id="tenant-fallback-model" name="fallbackModel" type="text" value="{{ policy_values.fallbackModel }}" maxlength="100" placeholder="gpt-4.1-nano">
-      </div>
+        </div>
+        <div class="field">
+          <label for="tenant-daily-cost-limit">Límite diario de tokens</label>
+          <select id="tenant-daily-cost-limit" name="dailyCostLimitEur">
+            <option value=""{% if policy_values.dailyCostLimitEur is empty %} selected{% endif %}>Sin límite</option>
+            {% for option in commercial_limit_options %}
+              <option value="{{ option.value }}"{% if policy_values.dailyCostLimitEur == option.value %} selected{% endif %}>{{ option.label }}</option>
+            {% endfor %}
+          </select>
+          <div class="field-note">Se guarda en bloques comerciales de 1M tokens.</div>
+        </div>
+        <div class="field">
+          <label for="tenant-monthly-cost-limit">Límite mensual de tokens</label>
+          <select id="tenant-monthly-cost-limit" name="monthlyCostLimitEur">
+            <option value=""{% if policy_values.monthlyCostLimitEur is empty %} selected{% endif %}>Sin límite</option>
+            {% for option in commercial_monthly_limit_options %}
+              <option value="{{ option.value }}"{% if policy_values.monthlyCostLimitEur == option.value %} selected{% endif %}>{{ option.label }}</option>
+            {% endfor %}
+          </select>
+          <div class="field-note">Se guarda en bloques comerciales de 1M tokens.</div>
+        </div>
+        <div class="field">
+          <label for="tenant-default-model">Modelo por defecto</label>
+          <select id="tenant-default-model" name="defaultModel">
+            <option value=""{% if policy_values.defaultModel is empty %} selected{% endif %}>Sin modelo</option>
+            {% for option in policy_values.defaultModelOptions %}
+              <option value="{{ option.value }}"{% if policy_values.defaultModel == option.value %} selected{% endif %}>{{ option.label }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="field">
+          <label for="tenant-fallback-model">Modelo fallback</label>
+          <select id="tenant-fallback-model" name="fallbackModel">
+            <option value=""{% if policy_values.fallbackModel is empty %} selected{% endif %}>Sin modelo</option>
+            {% for option in policy_values.fallbackModelOptions %}
+              <option value="{{ option.value }}"{% if policy_values.fallbackModel == option.value %} selected{% endif %}>{{ option.label }}</option>
+            {% endfor %}
+          </select>
+        </div>
       <div class="field">
         <label for="tenant-max-audio-transcription-seconds">Límite máximo de audio para transcripción (segundos)</label>
         <input id="tenant-max-audio-transcription-seconds" name="maxAudioTranscriptionSeconds" type="number" min="1" step="1" value="{{ policy_values.maxAudioTranscriptionSeconds }}" placeholder="60">
@@ -219,7 +239,7 @@
               <div class="subtle">Resuelto: {{ request.resolvedAt }}</div>
               <div class="subtle">Por: {{ request.resolvedBy }}</div>
               {% if request.approvedTokens != '—' %}
-                <div class="subtle">Aprobados: {{ request.approvedTokens }} tokens</div>
+                <div class="subtle">Aprobados: {{ request.approvedTokens }}</div>
               {% endif %}
             </td>
             <td class="subtle">{{ request.approvedPeriodKey }}</td>
@@ -229,7 +249,11 @@
                   <form method="post" action="{{ request.approve_url }}" class="request-action-form request-action-form-stack">
                     <input type="hidden" name="_csrf_token" value="{{ request.approve_token }}">
                     <label class="visually-hidden" for="request-approved-tokens-{{ request.id }}">Tokens aprobados</label>
-                    <input id="request-approved-tokens-{{ request.id }}" class="request-approve-input" name="approvedTokens" type="number" min="1" step="1" value="{{ request.requestedTokensInput }}" required>
+                    <select id="request-approved-tokens-{{ request.id }}" class="request-approve-input" name="approvedTokens" required>
+                      {% for option in request.approve_token_options %}
+                        <option value="{{ option.value }}"{% if request.requestedTokensInput == option.value %} selected{% endif %}>{{ option.label }}</option>
+                      {% endfor %}
+                    </select>
                     <button class="secondary-action" type="submit">Aprobar</button>
                   </form>
                   <form method="post" action="{{ request.reject_url }}" class="request-action-form">

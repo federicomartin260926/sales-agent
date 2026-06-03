@@ -93,6 +93,10 @@ class AgentRuntime:
             if not ai_usage_decision.allowed:
                 return self._ai_usage_limit_response(ai_usage_decision)
 
+            audio_configuration = await self._resolve_audio_transcription_configuration()
+            if audio_configuration is not None and not getattr(audio_configuration, "enabled", True):
+                return self._audio_transcription_disabled_response(payload, routing)
+
             duration_seconds = self._audio_duration_seconds(payload)
             max_audio_seconds = self._effective_audio_limit_seconds(ai_usage_decision.policy)
             if duration_seconds is not None and duration_seconds > max_audio_seconds:
@@ -117,6 +121,7 @@ class AgentRuntime:
                 ai_usage_decision.usage,
                 duration_seconds,
                 max_audio_seconds,
+                audio_configuration,
             )
             if transcription_cost_limit_decision is not None:
                 logger.info(
@@ -138,13 +143,15 @@ class AgentRuntime:
                 )
 
             try:
-                transcription_result = await self._transcribe_audio_message(payload)
+                transcription_result = await self._transcribe_audio_message(payload, audio_configuration)
             except Exception as exc:
+                wa_id = getattr(payload.contact, "wa_id", None) or payload.contact.phone
+                sender = getattr(payload.contact, "sender", None) or payload.contact.phone
                 logger.exception(
                     "Failed to transcribe WhatsApp audio message_id=%s wa_id=%s sender=%s",
                     payload.message.id,
-                    payload.contact.wa_id or payload.contact.phone,
-                    payload.contact.sender or payload.contact.phone,
+                    wa_id,
+                    sender,
                 )
                 return self._audio_transcription_failure_response(payload, routing, exc)
 
@@ -374,7 +381,11 @@ class AgentRuntime:
 
         return False
 
-    async def _transcribe_audio_message(self, payload: AgentRequest) -> AudioTranscriptionResult:
+    async def _transcribe_audio_message(
+        self,
+        payload: AgentRequest,
+        audio_configuration: Any | None = None,
+    ) -> AudioTranscriptionResult:
         media = payload.message.media if isinstance(payload.message.media, dict) else None
         media_id = ""
         if isinstance(media, dict):
@@ -1060,13 +1071,14 @@ class AgentRuntime:
         usage: Any | None,
         duration_seconds: int | None,
         max_audio_seconds: int,
+        audio_configuration: Any | None = None,
     ) -> dict[str, Any] | None:
         if policy is None or usage is None:
             return None
 
         estimated_duration_seconds = duration_seconds if duration_seconds is not None else max_audio_seconds
         estimated_duration_seconds = max(0, int(estimated_duration_seconds))
-        estimated_audio_cost_eur = self._estimate_audio_transcription_cost_eur(estimated_duration_seconds)
+        estimated_audio_cost_eur = self._estimate_audio_transcription_cost_eur(estimated_duration_seconds, audio_configuration)
         reserve_cost_eur = self._audio_llm_followup_reserve_cost_eur()
         required_cost_eur = estimated_audio_cost_eur + reserve_cost_eur
 
@@ -1133,6 +1145,25 @@ class AgentRuntime:
             data_to_save=data,
         )
 
+    def _audio_transcription_disabled_response(self, payload: AgentRequest, routing: RoutingContext) -> AgentResponse:
+        data: dict[str, Any] = {
+            "audio_transcription_disabled": True,
+            "audio_message_id": payload.message.id,
+            "audio_media_id": self._audio_media_id(payload),
+            "audio_mime_type": self._audio_media_mime_type(payload),
+        }
+        if routing.tenant_id.strip() != "":
+            data["tenant_id"] = routing.tenant_id.strip()
+
+        return AgentResponse(
+            reply=self.AUDIO_TRANSCRIPTION_USAGE_LIMIT_MESSAGE,
+            intent="handoff",
+            score=0.9,
+            action="audio_transcription_disabled",
+            needs_human=True,
+            data_to_save=data,
+        )
+
     def _audio_media_mime_type(self, payload: AgentRequest) -> str | None:
         media = payload.message.media
         if not isinstance(media, dict):
@@ -1144,30 +1175,60 @@ class AgentRuntime:
 
         return None
 
-    def _estimate_audio_transcription_cost_eur(self, duration_seconds: int) -> float:
+    def _estimate_audio_transcription_cost_eur(self, duration_seconds: int, audio_configuration: Any | None = None) -> float:
         duration_seconds = max(0, int(duration_seconds))
 
         estimator = getattr(self.audio_transcription_client, "estimate_cost_eur", None)
         if callable(estimator):
             try:
-                estimated = float(estimator(duration_seconds))
+                if audio_configuration is not None:
+                    estimated = float(estimator(duration_seconds, audio_configuration))
+                else:
+                    estimated = float(estimator(duration_seconds))
                 return max(0.0, estimated)
             except Exception:
                 pass
 
-        cost_per_minute = self._audio_transcription_cost_per_minute_eur()
-        return math.ceil(duration_seconds / 60.0) * cost_per_minute
+        cost_per_unit = self._audio_transcription_cost_per_unit_eur(audio_configuration)
+        cost_unit = self._audio_transcription_cost_unit(audio_configuration)
+        if cost_unit == "second":
+            return round(duration_seconds * cost_per_unit, 8)
 
-    def _audio_transcription_cost_per_minute_eur(self) -> float:
+        return math.ceil(duration_seconds / 60.0) * cost_per_unit
+
+    def _audio_transcription_cost_per_unit_eur(self, audio_configuration: Any | None = None) -> float:
+        if audio_configuration is not None:
+            value = getattr(audio_configuration, "cost_per_unit_eur", None)
+            if isinstance(value, (int, float)):
+                return max(0.0, float(value))
+
         settings = getattr(self.audio_transcription_client, "settings", None)
         if settings is None:
             settings = getattr(self.backend_client, "settings", None)
 
-        value = getattr(settings, "openai_audio_transcription_cost_per_minute_eur", None)
+        value = getattr(settings, "audio_transcription_cost_per_unit_eur", None)
+        if value is None:
+            value = getattr(settings, "openai_audio_transcription_cost_per_minute_eur", None)
         if isinstance(value, (int, float)):
             return max(0.0, float(value))
 
         return self.DEFAULT_AUDIO_TRANSCRIPTION_COST_PER_MINUTE_EUR
+
+    def _audio_transcription_cost_unit(self, audio_configuration: Any | None = None) -> str:
+        if audio_configuration is not None:
+            value = getattr(audio_configuration, "cost_unit", None)
+            if isinstance(value, str) and value.strip() in {"minute", "second"}:
+                return value.strip()
+
+        settings = getattr(self.audio_transcription_client, "settings", None)
+        if settings is None:
+            settings = getattr(self.backend_client, "settings", None)
+
+        value = getattr(settings, "audio_transcription_cost_unit", None)
+        if isinstance(value, str) and value.strip() in {"minute", "second"}:
+            return value.strip()
+
+        return "minute"
 
     def _audio_llm_followup_reserve_cost_eur(self) -> float:
         settings = getattr(self.audio_transcription_client, "settings", None)
@@ -1239,12 +1300,110 @@ class AgentRuntime:
             tenant_id=routing.tenant_id.strip(),
             conversation_id=conversation_id,
             conversation_message_id=conversation_message_id,
-            provider="openai",
+            provider=getattr(transcription_result, "provider", None) or "openai",
             model=transcription_result.model,
             usage_type="audio_transcription",
         )
 
         await self.backend_client.create_ai_usage_event(payload)
+
+    async def _resolve_audio_transcription_configuration(self) -> Any | None:
+        resolver = getattr(self.audio_transcription_client, "resolve_configuration", None)
+        if not callable(resolver):
+            return self._build_audio_transcription_configuration_from_settings()
+
+        try:
+            return await resolver()
+        except Exception:
+            logger.debug("Falling back to static audio transcription configuration", exc_info=True)
+            return self._build_audio_transcription_configuration_from_settings()
+
+    def _build_audio_transcription_configuration_from_settings(self) -> Any | None:
+        settings = getattr(self.audio_transcription_client, "settings", None)
+        if settings is None:
+            settings = getattr(self.backend_client, "settings", None)
+        if settings is None:
+            return None
+
+        provider = str(getattr(settings, "audio_transcription_provider", "openai")).strip() or "openai"
+        model = str(
+            getattr(
+                settings,
+                "audio_transcription_model",
+                getattr(settings, "openai_transcription_model", ""),
+            )
+        ).strip()
+        enabled = self._parse_bool_setting(getattr(settings, "audio_transcription_enabled", True), True)
+        cost_unit = str(getattr(settings, "audio_transcription_cost_unit", "minute")).strip().lower() or "minute"
+        if cost_unit not in {"minute", "second"}:
+            cost_unit = "minute"
+        cost_per_unit_eur = self._parse_float_setting(
+            getattr(
+                settings,
+                "audio_transcription_cost_per_unit_eur",
+                getattr(settings, "openai_audio_transcription_cost_per_minute_eur", self.DEFAULT_AUDIO_TRANSCRIPTION_COST_PER_MINUTE_EUR),
+            ),
+            self.DEFAULT_AUDIO_TRANSCRIPTION_COST_PER_MINUTE_EUR,
+        )
+        currency = str(getattr(settings, "audio_transcription_currency", "EUR")).strip() or "EUR"
+        notes = getattr(settings, "audio_transcription_notes", None)
+        if not isinstance(notes, str):
+            notes = None
+        base_url = str(getattr(settings, "openai_base_url", "https://api.openai.com/v1")).strip().rstrip("/")
+        api_key = str(getattr(settings, "openai_api_key", "")).strip()
+        timeout_seconds = 15
+        raw_timeout_seconds = getattr(settings, "openai_timeout_seconds", 15)
+        if isinstance(raw_timeout_seconds, int):
+            timeout_seconds = max(1, raw_timeout_seconds)
+        elif isinstance(raw_timeout_seconds, float):
+            timeout_seconds = max(1, int(raw_timeout_seconds))
+        elif isinstance(raw_timeout_seconds, str) and raw_timeout_seconds.strip() != "":
+            try:
+                timeout_seconds = max(1, int(float(raw_timeout_seconds.strip())))
+            except ValueError:
+                timeout_seconds = 15
+
+        return type(
+            "AudioTranscriptionConfigurationFallback",
+            (),
+            {
+                "provider": provider,
+                "model": model,
+                "enabled": enabled,
+                "cost_unit": cost_unit,
+                "cost_per_unit_eur": cost_per_unit_eur,
+                "currency": currency,
+                "notes": notes,
+                "base_url": base_url,
+                "api_key": api_key,
+                "timeout_seconds": timeout_seconds,
+            },
+        )()
+
+    def _parse_bool_setting(self, raw_value: Any, fallback: bool) -> bool:
+        if isinstance(raw_value, bool):
+            return raw_value
+
+        if isinstance(raw_value, str):
+            normalized = raw_value.strip().lower()
+            if normalized in {"1", "true", "yes", "on", "enabled"}:
+                return True
+            if normalized in {"0", "false", "no", "off", "disabled"}:
+                return False
+
+        return fallback
+
+    def _parse_float_setting(self, raw_value: Any, fallback: float) -> float:
+        if isinstance(raw_value, (int, float)):
+            return max(0.0, float(raw_value))
+
+        if isinstance(raw_value, str) and raw_value.strip() != "":
+            try:
+                return max(0.0, float(raw_value.strip().replace(",", ".")))
+            except ValueError:
+                return max(0.0, fallback)
+
+        return max(0.0, fallback)
 
     async def _report_ai_usage_event(
         self,

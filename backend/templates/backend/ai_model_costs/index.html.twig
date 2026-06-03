@@ -1,0 +1,78 @@
+{% extends 'backend/layout.html.twig' %}
+
+{% block content %}
+  <section class="hero-panel">
+    <div class="hero-copy">
+      <div class="eyebrow-dark">Modelos IA</div>
+      <h2>{{ page_title }}</h2>
+      <p>Catálogo global de referencias de coste para chat LLM y transcripción de audio. Los tenants sólo seleccionan modelos activos.</p>
+    </div>
+    <div class="hero-aside">
+      <div class="badge-live">Plataforma</div>
+      <div class="hero-aside-title">Referencia global</div>
+      <p>Las tarifas se guardan una sola vez para todos los tenants. La selección en tenant usa sólo modelos activos de tipo chat.</p>
+      <a class="primary-action" href="{{ new_url }}">Nueva referencia</a>
+    </div>
+  </section>
+
+  {{ error_html|raw }}
+
+  <section class="table-card">
+    <div class="table-header">
+      <div>
+        <h3>Catálogo global</h3>
+        <p>Define tarifas de chat por 1M tokens y tarifas de audio por unidad.</p>
+      </div>
+      <a class="secondary-action" href="{{ new_url }}">Crear referencia</a>
+    </div>
+
+    <div class="table-responsive">
+      <table class="request-table">
+        <thead>
+          <tr>
+            <th scope="col">Uso</th>
+            <th scope="col">Modelo</th>
+            <th scope="col">Coste</th>
+            <th scope="col">Moneda</th>
+            <th scope="col">Estado</th>
+            <th scope="col">Notas</th>
+            <th scope="col">Actualizado</th>
+            <th scope="col" class="text-right">Acciones</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for reference in references %}
+            <tr>
+              <td>
+                <strong>{{ reference.usageType == 'llm_chat' ? 'Chat LLM' : 'Transcripción audio' }}</strong>
+                <div class="subtle">{{ reference.usageType }}</div>
+              </td>
+              <td><strong>{{ reference.model }}</strong></td>
+              <td>
+                <strong>{{ reference.priceSummary }}</strong>
+                <div class="subtle">{{ reference.priceDetail }}</div>
+              </td>
+              <td>{{ reference.currency }}</td>
+              <td>{% if reference.active %}<span class="status-ok">Activo</span>{% else %}<span class="status-off">Inactivo</span>{% endif %}</td>
+              <td class="message-cell">{{ reference.notes }}</td>
+              <td class="subtle">{{ reference.updatedAt }}</td>
+              <td class="text-right">
+                <div class="tool-actions-inline">
+                  <a class="icon-action tool-action-icon-button" href="{{ reference.edit_url }}" title="Editar referencia" aria-label="Editar referencia">✎</a>
+                  <form method="post" action="{{ reference.toggle_url }}" style="display:inline-flex;">
+                    <input type="hidden" name="_csrf_token" value="{{ reference.toggle_token }}">
+                    <button class="icon-action tool-action-icon-button" type="submit" title="{{ reference.active ? 'Desactivar' : 'Activar' }}" aria-label="{{ reference.active ? 'Desactivar' : 'Activar' }}">{{ reference.active ? '⏸' : '▶' }}</button>
+                  </form>
+                </div>
+              </td>
+            </tr>
+          {% else %}
+            <tr>
+              <td colspan="8" class="empty-row">No hay referencias de coste IA todavía.</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+{% endblock %}

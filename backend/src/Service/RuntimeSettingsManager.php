@@ -48,6 +48,11 @@ final class RuntimeSettingsManager
         foreach ($this->catalog->indexed() as $key => $definition) {
             $configured = $this->repository->findOneByKey($key) !== null;
             $value = $definition['secret'] ? ($configured ? self::SECRET_PLACEHOLDER : '') : $values[$key];
+            $options = $definition['options'];
+
+            if ($key === 'openai_model') {
+                $options = $this->catalog->openaiModelOptionsForValue($values[$key] ?? '');
+            }
 
             $state[$key] = [
                 'key' => $key,
@@ -55,12 +60,12 @@ final class RuntimeSettingsManager
                 'description' => $definition['description'],
                 'inputType' => $definition['inputType'],
                 'group' => $definition['group'],
-                'options' => $definition['options'],
+                'options' => $options,
                 'defaultValue' => $definition['defaultValue'],
                 'secret' => $definition['secret'],
                 'configured' => $configured,
                 'value' => $value,
-                'fullWidth' => $key === 'openai_api_key',
+                'fullWidth' => in_array($key, ['openai_api_key', 'audio_transcription_notes'], true),
                 'min' => $definition['min'] ?? null,
             ];
         }
@@ -121,6 +126,8 @@ final class RuntimeSettingsManager
     public function validate(array $submitted): array
     {
         $errors = [];
+        $resolvedValues = $this->resolvedValues();
+        $currentOpenAiModel = $resolvedValues['openai_model'] ?? '';
 
         foreach ($this->catalog->indexed() as $key => $definition) {
             $rawValue = trim((string) ($submitted[$key] ?? ''));
@@ -130,14 +137,23 @@ final class RuntimeSettingsManager
             }
 
             if (($definition['inputType'] ?? 'text') === 'select') {
+                $allowedOptions = $definition['options'];
+                if ($key === 'openai_model') {
+                    $allowedOptions = $this->catalog->openaiModelOptionsForValue($currentOpenAiModel);
+                }
+
                 $allowedValues = array_map(
                     static fn (array $option): string => (string) ($option['value'] ?? ''),
-                    is_array($definition['options'] ?? null) ? $definition['options'] : []
+                    is_array($allowedOptions ?? null) ? $allowedOptions : []
                 );
                 if (!in_array($rawValue, $allowedValues, true)) {
                     $errors[] = sprintf('El valor de "%s" no es válido.', $definition['label']);
                 }
 
+                continue;
+            }
+
+            if (($definition['inputType'] ?? 'text') === 'textarea') {
                 continue;
             }
 
@@ -150,6 +166,16 @@ final class RuntimeSettingsManager
                 $min = (int) ($definition['min'] ?? 0);
                 if ((int) $rawValue < $min) {
                     $errors[] = sprintf('El valor de "%s" debe ser mayor o igual que %d.', $definition['label'], $min);
+                }
+
+                continue;
+            }
+
+            if ($key === 'audio_transcription_cost_per_unit_eur') {
+                if (!is_numeric(str_replace(',', '.', $rawValue))) {
+                    $errors[] = 'El coste de transcripción debe ser numérico.';
+                } elseif ((float) str_replace(',', '.', $rawValue) < 0) {
+                    $errors[] = 'El coste de transcripción no puede ser negativo.';
                 }
 
                 continue;

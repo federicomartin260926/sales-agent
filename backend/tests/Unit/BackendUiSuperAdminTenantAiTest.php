@@ -12,6 +12,7 @@ use App\Repository\AiUsageEventRepository;
 use App\Repository\TenantAiTopUpRequestRepository;
 use App\Repository\TenantAiUsagePolicyRepository;
 use App\Repository\TenantRepository;
+use App\Repository\AiModelCostReferenceRepository;
 use App\Service\ActiveTenantContext;
 use App\Service\RuntimeConfigurationService;
 use Doctrine\ORM\EntityManagerInterface;
@@ -36,7 +37,7 @@ final class BackendUiSuperAdminTenantAiTest extends TestCase
         $policy->setMaxAudioTranscriptionSeconds(60);
         $policy->setAudioLimitExceededMessage('El audio es demasiado largo para procesarlo automáticamente. Por favor, envíame un audio más corto o escríbeme el mensaje por texto.');
         $event = $this->event($tenant);
-        $requestEntity = $this->topUpRequest($tenant, 40.0, 'Solicitamos ampliación para el trimestre');
+        $requestEntity = $this->topUpRequest($tenant, 40_000_000.0, 'Solicitamos ampliación para el trimestre');
         $requestEntity->setRequestedBy($this->user('manager@example.com', ['manager'], 'Manager'));
 
         $controller = $this->controller($this->user('owner@example.com', ['super_admin'], 'Owner'));
@@ -67,7 +68,9 @@ final class BackendUiSuperAdminTenantAiTest extends TestCase
         self::assertStringContainsString('Plan mensual base', $response->getContent());
         self::assertStringContainsString('Recargas aprobadas este mes', $response->getContent());
         self::assertStringContainsString('Cupo efectivo este mes', $response->getContent());
-        self::assertStringContainsString('130', $response->getContent());
+        self::assertStringContainsString('0,00013M', $response->getContent());
+        self::assertStringContainsString('0,00053M', $response->getContent());
+        self::assertStringContainsString('>40M<', $response->getContent());
         self::assertStringContainsString('0,25 €', $response->getContent());
         self::assertStringNotContainsString('openai_api_key', $response->getContent());
         self::assertStringNotContainsString('bearer', $response->getContent());
@@ -101,14 +104,19 @@ final class BackendUiSuperAdminTenantAiTest extends TestCase
         );
 
         self::assertSame(Response::HTTP_OK, $response->getStatusCode());
-        self::assertStringContainsString('name="dailyCostLimitEur" type="number" min="0" step="1" value="100000"', $response->getContent());
-        self::assertStringContainsString('name="monthlyCostLimitEur" type="number" min="0" step="1" value="500000"', $response->getContent());
-        self::assertMatchesRegularExpression('/Límite diario base<\/div>\s*<div class="metric-value">100\.000<\/div>/', $response->getContent());
-        self::assertMatchesRegularExpression('/Plan mensual base<\/div>\s*<div class="metric-value">500\.000<\/div>/', $response->getContent());
-        self::assertMatchesRegularExpression('/Cupo efectivo este mes<\/div>\s*<div class="metric-value">500\.000<\/div>/', $response->getContent());
-        self::assertStringContainsString('4.864', $response->getContent());
-        self::assertStringContainsString('95.136', $response->getContent());
-        self::assertStringContainsString('495.136', $response->getContent());
+        self::assertStringContainsString('<select id="tenant-daily-cost-limit" name="dailyCostLimitEur">', $response->getContent());
+        self::assertStringContainsString('>0,1M<', $response->getContent());
+        self::assertStringContainsString('<select id="tenant-monthly-cost-limit" name="monthlyCostLimitEur">', $response->getContent());
+        self::assertStringContainsString('>0,5M<', $response->getContent());
+        self::assertStringContainsString('<select id="tenant-default-model" name="defaultModel">', $response->getContent());
+        self::assertStringContainsString('<select id="tenant-fallback-model" name="fallbackModel">', $response->getContent());
+        self::assertMatchesRegularExpression('/Límite diario base<\/div>\s*<div class="metric-value">0,1M<\/div>/', $response->getContent());
+        self::assertMatchesRegularExpression('/Plan mensual base<\/div>\s*<div class="metric-value">0,5M<\/div>/', $response->getContent());
+        self::assertMatchesRegularExpression('/Cupo efectivo este mes<\/div>\s*<div class="metric-value">0,5M<\/div>/', $response->getContent());
+        self::assertStringContainsString('0,004864M', $response->getContent());
+        self::assertStringContainsString('0,0042M', $response->getContent());
+        self::assertStringContainsString('0,095136M', $response->getContent());
+        self::assertStringContainsString('0,495136M', $response->getContent());
     }
 
     public function testNonSuperAdminCannotAccessTenantAiPage(): void
@@ -140,8 +148,8 @@ final class BackendUiSuperAdminTenantAiTest extends TestCase
         $request = Request::create('/backend/super-admin/tenants/'.$tenant->getId()->toRfc4122().'/ai', 'POST', [
             '_csrf_token' => 'token',
             'aiEnabled' => '1',
-            'dailyCostLimitEur' => '1060',
-            'monthlyCostLimitEur' => '12720',
+            'dailyCostLimitEur' => '100000',
+            'monthlyCostLimitEur' => '500000',
             'defaultModel' => 'gpt-4.1-mini',
             'fallbackModel' => 'gpt-4.1-nano',
             'maxAudioTranscriptionSeconds' => '75',
@@ -176,7 +184,7 @@ final class BackendUiSuperAdminTenantAiTest extends TestCase
     public function testSuperAdminCanApproveTopUpRequest(): void
     {
         $tenant = $this->tenant('Tech Investments', 'tech-investments');
-        $requestEntity = $this->topUpRequest($tenant, 45.0, 'Ampliación para cerrar leads');
+        $requestEntity = $this->topUpRequest($tenant, 45_000_000.0, 'Ampliación para cerrar leads');
         $requestEntity->setRequestedBy($this->user('manager@example.com', ['manager'], 'Manager'));
         $policy = $this->policy($tenant, true, 1.0, 10.0, 'gpt-4.1-mini', 'gpt-4.1-nano', 'handoff_human');
         $policyRepository = $this->policyRepository($policy);
@@ -187,7 +195,7 @@ final class BackendUiSuperAdminTenantAiTest extends TestCase
         $controller = $this->controller($this->user('owner@example.com', ['super_admin'], 'Owner'), $entityManager, null, $this->csrfTokenManager(true));
         $request = Request::create('/backend/super-admin/tenants/'.$tenant->getId()->toRfc4122().'/ai/top-up-requests/'.$requestEntity->getId()->toRfc4122().'/approve', 'POST', [
             '_csrf_token' => 'token',
-            'approvedTokens' => '100',
+            'approvedTokens' => '1000000',
         ]);
         $request->setSession(new Session());
 
@@ -204,7 +212,7 @@ final class BackendUiSuperAdminTenantAiTest extends TestCase
         self::assertSame(Response::HTTP_FOUND, $response->getStatusCode());
         self::assertSame('/backend/super-admin/tenants/'.$tenant->getId()->toRfc4122().'/ai', $response->headers->get('Location'));
         self::assertSame(TenantAiTopUpRequest::STATUS_APPROVED, $requestEntity->getStatus());
-        self::assertSame(100, $requestEntity->getApprovedTokens());
+        self::assertSame(1000000, $requestEntity->getApprovedTokens());
         self::assertSame((new \DateTimeImmutable('now', new \DateTimeZone('Europe/Madrid')))->format('Y-m'), $requestEntity->getApprovedPeriodKey());
         self::assertNotNull($requestEntity->getResolvedAt());
         self::assertSame('owner@example.com', $requestEntity->getResolvedBy()?->getEmail());
@@ -217,7 +225,7 @@ final class BackendUiSuperAdminTenantAiTest extends TestCase
     public function testSuperAdminCanRejectTopUpRequest(): void
     {
         $tenant = $this->tenant('Tech Investments', 'tech-investments');
-        $requestEntity = $this->topUpRequest($tenant, 45.0, 'Ampliación para cerrar leads');
+        $requestEntity = $this->topUpRequest($tenant, 45_000_000.0, 'Ampliación para cerrar leads');
         $policyRepository = $this->policyRepository($this->policy($tenant, true, 1.0, 10.0, 'gpt-4.1-mini', 'gpt-4.1-nano', 'handoff_human'));
         $entityManager = $this->createMock(EntityManagerInterface::class);
         $entityManager->expects(self::once())->method('persist')->with(self::identicalTo($requestEntity));
@@ -250,7 +258,7 @@ final class BackendUiSuperAdminTenantAiTest extends TestCase
     {
         $tenant = $this->tenant('Tech Investments', 'tech-investments');
         $otherTenant = $this->tenant('Northwind', 'northwind');
-        $requestEntity = $this->topUpRequest($otherTenant, 45.0, 'Ampliación para otro tenant');
+        $requestEntity = $this->topUpRequest($otherTenant, 45_000_000.0, 'Ampliación para otro tenant');
         $controller = $this->controller($this->user('owner@example.com', ['super_admin'], 'Owner'));
         $request = Request::create('/backend/super-admin/tenants/'.$tenant->getId()->toRfc4122().'/ai/top-up-requests/'.$requestEntity->getId()->toRfc4122().'/approve', 'POST', [
             '_csrf_token' => 'token',
@@ -272,7 +280,7 @@ final class BackendUiSuperAdminTenantAiTest extends TestCase
     public function testSuperAdminApprovalWithUnlimitedMonthlyLimitDoesNotChangePolicy(): void
     {
         $tenant = $this->tenant('Tech Investments', 'tech-investments');
-        $requestEntity = $this->topUpRequest($tenant, 45.0, 'Ampliación para cerrar leads');
+        $requestEntity = $this->topUpRequest($tenant, 45_000_000.0, 'Ampliación para cerrar leads');
         $policy = $this->policy($tenant, true, 1.0, null, 'gpt-4.1-mini', 'gpt-4.1-nano', 'handoff_human');
         $policyRepository = $this->policyRepository($policy);
 
@@ -283,7 +291,7 @@ final class BackendUiSuperAdminTenantAiTest extends TestCase
         $controller = $this->controller($this->user('owner@example.com', ['super_admin'], 'Owner'), $entityManager, null, $this->csrfTokenManager(true));
         $request = Request::create('/backend/super-admin/tenants/'.$tenant->getId()->toRfc4122().'/ai/top-up-requests/'.$requestEntity->getId()->toRfc4122().'/approve', 'POST', [
             '_csrf_token' => 'token',
-            'approvedTokens' => '100',
+            'approvedTokens' => '1000000',
         ]);
         $request->setSession(new Session());
 
@@ -299,7 +307,7 @@ final class BackendUiSuperAdminTenantAiTest extends TestCase
 
         self::assertSame(Response::HTTP_FOUND, $response->getStatusCode());
         self::assertSame(TenantAiTopUpRequest::STATUS_APPROVED, $requestEntity->getStatus());
-        self::assertSame(100, $requestEntity->getApprovedTokens());
+        self::assertSame(1000000, $requestEntity->getApprovedTokens());
         self::assertSame((new \DateTimeImmutable('now', new \DateTimeZone('Europe/Madrid')))->format('Y-m'), $requestEntity->getApprovedPeriodKey());
         self::assertCount(0, $policyRepository->savedPolicies);
         self::assertSame(1.0, $policy->getDailyCostLimitEur());
@@ -309,11 +317,11 @@ final class BackendUiSuperAdminTenantAiTest extends TestCase
     public function testNonSuperAdminCannotApproveOrRejectTopUpRequests(): void
     {
         $tenant = $this->tenant('Tech Investments', 'tech-investments');
-        $requestEntity = $this->topUpRequest($tenant, 45.0, 'Ampliación para cerrar leads');
+        $requestEntity = $this->topUpRequest($tenant, 45_000_000.0, 'Ampliación para cerrar leads');
         $controller = $this->controller($this->user('manager@example.com', ['manager'], 'Manager'));
         $request = Request::create('/backend/super-admin/tenants/'.$tenant->getId()->toRfc4122().'/ai/top-up-requests/'.$requestEntity->getId()->toRfc4122().'/approve', 'POST', [
             '_csrf_token' => 'token',
-            'approvedTokens' => '100',
+            'approvedTokens' => '1000000',
         ]);
         $request->setSession(new Session());
 
@@ -352,6 +360,7 @@ final class BackendUiSuperAdminTenantAiTest extends TestCase
         ?UserPasswordHasherInterface $passwordHasher = null,
         ?CsrfTokenManagerInterface $csrfTokenManager = null,
         ?Environment $twig = null,
+        ?AiModelCostReferenceRepository $aiModelCosts = null,
     ): BackendUiController {
         $security = $this->createStub(Security::class);
         $roles = $user->getRoles();
@@ -381,6 +390,7 @@ final class BackendUiSuperAdminTenantAiTest extends TestCase
             $activeTenantContext,
             $twig ?? new Environment(new FilesystemLoader(__DIR__.'/../../templates'), ['cache' => false]),
             null,
+            $aiModelCosts,
             null,
             $csrfTokenManager,
             null,

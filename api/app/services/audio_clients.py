@@ -27,7 +27,22 @@ class AudioDownloadResult:
 @dataclass(slots=True)
 class AudioTranscriptionResult:
     text: str
+    provider: str
     model: str
+
+
+@dataclass(slots=True)
+class AudioTranscriptionConfiguration:
+    provider: str
+    model: str
+    enabled: bool
+    cost_unit: str
+    cost_per_unit_eur: float
+    currency: str
+    notes: str | None
+    base_url: str
+    api_key: str
+    timeout_seconds: int
 
 
 class AudioGatewayClient:
@@ -78,34 +93,38 @@ class AudioTranscriptionClient:
         self,
         settings: Settings,
         runtime_settings_client: RuntimeSettingsClient | None = None,
-    ) -> None:
+        ) -> None:
         self.settings = settings
         self.runtime_settings_client = runtime_settings_client or RuntimeSettingsClient(settings)
 
-    def estimate_cost_eur(self, duration_seconds: int) -> float:
+    def estimate_cost_eur(self, duration_seconds: int, configuration: AudioTranscriptionConfiguration | None = None) -> float:
         seconds = max(0, int(duration_seconds))
-        cost_per_minute = max(0.0, float(self.settings.openai_audio_transcription_cost_per_minute_eur))
-        return math.ceil(seconds / 60.0) * cost_per_minute
+        config = configuration or self._fallback_configuration()
+        if not config.enabled:
+            return 0.0
+
+        return self._estimate_cost_from_configuration(seconds, config)
 
     async def transcribe(self, audio_bytes: bytes, content_type: str | None, media_id: str) -> AudioTranscriptionResult:
-        configuration = await self.runtime_settings_client.effective_values()
-        base_url = configuration.get("openai_base_url", "").strip().rstrip("/")
-        api_key = configuration.get("openai_api_key", "").strip()
-        model = configuration.get("openai_transcription_model", self.settings.openai_transcription_model).strip()
-        timeout_seconds = self._parse_timeout(configuration.get("openai_timeout_seconds"), self.settings.openai_timeout_seconds)
+        configuration = await self.resolve_configuration()
+        if not configuration.enabled:
+            raise RuntimeError("Audio transcription is disabled.")
 
-        if base_url == "" or api_key == "" or model == "":
+        if configuration.provider.lower() != "openai":
+            raise RuntimeError(f"Unsupported audio transcription provider: {configuration.provider}.")
+
+        if configuration.base_url == "" or configuration.api_key == "" or configuration.model == "":
             raise RuntimeError("OpenAI transcription configuration is incomplete.")
 
-        timeout = httpx.Timeout(timeout_seconds, connect=2.0)
+        timeout = httpx.Timeout(configuration.timeout_seconds, connect=2.0)
         filename = self._filename_for_content_type(content_type, media_id)
         file_payload = io.BytesIO(audio_bytes)
         files = {"file": (filename, file_payload, content_type or "application/octet-stream")}
-        data = {"model": model}
-        headers = {"Authorization": f"Bearer {api_key}"}
+        data = {"model": configuration.model}
+        headers = {"Authorization": f"Bearer {configuration.api_key}"}
 
         try:
-            async with httpx.AsyncClient(base_url=base_url, timeout=timeout) as client:
+            async with httpx.AsyncClient(base_url=configuration.base_url, timeout=timeout) as client:
                 response = await client.post("/audio/transcriptions", data=data, files=files, headers=headers)
                 response.raise_for_status()
         except httpx.HTTPStatusError as exc:
@@ -117,7 +136,56 @@ class AudioTranscriptionClient:
         if text == "":
             raise RuntimeError("OpenAI transcription response did not contain text.")
 
-        return AudioTranscriptionResult(text=text, model=model)
+        return AudioTranscriptionResult(text=text, provider=configuration.provider, model=configuration.model)
+
+    async def resolve_configuration(self) -> AudioTranscriptionConfiguration:
+        configuration = await self.runtime_settings_client.effective_values()
+        return self._configuration_from_values(configuration)
+
+    def _fallback_configuration(self) -> AudioTranscriptionConfiguration:
+        return self._configuration_from_values({})
+
+    def _configuration_from_values(self, values: dict[str, Any]) -> AudioTranscriptionConfiguration:
+        provider = str(values.get("audio_transcription_provider", self.settings.audio_transcription_provider)).strip() or "openai"
+        model = str(values.get("audio_transcription_model", self.settings.audio_transcription_model or self.settings.openai_transcription_model)).strip()
+        base_url = str(values.get("openai_base_url", "https://api.openai.com/v1")).strip().rstrip("/")
+        api_key = str(values.get("openai_api_key", self.settings.openai_api_key)).strip()
+        timeout_seconds = self._parse_timeout(values.get("openai_timeout_seconds"), self.settings.openai_timeout_seconds)
+        enabled = self._parse_bool(values.get("audio_transcription_enabled"), self.settings.audio_transcription_enabled)
+        cost_unit = str(values.get("audio_transcription_cost_unit", self.settings.audio_transcription_cost_unit)).strip().lower() or "minute"
+        if cost_unit not in {"minute", "second"}:
+            cost_unit = "minute"
+        cost_per_unit_eur = self._parse_float(
+            values.get("audio_transcription_cost_per_unit_eur"),
+            self.settings.audio_transcription_cost_per_unit_eur,
+        )
+        currency = str(values.get("audio_transcription_currency", "EUR")).strip() or "EUR"
+        notes = values.get("audio_transcription_notes")
+        if not isinstance(notes, str):
+            notes = None
+
+        return AudioTranscriptionConfiguration(
+            provider=provider,
+            model=model,
+            enabled=enabled,
+            cost_unit=cost_unit,
+            cost_per_unit_eur=cost_per_unit_eur,
+            currency=currency,
+            notes=notes,
+            base_url=base_url,
+            api_key=api_key,
+            timeout_seconds=timeout_seconds,
+        )
+
+    def _estimate_cost_from_configuration(self, duration_seconds: int, configuration: AudioTranscriptionConfiguration) -> float:
+        duration_seconds = max(0, int(duration_seconds))
+        if configuration.cost_per_unit_eur <= 0.0:
+            return 0.0
+
+        if configuration.cost_unit == "second":
+            return round(duration_seconds * configuration.cost_per_unit_eur, 8)
+
+        return round(math.ceil(duration_seconds / 60.0) * configuration.cost_per_unit_eur, 8)
 
     def _extract_text(self, response: httpx.Response) -> str:
         try:
@@ -138,6 +206,31 @@ class AudioTranscriptionClient:
 
         if isinstance(raw_timeout, (int, float)):
             return max(1, int(raw_timeout))
+
+        return fallback
+
+    def _parse_float(self, raw_value: Any, fallback: float) -> float:
+        if isinstance(raw_value, str) and raw_value.strip() != "":
+            try:
+                return max(0.0, float(raw_value.strip().replace(",", ".")))
+            except ValueError:
+                return max(0.0, fallback)
+
+        if isinstance(raw_value, (int, float)):
+            return max(0.0, float(raw_value))
+
+        return max(0.0, fallback)
+
+    def _parse_bool(self, raw_value: Any, fallback: bool) -> bool:
+        if isinstance(raw_value, bool):
+            return raw_value
+
+        if isinstance(raw_value, str):
+            normalized = raw_value.strip().lower()
+            if normalized in {"1", "true", "yes", "on", "enabled"}:
+                return True
+            if normalized in {"0", "false", "no", "off", "disabled"}:
+                return False
 
         return fallback
 

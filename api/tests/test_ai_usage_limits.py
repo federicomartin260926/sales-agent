@@ -166,6 +166,7 @@ def configure_environment() -> None:
     os.environ["BACKEND_BASE_URL"] = ""
     os.environ["CRM_BASE_URL"] = ""
     os.environ["OPENAI_AUDIO_TRANSCRIPTION_COST_PER_MINUTE_EUR"] = "0.02"
+    os.environ["AUDIO_TRANSCRIPTION_ENABLED"] = "1"
     os.environ["AUDIO_LLM_FOLLOWUP_RESERVE_COST_EUR"] = "0.01"
     get_settings.cache_clear()
 
@@ -396,6 +397,66 @@ async def test_agent_respond_blocks_audio_when_duration_exceeds_tenant_limit(mon
     assert body["data_to_save"]["audio_duration_seconds"] == 12
     assert body["data_to_save"]["max_audio_transcription_seconds"] == 10
     assert body["data_to_save"]["audio_limit_exceeded_message"] == "Audio demasiado largo para este tenant."
+    assert backend.ai_usage_event_payloads == []
+
+
+@pytest.mark.asyncio
+async def test_agent_respond_blocks_audio_when_transcription_is_disabled(monkeypatch):
+    configure_environment()
+    os.environ["AUDIO_TRANSCRIPTION_ENABLED"] = "0"
+    get_settings.cache_clear()
+
+    backend = BlockedBackendClient(
+        build_context(),
+        ai_enabled=True,
+        max_audio_transcription_seconds=60,
+    )
+
+    async def fail_if_llm_is_called(*args, **kwargs):
+        raise AssertionError("LLM should not be called when audio transcription is disabled")
+
+    monkeypatch.setattr(LLMClient, "resolve_configuration", fail_if_llm_is_called)
+    monkeypatch.setattr(LLMClient, "generate", fail_if_llm_is_called)
+    monkeypatch.setattr(LLMDecisionService, "propose", fail_if_llm_is_called)
+
+    app = create_app()
+    app.dependency_overrides[get_backend_client] = lambda: backend
+    runtime = AgentRuntime(
+        backend,
+        RuntimeRoutingResolver(backend),  # type: ignore[arg-type]
+        DecisionEngine(backend),  # type: ignore[arg-type]
+        audio_gateway_client=FailingAudioGatewayClient(),  # type: ignore[arg-type]
+        audio_transcription_client=FailingAudioTranscriptionClient(),  # type: ignore[arg-type]
+    )
+    app.dependency_overrides[get_agent_runtime] = lambda: runtime
+    client = TestClient(app)
+
+    response = client.post(
+        "/agent/respond",
+        headers={"Authorization": "Bearer test-internal-token"},
+        json={
+            "tenant_id": "tenant-1",
+            "message": {
+                "type": "audio",
+                "media": {
+                    "provider": "whatsapp_cloud_api",
+                    "kind": "audio",
+                    "media_id": "media-123",
+                    "mime_type": "audio/ogg",
+                    "sha256": "abc123",
+                    "duration_seconds": 12,
+                },
+            },
+            "contact": {"phone": "+34999999999", "name": "Ana"},
+            "conversation": {"last_messages": ["mensaje 1", "mensaje 2"]},
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["action"] == "audio_transcription_disabled"
+    assert body["needs_human"] is True
+    assert body["data_to_save"]["audio_transcription_disabled"] is True
     assert backend.ai_usage_event_payloads == []
 
 

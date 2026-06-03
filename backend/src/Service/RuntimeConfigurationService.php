@@ -30,6 +30,32 @@ class RuntimeConfigurationService
             $formState[$key]['value'] = is_string($value) ? trim($value) : '';
         }
 
+        $submittedOpenAiModel = trim((string) ($submitted['openai_model'] ?? ''));
+        if ($submittedOpenAiModel !== '' && isset($formState['openai_model']) && is_array($formState['openai_model'])) {
+            $options = $formState['openai_model']['options'] ?? [];
+            if (!is_array($options)) {
+                $options = [];
+            }
+
+            $hasOption = false;
+            foreach ($options as $option) {
+                if (($option['value'] ?? '') === $submittedOpenAiModel) {
+                    $hasOption = true;
+                    break;
+                }
+            }
+
+            if (!$hasOption) {
+                $options[] = [
+                    'value' => $submittedOpenAiModel,
+                    'label' => $submittedOpenAiModel,
+                ];
+            }
+
+            $formState['openai_model']['options'] = $options;
+            $formState['openai_model']['value'] = $submittedOpenAiModel;
+        }
+
         return [
             'formState' => $formState,
             'values' => $values,

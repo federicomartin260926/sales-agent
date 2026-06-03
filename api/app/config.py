@@ -15,13 +15,20 @@ class Settings(BaseSettings):
     openai_timeout_seconds: int = Field(default=15, alias="OPENAI_TIMEOUT_SECONDS")
     openai_responses_timeout_seconds: int = Field(default=60, alias="OPENAI_RESPONSES_TIMEOUT_SECONDS")
     openai_transcription_model: str = Field(default="gpt-4o-mini-transcribe", alias="OPENAI_TRANSCRIPTION_MODEL")
-    openai_audio_transcription_cost_per_minute_eur: float = Field(
+    audio_transcription_provider: str = Field(default="openai", alias="AUDIO_TRANSCRIPTION_PROVIDER")
+    audio_transcription_model: str = Field(default="gpt-4o-mini-transcribe", alias="AUDIO_TRANSCRIPTION_MODEL")
+    audio_transcription_cost_unit: str = Field(default="minute", alias="AUDIO_TRANSCRIPTION_COST_UNIT")
+    audio_transcription_cost_per_unit_eur: float = Field(
         default=0.02,
         validation_alias=AliasChoices(
             "OPENAI_AUDIO_TRANSCRIPTION_COST_PER_MINUTE_EUR",
             "AUDIO_TRANSCRIPTION_COST_PER_MINUTE_EUR",
+            "AUDIO_TRANSCRIPTION_COST_PER_UNIT_EUR",
         ),
     )
+    audio_transcription_enabled: bool = Field(default=True, alias="AUDIO_TRANSCRIPTION_ENABLED")
+    audio_transcription_currency: str = Field(default="EUR", alias="AUDIO_TRANSCRIPTION_CURRENCY")
+    audio_transcription_notes: str = Field(default="", alias="AUDIO_TRANSCRIPTION_NOTES")
     audio_llm_followup_reserve_cost_eur: float = Field(default=0.01, alias="AUDIO_LLM_FOLLOWUP_RESERVE_COST_EUR")
     ai_billing_mode: str = Field(default="byok", alias="AI_BILLING_MODE")
     ollama_base_url: str = Field(default="http://ollama-vpn-bridge:11434", alias="OLLAMA_BASE_URL")

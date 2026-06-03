@@ -202,22 +202,42 @@
             </div>
             <div class="field">
               <label for="tenant-daily-cost-limit">Límite diario de tokens</label>
-              <input id="tenant-daily-cost-limit" name="dailyCostLimitEur" type="number" min="0" step="1" value="{{ values.dailyCostLimitEur }}" placeholder="100000">
-              <div class="field-note">Vacío = sin límite diario. La equivalencia interna se calcula al guardar.</div>
+              <select id="tenant-daily-cost-limit" name="dailyCostLimitEur">
+                <option value=""{% if values.dailyCostLimitEur is empty %} selected{% endif %}>Sin límite</option>
+                {% for option in commercial_daily_limit_options %}
+                  <option value="{{ option.value }}"{% if values.dailyCostLimitEur == option.value %} selected{% endif %}>{{ option.label }}</option>
+                {% endfor %}
+              </select>
+              <div class="field-note">Vacío = sin límite diario. Se guarda en bloques comerciales de 1M tokens.</div>
             </div>
             <div class="field">
               <label for="tenant-monthly-cost-limit">Límite mensual de tokens</label>
-              <input id="tenant-monthly-cost-limit" name="monthlyCostLimitEur" type="number" min="0" step="1" value="{{ values.monthlyCostLimitEur }}" placeholder="1000000">
-              <div class="field-note">Vacío = sin límite mensual. La equivalencia interna se calcula al guardar.</div>
+              <select id="tenant-monthly-cost-limit" name="monthlyCostLimitEur">
+                <option value=""{% if values.monthlyCostLimitEur is empty %} selected{% endif %}>Sin límite</option>
+                {% for option in commercial_monthly_limit_options %}
+                  <option value="{{ option.value }}"{% if values.monthlyCostLimitEur == option.value %} selected{% endif %}>{{ option.label }}</option>
+                {% endfor %}
+              </select>
+              <div class="field-note">Vacío = sin límite mensual. Se guarda en bloques comerciales de 1M tokens.</div>
             </div>
             <div class="field">
               <label for="tenant-default-model">Modelo por defecto</label>
-              <input id="tenant-default-model" name="defaultModel" type="text" value="{{ values.defaultModel }}" maxlength="100" placeholder="gpt-4.1-mini">
+              <select id="tenant-default-model" name="defaultModel">
+                <option value=""{% if values.defaultModel is empty %} selected{% endif %}>Sin modelo</option>
+                {% for option in default_model_options %}
+                  <option value="{{ option.value }}"{% if values.defaultModel == option.value %} selected{% endif %}>{{ option.label }}</option>
+                {% endfor %}
+              </select>
               <div class="field-note">Referencia operativa para este tenant. No fuerza el runtime todavía.</div>
             </div>
             <div class="field">
-              <label for="tenant-fallback-model">Modelo alternativo</label>
-              <input id="tenant-fallback-model" name="fallbackModel" type="text" value="{{ values.fallbackModel }}" maxlength="100" placeholder="gpt-4.1-nano">
+              <label for="tenant-fallback-model">Modelo fallback</label>
+              <select id="tenant-fallback-model" name="fallbackModel">
+                <option value=""{% if values.fallbackModel is empty %} selected{% endif %}>Sin modelo</option>
+                {% for option in fallback_model_options %}
+                  <option value="{{ option.value }}"{% if values.fallbackModel == option.value %} selected{% endif %}>{{ option.label }}</option>
+                {% endfor %}
+              </select>
               <div class="field-note">Reserva si quieres dejar una opción de backup.</div>
             </div>
             <div class="field">
@@ -247,12 +267,12 @@
             </div>
             <div class="metric">
               <div class="metric-label">Límite diario de tokens</div>
-              <div class="metric-value">{{ values.dailyCostLimitEur|default('Sin límite') }}</div>
+              <div class="metric-value">{{ daily_limit_display }}</div>
               <div class="metric-note">Coste estimado hoy: {{ ai_usage.today.estimatedCostEur|default('0,000000 €') }}</div>
             </div>
             <div class="metric">
               <div class="metric-label">Límite mensual de tokens</div>
-              <div class="metric-value">{{ values.monthlyCostLimitEur|default('Sin límite') }}</div>
+              <div class="metric-value">{{ monthly_limit_display }}</div>
               <div class="metric-note">Coste estimado este mes: {{ ai_usage.month.estimatedCostEur|default('0,000000 €') }}</div>
             </div>
           </div>

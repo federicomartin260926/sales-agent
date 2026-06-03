@@ -46,15 +46,16 @@
             </div>
           </div>
 
-          <div class="nav-section">
-            <div class="nav-section-title">Plataforma</div>
-            <div class="nav-section-items">
-              <a class="{{ active_nav == 'tenants' ? 'active' : '' }}" href="/backend/tenants">Negocios</a>
-              <a class="{{ active_nav == 'admin-users' ? 'active' : '' }}" href="/backend/users">Usuarios</a>
-              <a class="{{ active_nav == 'admin-configuration' ? 'active' : '' }}" href="/backend/configuration">Configuración</a>
-              <a class="{{ active_nav in ['admin-api-health', 'api-health'] ? 'active' : '' }}" href="/backend/api-health">API Health</a>
+            <div class="nav-section">
+              <div class="nav-section-title">Plataforma</div>
+              <div class="nav-section-items">
+                <a class="{{ active_nav == 'tenants' ? 'active' : '' }}" href="/backend/tenants">Negocios</a>
+                <a class="{{ active_nav == 'admin-users' ? 'active' : '' }}" href="/backend/users">Usuarios</a>
+                <a class="{{ active_nav == 'admin-ai-costs' ? 'active' : '' }}" href="/backend/ai-costs">Modelos IA</a>
+                <a class="{{ active_nav == 'admin-configuration' ? 'active' : '' }}" href="/backend/configuration">Configuración</a>
+                <a style="display:none" class="{{ active_nav in ['admin-api-health', 'api-health'] ? 'active' : '' }}" href="/backend/api-health">API Health</a>
+              </div>
             </div>
-          </div>
         {% endif %}
       </nav>
     </aside>

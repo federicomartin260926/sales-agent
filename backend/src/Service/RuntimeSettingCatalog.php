@@ -2,8 +2,16 @@
 
 namespace App\Service;
 
+use App\Entity\AiModelCostReference;
+use App\Repository\AiModelCostReferenceRepository;
+
 final class RuntimeSettingCatalog
 {
+    public function __construct(
+        private readonly ?AiModelCostReferenceRepository $aiModelCosts = null,
+    ) {
+    }
+
     /**
      * @return array<int, array{
      *     key: string,
@@ -47,7 +55,7 @@ final class RuntimeSettingCatalog
                 'inputType' => 'select',
                 'defaultValue' => 'gpt-4o-mini',
                 'group' => 'llm',
-                'options' => $this->openaiModelOptions(),
+                'options' => $this->openaiModelOptionsForValue(),
                 'secret' => false,
             ],
             [
@@ -123,6 +131,84 @@ final class RuntimeSettingCatalog
                 'secret' => false,
                 'min' => 1,
             ],
+            [
+                'key' => 'audio_transcription_enabled',
+                'label' => 'Transcripción de audio',
+                'description' => 'Activa o desactiva la transcripción automática de audios WhatsApp.',
+                'inputType' => 'select',
+                'defaultValue' => '1',
+                'group' => 'audio',
+                'options' => [
+                    ['value' => '1', 'label' => 'Activo'],
+                    ['value' => '0', 'label' => 'Inactivo'],
+                ],
+                'secret' => false,
+            ],
+            [
+                'key' => 'audio_transcription_provider',
+                'label' => 'Proveedor de transcripción',
+                'description' => 'Proveedor usado para la transcripción de audio.',
+                'inputType' => 'select',
+                'defaultValue' => 'openai',
+                'group' => 'audio',
+                'options' => [
+                    ['value' => 'openai', 'label' => 'OpenAI'],
+                ],
+                'secret' => false,
+            ],
+            [
+                'key' => 'audio_transcription_model',
+                'label' => 'Modelo de transcripción',
+                'description' => 'Modelo empleado para audio. No se comparte con el chat.',
+                'inputType' => 'text',
+                'defaultValue' => 'gpt-4o-mini-transcribe',
+                'group' => 'audio',
+                'options' => [],
+                'secret' => false,
+            ],
+            [
+                'key' => 'audio_transcription_cost_unit',
+                'label' => 'Unidad de coste de audio',
+                'description' => 'Unidad usada para estimar el coste de transcripción.',
+                'inputType' => 'select',
+                'defaultValue' => 'minute',
+                'group' => 'audio',
+                'options' => [
+                    ['value' => 'minute', 'label' => 'Por minuto'],
+                    ['value' => 'second', 'label' => 'Por segundo'],
+                ],
+                'secret' => false,
+            ],
+            [
+                'key' => 'audio_transcription_cost_per_unit_eur',
+                'label' => 'Coste de transcripción por unidad (€)',
+                'description' => 'Coste estimado para la unidad anterior. Soporta decimales.',
+                'inputType' => 'text',
+                'defaultValue' => '0.02',
+                'group' => 'audio',
+                'options' => [],
+                'secret' => false,
+            ],
+            [
+                'key' => 'audio_transcription_currency',
+                'label' => 'Moneda de transcripción',
+                'description' => 'Moneda usada para la referencia de coste de audio.',
+                'inputType' => 'text',
+                'defaultValue' => 'EUR',
+                'group' => 'audio',
+                'options' => [],
+                'secret' => false,
+            ],
+            [
+                'key' => 'audio_transcription_notes',
+                'label' => 'Notas de transcripción',
+                'description' => 'Notas internas opcionales sobre la configuración de audio.',
+                'inputType' => 'textarea',
+                'defaultValue' => '',
+                'group' => 'audio',
+                'options' => [],
+                'secret' => false,
+            ],
         ];
     }
 
@@ -178,13 +264,25 @@ final class RuntimeSettingCatalog
     /**
      * @return array<int, array{value: string, label: string}>
      */
-    private function openaiModelOptions(): array
+    public function openaiModelOptionsForValue(string $currentModel = ''): array
     {
-        return [
-            ['value' => 'gpt-4o-mini', 'label' => 'gpt-4o-mini'],
-            ['value' => 'gpt-4.1-mini', 'label' => 'gpt-4.1-mini'],
-            ['value' => 'gpt-4.1', 'label' => 'gpt-4.1'],
-        ];
+        $options = [];
+
+        foreach ($this->activeOpenAiReferences() as $reference) {
+            $options[] = [
+                'value' => $reference->getModel(),
+                'label' => $this->formatOpenAiModelLabel($reference),
+            ];
+        }
+
+        if ($currentModel !== '' && !$this->hasOptionValue($options, $currentModel)) {
+            $options[] = [
+                'value' => $currentModel,
+                'label' => $currentModel,
+            ];
+        }
+
+        return $options;
     }
 
     /**
@@ -197,6 +295,55 @@ final class RuntimeSettingCatalog
             ['value' => 'qwen2.5:14b-instruct', 'label' => 'qwen2.5:14b-instruct'],
             ['value' => 'llama3.2:3b', 'label' => 'llama3.2:3b'],
         ];
+    }
+
+    /**
+     * @return array<int, AiModelCostReference>
+     */
+    private function activeOpenAiReferences(): array
+    {
+        if (!$this->aiModelCosts instanceof AiModelCostReferenceRepository) {
+            return [];
+        }
+
+        return $this->aiModelCosts->findActiveByUsageType(AiModelCostReference::USAGE_TYPE_LLM_CHAT);
+    }
+
+    private function formatOpenAiModelLabel(AiModelCostReference $reference): string
+    {
+        return sprintf(
+            '%s (%s/%s/%s %s)',
+            $reference->getModel(),
+            $this->formatDecimal($reference->getInputCostPerMillion()),
+            $this->formatDecimal($reference->getCachedInputCostPerMillion()),
+            $this->formatDecimal($reference->getOutputCostPerMillion()),
+            $reference->getCurrency()
+        );
+    }
+
+    private function formatDecimal(?float $value): string
+    {
+        if ($value === null) {
+            return '—';
+        }
+
+        $formatted = rtrim(rtrim(number_format($value, 3, '.', ''), '0'), '.');
+
+        return $formatted === '' ? '0' : $formatted;
+    }
+
+    /**
+     * @param array<int, array{value: string, label: string}> $options
+     */
+    private function hasOptionValue(array $options, string $value): bool
+    {
+        foreach ($options as $option) {
+            if (($option['value'] ?? '') === $value) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
 }

@@ -18,6 +18,7 @@ use App\Repository\ProductRepository;
 use App\Repository\ExternalToolRepository;
 use App\Repository\TenantAiUsagePolicyRepository;
 use App\Repository\TenantRepository;
+use App\Repository\AiModelCostReferenceRepository;
 use App\Service\RuntimeConfigurationService;
 use App\Service\ProductCatalogImportService;
 use App\Service\ActiveTenantContext;
@@ -50,6 +51,7 @@ final class BackendUiControllerTest extends TestCase
         ?Environment $twig = null,
         ?ActiveTenantContext $activeTenantContext = null,
         ?TenantAccessResolver $tenantAccessResolver = null,
+        ?AiModelCostReferenceRepository $aiModelCosts = null,
     ): BackendUiController {
         $entityManager ??= $this->createStub(EntityManagerInterface::class);
         $passwordHasher ??= $this->createStub(UserPasswordHasherInterface::class);
@@ -58,7 +60,7 @@ final class BackendUiControllerTest extends TestCase
         $twig ??= $this->createTwigEnvironment();
         $activeTenantContext ??= new ActiveTenantContext(new RequestStack(), $this->createTenantRepositoryFake());
 
-        return new BackendUiController($security, $entityManager, $passwordHasher, $runtimeConfigurationService, $activeTenantContext, $twig, null, $productCatalogImportService, $csrfTokenManager, $tenantAccessResolver);
+        return new BackendUiController($security, $entityManager, $passwordHasher, $runtimeConfigurationService, $activeTenantContext, $twig, null, $aiModelCosts, $productCatalogImportService, $csrfTokenManager, $tenantAccessResolver);
     }
 
     private function createActiveTenantContext(?Tenant $tenant = null): ActiveTenantContext
@@ -97,6 +99,7 @@ final class BackendUiControllerTest extends TestCase
         ?RuntimeConfigurationService $runtimeConfigurationService = null,
         ?Environment $twig = null,
         ?TenantAccessResolver $tenantAccessResolver = null,
+        ?AiModelCostReferenceRepository $aiModelCosts = null,
     ): BackendUiController {
         return $this->createController(
             $security,
@@ -108,6 +111,7 @@ final class BackendUiControllerTest extends TestCase
             $twig,
             $this->createActiveTenantContext($tenant),
             $tenantAccessResolver,
+            $aiModelCosts,
         );
     }
 
@@ -1357,15 +1361,18 @@ final class BackendUiControllerTest extends TestCase
         self::assertStringContainsString('Ficha negocio, Canales, Handoff y Uso IA', $response->getContent());
         self::assertStringContainsString('No se guardará hasta que pulses Guardar cambios.', $response->getContent());
         self::assertStringContainsString('name="aiEnabled"', $response->getContent());
-        self::assertStringContainsString('name="dailyCostLimitEur"', $response->getContent());
-        self::assertStringContainsString('name="monthlyCostLimitEur"', $response->getContent());
-        self::assertStringContainsString('step="1"', $response->getContent());
+        self::assertStringContainsString('0,1M', $response->getContent());
+        self::assertStringContainsString('0,5M', $response->getContent());
+        self::assertStringNotContainsString('100.000', $response->getContent());
+        self::assertStringNotContainsString('500.000', $response->getContent());
+        self::assertStringContainsString('<select id="tenant-default-model" name="defaultModel">', $response->getContent());
+        self::assertStringContainsString('<select id="tenant-fallback-model" name="fallbackModel">', $response->getContent());
         self::assertStringContainsString('Tokens procesados hoy', $response->getContent());
         self::assertStringContainsString('Tokens procesados este mes', $response->getContent());
+        self::assertStringContainsString('0,0001M', $response->getContent());
+        self::assertStringContainsString('0,0005M', $response->getContent());
         self::assertStringContainsString('0,004321 €', $response->getContent());
         self::assertStringContainsString('0,012345 €', $response->getContent());
-        self::assertStringContainsString('100', $response->getContent());
-        self::assertStringContainsString('500', $response->getContent());
         self::assertStringContainsString('Límite diario de tokens', $response->getContent());
         self::assertStringContainsString('Límite mensual de tokens', $response->getContent());
         self::assertStringContainsString('Últimos 5 eventos IA', $response->getContent());
@@ -1483,8 +1490,8 @@ final class BackendUiControllerTest extends TestCase
                 'salesBoundaries' => "Sin garantías\nSin promesas",
                 'notes' => 'Actualización',
                 'aiEnabled' => '1',
-                'dailyCostLimitEur' => '60750',
-                'monthlyCostLimitEur' => '617658',
+                'dailyCostLimitEur' => '100000',
+                'monthlyCostLimitEur' => '500000',
                 'defaultModel' => 'gpt-4.1-mini',
                 'fallbackModel' => 'gpt-4.1-nano',
                 'limitAction' => 'block',
@@ -1517,6 +1524,38 @@ final class BackendUiControllerTest extends TestCase
         self::assertSame('gpt-4.1-mini', $policy->getDefaultModel());
         self::assertSame('gpt-4.1-nano', $policy->getFallbackModel());
         self::assertSame('block', $policy->getLimitAction());
+    }
+
+    public function testAiUsagePageRendersCommercialTopUpSelectBlocks(): void
+    {
+        $tenant = new Tenant('Federico Martin Demo', 'federico-martin-demo');
+        $tenant->setActive(true);
+
+        $security = $this->createStub(Security::class);
+        $security->method('getUser')->willReturn($this->createAuthenticatedUser('manager@example.com', ['manager'], 'María Manager'));
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => in_array($role, ['ROLE_MANAGER', 'ROLE_ADMIN'], true));
+
+        $csrfTokenManager = $this->createStub(CsrfTokenManagerInterface::class);
+        $csrfTokenManager->method('getToken')->willReturnCallback(
+            static fn (string $id): CsrfToken => new CsrfToken($id, 'token-'.$id)
+        );
+
+        $controller = $this->createControllerForActiveTenant($security, $tenant, null, null, $csrfTokenManager);
+        $response = $controller->aiUsage(
+            Request::create('/backend/ai-usage', 'GET'),
+            null,
+            $this->createAiUsageEventRepositoryFake()
+        );
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        self::assertStringContainsString('Ampliación solicitada', $response->getContent());
+        self::assertStringContainsString('<select id="ai-usage-request-amount" name="requestedTokens" required>', $response->getContent());
+        self::assertStringContainsString('>1M<', $response->getContent());
+        self::assertStringContainsString('>5M<', $response->getContent());
+        self::assertStringContainsString('>10M<', $response->getContent());
+        self::assertStringContainsString('>25M<', $response->getContent());
+        self::assertStringContainsString('>50M<', $response->getContent());
+        self::assertStringContainsString('>100M<', $response->getContent());
     }
 
     public function testPlaybooksPageRendersCreateAndEditActions(): void
