@@ -246,14 +246,16 @@ class AgentRuntime:
             if isinstance(conversation, dict) and isinstance(conversation.get("id"), str):
                 routing.conversation_id = conversation["id"]
 
-        agenda_response = self.decision_engine.resolve_agenda_response(
-            payload,
-            routing=routing,
-            backend_context=backend_context,
-            contact_context=None,
-        )
-        if agenda_response is not None:
-            return agenda_response
+        agenda_tools_available = self._mcp_agenda_tools_available(mcp_config)
+        if not agenda_tools_available:
+            agenda_response = self.decision_engine.resolve_agenda_response(
+                payload,
+                routing=routing,
+                backend_context=backend_context,
+                contact_context=None,
+            )
+            if agenda_response is not None:
+                return agenda_response
 
         explicit_handoff_request = self._is_explicit_handoff_request(payload)
         handoff_config = self._handoff_config_from_tenant(backend_context.tenant if backend_context is not None else None)
@@ -463,6 +465,15 @@ class AgentRuntime:
             return int(round(score * 100))
         except Exception:
             return None
+
+    def _mcp_agenda_tools_available(self, mcp_config: McpRemoteConfig | None) -> bool:
+        if mcp_config is None or not mcp_config.enabled:
+            return False
+
+        return any(
+            tool.strip().startswith("appointment_")
+            for tool in mcp_config.allowed_tools
+        )
 
     def _log_mcp_config(self, tenant_id: str, mcp_config: McpRemoteConfig | None) -> None:
         if mcp_config is None:

@@ -820,6 +820,139 @@ async def test_runtime_does_not_short_circuit_agenda_lookup_messages(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_runtime_does_not_short_circuit_agenda_booking_when_appointment_availability_is_available(monkeypatch: pytest.MonkeyPatch):
+    backend = RecordingBackendClient(
+        ref_context=BackendRoutingEntryPointUtmContext.model_validate(
+            {
+                "entry_point_utm_id": "utm-1",
+                "ref": "abc123",
+                "entry_point_id": "entrypoint-1",
+                "entry_point_code": "crm-demo",
+                "tenant_id": "tenant-1",
+                "tenant_slug": "negocio-demo",
+                "product_id": "product-1",
+                "product_name": "CRM Automation",
+                "playbook_id": "playbook-1",
+                "crm_branch_ref": "branch-1",
+                "utm_source": "google",
+                "utm_medium": "cpc",
+                "utm_campaign": "crm_pymes",
+                "status": "matched",
+            }
+        ),
+        mcp_config=McpRemoteConfig(
+            enabled=True,
+            server_label="tech_investments_mcp",
+            server_url="https://mcp.tech-investments.net/mcp",
+            allowed_tools=["appointment_availability", "contact_context_mock"],
+            timeout_seconds=15,
+        ),
+    )
+
+    async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None):
+        assert mcp_config is not None and mcp_config.enabled is True
+        return AgentResponse(
+            reply="Sí, veo huecos disponibles esta semana.",
+            intent="agenda",
+            score=0.93,
+            action="answer_question",
+            needs_human=False,
+            data_to_save={
+                "topic": "agenda",
+                "mcp_enabled": True,
+                "mcp_server_label": "tech_investments_mcp",
+                "mcp_response_id": "resp_availability_123",
+                "mcp_tool_traces": [
+                    {
+                        "type": "mcp_call",
+                        "server_label": "tech_investments_mcp",
+                        "tool_name": "appointment_availability",
+                        "arguments": {
+                            "service_ref": "maria-laser-axilas",
+                            "duration_minutes": 15,
+                            "timezone": "Europe/Madrid",
+                        },
+                        "output": {"available": True},
+                        "status": "completed",
+                    }
+                ],
+            },
+            provider="openai",
+            model="gpt-4.1-mini",
+            latency_ms=88,
+        )
+
+    monkeypatch.setattr(DecisionEngine, "decide", fake_decide)
+
+    runtime = AgentRuntime(backend, RuntimeRoutingResolver(backend), DecisionEngine(backend))  # type: ignore[arg-type]
+    payload = AgentRequest(
+        tenant_id="tenant-ignored",
+        entrypoint_ref="abc123",
+        message="Quiero reservar láser axilas esta semana. ¿Qué huecos tienes?",
+        contact=Contact(phone="+34999999999"),
+    )
+
+    response = await runtime.respond(payload)
+
+    assert response.provider == "openai"
+    assert response.model == "gpt-4.1-mini"
+    assert response.action == "answer_question"
+    assert response.data_to_save["mcp_tool_traces"][0]["tool_name"] == "appointment_availability"
+    create_calls = [call for call in backend.calls if call[0] == "create_conversation_message"]
+    assert len(create_calls) == 2
+    outbound_payload = create_calls[-1][1][0]
+    assert outbound_payload["metadata"]["mcp_enabled"] is True
+    assert outbound_payload["metadata"]["mcp_server_label"] == "tech_investments_mcp"
+    assert outbound_payload["metadata"]["mcp_tool_traces"][0]["tool_name"] == "appointment_availability"
+
+
+@pytest.mark.asyncio
+async def test_runtime_keeps_agenda_fallback_when_appointment_tools_are_unavailable(monkeypatch: pytest.MonkeyPatch):
+    backend = RecordingBackendClient(
+        ref_context=BackendRoutingEntryPointUtmContext.model_validate(
+            {
+                "entry_point_utm_id": "utm-1",
+                "ref": "abc123",
+                "entry_point_id": "entrypoint-1",
+                "entry_point_code": "crm-demo",
+                "tenant_id": "tenant-1",
+                "tenant_slug": "negocio-demo",
+                "product_id": "product-1",
+                "product_name": "CRM Automation",
+                "playbook_id": "playbook-1",
+                "crm_branch_ref": "branch-1",
+                "utm_source": "google",
+                "utm_medium": "cpc",
+                "utm_campaign": "crm_pymes",
+                "status": "matched",
+            }
+        ),
+        mcp_config=McpRemoteConfig(
+            enabled=True,
+            server_label="tech_investments_mcp",
+            server_url="https://mcp.tech-investments.net/mcp",
+            allowed_tools=["services_search"],
+            timeout_seconds=15,
+        ),
+    )
+
+    runtime = AgentRuntime(backend, RuntimeRoutingResolver(backend), DecisionEngine(backend))  # type: ignore[arg-type]
+    payload = AgentRequest(
+        tenant_id="tenant-ignored",
+        entrypoint_ref="abc123",
+        message="Quiero reservar láser axilas esta semana. ¿Qué huecos tienes?",
+        contact=Contact(phone="+34999999999"),
+    )
+
+    response = await runtime.respond(payload)
+
+    assert response.provider is None
+    assert response.model is None
+    assert response.action == "offer_booking_or_handoff"
+    assert "Ahora mismo no puedo consultar la agenda" in response.reply
+
+
+@pytest.mark.asyncio
 async def test_runtime_skips_legacy_handoff_webhook_when_llm_used_handoff_request(monkeypatch: pytest.MonkeyPatch):
     backend = RecordingBackendClient(
         ref_context=BackendRoutingEntryPointUtmContext.model_validate(
