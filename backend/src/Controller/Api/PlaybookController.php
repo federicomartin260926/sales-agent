@@ -9,7 +9,9 @@ use App\Entity\Tenant;
 use App\Repository\PlaybookRepository;
 use App\Repository\ProductRepository;
 use App\Repository\TenantRepository;
+use App\Exception\PlanLimitExceededException;
 use App\Service\TenantAccessResolver;
+use App\Service\PlanUsageGuard;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
@@ -26,6 +28,7 @@ final class PlaybookController extends AbstractApiController
         private readonly EntityManagerInterface $em,
         private readonly Security $security,
         private readonly ?TenantAccessResolver $tenantAccessResolver = null,
+        private readonly ?PlanUsageGuard $planUsageGuard = null,
     ) {
     }
 
@@ -80,15 +83,23 @@ final class PlaybookController extends AbstractApiController
             }
         }
 
-        $playbook = new Playbook($tenant, (string) $data['name'], $product);
-        $config = CommercialDomainSchema::normalizePlaybookConfig($data['config'] ?? []);
-        if (($error = CommercialDomainSchema::validatePlaybookConfig($config)) !== null) {
-            return $this->badRequest($error);
-        }
-        $playbook->setConfig($config);
-        $playbook->setActive((bool) ($data['isActive'] ?? true));
+        try {
+            if ($this->planUsageGuard instanceof PlanUsageGuard) {
+                $this->planUsageGuard->assertCanCreatePlaybook($tenant);
+            }
 
-        $this->playbooks->save($playbook);
+            $playbook = new Playbook($tenant, (string) $data['name'], $product);
+            $config = CommercialDomainSchema::normalizePlaybookConfig($data['config'] ?? []);
+            if (($error = CommercialDomainSchema::validatePlaybookConfig($config)) !== null) {
+                return $this->badRequest($error);
+            }
+            $playbook->setConfig($config);
+            $playbook->setActive((bool) ($data['isActive'] ?? true));
+
+            $this->playbooks->save($playbook);
+        } catch (PlanLimitExceededException $exception) {
+            return $this->json(['message' => $exception->getMessage()], 422);
+        }
 
         return $this->json($playbook->toArray(), JsonResponse::HTTP_CREATED);
     }

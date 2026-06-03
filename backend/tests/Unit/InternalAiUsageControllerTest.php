@@ -145,7 +145,66 @@ final class InternalAiUsageControllerTest extends TestCase
         self::assertSame('plan', $payload['monthly_limit_source']);
         self::assertGreaterThan(2.0, $payload['monthly_cost_limit_eur']);
         self::assertLessThan(2.2, $payload['monthly_cost_limit_eur']);
+        self::assertSame(false, $payload['audio_transcription_enabled_by_plan']);
+        self::assertSame(
+            'Tu plan actual no incluye procesamiento automático de audios. Por favor, escribe el mensaje en texto o contacta con el equipo para ampliar el plan.',
+            $payload['audio_transcription_plan_message']
+        );
         self::assertTrue($payload['exists']);
+    }
+
+    public function testPolicyPayloadEnablesAudioTranscriptionWhenPlanIncludesIt(): void
+    {
+        $tenant = new Tenant('Negocio Demo', 'tenant-1');
+        $tenant->setActive(true);
+        $plan = new CommercialPlan('growth', 'Growth');
+        $plan->setFeatures(['audio_transcription' => true]);
+        $tenant->setCommercialPlan($plan);
+
+        $policy = new \App\Entity\TenantAiUsagePolicy($tenant);
+        $policy->setAiEnabled(true);
+        $policy->setDefaultModel('gpt-4.1-mini');
+        $policy->setFallbackModel('gpt-4.1-mini');
+
+        $controller = new InternalAiUsageController(
+            new class($tenant) extends TenantRepository {
+                public function __construct(private readonly Tenant $tenant)
+                {
+                }
+
+                public function find($id, $lockMode = null, $lockVersion = null): ?object
+                {
+                    return $this->tenant;
+                }
+            },
+            new class($policy) extends TenantAiUsagePolicyRepository {
+                public function __construct(private readonly \App\Entity\TenantAiUsagePolicy $policy)
+                {
+                }
+
+                public function findOneByTenant(Tenant $tenant): ?\App\Entity\TenantAiUsagePolicy
+                {
+                    return $this->policy;
+                }
+            },
+            $this->createStub(AiUsageEventRepository::class),
+            $this->createStub(ConversationRepository::class),
+            $this->createStub(ConversationMessageRepository::class),
+            new InternalBearerTokenValidator(self::TOKEN),
+        );
+        $controller->setContainer(new Container());
+
+        $response = $controller->policy(
+            $tenant->getId()->toRfc4122(),
+            Request::create('/api/internal/ai-usage/'.$tenant->getId()->toRfc4122().'/policy', 'GET', [], [], [], [
+                'HTTP_AUTHORIZATION' => 'Bearer '.self::TOKEN,
+            ])
+        );
+
+        self::assertSame(200, $response->getStatusCode());
+        $payload = json_decode((string) $response->getContent(), true);
+        self::assertSame(true, $payload['audio_transcription_enabled_by_plan']);
+        self::assertSame(null, $payload['audio_transcription_plan_message']);
     }
 
     public function testPolicyPayloadFallsBackToManualMonthlyLimitWhenNoPlanIsAssigned(): void

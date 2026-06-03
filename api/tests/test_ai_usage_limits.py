@@ -39,6 +39,8 @@ class BlockedBackendClient:
         monthly_estimated_cost_eur: float = 0.0,
         max_audio_transcription_seconds: int | None = None,
         audio_limit_exceeded_message: str | None = None,
+        audio_transcription_enabled_by_plan: bool = True,
+        audio_transcription_plan_message: str | None = None,
     ) -> None:
         self.context = context
         self.settings = get_settings()
@@ -49,6 +51,8 @@ class BlockedBackendClient:
         self.monthly_estimated_cost_eur = monthly_estimated_cost_eur
         self.max_audio_transcription_seconds = max_audio_transcription_seconds
         self.audio_limit_exceeded_message = audio_limit_exceeded_message
+        self.audio_transcription_enabled_by_plan = audio_transcription_enabled_by_plan
+        self.audio_transcription_plan_message = audio_transcription_plan_message
         self.ai_usage_event_payloads: list[dict[str, object]] = []
 
     async def fetch_tenant_context(self, tenant_id: str, *args):
@@ -66,6 +70,8 @@ class BlockedBackendClient:
             monthly_cost_limit_eur=self.monthly_cost_limit_eur,
             max_audio_transcription_seconds=self.max_audio_transcription_seconds,
             audio_limit_exceeded_message=self.audio_limit_exceeded_message,
+            audio_transcription_enabled_by_plan=self.audio_transcription_enabled_by_plan,
+            audio_transcription_plan_message=self.audio_transcription_plan_message,
         )
 
     async def fetch_ai_usage_snapshot(self, tenant_id: str):
@@ -457,6 +463,68 @@ async def test_agent_respond_blocks_audio_when_transcription_is_disabled(monkeyp
     assert body["action"] == "audio_transcription_disabled"
     assert body["needs_human"] is True
     assert body["data_to_save"]["audio_transcription_disabled"] is True
+    assert backend.ai_usage_event_payloads == []
+
+
+@pytest.mark.asyncio
+async def test_agent_respond_blocks_audio_when_plan_disables_transcription(monkeypatch):
+    configure_environment()
+
+    backend = BlockedBackendClient(
+        build_context(),
+        ai_enabled=True,
+        max_audio_transcription_seconds=60,
+        audio_transcription_enabled_by_plan=False,
+    )
+
+    async def fail_if_llm_is_called(*args, **kwargs):
+        raise AssertionError("LLM should not be called when plan disables audio transcription")
+
+    monkeypatch.setattr(LLMClient, "resolve_configuration", fail_if_llm_is_called)
+    monkeypatch.setattr(LLMClient, "generate", fail_if_llm_is_called)
+    monkeypatch.setattr(LLMDecisionService, "propose", fail_if_llm_is_called)
+
+    app = create_app()
+    app.dependency_overrides[get_backend_client] = lambda: backend
+    runtime = AgentRuntime(
+        backend,
+        RuntimeRoutingResolver(backend),  # type: ignore[arg-type]
+        DecisionEngine(backend),  # type: ignore[arg-type]
+        audio_gateway_client=FailingAudioGatewayClient(),  # type: ignore[arg-type]
+        audio_transcription_client=FailingAudioTranscriptionClient(),  # type: ignore[arg-type]
+    )
+    app.dependency_overrides[get_agent_runtime] = lambda: runtime
+    client = TestClient(app)
+
+    response = client.post(
+        "/agent/respond",
+        headers={"Authorization": "Bearer test-internal-token"},
+        json={
+            "tenant_id": "tenant-1",
+            "message": {
+                "type": "audio",
+                "media": {
+                    "provider": "whatsapp_cloud_api",
+                    "kind": "audio",
+                    "media_id": "media-123",
+                    "mime_type": "audio/ogg",
+                    "sha256": "abc123",
+                    "duration_seconds": 12,
+                },
+            },
+            "contact": {"phone": "+34999999999", "name": "Ana"},
+            "conversation": {"last_messages": ["mensaje 1", "mensaje 2"]},
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["action"] == "audio_transcription_disabled"
+    assert body["needs_human"] is True
+    assert body["reply"] == "Tu plan actual no incluye procesamiento automático de audios. Por favor, escribe el mensaje en texto o contacta con el equipo para ampliar el plan."
+    assert body["data_to_save"]["audio_transcription_disabled"] is True
+    assert body["data_to_save"]["audio_transcription_disabled_by_plan"] is True
+    assert body["data_to_save"]["audio_transcription_plan_message"] == "Tu plan actual no incluye procesamiento automático de audios. Por favor, escribe el mensaje en texto o contacta con el equipo para ampliar el plan."
     assert backend.ai_usage_event_payloads == []
 
 

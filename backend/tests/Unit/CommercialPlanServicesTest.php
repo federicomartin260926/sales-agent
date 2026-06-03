@@ -3,10 +3,20 @@
 namespace App\Tests\Unit;
 
 use App\Entity\CommercialPlan;
+use App\Entity\EntryPoint;
+use App\Entity\ExternalTool;
+use App\Entity\Playbook;
+use App\Entity\Product;
 use App\Entity\Tenant;
 use App\Service\FeatureAccessChecker;
 use App\Service\PlanEntitlementResolver;
 use App\Service\PlanLimitResolver;
+use App\Service\PlanUsageGuard;
+use App\Exception\PlanLimitExceededException;
+use App\Repository\EntryPointRepository;
+use App\Repository\ExternalToolRepository;
+use App\Repository\PlaybookRepository;
+use App\Repository\ProductRepository;
 use PHPUnit\Framework\TestCase;
 
 final class CommercialPlanServicesTest extends TestCase
@@ -61,6 +71,45 @@ final class CommercialPlanServicesTest extends TestCase
         self::assertNull($resolver->getLimit($tenant, 'missing_limit'));
     }
 
+    public function testPlanUsageGuardBlocksResourceCreationWhenLimitIsReached(): void
+    {
+        $tenant = $this->tenant();
+        $tenant->setCommercialPlan($this->plan(null, [
+            'products' => 1,
+            'playbooks' => 1,
+            'entry_points' => 1,
+            'mcp_tools' => 1,
+        ]));
+
+        $product = new Product($tenant, 'Producto');
+        $playbook = new Playbook($tenant, 'Guía');
+        $entryPoint = new EntryPoint($product, 'code-1', 'Entrada');
+        $tool = new ExternalTool($tenant, 'MCP', 'mcp_remote', 'openai_remote_mcp');
+
+        $guard = $this->guard([$product], [$playbook], [$entryPoint], [$tool]);
+
+        self::assertFalse($guard->canUseAudioTranscription($tenant));
+        self::assertFalse($guard->canUseMcpTools($tenant));
+
+        self::expectException(PlanLimitExceededException::class);
+        self::expectExceptionMessage('Tu plan Starter ya alcanzó el límite de productos / servicios (1/1).');
+        $guard->assertCanCreateProduct($tenant);
+    }
+
+    public function testPlanUsageGuardBlocksWhenTenantHasNoCommercialPlan(): void
+    {
+        $tenant = $this->tenant();
+
+        $guard = $this->guard([], [], [], []);
+
+        self::assertFalse($guard->canUseAudioTranscription($tenant));
+        self::assertFalse($guard->canUseMcpTools($tenant));
+
+        self::expectException(PlanLimitExceededException::class);
+        self::expectExceptionMessage('Este negocio no tiene un plan comercial asignado.');
+        $guard->assertCanCreatePlaybook($tenant);
+    }
+
     /**
      * @param array<string, mixed>|null $features
      * @param array<string, mixed>|null $limits
@@ -85,5 +134,53 @@ final class CommercialPlanServicesTest extends TestCase
         $tenant->setActive(true);
 
         return $tenant;
+    }
+
+    private function guard(array $products, array $playbooks, array $entryPoints, array $externalTools): PlanUsageGuard
+    {
+        return new PlanUsageGuard(
+            new FeatureAccessChecker(new PlanEntitlementResolver()),
+            new PlanLimitResolver(new PlanEntitlementResolver()),
+            new class($products) extends ProductRepository {
+                public function __construct(private array $products)
+                {
+                }
+
+                public function findByTenantOrdered(Tenant $tenant): array
+                {
+                    return array_values(array_filter($this->products, static fn (Product $product): bool => $product->getTenant()->getId()->toRfc4122() === $tenant->getId()->toRfc4122()));
+                }
+            },
+            new class($playbooks) extends PlaybookRepository {
+                public function __construct(private array $playbooks)
+                {
+                }
+
+                public function findByTenantOrdered(Tenant $tenant): array
+                {
+                    return array_values(array_filter($this->playbooks, static fn (Playbook $playbook): bool => $playbook->getTenant()->getId()->toRfc4122() === $tenant->getId()->toRfc4122()));
+                }
+            },
+            new class($entryPoints) extends EntryPointRepository {
+                public function __construct(private array $entryPoints)
+                {
+                }
+
+                public function findByTenantOrdered(Tenant $tenant): array
+                {
+                    return array_values(array_filter($this->entryPoints, static fn (EntryPoint $entryPoint): bool => $entryPoint->getTenant()->getId()->toRfc4122() === $tenant->getId()->toRfc4122()));
+                }
+            },
+            new class($externalTools) extends ExternalToolRepository {
+                public function __construct(private array $externalTools)
+                {
+                }
+
+                public function findByTenantOrdered(Tenant $tenant): array
+                {
+                    return array_values(array_filter($this->externalTools, static fn (ExternalTool $tool): bool => $tool->getTenant()->getId()->toRfc4122() === $tenant->getId()->toRfc4122()));
+                }
+            }
+        );
     }
 }

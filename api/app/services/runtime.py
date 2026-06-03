@@ -36,6 +36,9 @@ class AgentRuntime:
     AUDIO_TRANSCRIPTION_USAGE_LIMIT_MESSAGE = (
         "Ahora mismo no puedo procesar audios. Por favor, envíame tu consulta por escrito."
     )
+    AUDIO_TRANSCRIPTION_PLAN_DISABLED_MESSAGE = (
+        "Tu plan actual no incluye procesamiento automático de audios. Por favor, escribe el mensaje en texto o contacta con el equipo para ampliar el plan."
+    )
 
     def __init__(
         self,
@@ -90,6 +93,18 @@ class AgentRuntime:
                 )
 
             ai_usage_decision = await self.ai_usage_guard.evaluate(routing.tenant_id)
+            audio_plan_enabled = getattr(ai_usage_decision.policy, "audio_transcription_enabled_by_plan", True)
+            if not audio_plan_enabled:
+                return self._audio_transcription_disabled_response(
+                    payload,
+                    routing,
+                    reply=self._audio_transcription_plan_disabled_message(ai_usage_decision.policy),
+                    data_extra={
+                        "audio_transcription_disabled_by_plan": True,
+                        "audio_transcription_plan_message": self._audio_transcription_plan_disabled_message(ai_usage_decision.policy),
+                    },
+                )
+
             if not ai_usage_decision.allowed:
                 return self._ai_usage_limit_response(ai_usage_decision)
 
@@ -1145,24 +1160,40 @@ class AgentRuntime:
             data_to_save=data,
         )
 
-    def _audio_transcription_disabled_response(self, payload: AgentRequest, routing: RoutingContext) -> AgentResponse:
+    def _audio_transcription_disabled_response(
+        self,
+        payload: AgentRequest,
+        routing: RoutingContext,
+        *,
+        reply: str | None = None,
+        data_extra: dict[str, Any] | None = None,
+    ) -> AgentResponse:
         data: dict[str, Any] = {
             "audio_transcription_disabled": True,
             "audio_message_id": payload.message.id,
             "audio_media_id": self._audio_media_id(payload),
             "audio_mime_type": self._audio_media_mime_type(payload),
         }
+        if data_extra:
+            data.update(data_extra)
         if routing.tenant_id.strip() != "":
             data["tenant_id"] = routing.tenant_id.strip()
 
         return AgentResponse(
-            reply=self.AUDIO_TRANSCRIPTION_USAGE_LIMIT_MESSAGE,
+            reply=reply or self.AUDIO_TRANSCRIPTION_USAGE_LIMIT_MESSAGE,
             intent="handoff",
             score=0.9,
             action="audio_transcription_disabled",
             needs_human=True,
             data_to_save=data,
         )
+
+    def _audio_transcription_plan_disabled_message(self, policy: Any | None) -> str:
+        value = getattr(policy, "audio_transcription_plan_message", None)
+        if isinstance(value, str) and value.strip() != "":
+            return value.strip()
+
+        return self.AUDIO_TRANSCRIPTION_PLAN_DISABLED_MESSAGE
 
     def _audio_media_mime_type(self, payload: AgentRequest) -> str | None:
         media = payload.message.media

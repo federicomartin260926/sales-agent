@@ -7,11 +7,18 @@ use App\Entity\Product;
 use App\Entity\Tenant;
 use App\Repository\ProductRepository;
 use App\Repository\TenantRepository;
+use App\Repository\EntryPointRepository;
+use App\Repository\ExternalToolRepository;
+use App\Repository\PlaybookRepository;
 use Doctrine\ORM\EntityManagerInterface;
 use PHPUnit\Framework\TestCase;
 use Symfony\Bundle\SecurityBundle\Security;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\DependencyInjection\Container;
+use App\Service\FeatureAccessChecker;
+use App\Service\PlanEntitlementResolver;
+use App\Service\PlanLimitResolver;
+use App\Service\PlanUsageGuard;
 
 final class ProductControllerTest extends TestCase
 {
@@ -96,6 +103,34 @@ final class ProductControllerTest extends TestCase
         self::assertSame($tenantA->getId()->toRfc4122(), $repository->saved[0]->getTenant()->getId()->toRfc4122());
     }
 
+    public function testCreateBlocksWhenTenantHasNoCommercialPlan(): void
+    {
+        $tenant = $this->tenant('tenant-a', 'Tenant A');
+        $controller = $this->createController(['tenant-a' => $tenant], [], null, $this->planUsageGuard([]));
+
+        $response = $controller->create(Request::create(
+            '/api/products?tenant_id=tenant-a',
+            'POST',
+            [],
+            [],
+            [],
+            ['CONTENT_TYPE' => 'application/json'],
+            json_encode([
+                'name' => 'WhatsApp Automation',
+                'slug' => 'whatsapp-automation',
+                'description' => 'Automatización comercial',
+                'valueProposition' => 'Atiende leads 24/7',
+                'salesPolicy' => [
+                    'positioning' => 'Automatización comercial para leads entrantes.',
+                ],
+                'isActive' => true,
+            ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES),
+        ));
+
+        self::assertSame(422, $response->getStatusCode());
+        self::assertSame('Este negocio no tiene un plan comercial asignado.', json_decode((string) $response->getContent(), true)['message']);
+    }
+
     public function testUpdateRejectsTenantChange(): void
     {
         $tenantA = $this->tenant('tenant-a', 'Tenant A');
@@ -140,7 +175,7 @@ final class ProductControllerTest extends TestCase
         self::assertSame(404, $response->getStatusCode());
     }
 
-    private function createController(array $tenants, array $products, ?ProductRepository $productRepository = null): ProductController
+    private function createController(array $tenants, array $products, ?ProductRepository $productRepository = null, ?PlanUsageGuard $planUsageGuard = null): ProductController
     {
         $tenantRepository = $this->tenantRepository($tenants);
         $productRepository ??= $this->productRepository($products);
@@ -150,10 +185,51 @@ final class ProductControllerTest extends TestCase
             $tenantRepository,
             $this->createStub(EntityManagerInterface::class),
             $this->superAdminSecurity(),
+            null,
+            $planUsageGuard,
         );
         $controller->setContainer(new Container());
 
         return $controller;
+    }
+
+    private function planUsageGuard(array $products): PlanUsageGuard
+    {
+        return new PlanUsageGuard(
+            new FeatureAccessChecker(new PlanEntitlementResolver()),
+            new PlanLimitResolver(new PlanEntitlementResolver()),
+            $this->productRepository($products),
+            new class extends PlaybookRepository {
+                public function __construct()
+                {
+                }
+
+                public function findByTenantOrdered(Tenant $tenant): array
+                {
+                    return [];
+                }
+            },
+            new class extends EntryPointRepository {
+                public function __construct()
+                {
+                }
+
+                public function findByTenantOrdered(Tenant $tenant): array
+                {
+                    return [];
+                }
+            },
+            new class extends ExternalToolRepository {
+                public function __construct()
+                {
+                }
+
+                public function findByTenantOrdered(Tenant $tenant): array
+                {
+                    return [];
+                }
+            }
+        );
     }
 
     private function tenantRepository(array $tenants): TenantRepository

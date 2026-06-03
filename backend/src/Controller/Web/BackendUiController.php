@@ -15,6 +15,7 @@ use App\Entity\TenantAiUsagePolicy;
 use App\Entity\TenantAiTopUpRequest;
 use App\Entity\TenantMembership;
 use App\Entity\User;
+use App\Exception\PlanLimitExceededException;
 use App\Repository\AiUsageEventRepository;
 use App\Repository\AiModelCostReferenceRepository;
 use App\Repository\CommercialPlanRepository;
@@ -29,6 +30,7 @@ use App\Repository\UserRepository;
 use App\Service\ActiveTenantContext;
 use App\Service\CommercialTokenFormatter;
 use App\Service\PlanEntitlementResolver;
+use App\Service\PlanUsageGuard;
 use App\Service\RuntimeConfigurationService;
 use App\Service\TenantAccessResolver;
 use App\Service\ProductCatalogImportResult;
@@ -61,6 +63,7 @@ final class BackendUiController
         private readonly ?CsrfTokenManagerInterface $csrfTokenManager = null,
         private readonly ?TenantAccessResolver $tenantAccessResolver = null,
         private readonly ?PlanEntitlementResolver $planEntitlementResolver = null,
+        private readonly ?PlanUsageGuard $planUsageGuard = null,
     ) {
     }
 
@@ -365,12 +368,20 @@ final class BackendUiController
                 $error = $this->validatePlaybookForm($values, null, $activeTenant, $products, $playbooks);
 
                 if ($error === null) {
-                    $playbook = new Playbook($activeTenant, $values['name']);
-                    $this->hydratePlaybookFromForm($playbook, $values, $activeTenant, $products);
-                    $this->entityManager->persist($playbook);
-                    $this->entityManager->flush();
+                    try {
+                        if ($this->planUsageGuard instanceof PlanUsageGuard) {
+                            $this->planUsageGuard->assertCanCreatePlaybook($activeTenant);
+                        }
 
-                    return new RedirectResponse('/backend/playbooks');
+                        $playbook = new Playbook($activeTenant, $values['name']);
+                        $this->hydratePlaybookFromForm($playbook, $values, $activeTenant, $products);
+                        $this->entityManager->persist($playbook);
+                        $this->entityManager->flush();
+
+                        return new RedirectResponse('/backend/playbooks');
+                    } catch (PlanLimitExceededException $exception) {
+                        $error = $exception->getMessage();
+                    }
                 }
             }
         }
@@ -1383,12 +1394,20 @@ final class BackendUiController
                 $error = $this->validateProductForm($values, null, $activeTenant, $products);
 
                 if ($error === null) {
-                    $product = new Product($activeTenant, $values['name']);
-                    $this->hydrateProductFromForm($product, $values, $activeTenant);
-                    $this->entityManager->persist($product);
-                    $this->entityManager->flush();
+                    try {
+                        if ($this->planUsageGuard instanceof PlanUsageGuard) {
+                            $this->planUsageGuard->assertCanCreateProduct($activeTenant);
+                        }
 
-                    return new RedirectResponse('/backend/products');
+                        $product = new Product($activeTenant, $values['name']);
+                        $this->hydrateProductFromForm($product, $values, $activeTenant);
+                        $this->entityManager->persist($product);
+                        $this->entityManager->flush();
+
+                        return new RedirectResponse('/backend/products');
+                    } catch (PlanLimitExceededException $exception) {
+                        $error = $exception->getMessage();
+                    }
                 }
             }
         }
@@ -1575,12 +1594,20 @@ final class BackendUiController
                     if (!$product instanceof Product || $product->getTenant()->getId()->toRfc4122() !== $activeTenant->getId()->toRfc4122()) {
                         $error = 'El producto seleccionado no pertenece al negocio activo.';
                     } else {
-                        $entryPoint = new EntryPoint($product, $values['code'], $values['name']);
-                        $this->hydrateEntryPointFromForm($entryPoint, $values, $product, $playbooks);
-                        $this->entityManager->persist($entryPoint);
-                        $this->entityManager->flush();
+                        try {
+                            if ($this->planUsageGuard instanceof PlanUsageGuard) {
+                                $this->planUsageGuard->assertCanCreateEntryPoint($activeTenant);
+                            }
 
-                        return new RedirectResponse('/backend/entry-points');
+                            $entryPoint = new EntryPoint($product, $values['code'], $values['name']);
+                            $this->hydrateEntryPointFromForm($entryPoint, $values, $product, $playbooks);
+                            $this->entityManager->persist($entryPoint);
+                            $this->entityManager->flush();
+
+                            return new RedirectResponse('/backend/entry-points');
+                        } catch (PlanLimitExceededException $exception) {
+                            $error = $exception->getMessage();
+                        }
                     }
                 }
             }
@@ -2979,6 +3006,7 @@ final class BackendUiController
             'csrf_token' => $this->aiUsageTopUpRequestTokenValue(),
             'values' => $values,
             'commercial_token_options' => $this->commercialMillionOptionsWithCurrent([1, 5, 10, 25, 50, 100], $values['requestedTokens'] ?? ''),
+            'dashboard' => $dashboard,
             ...$dashboard,
         ]);
 

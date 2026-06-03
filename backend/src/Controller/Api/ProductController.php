@@ -7,7 +7,9 @@ use App\Entity\Product;
 use App\Entity\Tenant;
 use App\Repository\ProductRepository;
 use App\Repository\TenantRepository;
+use App\Exception\PlanLimitExceededException;
 use App\Service\TenantAccessResolver;
+use App\Service\PlanUsageGuard;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
@@ -23,6 +25,7 @@ final class ProductController extends AbstractApiController
         private readonly EntityManagerInterface $em,
         private readonly Security $security,
         private readonly ?TenantAccessResolver $tenantAccessResolver = null,
+        private readonly ?PlanUsageGuard $planUsageGuard = null,
     ) {
     }
 
@@ -81,32 +84,40 @@ final class ProductController extends AbstractApiController
             return $error;
         }
 
-        $product = new Product($tenant, (string) $data['name']);
-        if (isset($data['slug']) && trim((string) $data['slug']) !== '') {
-            $product->setSlug((string) $data['slug']);
-        }
-        if (array_key_exists('externalSource', $data)) {
-            $product->setExternalSource(is_string($data['externalSource']) && trim($data['externalSource']) !== '' ? $data['externalSource'] : null);
-        }
-        if (array_key_exists('externalReference', $data)) {
-            $product->setExternalReference(is_string($data['externalReference']) && trim($data['externalReference']) !== '' ? $data['externalReference'] : null);
-        }
-        $product->setDescription((string) ($data['description'] ?? ''));
-        $product->setValueProposition((string) ($data['valueProposition'] ?? ''));
-        if (array_key_exists('basePriceCents', $data)) {
-            $product->setBasePriceCents($this->intOrNull($data['basePriceCents']));
-        }
-        if (array_key_exists('currency', $data)) {
-            $product->setCurrency(is_string($data['currency']) && trim($data['currency']) !== '' ? $data['currency'] : null);
-        }
-        $salesPolicy = CommercialDomainSchema::normalizeProductSalesPolicy($data['salesPolicy'] ?? []);
-        if (($error = CommercialDomainSchema::validateProductSalesPolicy($salesPolicy)) !== null) {
-            return $this->badRequest($error);
-        }
-        $product->setSalesPolicy($salesPolicy);
-        $product->setActive((bool) ($data['isActive'] ?? true));
+        try {
+            if ($this->planUsageGuard instanceof PlanUsageGuard) {
+                $this->planUsageGuard->assertCanCreateProduct($tenant);
+            }
 
-        $this->products->save($product);
+            $product = new Product($tenant, (string) $data['name']);
+            if (isset($data['slug']) && trim((string) $data['slug']) !== '') {
+                $product->setSlug((string) $data['slug']);
+            }
+            if (array_key_exists('externalSource', $data)) {
+                $product->setExternalSource(is_string($data['externalSource']) && trim($data['externalSource']) !== '' ? $data['externalSource'] : null);
+            }
+            if (array_key_exists('externalReference', $data)) {
+                $product->setExternalReference(is_string($data['externalReference']) && trim($data['externalReference']) !== '' ? $data['externalReference'] : null);
+            }
+            $product->setDescription((string) ($data['description'] ?? ''));
+            $product->setValueProposition((string) ($data['valueProposition'] ?? ''));
+            if (array_key_exists('basePriceCents', $data)) {
+                $product->setBasePriceCents($this->intOrNull($data['basePriceCents']));
+            }
+            if (array_key_exists('currency', $data)) {
+                $product->setCurrency(is_string($data['currency']) && trim($data['currency']) !== '' ? $data['currency'] : null);
+            }
+            $salesPolicy = CommercialDomainSchema::normalizeProductSalesPolicy($data['salesPolicy'] ?? []);
+            if (($error = CommercialDomainSchema::validateProductSalesPolicy($salesPolicy)) !== null) {
+                return $this->badRequest($error);
+            }
+            $product->setSalesPolicy($salesPolicy);
+            $product->setActive((bool) ($data['isActive'] ?? true));
+
+            $this->products->save($product);
+        } catch (PlanLimitExceededException $exception) {
+            return $this->json(['message' => $exception->getMessage()], 422);
+        }
 
         return $this->json($product->toArray(), JsonResponse::HTTP_CREATED);
     }

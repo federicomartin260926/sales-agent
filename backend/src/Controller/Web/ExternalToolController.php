@@ -4,11 +4,13 @@ namespace App\Controller\Web;
 
 use App\Entity\ExternalTool;
 use App\Entity\Tenant;
+use App\Exception\PlanLimitExceededException;
 use App\Repository\ExternalToolRepository;
 use App\Repository\TenantRepository;
 use App\Service\ActiveTenantContext;
 use App\Service\RuntimeSettingCipher;
 use App\Service\RuntimeConfigurationService;
+use App\Service\PlanUsageGuard;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\DependencyInjection\Attribute\Autowire;
@@ -49,6 +51,7 @@ final class ExternalToolController extends AbstractController
         private readonly RuntimeConfigurationService $runtimeConfigurationService,
         private readonly ActiveTenantContext $activeTenantContext,
         private readonly ?CsrfTokenManagerInterface $csrfTokenManager = null,
+        private readonly ?PlanUsageGuard $planUsageGuard = null,
     ) {
     }
 
@@ -114,12 +117,20 @@ final class ExternalToolController extends AbstractController
             } else {
                 $errors = $this->validateToolForm($values);
                 if ($errors === []) {
-                    $tool = new ExternalTool($activeTenant, $values['name'], $values['type'], $values['provider']);
-                    $this->applyToolFormValues($tool, $values, true, $activeTenant);
-                    $this->entityManager->persist($tool);
-                    $this->entityManager->flush();
+                    try {
+                        if ($this->planUsageGuard instanceof PlanUsageGuard && $values['type'] === self::MCP_TOOL_TYPE && $values['isActive']) {
+                            $this->planUsageGuard->assertCanCreateExternalTool($activeTenant);
+                        }
 
-                    return new RedirectResponse($this->backendExternalToolsIndexUrl($activeTenant->getId()->toRfc4122()));
+                        $tool = new ExternalTool($activeTenant, $values['name'], $values['type'], $values['provider']);
+                        $this->applyToolFormValues($tool, $values, true, $activeTenant);
+                        $this->entityManager->persist($tool);
+                        $this->entityManager->flush();
+
+                        return new RedirectResponse($this->backendExternalToolsIndexUrl($activeTenant->getId()->toRfc4122()));
+                    } catch (PlanLimitExceededException $exception) {
+                        $errors[] = $exception->getMessage();
+                    }
                 }
             }
         }
@@ -171,11 +182,19 @@ final class ExternalToolController extends AbstractController
             } else {
                 $errors = $this->validateToolForm($values, $tool);
                 if ($errors === []) {
-                    $this->applyToolFormValues($tool, $values, false, $activeTenant);
-                    $this->entityManager->persist($tool);
-                    $this->entityManager->flush();
+                    try {
+                        if ($this->planUsageGuard instanceof PlanUsageGuard && $values['type'] === self::MCP_TOOL_TYPE && $values['isActive'] && (!$tool->isActive() || $tool->getType() !== self::MCP_TOOL_TYPE)) {
+                            $this->planUsageGuard->assertCanCreateExternalTool($activeTenant);
+                        }
 
-                    return new RedirectResponse($this->backendExternalToolsIndexUrl($activeTenant->getId()->toRfc4122()));
+                        $this->applyToolFormValues($tool, $values, false, $activeTenant);
+                        $this->entityManager->persist($tool);
+                        $this->entityManager->flush();
+
+                        return new RedirectResponse($this->backendExternalToolsIndexUrl($activeTenant->getId()->toRfc4122()));
+                    } catch (PlanLimitExceededException $exception) {
+                        $errors[] = $exception->getMessage();
+                    }
                 }
             }
         }
@@ -212,6 +231,21 @@ final class ExternalToolController extends AbstractController
         }
 
         $wasRuntimeDefault = $tool->isRuntimeDefault();
+        if ($tool->getType() === self::MCP_TOOL_TYPE && !$tool->isActive()) {
+            if (!$this->planUsageGuard instanceof PlanUsageGuard) {
+                $this->addFlash('error', 'No hay un plan comercial disponible para activar servidores MCP.');
+
+                return new RedirectResponse($this->backendExternalToolsIndexUrl($tool->getTenant()->getId()->toRfc4122()));
+            }
+
+            try {
+                $this->planUsageGuard->assertCanCreateExternalTool($tool->getTenant());
+            } catch (PlanLimitExceededException $exception) {
+                $this->addFlash('error', $exception->getMessage());
+
+                return new RedirectResponse($this->backendExternalToolsIndexUrl($tool->getTenant()->getId()->toRfc4122()));
+            }
+        }
         $tool->setActive(!$tool->isActive());
         if (!$tool->isActive() && $wasRuntimeDefault) {
             $tool->setRuntimeDefault(false);

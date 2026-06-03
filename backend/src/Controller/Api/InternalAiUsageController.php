@@ -3,6 +3,7 @@
 namespace App\Controller\Api;
 
 use App\Entity\AiUsageEvent;
+use App\Entity\CommercialPlan;
 use App\Entity\Conversation;
 use App\Entity\ConversationMessage;
 use App\Entity\Tenant;
@@ -198,6 +199,7 @@ final class InternalAiUsageController extends AbstractApiController
     {
         $tokenRate = $this->tenantAiUsageTokenRate($policy);
         $commercialPlanContext = $this->tenantCommercialPlanContext($tenant, $policy, $tokenRate);
+        $audioPlanContext = $this->tenantAudioPlanContext($tenant);
 
         $effectiveMonthlyTokens = $commercialPlanContext['effectiveTokens'];
         $payload['commercial_plan_code'] = $commercialPlanContext['commercialPlan']['code'];
@@ -207,8 +209,41 @@ final class InternalAiUsageController extends AbstractApiController
         $payload['effective_monthly_ai_token_limit'] = $effectiveMonthlyTokens;
         $payload['monthly_limit_source'] = $commercialPlanContext['source'];
         $payload['monthly_cost_limit_eur'] = $effectiveMonthlyTokens !== null ? $this->costAmountFromTokens($effectiveMonthlyTokens, $tokenRate) : $payload['monthly_cost_limit_eur'];
+        $payload['audio_transcription_enabled_by_plan'] = $audioPlanContext['enabled'];
+        $payload['audio_transcription_plan_message'] = $audioPlanContext['message'];
 
         return $payload;
+    }
+
+    /**
+     * @return array{enabled: bool, message: string|null}
+     */
+    private function tenantAudioPlanContext(Tenant $tenant): array
+    {
+        $plan = $tenant->getCommercialPlan();
+        if (!$plan instanceof CommercialPlan) {
+            return [
+                'enabled' => false,
+                'message' => 'Este negocio no tiene un plan comercial asignado.',
+            ];
+        }
+
+        $features = $this->planEntitlementResolver instanceof PlanEntitlementResolver
+            ? ($this->planEntitlementResolver->resolve($tenant)['features'] ?? [])
+            : $plan->getFeatures();
+
+        $enabled = $this->truthyFeatureValue($features['audio_transcription'] ?? false);
+        if ($enabled) {
+            return [
+                'enabled' => true,
+                'message' => null,
+            ];
+        }
+
+        return [
+            'enabled' => false,
+            'message' => 'Tu plan actual no incluye procesamiento automático de audios. Por favor, escribe el mensaje en texto o contacta con el equipo para ampliar el plan.',
+        ];
     }
 
     /**
@@ -343,6 +378,28 @@ final class InternalAiUsageController extends AbstractApiController
         $tokens = (int) round((float) $value);
 
         return $tokens > 0 ? $tokens : null;
+    }
+
+    private function truthyFeatureValue(mixed $value): bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        if (is_int($value) || is_float($value)) {
+            return $value > 0;
+        }
+
+        if (!is_string($value)) {
+            return false;
+        }
+
+        $normalized = strtolower(trim($value));
+        if ($normalized === '') {
+            return false;
+        }
+
+        return !in_array($normalized, ['0', 'false', 'no', 'off', 'disabled', 'none', 'null'], true);
     }
 
     private function tenantAiCurrentPeriodKey(?\DateTimeImmutable $date = null): string

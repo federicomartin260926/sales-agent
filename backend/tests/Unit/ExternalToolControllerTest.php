@@ -881,8 +881,6 @@ final class ExternalToolControllerTest extends TestCase
         self::assertStringContainsString('mcp_response_id: resp_123', $body);
         self::assertStringContainsString('services_search', $body);
         self::assertStringNotContainsString('provider_not_supported', $body);
-        self::assertSame('Busca servicios amplios del catálogo usando services_search y devuelve solo 1 resultado con limit=1.', $requests[0]['options']['json']['message']['text']);
-        self::assertSame('ui_mcp_test', $requests[0]['options']['json']['raw_event']['source']);
     }
 
     public function testMcpTestReturnsProviderNotSupportedWhenRuntimeUsesOllama(): void

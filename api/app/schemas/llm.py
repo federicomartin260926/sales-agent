@@ -118,6 +118,14 @@ class BackendAiUsagePolicy(BaseModel):
         default=None,
         validation_alias=AliasChoices("audio_limit_exceeded_message", "audioLimitExceededMessage"),
     )
+    audio_transcription_enabled_by_plan: bool = Field(
+        default=True,
+        validation_alias=AliasChoices("audio_transcription_enabled_by_plan", "audioTranscriptionEnabledByPlan"),
+    )
+    audio_transcription_plan_message: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("audio_transcription_plan_message", "audioTranscriptionPlanMessage"),
+    )
     limit_action: str = Field(default="handoff_human", validation_alias=AliasChoices("limit_action", "limitAction"))
     created_at: str | None = Field(default=None, validation_alias=AliasChoices("created_at", "createdAt"))
     updated_at: str | None = Field(default=None, validation_alias=AliasChoices("updated_at", "updatedAt"))
