@@ -89,6 +89,20 @@
 <section class="profile-grid">
   <article class="profile-card">
     <div class="profile-card-header">
+      <h3>Plan comercial</h3>
+      <span class="subtle">{{ dashboard.monthly_limit_source == 'plan' ? 'Base del plan' : (dashboard.monthly_limit_source == 'manual_policy' ? 'Fallback manual' : 'Sin base mensual') }}</span>
+    </div>
+    <div class="profile-card-body">
+      <p>Asignado: <strong>{{ dashboard.commercial_plan.summary }}</strong></p>
+      <p>Tokens incluidos por plan: <strong>{{ dashboard.commercial_plan.tokens.primary }}</strong></p>
+      <p>Tokens extra aprobados este mes: <strong>{{ dashboard.monthly_top_ups.value.primary }}</strong></p>
+      <p>Límite mensual efectivo: <strong>{{ dashboard.monthly_effective_limit.value.primary }}</strong></p>
+      <p class="subtle">{{ dashboard.monthly_base_limit.note }}</p>
+    </div>
+  </article>
+
+  <article class="profile-card">
+    <div class="profile-card-header">
       <h3>Policy IA</h3>
       <span class="subtle">{{ policy_exists ? 'Configurada' : 'Sin policy' }}</span>
     </div>

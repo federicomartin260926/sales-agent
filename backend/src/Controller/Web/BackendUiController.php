@@ -28,6 +28,7 @@ use App\Repository\TenantRepository;
 use App\Repository\UserRepository;
 use App\Service\ActiveTenantContext;
 use App\Service\CommercialTokenFormatter;
+use App\Service\PlanEntitlementResolver;
 use App\Service\RuntimeConfigurationService;
 use App\Service\TenantAccessResolver;
 use App\Service\ProductCatalogImportResult;
@@ -59,6 +60,7 @@ final class BackendUiController
         private readonly ?ProductCatalogImportService $productCatalogImportService = null,
         private readonly ?CsrfTokenManagerInterface $csrfTokenManager = null,
         private readonly ?TenantAccessResolver $tenantAccessResolver = null,
+        private readonly ?PlanEntitlementResolver $planEntitlementResolver = null,
     ) {
     }
 
@@ -3090,10 +3092,11 @@ final class BackendUiController
         ];
 
         $tokenRate = $this->tenantAiUsageTokenRate($policy);
+        $commercialPlanContext = $this->tenantCommercialPlanContext($tenant, $policy, $topUpRequests, $tokenRate);
         $dailyLimitTokens = $policy instanceof TenantAiUsagePolicy ? $this->tokenAmountFromCost($policy->getDailyCostLimitEur(), $tokenRate) : null;
-        $monthlyBaseLimitTokens = $policy instanceof TenantAiUsagePolicy ? $this->tokenAmountFromCost($policy->getMonthlyCostLimitEur(), $tokenRate) : null;
+        $monthlyBaseLimitTokens = $commercialPlanContext['baseTokens'];
         $approvedTopUpTokens = $topUpRequests instanceof TenantAiTopUpRequestRepository ? $topUpRequests->sumApprovedTokensByTenantAndPeriod($tenant, $periodKey) : 0;
-        $monthlyEffectiveLimitTokens = $monthlyBaseLimitTokens !== null ? $monthlyBaseLimitTokens + $approvedTopUpTokens : null;
+        $monthlyEffectiveLimitTokens = $commercialPlanContext['effectiveTokens'];
         $dailyUsedTokens = (int) ($todaySummary['total_tokens'] ?? 0);
         $monthlyUsedTokens = (int) ($monthSummary['total_tokens'] ?? 0);
         $dailyRemainingTokens = $dailyLimitTokens !== null ? max(0, $dailyLimitTokens - $dailyUsedTokens) : null;
@@ -3161,9 +3164,9 @@ final class BackendUiController
             ],
             'daily_limit' => $this->tenantAiUsageLimitView('Límite diario base', $dailyLimitTokens, $dailyUsedTokens, $dailyRemainingTokens, $dailyPercent, 'Cuota recurrente diaria del tenant.', $policy instanceof TenantAiUsagePolicy),
             'monthly_base_limit' => [
-                'label' => 'Plan mensual base',
+                'label' => $commercialPlanContext['baseLabel'],
                 'value' => CommercialTokenFormatter::formatCommercialDual($monthlyBaseLimitTokens),
-                'note' => $policy instanceof TenantAiUsagePolicy ? 'Cupo recurrente del tenant.' : 'No hay policy base configurada.',
+                'note' => $commercialPlanContext['baseNote'],
             ],
             'monthly_top_ups' => [
                 'label' => 'Recargas aprobadas este mes',
@@ -3171,6 +3174,8 @@ final class BackendUiController
                 'note' => $approvedTopUpTokens > 0 ? sprintf('Aplicadas al periodo %s.', $periodKey) : 'No hay recargas aprobadas en el periodo actual.',
             ],
             'monthly_effective_limit' => $this->tenantAiUsageLimitView('Cupo efectivo este mes', $monthlyEffectiveLimitTokens, $monthlyUsedTokens, $monthlyRemainingTokens, $monthlyPercent, 'Base + recargas del periodo actual.', $policy instanceof TenantAiUsagePolicy),
+            'commercial_plan' => $commercialPlanContext['commercialPlan'],
+            'monthly_limit_source' => $commercialPlanContext['source'],
             'period' => [
                 'label' => 'Periodo actual',
                 'current' => $periodKey,
@@ -3193,6 +3198,82 @@ final class BackendUiController
                 'dailyCostLimitEur' => $this->formatTokenInputFromCost($policy?->getDailyCostLimitEur(), $tokenRate) ?? '',
             ],
         ];
+    }
+
+    /**
+     * @return array{
+     *     baseTokens: int|null,
+     *     baseLabel: string,
+     *     baseNote: string,
+     *     source: 'plan'|'manual_policy'|'none',
+     *     commercialPlan: array{exists: bool, code: string, name: string, tokens: array{primary: string, secondary: string|null}, summary: string, note: string}
+     * }
+     */
+    private function tenantCommercialPlanContext(Tenant $tenant, ?TenantAiUsagePolicy $policy, ?TenantAiTopUpRequestRepository $topUpRequests, ?float $tokenRate): array
+    {
+        $plan = $tenant->getCommercialPlan();
+        $planData = [
+            'exists' => $plan instanceof CommercialPlan,
+            'code' => $plan instanceof CommercialPlan ? $plan->getCode() : '',
+            'name' => $plan instanceof CommercialPlan ? $plan->getName() : 'Sin plan comercial asignado',
+            'tokens' => CommercialTokenFormatter::formatCommercialDual(null),
+            'summary' => $plan instanceof CommercialPlan ? sprintf('%s (%s)', $plan->getName(), $plan->getCode()) : 'Sin plan comercial asignado',
+            'note' => $plan instanceof CommercialPlan ? 'Tokens incluidos por el plan comercial.' : 'El cupo mensual sale de la policy manual si existe.',
+        ];
+
+        $planTokens = null;
+        if ($this->planEntitlementResolver instanceof PlanEntitlementResolver) {
+            $resolved = $this->planEntitlementResolver->resolve($tenant);
+            $limits = $resolved['limits'] ?? [];
+            $planTokens = $this->extractCommercialLimitTokens($limits['included_monthly_ai_tokens'] ?? null);
+        } elseif ($plan instanceof CommercialPlan) {
+            $planTokens = $this->extractCommercialLimitTokens($plan->getLimits()['included_monthly_ai_tokens'] ?? null);
+        }
+
+        $manualBaseTokens = $policy instanceof TenantAiUsagePolicy ? $this->tokenAmountFromCost($policy->getMonthlyCostLimitEur(), $tokenRate) : null;
+        $source = 'none';
+        $baseTokens = null;
+        if ($planTokens !== null) {
+            $source = 'plan';
+            $baseTokens = $planTokens;
+            $planData['tokens'] = CommercialTokenFormatter::formatCommercialDual($planTokens);
+            $planData['note'] = sprintf('Incluye %s tokens/mes.', CommercialTokenFormatter::formatCommercialMillionTokens($planTokens));
+        } elseif ($manualBaseTokens !== null) {
+            $source = 'manual_policy';
+            $baseTokens = $manualBaseTokens;
+            $planData['note'] = 'Sin plan comercial asignado; la policy manual define el cupo base.';
+        }
+
+        $extraTokens = $topUpRequests instanceof TenantAiTopUpRequestRepository ? $topUpRequests->sumApprovedTokensByTenantAndPeriod($tenant, $this->tenantAiCurrentPeriodKey()) : 0;
+        $effectiveTokens = $baseTokens !== null ? $baseTokens + $extraTokens : null;
+
+        return [
+            'baseTokens' => $baseTokens,
+            'baseLabel' => $source === 'plan' ? 'Tokens incluidos por plan' : 'Plan mensual base',
+            'baseNote' => $source === 'plan'
+                ? sprintf('Plan comercial asignado: %s.', $planData['summary'])
+                : ($source === 'manual_policy'
+                    ? 'Base manual configurada en la policy del tenant.'
+                    : 'No hay plan comercial ni base mensual configurada.'),
+            'source' => $source,
+            'commercialPlan' => $planData,
+            'effectiveTokens' => $effectiveTokens,
+        ];
+    }
+
+    private function extractCommercialLimitTokens(mixed $value): ?int
+    {
+        if ($value === null || $value === '') {
+            return null;
+        }
+
+        if (!is_numeric($value)) {
+            return null;
+        }
+
+        $tokens = (int) round((float) $value);
+
+        return $tokens > 0 ? $tokens : null;
     }
 
     /**

@@ -4,12 +4,15 @@ namespace App\Tests\Unit;
 
 use App\Controller\Api\InternalAiUsageController;
 use App\Entity\AiUsageEvent;
+use App\Entity\CommercialPlan;
 use App\Entity\Conversation;
 use App\Entity\ConversationMessage;
 use App\Entity\Tenant;
+use App\Entity\TenantAiTopUpRequest;
 use App\Repository\AiUsageEventRepository;
 use App\Repository\ConversationMessageRepository;
 use App\Repository\ConversationRepository;
+use App\Repository\TenantAiTopUpRequestRepository;
 use App\Repository\TenantAiUsagePolicyRepository;
 use App\Repository\TenantRepository;
 use App\Security\InternalBearerTokenValidator;
@@ -68,6 +71,153 @@ final class InternalAiUsageControllerTest extends TestCase
             'El audio es demasiado largo para procesarlo automáticamente. Por favor, envíame un audio más corto o escríbeme el mensaje por texto.',
             $payload['audio_limit_exceeded_message']
         );
+    }
+
+    public function testPolicyPayloadIncludesCommercialPlanAndCurrentMonthTopUps(): void
+    {
+        $tenant = new Tenant('Negocio Demo', 'tenant-1');
+        $tenant->setActive(true);
+        $plan = new CommercialPlan('starter', 'Starter');
+        $plan->setLimits(['included_monthly_ai_tokens' => 1000000]);
+        $tenant->setCommercialPlan($plan);
+
+        $policy = new \App\Entity\TenantAiUsagePolicy($tenant);
+        $policy->setAiEnabled(true);
+        $policy->setDefaultModel('gpt-4.1-mini');
+        $policy->setFallbackModel('gpt-4.1-mini');
+
+        $currentPeriodKey = (new \DateTimeImmutable('now', new \DateTimeZone('Europe/Madrid')))->format('Y-m');
+        $topUpRequest = new TenantAiTopUpRequest($tenant, 25.0, 'Ampliación');
+        $topUpRequest->approve(new \App\Entity\User('owner@example.com', ['super_admin'], 'Owner'), 2000000, $currentPeriodKey);
+
+        $controller = new InternalAiUsageController(
+            new class($tenant) extends TenantRepository {
+                public function __construct(private readonly Tenant $tenant)
+                {
+                }
+
+                public function find($id, $lockMode = null, $lockVersion = null): ?object
+                {
+                    return $this->tenant;
+                }
+            },
+            new class($policy) extends TenantAiUsagePolicyRepository {
+                public function __construct(private readonly \App\Entity\TenantAiUsagePolicy $policy)
+                {
+                }
+
+                public function findOneByTenant(Tenant $tenant): ?\App\Entity\TenantAiUsagePolicy
+                {
+                    return $this->policy;
+                }
+            },
+            $this->createStub(AiUsageEventRepository::class),
+            $this->createStub(ConversationRepository::class),
+            $this->createStub(ConversationMessageRepository::class),
+            new InternalBearerTokenValidator(self::TOKEN),
+            new class($tenant, $topUpRequest) extends TenantAiTopUpRequestRepository {
+                public function __construct(private readonly Tenant $tenant, private readonly TenantAiTopUpRequest $topUpRequest)
+                {
+                }
+
+                public function sumApprovedTokensByTenantAndPeriod(Tenant $tenant, string $periodKey): int
+                {
+                    return $this->topUpRequest->getApprovedPeriodKey() === $periodKey ? $this->topUpRequest->getApprovedTokens() ?? 0 : 0;
+                }
+            }
+        );
+        $controller->setContainer(new Container());
+
+        $response = $controller->policy(
+            $tenant->getId()->toRfc4122(),
+            Request::create('/api/internal/ai-usage/'.$tenant->getId()->toRfc4122().'/policy', 'GET', [], [], [], [
+                'HTTP_AUTHORIZATION' => 'Bearer '.self::TOKEN,
+            ])
+        );
+
+        self::assertSame(200, $response->getStatusCode());
+        $payload = json_decode((string) $response->getContent(), true);
+        self::assertSame('starter', $payload['commercial_plan_code']);
+        self::assertSame('Starter', $payload['commercial_plan_name']);
+        self::assertSame(1000000, $payload['plan_monthly_ai_tokens']);
+        self::assertSame(2000000, $payload['approved_extra_tokens_current_month']);
+        self::assertSame(3000000, $payload['effective_monthly_ai_token_limit']);
+        self::assertSame('plan', $payload['monthly_limit_source']);
+        self::assertGreaterThan(2.0, $payload['monthly_cost_limit_eur']);
+        self::assertLessThan(2.2, $payload['monthly_cost_limit_eur']);
+        self::assertTrue($payload['exists']);
+    }
+
+    public function testPolicyPayloadFallsBackToManualMonthlyLimitWhenNoPlanIsAssigned(): void
+    {
+        $tenant = new Tenant('Negocio Demo', 'tenant-1');
+        $tenant->setActive(true);
+
+        $policy = new \App\Entity\TenantAiUsagePolicy($tenant);
+        $policy->setAiEnabled(true);
+        $policy->setDefaultModel('gpt-4.1-mini');
+        $policy->setFallbackModel('gpt-4.1-mini');
+        $policy->setMonthlyCostLimitEur(0.0);
+
+        $currentPeriodKey = (new \DateTimeImmutable('now', new \DateTimeZone('Europe/Madrid')))->format('Y-m');
+        $topUpRequest = new TenantAiTopUpRequest($tenant, 25.0, 'Ampliación');
+        $topUpRequest->approve(new \App\Entity\User('owner@example.com', ['super_admin'], 'Owner'), 2000000, $currentPeriodKey);
+
+        $controller = new InternalAiUsageController(
+            new class($tenant) extends TenantRepository {
+                public function __construct(private readonly Tenant $tenant)
+                {
+                }
+
+                public function find($id, $lockMode = null, $lockVersion = null): ?object
+                {
+                    return $this->tenant;
+                }
+            },
+            new class($policy) extends TenantAiUsagePolicyRepository {
+                public function __construct(private readonly \App\Entity\TenantAiUsagePolicy $policy)
+                {
+                }
+
+                public function findOneByTenant(Tenant $tenant): ?\App\Entity\TenantAiUsagePolicy
+                {
+                    return $this->policy;
+                }
+            },
+            $this->createStub(AiUsageEventRepository::class),
+            $this->createStub(ConversationRepository::class),
+            $this->createStub(ConversationMessageRepository::class),
+            new InternalBearerTokenValidator(self::TOKEN),
+            new class($tenant, $topUpRequest) extends TenantAiTopUpRequestRepository {
+                public function __construct(private readonly Tenant $tenant, private readonly TenantAiTopUpRequest $topUpRequest)
+                {
+                }
+
+                public function sumApprovedTokensByTenantAndPeriod(Tenant $tenant, string $periodKey): int
+                {
+                    return $this->topUpRequest->getApprovedPeriodKey() === $periodKey ? $this->topUpRequest->getApprovedTokens() ?? 0 : 0;
+                }
+            }
+        );
+        $controller->setContainer(new Container());
+
+        $response = $controller->policy(
+            $tenant->getId()->toRfc4122(),
+            Request::create('/api/internal/ai-usage/'.$tenant->getId()->toRfc4122().'/policy', 'GET', [], [], [], [
+                'HTTP_AUTHORIZATION' => 'Bearer '.self::TOKEN,
+            ])
+        );
+
+        self::assertSame(200, $response->getStatusCode());
+        $payload = json_decode((string) $response->getContent(), true);
+        self::assertSame('', $payload['commercial_plan_code']);
+        self::assertSame('Sin plan comercial asignado', $payload['commercial_plan_name']);
+        self::assertSame(0, $payload['plan_monthly_ai_tokens']);
+        self::assertSame(2000000, $payload['approved_extra_tokens_current_month']);
+        self::assertSame(2000000, $payload['effective_monthly_ai_token_limit']);
+        self::assertSame('manual_policy', $payload['monthly_limit_source']);
+        self::assertGreaterThan(1.3, $payload['monthly_cost_limit_eur']);
+        self::assertLessThan(1.5, $payload['monthly_cost_limit_eur']);
     }
 
     public function testCreateEventPersistsUsageEvent(): void

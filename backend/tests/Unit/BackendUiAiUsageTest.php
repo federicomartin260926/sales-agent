@@ -4,6 +4,7 @@ namespace App\Tests\Unit;
 
 use App\Controller\Web\BackendUiController;
 use App\Entity\AiUsageEvent;
+use App\Entity\CommercialPlan;
 use App\Entity\Tenant;
 use App\Entity\TenantAiTopUpRequest;
 use App\Entity\TenantAiUsagePolicy;
@@ -68,7 +69,7 @@ final class BackendUiAiUsageTest extends TestCase
         self::assertStringContainsString('Cupo efectivo este mes', $response->getContent());
         self::assertStringContainsString('Límite diario base', $response->getContent());
         self::assertStringContainsString('Periodo actual', $response->getContent());
-        self::assertStringContainsString('Solicitar ampliación', $response->getContent());
+        self::assertStringContainsString('Ampliación solicitada', $response->getContent());
         self::assertStringContainsString('Tokens solicitados', $response->getContent());
         self::assertStringContainsString('/backend/ai-usage/top-up-requests', $response->getContent());
         self::assertStringContainsString('Pendiente', $response->getContent());
@@ -76,6 +77,43 @@ final class BackendUiAiUsageTest extends TestCase
         self::assertStringContainsString('Límite máximo de audio', $response->getContent());
         self::assertStringNotContainsString('default_model', $response->getContent());
         self::assertStringNotContainsString('fallback_model', $response->getContent());
+    }
+
+    public function testManagerUsageDashboardShowsCommercialPlanBaseAndEffectiveLimit(): void
+    {
+        $tenant = $this->tenant('Tech Investments', 'tech-investments');
+        $plan = new CommercialPlan('growth', 'Growth');
+        $plan->setLimits(['included_monthly_ai_tokens' => 10000000]);
+        $tenant->setCommercialPlan($plan);
+
+        $user = new User('manager@example.com', ['manager'], 'Manager');
+        $resolver = $this->resolver($user, [$tenant], [$this->membership($user, $tenant, 'manager')]);
+        $policy = $this->policy($tenant, true, 1.0, 10.0);
+        $currentPeriodKey = (new \DateTimeImmutable('now', new \DateTimeZone('Europe/Madrid')))->format('Y-m');
+        $requestEntity = $this->topUpRequest($tenant, 25.0, 'Ampliación puntual');
+        $requestEntity->approve($user, 2000000, $currentPeriodKey);
+
+        $request = Request::create('/backend/ai-usage', 'GET');
+        $request->setSession(new Session());
+        $context = $this->activeTenantContext($request, [$tenant], $tenant);
+
+        $controller = $this->controller($user, $context, $resolver);
+        $response = $controller->aiUsage(
+            $request,
+            $this->policyRepository($policy),
+            $this->eventsRepository([], ['estimated_cost_eur' => 0.0, 'total_tokens' => 0], ['estimated_cost_eur' => 0.0, 'total_tokens' => 0]),
+            $this->topUpRequestRepository([$requestEntity])
+        );
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        self::assertStringContainsString('Plan comercial', $response->getContent());
+        self::assertStringContainsString('Growth', $response->getContent());
+        self::assertStringContainsString('Tokens incluidos por plan', $response->getContent());
+        self::assertMatchesRegularExpression('/Tokens incluidos por plan<\/div>\s*<div class="metric-value">10M<\/div>/', $response->getContent());
+        self::assertStringContainsString('Tokens extra aprobados este mes', $response->getContent());
+        self::assertStringContainsString('2M', $response->getContent());
+        self::assertMatchesRegularExpression('/Cupo efectivo este mes<\/div>\s*<div class="metric-value">12M<\/div>/', $response->getContent());
+        self::assertStringContainsString('Plan comercial asignado: Growth (growth).', $response->getContent());
     }
 
     public function testUsageDashboardKeepsBaseLimitsStableWhenConsumptionArrives(): void
@@ -110,12 +148,12 @@ final class BackendUiAiUsageTest extends TestCase
         );
 
         self::assertSame(Response::HTTP_OK, $response->getStatusCode());
-        self::assertMatchesRegularExpression('/Límite diario base<\/div>\s*<div class="metric-value">100\.000<\/div>/', $response->getContent());
-        self::assertMatchesRegularExpression('/Plan mensual base<\/div>\s*<div class="metric-value">500\.000<\/div>/', $response->getContent());
-        self::assertMatchesRegularExpression('/Cupo efectivo este mes<\/div>\s*<div class="metric-value">500\.000<\/div>/', $response->getContent());
-        self::assertStringContainsString('4.864', $response->getContent());
-        self::assertStringContainsString('95.136', $response->getContent());
-        self::assertStringContainsString('495.136', $response->getContent());
+        self::assertMatchesRegularExpression('/Límite diario base<\/div>\s*<div class="metric-value">0,1M<\/div>/', $response->getContent());
+        self::assertMatchesRegularExpression('/Plan mensual base<\/div>\s*<div class="metric-value">0,5M<\/div>/', $response->getContent());
+        self::assertMatchesRegularExpression('/Cupo efectivo este mes<\/div>\s*<div class="metric-value">0,5M<\/div>/', $response->getContent());
+        self::assertStringContainsString('0,004864M', $response->getContent());
+        self::assertStringContainsString('0,095136M', $response->getContent());
+        self::assertStringContainsString('0,495136M', $response->getContent());
         self::assertStringContainsString('5%', $response->getContent());
         self::assertStringContainsString('1%', $response->getContent());
     }
@@ -157,7 +195,7 @@ final class BackendUiAiUsageTest extends TestCase
 
         self::assertSame(Response::HTTP_OK, $response->getStatusCode());
         self::assertStringContainsString('Aprobada', $response->getContent());
-        self::assertStringContainsString('Aprobados: 30 tokens', $response->getContent());
+        self::assertStringContainsString('Aprobados: 0,00003M', $response->getContent());
         self::assertStringContainsString('Recargas aprobadas este mes', $response->getContent());
     }
 
@@ -186,7 +224,7 @@ final class BackendUiAiUsageTest extends TestCase
         );
 
         self::assertSame(Response::HTTP_OK, $response->getStatusCode());
-        self::assertMatchesRegularExpression('/Recargas aprobadas este mes<\\/div>\\s*<div class="metric-value">31<\\/div>/', $response->getContent());
+        self::assertMatchesRegularExpression('/Recargas aprobadas este mes<\\/div>\\s*<div class="metric-value">0,000031M<\\/div>/', $response->getContent());
         self::assertStringContainsString('Cupo efectivo este mes', $response->getContent());
     }
 
@@ -217,7 +255,7 @@ final class BackendUiAiUsageTest extends TestCase
 
         $request = Request::create('/backend/ai-usage/top-up-requests', 'POST', [
             '_csrf_token' => 'token',
-            'requestedTokens' => '25',
+            'requestedTokens' => '1000000',
             'message' => 'Necesitamos más cuota para el mes',
         ]);
         $request->setSession(new Session());
@@ -241,7 +279,7 @@ final class BackendUiAiUsageTest extends TestCase
         self::assertCount(1, $topUpRepository->saved);
         self::assertInstanceOf(TenantAiTopUpRequest::class, $topUpRepository->saved[0]);
         self::assertSame(TenantAiTopUpRequest::STATUS_PENDING, $topUpRepository->saved[0]->getStatus());
-        self::assertSame(25.0, $topUpRepository->saved[0]->getRequestedAmountEur());
+        self::assertSame(1000000.0, $topUpRepository->saved[0]->getRequestedAmountEur());
         self::assertSame('Necesitamos más cuota para el mes', $topUpRepository->saved[0]->getMessage());
         self::assertSame($user->getEmail(), $topUpRepository->saved[0]->getRequestedBy()?->getEmail());
     }
@@ -254,7 +292,7 @@ final class BackendUiAiUsageTest extends TestCase
 
         $request = Request::create('/backend/ai-usage/top-up-requests', 'POST', [
             '_csrf_token' => 'token',
-            'requestedTokens' => '25',
+            'requestedTokens' => '1000000',
             'message' => 'Necesitamos más cuota para el mes',
         ]);
         $request->setSession(new Session());
@@ -300,8 +338,10 @@ final class BackendUiAiUsageTest extends TestCase
             new Environment(new FilesystemLoader(__DIR__.'/../../templates'), ['cache' => false]),
             null,
             null,
+            null,
             $csrfTokenManager,
             $resolver,
+            null,
         );
     }
 

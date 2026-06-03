@@ -7,12 +7,15 @@ use App\Entity\Conversation;
 use App\Entity\ConversationMessage;
 use App\Entity\Tenant;
 use App\Entity\TenantAiUsagePolicy;
+use App\Repository\AiModelCostReferenceRepository;
 use App\Repository\AiUsageEventRepository;
 use App\Repository\ConversationMessageRepository;
 use App\Repository\ConversationRepository;
+use App\Repository\TenantAiTopUpRequestRepository;
 use App\Repository\TenantAiUsagePolicyRepository;
 use App\Repository\TenantRepository;
 use App\Security\InternalBearerTokenValidator;
+use App\Service\PlanEntitlementResolver;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\Routing\Attribute\Route;
@@ -27,6 +30,9 @@ final class InternalAiUsageController extends AbstractApiController
         private readonly ConversationRepository $conversations,
         private readonly ConversationMessageRepository $conversationMessages,
         private readonly InternalBearerTokenValidator $validator,
+        private readonly ?TenantAiTopUpRequestRepository $topUpRequests = null,
+        private readonly ?PlanEntitlementResolver $planEntitlementResolver = null,
+        private readonly ?AiModelCostReferenceRepository $aiModelCosts = null,
     ) {
     }
 
@@ -46,6 +52,7 @@ final class InternalAiUsageController extends AbstractApiController
         if (!$policy instanceof TenantAiUsagePolicy) {
             $policy = new TenantAiUsagePolicy($tenant);
             $payload = $policy->toArray();
+            $payload = $this->augmentPolicyPayload($tenant, $policy, $payload);
             $payload['created_at'] = null;
             $payload['updated_at'] = null;
             $payload['exists'] = false;
@@ -53,7 +60,7 @@ final class InternalAiUsageController extends AbstractApiController
             return $this->json($payload);
         }
 
-        $payload = $policy->toArray();
+        $payload = $this->augmentPolicyPayload($tenant, $policy, $policy->toArray());
         $payload['exists'] = true;
 
         return $this->json($payload);
@@ -180,5 +187,168 @@ final class InternalAiUsageController extends AbstractApiController
         }
 
         return $normalized;
+    }
+
+    /**
+     * @param array<string, mixed> $payload
+     *
+     * @return array<string, mixed>
+     */
+    private function augmentPolicyPayload(Tenant $tenant, TenantAiUsagePolicy $policy, array $payload): array
+    {
+        $tokenRate = $this->tenantAiUsageTokenRate($policy);
+        $commercialPlanContext = $this->tenantCommercialPlanContext($tenant, $policy, $tokenRate);
+
+        $effectiveMonthlyTokens = $commercialPlanContext['effectiveTokens'];
+        $payload['commercial_plan_code'] = $commercialPlanContext['commercialPlan']['code'];
+        $payload['commercial_plan_name'] = $commercialPlanContext['commercialPlan']['name'];
+        $payload['plan_monthly_ai_tokens'] = $commercialPlanContext['baseTokens'];
+        $payload['approved_extra_tokens_current_month'] = $commercialPlanContext['extraTokens'];
+        $payload['effective_monthly_ai_token_limit'] = $effectiveMonthlyTokens;
+        $payload['monthly_limit_source'] = $commercialPlanContext['source'];
+        $payload['monthly_cost_limit_eur'] = $effectiveMonthlyTokens !== null ? $this->costAmountFromTokens($effectiveMonthlyTokens, $tokenRate) : $payload['monthly_cost_limit_eur'];
+
+        return $payload;
+    }
+
+    /**
+     * @return array{
+     *     baseTokens: int|null,
+     *     extraTokens: int,
+     *     effectiveTokens: int|null,
+     *     source: 'plan'|'manual_policy'|'none',
+     *     commercialPlan: array{code: string, name: string}
+     * }
+     */
+    private function tenantCommercialPlanContext(Tenant $tenant, TenantAiUsagePolicy $policy, float $tokenRate): array
+    {
+        $plan = $tenant->getCommercialPlan();
+        $planTokens = $this->planMonthlyTokens($tenant);
+        $manualBaseTokens = $this->tokenAmountFromCost($policy->getMonthlyCostLimitEur(), $tokenRate);
+        $extraTokens = $this->topUpRequests instanceof TenantAiTopUpRequestRepository ? $this->topUpRequests->sumApprovedTokensByTenantAndPeriod($tenant, $this->tenantAiCurrentPeriodKey()) : 0;
+
+        $source = 'none';
+        $baseTokens = null;
+        if ($planTokens !== null) {
+            $source = 'plan';
+            $baseTokens = $planTokens;
+        } elseif ($manualBaseTokens !== null) {
+            $source = 'manual_policy';
+            $baseTokens = $manualBaseTokens;
+        }
+
+        $effectiveTokens = ($baseTokens !== null || $extraTokens > 0) ? (($baseTokens ?? 0) + $extraTokens) : null;
+
+        return [
+            'baseTokens' => $baseTokens,
+            'extraTokens' => $extraTokens,
+            'effectiveTokens' => $effectiveTokens,
+            'source' => $source,
+            'commercialPlan' => [
+                'code' => $plan instanceof \App\Entity\CommercialPlan ? $plan->getCode() : '',
+                'name' => $plan instanceof \App\Entity\CommercialPlan ? $plan->getName() : 'Sin plan comercial asignado',
+            ],
+        ];
+    }
+
+    private function planMonthlyTokens(Tenant $tenant): ?int
+    {
+        $plan = $tenant->getCommercialPlan();
+        if (!$plan instanceof \App\Entity\CommercialPlan) {
+            return null;
+        }
+
+        if ($this->planEntitlementResolver instanceof PlanEntitlementResolver) {
+            $resolved = $this->planEntitlementResolver->resolve($tenant);
+            $limits = $resolved['limits'] ?? [];
+            return $this->extractCommercialLimitTokens($limits['included_monthly_ai_tokens'] ?? null);
+        }
+
+        return $this->extractCommercialLimitTokens($plan->getLimits()['included_monthly_ai_tokens'] ?? null);
+    }
+
+    private function tenantAiUsageTokenRate(?TenantAiUsagePolicy $policy): float
+    {
+        return $this->tenantAiUsageModelAverageCostPerToken($policy?->getDefaultModel() ?? $policy?->getFallbackModel());
+    }
+
+    private function tenantAiUsageModelAverageCostPerToken(?string $model): float
+    {
+        $normalized = strtolower(trim((string) $model));
+        if ($normalized === '') {
+            return 0.000001;
+        }
+
+        if ($this->aiModelCosts instanceof AiModelCostReferenceRepository) {
+            $reference = $this->aiModelCosts->findOneByUsageTypeAndModel(\App\Entity\AiModelCostReference::USAGE_TYPE_LLM_CHAT, $normalized);
+            if ($reference instanceof \App\Entity\AiModelCostReference && $reference->isActive()) {
+                return (($reference->getInputCostPerMillion() ?? 0.0) + ($reference->getOutputCostPerMillion() ?? 0.0) + ($reference->getCachedInputCostPerMillion() ?? 0.0)) / 3 / 1_000_000;
+            }
+        }
+
+        $pricingTable = [
+            'gpt-4.1' => ['input' => 2.0, 'output' => 8.0, 'cached_input' => 0.5],
+            'gpt-4.1-mini' => ['input' => 0.4, 'output' => 1.6, 'cached_input' => 0.1],
+            'gpt-4o' => ['input' => 2.5, 'output' => 10.0, 'cached_input' => 0.625],
+            'gpt-4o-mini' => ['input' => 0.15, 'output' => 0.6, 'cached_input' => 0.0375],
+            'gpt-5.4-mini' => ['input' => 0.75, 'output' => 4.5, 'cached_input' => 0.075],
+        ];
+
+        if (isset($pricingTable[$normalized])) {
+            $pricing = $pricingTable[$normalized];
+            return (($pricing['input'] + $pricing['output'] + $pricing['cached_input']) / 3) / 1_000_000;
+        }
+
+        foreach ($pricingTable as $key => $pricing) {
+            if (str_starts_with($normalized, $key)) {
+                return (($pricing['input'] + $pricing['output'] + $pricing['cached_input']) / 3) / 1_000_000;
+            }
+        }
+
+        return 0.000001;
+    }
+
+    private function tokenAmountFromCost(?float $cost, ?float $costPerToken): ?int
+    {
+        if ($cost === null) {
+            return null;
+        }
+
+        if ($costPerToken === null || $costPerToken <= 0.0) {
+            return (int) round($cost);
+        }
+
+        return (int) round($cost / $costPerToken);
+    }
+
+    private function costAmountFromTokens(?int $tokens, ?float $costPerToken): ?float
+    {
+        if ($tokens === null) {
+            return null;
+        }
+
+        if ($costPerToken === null || $costPerToken <= 0.0) {
+            return (float) $tokens;
+        }
+
+        return round($tokens * $costPerToken, 8);
+    }
+
+    private function extractCommercialLimitTokens(mixed $value): ?int
+    {
+        if ($value === null || $value === '' || !is_numeric($value)) {
+            return null;
+        }
+
+        $tokens = (int) round((float) $value);
+
+        return $tokens > 0 ? $tokens : null;
+    }
+
+    private function tenantAiCurrentPeriodKey(?\DateTimeImmutable $date = null): string
+    {
+        $date ??= new \DateTimeImmutable('now', new \DateTimeZone('Europe/Madrid'));
+
+        return $date->format('Y-m');
     }
 }

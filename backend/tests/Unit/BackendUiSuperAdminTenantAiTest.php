@@ -4,6 +4,7 @@ namespace App\Tests\Unit;
 
 use App\Controller\Web\BackendUiController;
 use App\Entity\AiUsageEvent;
+use App\Entity\CommercialPlan;
 use App\Entity\Tenant;
 use App\Entity\TenantAiTopUpRequest;
 use App\Entity\TenantAiUsagePolicy;
@@ -74,6 +75,35 @@ final class BackendUiSuperAdminTenantAiTest extends TestCase
         self::assertStringContainsString('0,25 €', $response->getContent());
         self::assertStringNotContainsString('openai_api_key', $response->getContent());
         self::assertStringNotContainsString('bearer', $response->getContent());
+    }
+
+    public function testSuperAdminTenantAiPageShowsCommercialPlanBaseLimit(): void
+    {
+        $tenant = $this->tenant('Tech Investments', 'tech-investments');
+        $plan = new CommercialPlan('starter', 'Starter');
+        $plan->setLimits(['included_monthly_ai_tokens' => 1000000]);
+        $tenant->setCommercialPlan($plan);
+        $policy = $this->policy($tenant, true, 1.0, 10.0, 'gpt-4.1-mini', 'gpt-4.1-nano', 'handoff_human');
+
+        $controller = $this->controller($this->user('owner@example.com', ['super_admin'], 'Owner'));
+        $request = Request::create('/backend/super-admin/tenants/'.$tenant->getId()->toRfc4122().'/ai', 'GET');
+        $request->setSession(new Session());
+
+        $response = $controller->superAdminTenantAi(
+            $tenant->getId()->toRfc4122(),
+            $request,
+            $this->tenantRepository([$tenant], $tenant),
+            $this->policyRepository($policy),
+            $this->eventsRepository([], ['estimated_cost_eur' => 0.0, 'total_tokens' => 0], ['estimated_cost_eur' => 0.0, 'total_tokens' => 0]),
+            $this->topUpRequestRepository([])
+        );
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        self::assertStringContainsString('Plan comercial', $response->getContent());
+        self::assertStringContainsString('Starter', $response->getContent());
+        self::assertStringContainsString('Tokens incluidos por plan', $response->getContent());
+        self::assertMatchesRegularExpression('/Tokens incluidos por plan<\/div>\s*<div class="metric-value">1M<\/div>/', $response->getContent());
+        self::assertMatchesRegularExpression('/Cupo efectivo este mes<\/div>\s*<div class="metric-value">1M<\/div>/', $response->getContent());
     }
 
     public function testSuperAdminTenantAiPageKeepsBasePolicyValuesStable(): void
