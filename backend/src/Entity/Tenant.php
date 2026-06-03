@@ -57,6 +57,19 @@ class Tenant
     #[ORM\Column(name: 'human_handoff_strategy', length: 50)]
     private string $humanHandoffStrategy = 'disabled';
 
+    #[ORM\ManyToOne(targetEntity: CommercialPlan::class)]
+    #[ORM\JoinColumn(name: 'commercial_plan_id', nullable: true, onDelete: 'SET NULL')]
+    private ?CommercialPlan $commercialPlan = null;
+
+    #[ORM\Column(name: 'subscription_status', length: 50, nullable: true)]
+    private ?string $subscriptionStatus = null;
+
+    #[ORM\Column(name: 'current_period_start', type: 'datetime_immutable', nullable: true)]
+    private ?\DateTimeImmutable $currentPeriodStart = null;
+
+    #[ORM\Column(name: 'current_period_end', type: 'datetime_immutable', nullable: true)]
+    private ?\DateTimeImmutable $currentPeriodEnd = null;
+
     #[Assert\Callback]
     public function validateSalesPolicy(ExecutionContextInterface $context): void
     {
@@ -191,6 +204,47 @@ class Tenant
         $this->humanHandoffStrategy = $strategy !== '' ? $strategy : 'disabled';
     }
 
+    public function getCommercialPlan(): ?CommercialPlan
+    {
+        return $this->commercialPlan;
+    }
+
+    public function setCommercialPlan(?CommercialPlan $commercialPlan): void
+    {
+        $this->commercialPlan = $commercialPlan;
+    }
+
+    public function getSubscriptionStatus(): ?string
+    {
+        return $this->subscriptionStatus;
+    }
+
+    public function setSubscriptionStatus(?string $subscriptionStatus): void
+    {
+        $trimmed = $subscriptionStatus !== null ? trim($subscriptionStatus) : null;
+        $this->subscriptionStatus = $trimmed !== '' ? $trimmed : null;
+    }
+
+    public function getCurrentPeriodStart(): ?\DateTimeImmutable
+    {
+        return $this->currentPeriodStart;
+    }
+
+    public function setCurrentPeriodStart(?\DateTimeImmutable $currentPeriodStart): void
+    {
+        $this->currentPeriodStart = $currentPeriodStart;
+    }
+
+    public function getCurrentPeriodEnd(): ?\DateTimeImmutable
+    {
+        return $this->currentPeriodEnd;
+    }
+
+    public function setCurrentPeriodEnd(?\DateTimeImmutable $currentPeriodEnd): void
+    {
+        $this->currentPeriodEnd = $currentPeriodEnd;
+    }
+
     public function getSalesPolicy(): array
     {
         return $this->salesPolicy;
@@ -235,6 +289,12 @@ class Tenant
             'humanHandoffWhatsappPublic' => $this->humanHandoffWhatsappPublic,
             'humanHandoffMessage' => $this->humanHandoffMessage,
             'humanHandoffStrategy' => $this->humanHandoffStrategy,
+            'commercialPlanId' => $this->commercialPlan?->getId()->toRfc4122(),
+            'commercialPlanCode' => $this->commercialPlan?->getCode(),
+            'commercialPlanName' => $this->commercialPlan?->getName(),
+            'subscriptionStatus' => $this->subscriptionStatus,
+            'currentPeriodStart' => $this->currentPeriodStart?->format(\DateTimeInterface::ATOM),
+            'currentPeriodEnd' => $this->currentPeriodEnd?->format(\DateTimeInterface::ATOM),
             'salesPolicy' => $this->salesPolicy,
             'isActive' => $this->isActive,
             'createdAt' => $this->createdAt->format(\DateTimeInterface::ATOM),

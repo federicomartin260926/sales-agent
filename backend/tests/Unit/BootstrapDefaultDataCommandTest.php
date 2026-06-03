@@ -3,6 +3,8 @@
 namespace App\Tests\Unit;
 
 use App\Command\BootstrapDefaultDataCommand;
+use App\Entity\AiModelCostReference;
+use App\Entity\CommercialPlan;
 use App\Entity\Playbook;
 use App\Entity\Product;
 use App\Entity\TenantMembership;
@@ -26,6 +28,8 @@ final class BootstrapDefaultDataCommandTest extends TestCase
         $productRepository = $this->createStub(EntityRepository::class);
         $membershipRepository = $this->createStub(EntityRepository::class);
         $playbookRepository = $this->createStub(EntityRepository::class);
+        $commercialPlanRepository = $this->createStub(EntityRepository::class);
+        $aiCostRepository = $this->createStub(EntityRepository::class);
 
         $tenantRepository->method('findOneBy')->willReturn(null);
         $userRepository->method('findOneBy')->willReturn(null);
@@ -38,22 +42,38 @@ final class BootstrapDefaultDataCommandTest extends TestCase
                 default => null,
             };
         });
+        $commercialPlanRepository->method('findOneBy')->willReturnCallback(static function (array $criteria) {
+            return match ($criteria['code'] ?? null) {
+                'starter', 'growth', 'pro' => null,
+                default => null,
+            };
+        });
+        $aiCostRepository->method('findOneBy')->willReturnCallback(static function (array $criteria) {
+            return match (($criteria['usageType'] ?? null).':'.($criteria['model'] ?? null)) {
+                'llm_chat:gpt-4.1-mini',
+                'llm_chat:gpt-5.4-mini',
+                'audio_transcription:gpt-4o-mini-transcribe' => null,
+                default => null,
+            };
+        });
 
-        $entityManager->expects(self::exactly(5))
+        $entityManager->expects(self::exactly(7))
             ->method('getRepository')
-            ->willReturnCallback(static function (string $class) use ($tenantRepository, $userRepository, $productRepository, $membershipRepository, $playbookRepository) {
+            ->willReturnCallback(static function (string $class) use ($tenantRepository, $userRepository, $productRepository, $playbookRepository, $commercialPlanRepository, $membershipRepository, $aiCostRepository) {
                 return match ($class) {
                     Tenant::class => $tenantRepository,
                     User::class => $userRepository,
                     Product::class => $productRepository,
-                    TenantMembership::class => $membershipRepository,
                     Playbook::class => $playbookRepository,
+                    CommercialPlan::class => $commercialPlanRepository,
+                    TenantMembership::class => $membershipRepository,
+                    AiModelCostReference::class => $aiCostRepository,
                     default => throw new \RuntimeException(sprintf('Unexpected repository %s', $class)),
                 };
             });
 
         $persisted = [];
-        $entityManager->expects(self::exactly(8))
+        $entityManager->expects(self::exactly(14))
             ->method('persist')
             ->willReturnCallback(static function (object $entity) use (&$persisted): void {
                 $persisted[] = $entity;
@@ -72,7 +92,7 @@ final class BootstrapDefaultDataCommandTest extends TestCase
         $exitCode = $tester->execute([]);
 
         self::assertSame(0, $exitCode);
-        self::assertCount(8, $persisted);
+        self::assertCount(14, $persisted);
 
         $tenant = $persisted[0];
         self::assertInstanceOf(Tenant::class, $tenant);
@@ -131,6 +151,37 @@ final class BootstrapDefaultDataCommandTest extends TestCase
         self::assertArrayHasKey('qualificationQuestions', $productPlaybook->getConfig());
         self::assertArrayHasKey('scoring', $productPlaybook->getConfig());
         self::assertArrayHasKey('allowedActions', $productPlaybook->getConfig());
+
+        $starterPlan = $persisted[8];
+        self::assertInstanceOf(CommercialPlan::class, $starterPlan);
+        self::assertSame('starter', $starterPlan->getCode());
+        self::assertSame('Starter', $starterPlan->getName());
+        self::assertTrue($starterPlan->isActive());
+        self::assertArrayHasKey('ai_agent', $starterPlan->getFeatures());
+
+        $growthPlan = $persisted[9];
+        self::assertInstanceOf(CommercialPlan::class, $growthPlan);
+        self::assertSame('growth', $growthPlan->getCode());
+        self::assertSame('Growth', $growthPlan->getName());
+        self::assertTrue($growthPlan->isFeatured());
+
+        $proPlan = $persisted[10];
+        self::assertInstanceOf(CommercialPlan::class, $proPlan);
+        self::assertSame('pro', $proPlan->getCode());
+        self::assertSame('Pro', $proPlan->getName());
+        self::assertArrayHasKey('priority_support', $proPlan->getFeatures());
+
+        $chatCost = $persisted[11];
+        self::assertInstanceOf(AiModelCostReference::class, $chatCost);
+        self::assertSame(AiModelCostReference::USAGE_TYPE_LLM_CHAT, $chatCost->getUsageType());
+
+        $chatCost2 = $persisted[12];
+        self::assertInstanceOf(AiModelCostReference::class, $chatCost2);
+        self::assertSame('gpt-5.4-mini', $chatCost2->getModel());
+
+        $audioCost = $persisted[13];
+        self::assertInstanceOf(AiModelCostReference::class, $audioCost);
+        self::assertSame(AiModelCostReference::USAGE_TYPE_AUDIO_TRANSCRIPTION, $audioCost->getUsageType());
     }
 
     public function testItSkipsWhenDataAlreadyExists(): void
@@ -152,6 +203,8 @@ final class BootstrapDefaultDataCommandTest extends TestCase
         $productRepository = $this->createStub(EntityRepository::class);
         $membershipRepository = $this->createStub(EntityRepository::class);
         $playbookRepository = $this->createStub(EntityRepository::class);
+        $commercialPlanRepository = $this->createStub(EntityRepository::class);
+        $aiCostRepository = $this->createStub(EntityRepository::class);
 
         $tenantRepository->method('findOneBy')->willReturn($tenant);
         $userRepository->method('findOneBy')->willReturn($user);
@@ -171,16 +224,32 @@ final class BootstrapDefaultDataCommandTest extends TestCase
                 default => null,
             };
         });
+        $commercialPlanRepository->method('findOneBy')->willReturnCallback(static function (array $criteria) {
+            return match ($criteria['code'] ?? null) {
+                'starter', 'growth', 'pro' => new CommercialPlan((string) $criteria['code'], ucfirst((string) $criteria['code'])),
+                default => null,
+            };
+        });
+        $aiCostRepository->method('findOneBy')->willReturnCallback(static function (array $criteria) {
+            return match (($criteria['usageType'] ?? null).':'.($criteria['model'] ?? null)) {
+                'llm_chat:gpt-4.1-mini',
+                'llm_chat:gpt-5.4-mini',
+                'audio_transcription:gpt-4o-mini-transcribe' => new AiModelCostReference((string) $criteria['usageType'], (string) $criteria['model']),
+                default => null,
+            };
+        });
 
-        $entityManager->expects(self::exactly(5))
+        $entityManager->expects(self::exactly(7))
             ->method('getRepository')
-            ->willReturnCallback(static function (string $class) use ($tenantRepository, $userRepository, $productRepository, $membershipRepository, $playbookRepository) {
+            ->willReturnCallback(static function (string $class) use ($tenantRepository, $userRepository, $productRepository, $playbookRepository, $commercialPlanRepository, $membershipRepository, $aiCostRepository) {
                 return match ($class) {
                     Tenant::class => $tenantRepository,
                     User::class => $userRepository,
                     Product::class => $productRepository,
-                    TenantMembership::class => $membershipRepository,
                     Playbook::class => $playbookRepository,
+                    CommercialPlan::class => $commercialPlanRepository,
+                    TenantMembership::class => $membershipRepository,
+                    AiModelCostReference::class => $aiCostRepository,
                     default => throw new \RuntimeException(sprintf('Unexpected repository %s', $class)),
                 };
             });

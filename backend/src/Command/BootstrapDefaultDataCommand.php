@@ -3,6 +3,7 @@
 namespace App\Command;
 
 use App\Entity\Playbook;
+use App\Entity\CommercialPlan;
 use App\Entity\AiModelCostReference;
 use App\Entity\Product;
 use App\Entity\TenantMembership;
@@ -90,6 +91,8 @@ final class BootstrapDefaultDataCommand extends Command
         $productRepository = $this->entityManager->getRepository(Product::class);
         /** @var ObjectRepository<Playbook> $playbookRepository */
         $playbookRepository = $this->entityManager->getRepository(Playbook::class);
+        /** @var ObjectRepository<CommercialPlan> $commercialPlanRepository */
+        $commercialPlanRepository = $this->entityManager->getRepository(CommercialPlan::class);
         /** @var ObjectRepository<TenantMembership> $membershipRepository */
         $membershipRepository = $this->entityManager->getRepository(TenantMembership::class);
         /** @var ObjectRepository<AiModelCostReference> $aiCostRepository */
@@ -274,6 +277,118 @@ final class BootstrapDefaultDataCommand extends Command
         } elseif ($productPlaybook->getProduct() === null) {
             $productPlaybook->setProduct($product);
             $changes[] = 'product playbook link';
+        }
+
+        $commercialPlanSeeds = [
+            [
+                'code' => 'starter',
+                'name' => 'Starter',
+                'description' => 'Plan base para arrancar con automatización de IA y WhatsApp.',
+                'active' => true,
+                'featured' => false,
+                'monthlyPriceEur' => '29.00',
+                'yearlyPriceEur' => '290.00',
+                'currency' => 'EUR',
+                'displayOrder' => 10,
+                'features' => [
+                    'ai_agent' => true,
+                    'whatsapp_channel' => true,
+                    'human_handoff' => 'basic',
+                    'mcp_tools' => false,
+                    'audio_transcription' => false,
+                    'advanced_analytics' => false,
+                ],
+                'limits' => [
+                    'included_monthly_ai_tokens' => 1000000,
+                    'monthly_conversations' => 500,
+                    'whatsapp_numbers' => 1,
+                    'entry_points' => 1,
+                    'mcp_tools' => 0,
+                    'products' => 5,
+                    'playbooks' => 3,
+                    'conversation_history_days' => 30,
+                ],
+            ],
+            [
+                'code' => 'growth',
+                'name' => 'Growth',
+                'description' => 'Plan escalable para operaciones comerciales en crecimiento.',
+                'active' => true,
+                'featured' => true,
+                'monthlyPriceEur' => '79.00',
+                'yearlyPriceEur' => '790.00',
+                'currency' => 'EUR',
+                'displayOrder' => 20,
+                'features' => [
+                    'ai_agent' => true,
+                    'whatsapp_channel' => true,
+                    'human_handoff' => true,
+                    'mcp_tools' => true,
+                    'audio_transcription' => true,
+                    'advanced_analytics' => 'basic',
+                ],
+                'limits' => [
+                    'included_monthly_ai_tokens' => 10000000,
+                    'monthly_conversations' => 3000,
+                    'whatsapp_numbers' => 1,
+                    'entry_points' => 5,
+                    'mcp_tools' => 3,
+                    'products' => 50,
+                    'playbooks' => 20,
+                    'conversation_history_days' => 180,
+                ],
+            ],
+            [
+                'code' => 'pro',
+                'name' => 'Pro',
+                'description' => 'Plan avanzado para equipos con mayor volumen y necesidad de soporte prioritario.',
+                'active' => true,
+                'featured' => false,
+                'monthlyPriceEur' => '199.00',
+                'yearlyPriceEur' => '1990.00',
+                'currency' => 'EUR',
+                'displayOrder' => 30,
+                'features' => [
+                    'ai_agent' => true,
+                    'whatsapp_channel' => true,
+                    'human_handoff' => true,
+                    'mcp_tools' => true,
+                    'audio_transcription' => true,
+                    'advanced_analytics' => true,
+                    'priority_support' => true,
+                ],
+                'limits' => [
+                    'included_monthly_ai_tokens' => 50000000,
+                    'monthly_conversations' => 15000,
+                    'whatsapp_numbers' => 5,
+                    'entry_points' => 20,
+                    'mcp_tools' => 20,
+                    'products' => 500,
+                    'playbooks' => 100,
+                    'conversation_history_days' => 365,
+                ],
+            ],
+        ];
+
+        foreach ($commercialPlanSeeds as $seed) {
+            $existingPlan = $commercialPlanRepository->findOneBy(['code' => $seed['code']]);
+            if ($existingPlan instanceof CommercialPlan) {
+                continue;
+            }
+
+            $plan = new CommercialPlan($seed['code'], $seed['name']);
+            $plan->setDescription($seed['description']);
+            $plan->setActive($seed['active']);
+            $plan->setFeatured($seed['featured']);
+            $plan->setMonthlyPriceEur($seed['monthlyPriceEur']);
+            $plan->setYearlyPriceEur($seed['yearlyPriceEur']);
+            $plan->setCurrency($seed['currency']);
+            $plan->setDisplayOrder($seed['displayOrder']);
+            $plan->setFeatures($seed['features']);
+            $plan->setLimits($seed['limits']);
+
+            $this->entityManager->persist($plan);
+            $changes[] = sprintf('commercial plan %s', $seed['code']);
         }
 
         $aiCostSeeds = [

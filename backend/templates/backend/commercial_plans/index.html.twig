@@ -1,0 +1,68 @@
+{% extends 'backend/layout.html.twig' %}
+
+{% block content %}
+  <section class="hero-panel">
+    <div class="hero-copy">
+      <div class="eyebrow-dark">Planes comerciales</div>
+      <h2>{{ page_title }}</h2>
+      <p>Catálogo base de planes para Sales Agent. Cada plan define precio, features y límites comerciales.</p>
+    </div>
+    <div class="hero-aside">
+      <div class="badge-live">Plataforma</div>
+      <div class="hero-aside-title">Catálogo base</div>
+      <p>Los planes se asignan a los tenants desde la ficha de negocio dentro de PLATAFORMA.</p>
+    </div>
+  </section>
+
+  {{ error_html|raw }}
+
+  <section class="table-card">
+    <div class="table-header">
+      <div>
+        <h3>Planes disponibles</h3>
+        <p>Lista de planes comerciales y su estado operativo.</p>
+      </div>
+      <a class="primary-action" href="/backend/plans/new">Nuevo plan</a>
+    </div>
+
+    <div class="table-responsive">
+      <table class="request-table">
+        <thead>
+          <tr>
+            <th scope="col">Nombre</th>
+            <th scope="col">Código</th>
+            <th scope="col">Activo</th>
+            <th scope="col">Destacado</th>
+            <th scope="col">Precio</th>
+            <th scope="col">Orden</th>
+            <th scope="col">Descripción</th>
+            <th scope="col" class="text-right">Acciones</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for plan in plans %}
+            <tr>
+              <td><strong>{{ plan.name }}</strong></td>
+              <td><code>{{ plan.code }}</code></td>
+              <td>{% if plan.active %}<span class="status-ok">Activo</span>{% else %}<span class="status-off">Inactivo</span>{% endif %}</td>
+              <td>{% if plan.featured %}<span class="status-ok">Sí</span>{% else %}<span class="status-off">No</span>{% endif %}</td>
+              <td>
+                <strong>{{ plan.monthlyPriceEur }} {{ plan.currency }}</strong>
+                <div class="subtle">{{ plan.yearlyPriceEur }} {{ plan.currency }} / año</div>
+              </td>
+              <td>{{ plan.displayOrder }}</td>
+              <td class="message-cell">{{ plan.description }}</td>
+              <td class="text-right">
+                <a class="icon-action" href="{{ plan.edit_url }}" title="Editar plan" aria-label="Editar plan">✎</a>
+              </td>
+            </tr>
+          {% else %}
+            <tr>
+              <td colspan="8" class="empty-row">No hay planes comerciales todavía.</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+{% endblock %}

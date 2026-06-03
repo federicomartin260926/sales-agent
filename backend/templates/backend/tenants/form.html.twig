@@ -77,6 +77,41 @@
             </div>
           </div>
 
+          {% if is_super_admin|default(false) %}
+            <div class="field field-full">
+              <div class="section-label">Plan comercial</div>
+              <div class="section-note">Sólo visible para super admin. No asigna ningún plan por defecto.</div>
+              <div class="form-grid">
+                <div class="field">
+                  <label for="tenant-commercial-plan">Plan asignado</label>
+                  <select id="tenant-commercial-plan" name="commercialPlanId">
+                    {% for option in commercial_plan_options %}
+                      <option value="{{ option.value }}"{% if values.commercialPlanId == option.value %} selected{% endif %}>{{ option.label }}</option>
+                    {% endfor %}
+                  </select>
+                  <div class="field-note">Plan actual: {{ commercial_plan_selected_label }}</div>
+                </div>
+                <div class="field">
+                  <label for="tenant-subscription-status">Estado de suscripción</label>
+                  <select id="tenant-subscription-status" name="subscriptionStatus">
+                    {% for option in subscription_status_options %}
+                      <option value="{{ option.value }}"{% if values.subscriptionStatus == option.value %} selected{% endif %}>{{ option.label }}</option>
+                    {% endfor %}
+                  </select>
+                  <div class="field-note">Estado manual de la suscripción del tenant.</div>
+                </div>
+                <div class="field">
+                  <label for="tenant-current-period-start">Inicio del periodo</label>
+                  <input id="tenant-current-period-start" name="currentPeriodStart" type="datetime-local" value="{{ values.currentPeriodStart }}">
+                </div>
+                <div class="field">
+                  <label for="tenant-current-period-end">Fin del periodo</label>
+                  <input id="tenant-current-period-end" name="currentPeriodEnd" type="datetime-local" value="{{ values.currentPeriodEnd }}">
+                </div>
+              </div>
+            </div>
+          {% endif %}
+
           <div class="field field-full">
             <div class="section-label">Contexto comercial</div>
             <div class="section-note">Describe el negocio y su política comercial para que el agente actúe con criterio.</div>

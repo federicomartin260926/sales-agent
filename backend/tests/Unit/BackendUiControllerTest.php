@@ -5,6 +5,7 @@ namespace App\Tests\Unit;
 use App\Controller\Web\BackendUiController;
 use App\Entity\EntryPoint;
 use App\Entity\AiUsageEvent;
+use App\Entity\CommercialPlan;
 use App\Entity\ExternalTool;
 use App\Entity\Playbook;
 use App\Entity\Product;
@@ -16,6 +17,7 @@ use App\Repository\EntryPointRepository;
 use App\Repository\PlaybookRepository;
 use App\Repository\ProductRepository;
 use App\Repository\ExternalToolRepository;
+use App\Repository\CommercialPlanRepository;
 use App\Repository\TenantAiUsagePolicyRepository;
 use App\Repository\TenantRepository;
 use App\Repository\AiModelCostReferenceRepository;
@@ -334,6 +336,41 @@ final class BackendUiControllerTest extends TestCase
                     $this->orderedTools,
                     static fn (ExternalTool $tool) => $tool->getTenant()->getId()->toRfc4122() === $tenant->getId()->toRfc4122() && $tool->isActive() && $tool->getType() === 'mcp_remote'
                 ));
+            }
+        };
+    }
+
+    /**
+     * @param CommercialPlan[] $plans
+     */
+    private function createCommercialPlanRepositoryFake(array $plans = [], ?CommercialPlan $foundPlan = null): CommercialPlanRepository
+    {
+        return new class($plans, $foundPlan) extends CommercialPlanRepository {
+            /**
+             * @param CommercialPlan[] $plans
+             */
+            public function __construct(
+                private array $plans,
+                private ?CommercialPlan $foundPlan,
+            ) {
+            }
+
+            public function findActiveOrdered(): array
+            {
+                return array_values(array_filter(
+                    $this->plans,
+                    static fn (CommercialPlan $plan): bool => $plan->isActive()
+                ));
+            }
+
+            public function findAllOrdered(): array
+            {
+                return $this->plans;
+            }
+
+            public function find($id, $lockMode = null, $lockVersion = null): ?object
+            {
+                return $this->foundPlan;
             }
         };
     }
@@ -1392,6 +1429,49 @@ final class BackendUiControllerTest extends TestCase
         self::assertStringContainsString('>Negocio</a>', $response->getContent());
         self::assertStringNotContainsString('<a class="active" href="/backend/tenants">Negocios</a>', $response->getContent());
         self::assertCount(1, $aiUsagePolicyRepository->savedPolicies);
+    }
+
+    public function testSuperAdminTenantEditFormShowsCommercialPlanAssignment(): void
+    {
+        $tenant = new Tenant('Federico Martin Demo', 'federico-martin-demo');
+        $tenant->setActive(true);
+        $plan = new CommercialPlan('starter', 'Starter');
+        $plan->setActive(true);
+        $tenant->setCommercialPlan($plan);
+        $tenant->setSubscriptionStatus('active');
+        $tenant->setCurrentPeriodStart(new \DateTimeImmutable('2026-06-01 00:00:00'));
+        $tenant->setCurrentPeriodEnd(new \DateTimeImmutable('2026-07-01 00:00:00'));
+
+        $security = $this->createStub(Security::class);
+        $security->method('getUser')->willReturn($this->createAuthenticatedUser('owner@example.com', ['super_admin'], 'Owner'));
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => in_array($role, ['ROLE_MANAGER', 'ROLE_SUPER_ADMIN'], true));
+
+        $tenants = $this->createTenantRepositoryFake([], $tenant);
+        $commercialPlans = $this->createCommercialPlanRepositoryFake([$plan], $plan);
+
+        $csrfTokenManager = $this->createStub(CsrfTokenManagerInterface::class);
+        $csrfTokenManager->method('getToken')->willReturnCallback(
+            static fn (string $id): CsrfToken => new CsrfToken($id, 'token-'.$id)
+        );
+
+        $controller = $this->createControllerForActiveTenant($security, $tenant, null, null, $csrfTokenManager);
+        $response = $controller->tenantEdit(
+            $tenant->getId()->toRfc4122(),
+            Request::create('/backend/tenants/'.$tenant->getId()->toRfc4122().'/edit', 'GET'),
+            $tenants,
+            $this->createTenantAiUsagePolicyRepositoryFake(null),
+            $this->createAiUsageEventRepositoryFake(),
+            $commercialPlans
+        );
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        self::assertStringContainsString('Plan comercial', $response->getContent());
+        self::assertStringContainsString('Plan asignado', $response->getContent());
+        self::assertStringContainsString('Estado de suscripción', $response->getContent());
+        self::assertStringContainsString('Inicio del periodo', $response->getContent());
+        self::assertStringContainsString('Fin del periodo', $response->getContent());
+        self::assertStringContainsString('<option value="'.$plan->getId()->toRfc4122().'" selected>', $response->getContent());
+        self::assertStringContainsString('Plan actual: Starter', $response->getContent());
     }
 
     public function testTenantEditFormShowsEmptyAiUsageStateWhenNoEvents(): void

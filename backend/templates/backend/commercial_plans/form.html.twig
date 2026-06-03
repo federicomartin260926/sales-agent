@@ -1,0 +1,105 @@
+{% extends 'backend/layout.html.twig' %}
+
+{% block content %}
+  <section class="hero-panel">
+    <div class="hero-copy">
+      <div class="eyebrow-dark">Planes comerciales</div>
+      <h2>{{ page_title }}</h2>
+      <p>Configura un plan con precios, features, límites y metadatos listos para Stripe.</p>
+    </div>
+    <div class="hero-aside">
+      <div class="badge-live">Plataforma</div>
+      <div class="hero-aside-title">Catálogo base</div>
+      <p>La ficha de negocio sólo asigna el plan. La edición de referencia vive aquí.</p>
+    </div>
+  </section>
+
+  {{ errors_html|raw }}
+
+  <section class="table-card">
+    <div class="table-header">
+      <div>
+        <h3>{{ is_edit ? 'Editar plan' : 'Nuevo plan' }}</h3>
+        <p>Rellena el formulario y guarda la referencia comercial.</p>
+      </div>
+      <a class="secondary-action" href="/backend/plans">Volver al listado</a>
+    </div>
+
+    <form method="post" action="{{ action_url }}" class="tenant-form">
+      <input type="hidden" name="_csrf_token" value="{{ form_token }}">
+
+      <div class="form-grid">
+        <div class="field">
+          <label for="plan-code">Código</label>
+          <input id="plan-code" name="code" type="text" value="{{ values.code }}" maxlength="50" required>
+          <div class="field-note">Identificador técnico estable, por ejemplo `starter` o `pro`.</div>
+        </div>
+        <div class="field">
+          <label for="plan-name">Nombre</label>
+          <input id="plan-name" name="name" type="text" value="{{ values.name }}" maxlength="255" required>
+          <div class="field-note">Nombre visible en la UI y en el selector de tenant.</div>
+        </div>
+        <div class="field field-full">
+          <label for="plan-description">Descripción</label>
+          <textarea id="plan-description" name="description" rows="3" maxlength="5000">{{ values.description }}</textarea>
+        </div>
+        <div class="field field-check">
+          <label for="plan-active">Estado</label>
+          <label class="checkbox-inline" for="plan-active">
+            <input id="plan-active" name="active" type="checkbox" value="1"{% if values.active %} checked{% endif %}>
+            <span>Plan activo</span>
+          </label>
+        </div>
+        <div class="field field-check">
+          <label for="plan-featured">Destacado</label>
+          <label class="checkbox-inline" for="plan-featured">
+            <input id="plan-featured" name="featured" type="checkbox" value="1"{% if values.featured %} checked{% endif %}>
+            <span>Mostrar como recomendado</span>
+          </label>
+        </div>
+        <div class="field">
+          <label for="plan-monthly-price">Precio mensual</label>
+          <input id="plan-monthly-price" name="monthlyPriceEur" type="text" value="{{ values.monthlyPriceEur }}" placeholder="29.00">
+        </div>
+        <div class="field">
+          <label for="plan-yearly-price">Precio anual</label>
+          <input id="plan-yearly-price" name="yearlyPriceEur" type="text" value="{{ values.yearlyPriceEur }}" placeholder="290.00">
+        </div>
+        <div class="field">
+          <label for="plan-currency">Moneda</label>
+          <input id="plan-currency" name="currency" type="text" value="{{ values.currency }}" maxlength="10" required>
+        </div>
+        <div class="field">
+          <label for="plan-display-order">Orden</label>
+          <input id="plan-display-order" name="displayOrder" type="number" value="{{ values.displayOrder }}" step="1">
+        </div>
+        <div class="field">
+          <label for="plan-stripe-product">Stripe Product ID</label>
+          <input id="plan-stripe-product" name="stripeProductId" type="text" value="{{ values.stripeProductId }}" maxlength="255">
+        </div>
+        <div class="field">
+          <label for="plan-stripe-monthly">Stripe Monthly Price ID</label>
+          <input id="plan-stripe-monthly" name="stripeMonthlyPriceId" type="text" value="{{ values.stripeMonthlyPriceId }}" maxlength="255">
+        </div>
+        <div class="field">
+          <label for="plan-stripe-yearly">Stripe Yearly Price ID</label>
+          <input id="plan-stripe-yearly" name="stripeYearlyPriceId" type="text" value="{{ values.stripeYearlyPriceId }}" maxlength="255">
+        </div>
+        <div class="field field-full">
+          <label for="plan-features">Features JSON</label>
+          <textarea id="plan-features" name="features" rows="9" spellcheck="false">{{ values.features }}</textarea>
+          <div class="field-note">JSON plano con flags de capacidad, por ejemplo `ai_agent`, `human_handoff` o `priority_support`.</div>
+        </div>
+        <div class="field field-full">
+          <label for="plan-limits">Limits JSON</label>
+          <textarea id="plan-limits" name="limits" rows="9" spellcheck="false">{{ values.limits }}</textarea>
+          <div class="field-note">JSON plano con límites numéricos o comerciales por plan.</div>
+        </div>
+      </div>
+
+      <div class="d-flex justify-content-end mt-4">
+        <button class="primary-action" type="submit">{{ submit_label }}</button>
+      </div>
+    </form>
+  </section>
+{% endblock %}

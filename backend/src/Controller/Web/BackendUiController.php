@@ -5,6 +5,7 @@ namespace App\Controller\Web;
 use App\Domain\CommercialDomainSchema;
 use App\Entity\EntryPoint;
 use App\Entity\ExternalTool;
+use App\Entity\CommercialPlan;
 use App\Entity\AiUsageEvent;
 use App\Entity\AiModelCostReference;
 use App\Entity\Playbook;
@@ -16,6 +17,7 @@ use App\Entity\TenantMembership;
 use App\Entity\User;
 use App\Repository\AiUsageEventRepository;
 use App\Repository\AiModelCostReferenceRepository;
+use App\Repository\CommercialPlanRepository;
 use App\Repository\PlaybookRepository;
 use App\Repository\ProductRepository;
 use App\Repository\EntryPointRepository;
@@ -487,21 +489,23 @@ final class BackendUiController
         }
 
         if (!$this->isSuperAdmin()) {
-        $rows = array_map(function (Tenant $tenant) use ($request): string {
-            $contextSummary = $this->shortenListText($tenant->getBusinessContext(), 110, 'Sin contexto');
-            $toneSummary = $this->shortenListText($tenant->getTone() ?? '', 36, 'Sin tono');
-            $policySummary = $this->shortenListText($tenant->getSalesPolicySummary(), 130, 'Sin política comercial');
-            $status = $tenant->isActive() ? '<span class="status-ok">Activo</span>' : '<span class="status-off">Inactivo</span>';
-            $enterUrl = sprintf('/backend/tenants/%s/enter', rawurlencode($tenant->getId()->toRfc4122()));
-            $editUrl = $this->canManageTenant($tenant) ? sprintf('/backend/tenants/%s/edit', rawurlencode($tenant->getId()->toRfc4122())) : null;
+            $rows = array_map(function (Tenant $tenant) use ($request): string {
+                $contextSummary = $this->shortenListText($tenant->getBusinessContext(), 110, 'Sin contexto');
+                $toneSummary = $this->shortenListText($tenant->getTone() ?? '', 36, 'Sin tono');
+                $policySummary = $this->shortenListText($tenant->getSalesPolicySummary(), 130, 'Sin política comercial');
+                $planSummary = $this->commercialPlanSummary($tenant->getCommercialPlan());
+                $status = $tenant->isActive() ? '<span class="status-ok">Activo</span>' : '<span class="status-off">Inactivo</span>';
+                $enterUrl = sprintf('/backend/tenants/%s/enter', rawurlencode($tenant->getId()->toRfc4122()));
+                $editUrl = $this->canManageTenant($tenant) ? sprintf('/backend/tenants/%s/edit', rawurlencode($tenant->getId()->toRfc4122())) : null;
 
-            return sprintf(
-                '<tr>
+                return sprintf(
+                    '<tr>
                     <td><strong>%s</strong><div class="subtle">Contexto: %s</div><div class="subtle">Tono: %s</div></td>
-                        <td><code>%s</code></td>
-                        <td>Política: %s</td>
-                        <td>%s</td>
-                        <td class="text-right">
+                    <td><code>%s</code></td>
+                    <td>Política: %s</td>
+                    <td>Plan: %s</td>
+                    <td>%s</td>
+                    <td class="text-right">
                       <div style="display:inline-flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end">
                         <form method="post" action="%s" style="display:inline-flex;">
                           <input type="hidden" name="_csrf_token" value="%s">
@@ -512,26 +516,27 @@ final class BackendUiController
                       </div>
                     </td>
                   </tr>',
-                htmlspecialchars($tenant->getName(), ENT_QUOTES, 'UTF-8'),
+                    htmlspecialchars($tenant->getName(), ENT_QUOTES, 'UTF-8'),
                     htmlspecialchars($contextSummary, ENT_QUOTES, 'UTF-8'),
                     htmlspecialchars($toneSummary, ENT_QUOTES, 'UTF-8'),
                     htmlspecialchars($tenant->getSlug(), ENT_QUOTES, 'UTF-8'),
-                htmlspecialchars($policySummary, ENT_QUOTES, 'UTF-8'),
-                $status,
-                htmlspecialchars($enterUrl, ENT_QUOTES, 'UTF-8'),
-                htmlspecialchars($this->tenantTokenValue($enterUrl), ENT_QUOTES, 'UTF-8'),
-                htmlspecialchars($tenant->getId()->toRfc4122(), ENT_QUOTES, 'UTF-8'),
-                is_string($editUrl) ? sprintf(
-                    '<a class="icon-action" href="%s" title="Editar negocio" aria-label="Editar negocio">%s</a>',
-                    htmlspecialchars($editUrl, ENT_QUOTES, 'UTF-8'),
-                    self::iconEditSvg()
-                ) : '<span class="subtle">Solo lectura</span>'
-            );
-        }, $accessibleTenants);
+                    htmlspecialchars($policySummary, ENT_QUOTES, 'UTF-8'),
+                    htmlspecialchars($planSummary, ENT_QUOTES, 'UTF-8'),
+                    $status,
+                    htmlspecialchars($enterUrl, ENT_QUOTES, 'UTF-8'),
+                    htmlspecialchars($this->tenantTokenValue($enterUrl), ENT_QUOTES, 'UTF-8'),
+                    htmlspecialchars($tenant->getId()->toRfc4122(), ENT_QUOTES, 'UTF-8'),
+                    is_string($editUrl) ? sprintf(
+                        '<a class="icon-action" href="%s" title="Editar negocio" aria-label="Editar negocio">%s</a>',
+                        htmlspecialchars($editUrl, ENT_QUOTES, 'UTF-8'),
+                        self::iconEditSvg()
+                    ) : '<span class="subtle">Solo lectura</span>'
+                );
+            }, $accessibleTenants);
 
             $content = $this->twig->render('backend/tenants/index.html.twig', [
                 'feedback_html' => $feedbackHtml,
-                'rows_html' => $rows !== [] ? implode('', $rows) : '<tr><td colspan="5" class="empty-row">No tienes negocios asignados.</td></tr>',
+                'rows_html' => $rows !== [] ? implode('', $rows) : '<tr><td colspan="6" class="empty-row">No tienes negocios asignados.</td></tr>',
             ]);
 
             return $this->renderBackendShell('Selector de negocios', 'Elige un negocio activo para abrir su ficha.', 'tenants', $content);
@@ -542,6 +547,7 @@ final class BackendUiController
             $contextSummary = $this->shortenListText($tenant->getBusinessContext(), 110, 'Sin contexto');
             $toneSummary = $this->shortenListText($tenant->getTone() ?? '', 36, 'Sin tono');
             $policySummary = $this->shortenListText($tenant->getSalesPolicySummary(), 130, 'Sin política comercial');
+            $planSummary = $this->commercialPlanSummary($tenant->getCommercialPlan());
             $status = $tenant->isActive() ? '<span class="status-ok">Activo</span>' : '<span class="status-off">Inactivo</span>';
             $editUrl = sprintf('/backend/tenants/%s/edit', rawurlencode($tenant->getId()->toRfc4122()));
             $deleteUrl = sprintf('/backend/tenants/%s/delete', rawurlencode($tenant->getId()->toRfc4122()));
@@ -553,6 +559,7 @@ final class BackendUiController
                     <td><strong>%s</strong><div class="subtle">Contexto: %s</div><div class="subtle">Tono: %s</div></td>
                     <td><code>%s</code></td>
                     <td>Política: %s</td>
+                    <td>Plan: %s</td>
                     <td>%s%s</td>
                     <td class="text-right">
                       <div style="display:inline-flex;align-items:center;gap:10px;flex-wrap:wrap;justify-content:flex-end">
@@ -574,6 +581,7 @@ final class BackendUiController
                 htmlspecialchars($toneSummary, ENT_QUOTES, 'UTF-8'),
                 htmlspecialchars($tenant->getSlug(), ENT_QUOTES, 'UTF-8'),
                 htmlspecialchars($policySummary, ENT_QUOTES, 'UTF-8'),
+                htmlspecialchars($planSummary, ENT_QUOTES, 'UTF-8'),
                 $status,
                 $isCurrentActive ? '<div class="subtle">Activo en sesión</div>' : '',
                 htmlspecialchars($enterUrl, ENT_QUOTES, 'UTF-8'),
@@ -614,7 +622,7 @@ final class BackendUiController
               <div class="table-responsive">
                 <table>
                   <thead>
-                    <tr><th>Negocio</th><th>Slug</th><th>Política comercial</th><th>Estado</th><th class="text-right">Acciones</th></tr>
+                    <tr><th>Negocio</th><th>Slug</th><th>Política comercial</th><th>Plan</th><th>Estado</th><th class="text-right">Acciones</th></tr>
                   </thead>
                   <tbody>%s</tbody>
                 </table>
@@ -622,12 +630,12 @@ final class BackendUiController
             </section>
             ',
             $feedbackHtml,
-            $rows !== [] ? implode('', $rows) : '<tr><td colspan="5" class="empty-row">No hay negocios todavía.</td></tr>'
+            $rows !== [] ? implode('', $rows) : '<tr><td colspan="6" class="empty-row">No hay negocios todavía.</td></tr>'
         );
 
         $content = $this->twig->render('backend/tenants/index.html.twig', [
             'feedback_html' => $feedbackHtml,
-            'rows_html' => $rows !== [] ? implode('', $rows) : '<tr><td colspan="5" class="empty-row">No hay negocios todavía.</td></tr>',
+            'rows_html' => $rows !== [] ? implode('', $rows) : '<tr><td colspan="6" class="empty-row">No hay negocios todavía.</td></tr>',
         ]);
 
         return $this->renderBackendShell('Selector de negocios', 'Elige un negocio activo para abrir su ficha.', 'tenants', $content);
@@ -706,13 +714,14 @@ final class BackendUiController
         Request $request,
         ?TenantRepository $tenants = null,
         ?TenantAiUsagePolicyRepository $aiUsagePolicies = null,
+        ?CommercialPlanRepository $commercialPlans = null,
     ): Response
     {
         if (!$this->security->isGranted('ROLE_SUPER_ADMIN')) {
             return new RedirectResponse('/backend/login');
         }
 
-        $values = $this->tenantFormDefaults();
+        $values = $this->tenantFormDefaults(null, null, null, null, $commercialPlans);
         $error = null;
 
         if ($request->isMethod('POST')) {
@@ -720,11 +729,11 @@ final class BackendUiController
                 $error = 'La sesión del formulario ha expirado. Vuelve a intentarlo.';
             } else {
                 $values = $this->tenantFormValuesFromRequest($request);
-                $error = $this->validateTenantForm($values, null, $tenants);
+                $error = $this->validateTenantForm($values, null, $tenants, $commercialPlans);
 
                 if ($error === null) {
                     $tenant = new Tenant();
-                    $this->hydrateTenantFromForm($tenant, $values);
+                    $this->hydrateTenantFromForm($tenant, $values, $commercialPlans);
                     $this->entityManager->persist($tenant);
                     $this->persistTenantAiUsagePolicy($tenant, $values, $aiUsagePolicies, false);
                     $this->entityManager->flush();
@@ -745,7 +754,12 @@ final class BackendUiController
             'Crear negocio',
             '/backend/tenants/new',
             $values,
-            $error
+            $error,
+            [],
+            'tenants',
+            $this->commercialPlanOptionsWithCurrent($commercialPlans, $values['commercialPlanId'] ?? ''),
+            $this->subscriptionStatusOptions(),
+            $this->commercialPlanSummaryFromValue($commercialPlans, $values['commercialPlanId'] ?? '')
         );
     }
 
@@ -756,6 +770,7 @@ final class BackendUiController
         ?TenantRepository $tenants = null,
         ?TenantAiUsagePolicyRepository $aiUsagePolicies = null,
         ?AiUsageEventRepository $aiUsageEvents = null,
+        ?CommercialPlanRepository $commercialPlans = null,
     ): Response
     {
         if (!$this->security->isGranted('ROLE_MANAGER')) {
@@ -779,21 +794,21 @@ final class BackendUiController
         $aiUsageEventsRepository = $aiUsageEvents ?? $this->aiUsageEvents;
         $aiUsageData = $this->tenantAiUsageDisplayData($tenant, $aiUsageEventsRepository);
         $aiUsageTokenRate = $this->tenantAiUsageTokenRate($aiUsagePolicy);
-        $values = $this->tenantFormDefaults($tenant, $aiUsagePolicy, $aiUsageEventsRepository, $aiUsageTokenRate);
+        $values = $this->tenantFormDefaults($tenant, $aiUsagePolicy, $aiUsageEventsRepository, $aiUsageTokenRate, $commercialPlans);
         $error = null;
 
         if ($request->isMethod('POST')) {
             if (!$this->isValidTenantToken('/backend/tenants/'.$tenant->getId()->toRfc4122().'/edit', (string) $request->request->get('_csrf_token'))) {
                 $error = 'La sesión del formulario ha expirado. Vuelve a intentarlo.';
             } else {
-                $values = $this->tenantFormValuesFromRequest($request);
-                $error = $this->validateTenantForm($values, $tenant, $tenants);
+                $values = $this->tenantFormValuesFromRequest($request, $tenant);
+                $error = $this->validateTenantForm($values, $tenant, $tenants, $commercialPlans);
                 if ($error === null) {
                     $error = $this->validateTenantAiUsagePolicyForm($values);
                 }
 
                 if ($error === null) {
-                    $this->hydrateTenantFromForm($tenant, $values);
+                    $this->hydrateTenantFromForm($tenant, $values, $commercialPlans);
                     $this->persistTenantAiUsagePolicy($tenant, $values, $aiUsagePolicies, false, $aiUsagePolicy, $aiUsageTokenRate);
                     $this->entityManager->persist($tenant);
                     $this->entityManager->flush();
@@ -818,7 +833,10 @@ final class BackendUiController
             $values,
             $error,
             $aiUsageData,
-            'tenant'
+            'tenant',
+            $this->commercialPlanOptionsWithCurrent($commercialPlans, $values['commercialPlanId'] ?? ''),
+            $this->subscriptionStatusOptions(),
+            $this->commercialPlanSummaryFromValue($commercialPlans, $values['commercialPlanId'] ?? '')
         );
     }
 
@@ -2515,13 +2533,14 @@ final class BackendUiController
     }
 
     /**
-     * @return array{name: string, slug: string, businessContext: string, tone: string, whatsappPhoneNumberId: string, whatsappPublicPhone: string, humanHandoffEnabled: bool, humanHandoffWhatsappPublic: string, humanHandoffMessage: string, humanHandoffStrategy: string, positioning: string, qualificationFocus: string, handoffRules: string, salesBoundaries: string, notes: string, isActive: bool}
+     * @return array{name: string, slug: string, businessContext: string, tone: string, whatsappPhoneNumberId: string, whatsappPublicPhone: string, humanHandoffEnabled: bool, humanHandoffWhatsappPublic: string, humanHandoffMessage: string, humanHandoffStrategy: string, commercialPlanId: string, subscriptionStatus: string, currentPeriodStart: string, currentPeriodEnd: string, positioning: string, qualificationFocus: string, handoffRules: string, salesBoundaries: string, notes: string, isActive: bool, aiEnabled: bool, dailyCostLimitEur: string, monthlyCostLimitEur: string, defaultModel: string, fallbackModel: string, limitAction: string}
      */
     private function tenantFormDefaults(
         ?Tenant $tenant = null,
         ?TenantAiUsagePolicy $aiUsagePolicy = null,
         ?AiUsageEventRepository $aiUsageEvents = null,
         ?float $tokenRate = null,
+        ?CommercialPlanRepository $commercialPlans = null,
     ): array
     {
         $salesPolicy = $tenant?->getSalesPolicy() ?? [];
@@ -2529,6 +2548,7 @@ final class BackendUiController
             $aiUsagePolicy,
             $tokenRate ?? $this->tenantAiUsageTokenRate($aiUsagePolicy)
         );
+        $commercialPlan = $tenant?->getCommercialPlan();
 
         return [
             'name' => $tenant?->getName() ?? '',
@@ -2553,14 +2573,23 @@ final class BackendUiController
             'defaultModel' => $aiPolicy['defaultModel'],
             'fallbackModel' => $aiPolicy['fallbackModel'],
             'limitAction' => $aiPolicy['limitAction'],
+            'commercialPlanId' => $commercialPlan?->getId()->toRfc4122() ?? '',
+            'subscriptionStatus' => $tenant?->getSubscriptionStatus() ?? '',
+            'currentPeriodStart' => $tenant?->getCurrentPeriodStart()?->format('Y-m-d\TH:i') ?? '',
+            'currentPeriodEnd' => $tenant?->getCurrentPeriodEnd()?->format('Y-m-d\TH:i') ?? '',
         ];
     }
 
     /**
-     * @return array{name: string, slug: string, businessContext: string, tone: string, whatsappPhoneNumberId: string, whatsappPublicPhone: string, humanHandoffEnabled: bool, humanHandoffWhatsappPublic: string, humanHandoffMessage: string, humanHandoffStrategy: string, positioning: string, qualificationFocus: string, handoffRules: string, salesBoundaries: string, notes: string, isActive: bool, aiEnabled: bool, dailyCostLimitEur: string, monthlyCostLimitEur: string, defaultModel: string, fallbackModel: string, limitAction: string}
+     * @return array{name: string, slug: string, businessContext: string, tone: string, whatsappPhoneNumberId: string, whatsappPublicPhone: string, humanHandoffEnabled: bool, humanHandoffWhatsappPublic: string, humanHandoffMessage: string, humanHandoffStrategy: string, commercialPlanId: string, subscriptionStatus: string, currentPeriodStart: string, currentPeriodEnd: string, positioning: string, qualificationFocus: string, handoffRules: string, salesBoundaries: string, notes: string, isActive: bool, aiEnabled: bool, dailyCostLimitEur: string, monthlyCostLimitEur: string, defaultModel: string, fallbackModel: string, limitAction: string}
      */
-    private function tenantFormValuesFromRequest(Request $request): array
+    private function tenantFormValuesFromRequest(Request $request, ?Tenant $tenant = null): array
     {
+        $commercialPlanId = $tenant?->getCommercialPlan()?->getId()->toRfc4122() ?? '';
+        $subscriptionStatus = $tenant?->getSubscriptionStatus() ?? '';
+        $currentPeriodStart = $tenant?->getCurrentPeriodStart()?->format('Y-m-d\TH:i') ?? '';
+        $currentPeriodEnd = $tenant?->getCurrentPeriodEnd()?->format('Y-m-d\TH:i') ?? '';
+
         return [
             'name' => trim((string) $request->request->get('name', '')),
             'slug' => trim((string) $request->request->get('slug', '')),
@@ -2584,6 +2613,10 @@ final class BackendUiController
             'defaultModel' => trim((string) $request->request->get('defaultModel', '')),
             'fallbackModel' => trim((string) $request->request->get('fallbackModel', '')),
             'limitAction' => trim((string) $request->request->get('limitAction', 'handoff_human')),
+            'commercialPlanId' => trim((string) $request->request->get('commercialPlanId', $commercialPlanId)),
+            'subscriptionStatus' => trim((string) $request->request->get('subscriptionStatus', $subscriptionStatus)),
+            'currentPeriodStart' => trim((string) $request->request->get('currentPeriodStart', $currentPeriodStart)),
+            'currentPeriodEnd' => trim((string) $request->request->get('currentPeriodEnd', $currentPeriodEnd)),
         ];
     }
 
@@ -2597,6 +2630,9 @@ final class BackendUiController
         ?string $error = null,
         array $aiUsage = [],
         string $activeNav = 'tenants',
+        array $commercialPlanOptions = [],
+        array $subscriptionStatusOptions = [],
+        string $commercialPlanSelectedLabel = 'Sin plan asignado',
     ): Response {
         $aiUsage = array_replace(
             [
@@ -2627,11 +2663,15 @@ final class BackendUiController
             'ai_assistant_token' => $this->tenantDraftAssistantTokenValue(),
             'ai_assistant_initial_message' => 'Hola. Te ayudaré a completar la ficha del negocio. La pantalla está separada en Ficha negocio, Canales, Handoff y Uso IA. Si no estás seguro con un WhatsApp o con el handoff, déjalo en blanco y lo revisamos después.',
             'ai_assistant_compose_note' => sprintf('La ficha se rellena en pantalla. No se guardará hasta que pulses %s.', $submitLabel),
+            'is_super_admin' => $this->security->isGranted('ROLE_SUPER_ADMIN'),
             'values' => $values,
             'commercial_daily_limit_options' => $this->commercialMillionOptionsWithCurrent([0.1, 0.25, 0.5, 1, 2, 5], $values['dailyCostLimitEur'] ?? ''),
             'commercial_monthly_limit_options' => $this->commercialMillionOptionsWithCurrent([0.5, 1, 3, 5, 10, 15, 25, 50, 100], $values['monthlyCostLimitEur'] ?? ''),
             'default_model_options' => $this->tenantAiModelOptionsWithCurrent(AiModelCostReference::USAGE_TYPE_LLM_CHAT, $values['defaultModel'] ?? ''),
             'fallback_model_options' => $this->tenantAiModelOptionsWithCurrent(AiModelCostReference::USAGE_TYPE_LLM_CHAT, $values['fallbackModel'] ?? ''),
+            'commercial_plan_options' => $commercialPlanOptions,
+            'subscription_status_options' => $subscriptionStatusOptions,
+            'commercial_plan_selected_label' => $commercialPlanSelectedLabel,
             'daily_limit_display' => $this->formatCommercialTokenValue($values['dailyCostLimitEur'] ?? ''),
             'monthly_limit_display' => $this->formatCommercialTokenValue($values['monthlyCostLimitEur'] ?? ''),
             'submit_label' => $submitLabel,
@@ -2641,7 +2681,7 @@ final class BackendUiController
         return $this->renderBackendShell($pageTitle, $pageSubtitle, $activeNav, $content);
     }
 
-    private function validateTenantForm(array $values, ?Tenant $tenant, ?TenantRepository $tenants): ?string
+    private function validateTenantForm(array $values, ?Tenant $tenant, ?TenantRepository $tenants, ?CommercialPlanRepository $commercialPlans = null): ?string
     {
         if ($values['name'] === '') {
             return 'El nombre del negocio es obligatorio.';
@@ -2685,6 +2725,27 @@ final class BackendUiController
 
         if (!in_array($values['humanHandoffStrategy'], ['disabled', 'manual_wa_link', 'n8n_webhook', 'manual_wa_link_and_n8n'], true)) {
             return 'La estrategia de handoff no es válida.';
+        }
+
+        if ($values['subscriptionStatus'] !== '' && !in_array($values['subscriptionStatus'], ['trialing', 'active', 'past_due', 'cancelled', 'manual', 'paused'], true)) {
+            return 'El estado de suscripción no es válido.';
+        }
+
+        if ($values['commercialPlanId'] !== '' && $commercialPlans instanceof CommercialPlanRepository) {
+            $commercialPlan = $commercialPlans->find($values['commercialPlanId']);
+            if (!$commercialPlan instanceof CommercialPlan) {
+                return 'El plan comercial seleccionado no existe.';
+            }
+        }
+
+        foreach (['currentPeriodStart', 'currentPeriodEnd'] as $field) {
+            if ($values[$field] === '') {
+                continue;
+            }
+
+            if ($this->parseDateTimeLocal($values[$field]) === null) {
+                return sprintf('El campo "%s" debe ser una fecha válida.', $field);
+            }
         }
 
         $salesPolicy = $this->tenantSalesPolicyFromForm($values);
@@ -2756,8 +2817,16 @@ final class BackendUiController
         return null;
     }
 
-    private function hydrateTenantFromForm(Tenant $tenant, array $values): void
+    private function hydrateTenantFromForm(Tenant $tenant, array $values, ?CommercialPlanRepository $commercialPlans = null): void
     {
+        $commercialPlan = null;
+        if ($commercialPlans instanceof CommercialPlanRepository && $values['commercialPlanId'] !== '') {
+            $candidate = $commercialPlans->find($values['commercialPlanId']);
+            if ($candidate instanceof CommercialPlan) {
+                $commercialPlan = $candidate;
+            }
+        }
+
         $tenant->setName($values['name']);
         $tenant->setSlug($values['slug']);
         $tenant->setBusinessContext($values['businessContext']);
@@ -2768,6 +2837,10 @@ final class BackendUiController
         $tenant->setHumanHandoffWhatsappPublic($values['humanHandoffWhatsappPublic'] !== '' ? $values['humanHandoffWhatsappPublic'] : null);
         $tenant->setHumanHandoffMessage($values['humanHandoffMessage'] !== '' ? $values['humanHandoffMessage'] : null);
         $tenant->setHumanHandoffStrategy($values['humanHandoffStrategy']);
+        $tenant->setCommercialPlan($commercialPlan);
+        $tenant->setSubscriptionStatus($values['subscriptionStatus'] !== '' ? $values['subscriptionStatus'] : null);
+        $tenant->setCurrentPeriodStart($this->parseDateTimeLocal($values['currentPeriodStart']));
+        $tenant->setCurrentPeriodEnd($this->parseDateTimeLocal($values['currentPeriodEnd']));
         $tenant->setSalesPolicy($this->tenantSalesPolicyFromForm($values));
         $tenant->setActive($values['isActive']);
     }
@@ -3410,6 +3483,31 @@ final class BackendUiController
         return $number > 0 ? $number : null;
     }
 
+    private function parseDateTimeLocal(mixed $value): ?\DateTimeImmutable
+    {
+        if (!is_string($value)) {
+            return null;
+        }
+
+        $trimmed = trim($value);
+        if ($trimmed === '') {
+            return null;
+        }
+
+        foreach (['Y-m-d\TH:i', 'Y-m-d\TH:i:s', \DateTimeInterface::ATOM] as $format) {
+            $date = \DateTimeImmutable::createFromFormat($format, $trimmed);
+            if ($date instanceof \DateTimeImmutable) {
+                return $date;
+            }
+        }
+
+        try {
+            return new \DateTimeImmutable($trimmed);
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
     private function userDisplayLabel(?User $user): string
     {
         if (!$user instanceof User) {
@@ -3762,6 +3860,108 @@ final class BackendUiController
         ]);
 
         return $options;
+    }
+
+    /**
+     * @return array<int, array{value: string, label: string}>
+     */
+    private function subscriptionStatusOptions(): array
+    {
+        return [
+            ['value' => '', 'label' => 'Sin estado'],
+            ['value' => 'trialing', 'label' => 'trialing'],
+            ['value' => 'active', 'label' => 'active'],
+            ['value' => 'past_due', 'label' => 'past_due'],
+            ['value' => 'cancelled', 'label' => 'cancelled'],
+            ['value' => 'manual', 'label' => 'manual'],
+            ['value' => 'paused', 'label' => 'paused'],
+        ];
+    }
+
+    /**
+     * @return array<int, array{value: string, label: string}>
+     */
+    private function commercialPlanOptionsWithCurrent(?CommercialPlanRepository $commercialPlans, mixed $currentValue): array
+    {
+        $options = [];
+
+        if ($commercialPlans instanceof CommercialPlanRepository) {
+            foreach ($commercialPlans->findActiveOrdered() as $plan) {
+                $options[] = [
+                    'value' => $plan->getId()->toRfc4122(),
+                    'label' => $this->commercialPlanLabel($plan),
+                ];
+            }
+        }
+
+        $current = trim((string) $currentValue);
+        if ($current === '') {
+            array_unshift($options, [
+                'value' => '',
+                'label' => 'Sin plan asignado',
+            ]);
+
+            return $options;
+        }
+
+        foreach ($options as $option) {
+            if (($option['value'] ?? '') === $current) {
+                return $options;
+            }
+        }
+
+        if ($commercialPlans instanceof CommercialPlanRepository) {
+            $currentPlan = $commercialPlans->find($current);
+            if ($currentPlan instanceof CommercialPlan) {
+                array_unshift($options, [
+                    'value' => $currentPlan->getId()->toRfc4122(),
+                    'label' => $this->commercialPlanLabel($currentPlan),
+                ]);
+
+                return $options;
+            }
+        }
+
+        array_unshift($options, [
+            'value' => $current,
+            'label' => $current,
+        ]);
+
+        return $options;
+    }
+
+    private function commercialPlanSummary(?CommercialPlan $plan): string
+    {
+        if (!$plan instanceof CommercialPlan) {
+            return 'Sin plan asignado';
+        }
+
+        return $this->commercialPlanLabel($plan);
+    }
+
+    private function commercialPlanSummaryFromValue(?CommercialPlanRepository $commercialPlans, mixed $currentValue): string
+    {
+        $current = trim((string) $currentValue);
+        if ($current === '') {
+            return 'Sin plan asignado';
+        }
+
+        if ($commercialPlans instanceof CommercialPlanRepository) {
+            $plan = $commercialPlans->find($current);
+            if ($plan instanceof CommercialPlan) {
+                return $this->commercialPlanLabel($plan);
+            }
+        }
+
+        return $current;
+    }
+
+    private function commercialPlanLabel(CommercialPlan $plan): string
+    {
+        $monthly = $plan->getMonthlyPriceEur() !== null ? $this->formatMoneyValue((float) $plan->getMonthlyPriceEur()) : '—';
+        $yearly = $plan->getYearlyPriceEur() !== null ? $this->formatMoneyValue((float) $plan->getYearlyPriceEur()) : '—';
+
+        return sprintf('%s (%s €/mes, %s €/año)', $plan->getName(), $monthly, $yearly);
     }
 
     private function formatIntegerDisplay(?int $value): string
