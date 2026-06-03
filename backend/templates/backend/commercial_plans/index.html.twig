@@ -33,6 +33,7 @@
             <th scope="col">Código</th>
             <th scope="col">Activo</th>
             <th scope="col">Destacado</th>
+            <th scope="col">Tokens/mes</th>
             <th scope="col">Precio</th>
             <th scope="col">Orden</th>
             <th scope="col">Descripción</th>
@@ -46,6 +47,7 @@
               <td><code>{{ plan.code }}</code></td>
               <td>{% if plan.active %}<span class="status-ok">Activo</span>{% else %}<span class="status-off">Inactivo</span>{% endif %}</td>
               <td>{% if plan.featured %}<span class="status-ok">Sí</span>{% else %}<span class="status-off">No</span>{% endif %}</td>
+              <td><strong>{{ plan.tokensPerMonth }}</strong></td>
               <td>
                 <strong>{{ plan.monthlyPriceEur }} {{ plan.currency }}</strong>
                 <div class="subtle">{{ plan.yearlyPriceEur }} {{ plan.currency }} / año</div>
@@ -58,7 +60,7 @@
             </tr>
           {% else %}
             <tr>
-              <td colspan="8" class="empty-row">No hay planes comerciales todavía.</td>
+              <td colspan="9" class="empty-row">No hay planes comerciales todavía.</td>
             </tr>
           {% endfor %}
         </tbody>

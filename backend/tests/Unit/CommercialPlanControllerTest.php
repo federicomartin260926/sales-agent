@@ -39,6 +39,7 @@ final class CommercialPlanControllerTest extends TestCase
         self::assertStringContainsString('<a class="active" href="/backend/plans">Planes comerciales</a>', $response->getContent());
         self::assertStringContainsString('Starter', $response->getContent());
         self::assertStringContainsString('Pro', $response->getContent());
+        self::assertStringContainsString('>1M<', $response->getContent());
         self::assertStringContainsString('/backend/plans/'.$plans[0]->getId()->toRfc4122().'/edit', $response->getContent());
     }
 
@@ -52,6 +53,12 @@ final class CommercialPlanControllerTest extends TestCase
         $entityManager->expects(self::once())->method('flush');
 
         $controller = $this->controller($tenant, [$plan], $entityManager);
+        $viewResponse = $controller->edit($plan->getId()->toRfc4122(), Request::create('/backend/plans/'.$plan->getId()->toRfc4122().'/edit', 'GET'));
+        self::assertSame(Response::HTTP_OK, $viewResponse->getStatusCode());
+        self::assertStringContainsString('Preparación Stripe (futuro)', $viewResponse->getContent());
+        self::assertStringContainsString('1000000 = 1M tokens incluidos/mes', $viewResponse->getContent());
+        self::assertStringContainsString('Tokens de referencia', $viewResponse->getContent());
+
         $response = $controller->edit($plan->getId()->toRfc4122(), Request::create('/backend/plans/'.$plan->getId()->toRfc4122().'/edit', 'POST', [
             'code' => 'starter',
             'name' => 'Starter Plus',

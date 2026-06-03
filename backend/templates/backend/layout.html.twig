@@ -14,30 +14,29 @@
         <div class="brand-name">Sales Agent</div>
         <div class="brand-sub">Panel para definir negocios, productos/servicios y comportamiento del agente IA.</div>
       </div>
+
       <nav class="nav">
         {% if active_tenant is not null %}
-            <div class="nav-section">
-              <div class="nav-section-title">Negocio activo</div>
-              <div class="nav-section-items">
-                <a class="{{ active_nav == 'dashboard' ? 'active' : '' }}" href="/backend/dashboard">Dashboard</a>
-                {% if can_manage_active_tenant|default(false) %}
-                  <a class="{{ active_nav == 'tenant' ? 'active' : '' }} nav-tenant-link" href="{{ active_tenant.edit_url }}">Negocio</a>
-                {% endif %}
-                <a class="{{ active_nav == 'playbooks' ? 'active' : '' }}" href="/backend/playbooks">Guías comerciales</a>
-                <a class="{{ active_nav == 'products' ? 'active' : '' }}" href="/backend/products">Productos / servicios</a>
-                <a class="{{ active_nav == 'entry-points' ? 'active' : '' }}" href="/backend/entry-points">Puntos de entrada</a>
-              </div>
+          <div class="nav-section">
+            <div class="nav-section-title">Negocio activo</div>
+            <div class="nav-section-items">
+              <a class="{{ active_nav == 'dashboard' ? 'active' : '' }}" href="/backend/dashboard">Dashboard</a>
+
+              {% if can_manage_active_tenant|default(false) %}
+                <a class="{{ active_nav == 'tenant' ? 'active' : '' }} nav-tenant-link" href="{{ active_tenant.edit_url }}">Negocio</a>
+              {% endif %}
+
+              <a class="{{ active_nav == 'playbooks' ? 'active' : '' }}" href="/backend/playbooks">Guías comerciales</a>
+              <a class="{{ active_nav == 'products' ? 'active' : '' }}" href="/backend/products">Productos / servicios</a>
+              <a class="{{ active_nav == 'entry-points' ? 'active' : '' }}" href="/backend/entry-points">Puntos de entrada</a>
+              {% if can_manage_active_tenant|default(false) or is_super_admin|default(false) %}
+                <a class="{{ active_nav == 'ai-usage' ? 'active' : '' }}" href="/backend/ai-usage">Uso IA</a>
+              {% endif %}
+            </div>
           </div>
 
-          {% if can_manage_active_tenant|default(false) or is_super_admin|default(false) %}
-            <div class="nav-section">
-              <div class="nav-section-title">Uso IA</div>
-              <div class="nav-section-items">
-                <a class="{{ active_nav == 'ai-usage' ? 'active' : '' }}" href="/backend/ai-usage">Uso IA</a>
-              </div>
-            </div>
-          {% endif %}
         {% endif %}
+
         {% if is_super_admin|default(false) %}
           <div class="nav-section">
             <div class="nav-section-title">Administración técnica</div>
@@ -46,17 +45,31 @@
             </div>
           </div>
 
-            <div class="nav-section">
-              <div class="nav-section-title">Plataforma</div>
-              <div class="nav-section-items">
-                <a class="{{ active_nav == 'tenants' ? 'active' : '' }}" href="/backend/tenants">Negocios</a>
-                <a class="{{ active_nav == 'admin-users' ? 'active' : '' }}" href="/backend/users">Usuarios</a>
-                <a class="{{ active_nav == 'admin-ai-costs' ? 'active' : '' }}" href="/backend/ai-costs">Modelos IA</a>
-                <a class="{{ active_nav == 'admin-commercial-plans' ? 'active' : '' }}" href="/backend/plans">Planes comerciales</a>
-                <a class="{{ active_nav == 'admin-configuration' ? 'active' : '' }}" href="/backend/configuration">Configuración</a>
-                <a style="display:none" class="{{ active_nav in ['admin-api-health', 'api-health'] ? 'active' : '' }}" href="/backend/api-health">API Health</a>
-              </div>
+          {% set platform_navs = [
+            'tenants',
+            'admin-users',
+            'admin-ai-costs',
+            'admin-commercial-plans',
+            'admin-configuration',
+            'admin-api-health',
+            'api-health'
+          ] %}
+
+          <details class="nav-section nav-section-collapsible" {{ active_nav in platform_navs ? 'open' : '' }}>
+            <summary class="nav-section-title nav-section-summary">
+              <span>Plataforma</span>
+              <span class="nav-section-caret" aria-hidden="true">▾</span>
+            </summary>
+
+            <div class="nav-section-items">
+              <a class="{{ active_nav == 'tenants' ? 'active' : '' }}" href="/backend/tenants">Negocios</a>
+              <a class="{{ active_nav == 'admin-users' ? 'active' : '' }}" href="/backend/users">Usuarios</a>
+              <a class="{{ active_nav == 'admin-ai-costs' ? 'active' : '' }}" href="/backend/ai-costs">Modelos IA</a>
+              <a class="{{ active_nav == 'admin-commercial-plans' ? 'active' : '' }}" href="/backend/plans">Planes comerciales</a>
+              <a class="{{ active_nav == 'admin-configuration' ? 'active' : '' }}" href="/backend/configuration">Configuración</a>
+              <a style="display:none" class="{{ active_nav in ['admin-api-health', 'api-health'] ? 'active' : '' }}" href="/backend/api-health">API Health</a>
             </div>
+          </details>
         {% endif %}
       </nav>
     </aside>
@@ -67,6 +80,7 @@
           <h1 class="page-title">{{ page_title }}</h1>
           <div class="page-subtitle">{{ page_subtitle }}</div>
         </div>
+
         <div class="topbar-meta">
           {% if active_tenant is not null %}
             {% if is_super_admin|default(false) %}
@@ -97,20 +111,22 @@
               <span class="tenant-chip-link">Seleccionar negocio</span>
             </a>
           {% endif %}
+
           <div class="user-area">
-          <details class="user-dropdown">
-            <summary class="user-summary">
-              <div class="user-chip">
-                <div class="avatar">{{ current_user_initials|default('SA') }}</div>
-                <div class="user-meta"><strong>{{ current_user_display_name|default('Usuario') }}</strong></div>
+            <details class="user-dropdown">
+              <summary class="user-summary">
+                <div class="user-chip">
+                  <div class="avatar">{{ current_user_initials|default('SA') }}</div>
+                  <div class="user-meta"><strong>{{ current_user_display_name|default('Usuario') }}</strong></div>
+                </div>
+                <span class="nav-caret">▾</span>
+              </summary>
+
+              <div class="user-links">
+                <a href="/backend/profile">Mi perfil</a>
+                <a href="/backend/logout">Salir</a>
               </div>
-              <span class="nav-caret">▾</span>
-            </summary>
-            <div class="user-links">
-              <a href="/backend/profile">Mi perfil</a>
-              <a href="/backend/logout">Salir</a>
-            </div>
-          </details>
+            </details>
           </div>
         </div>
       </header>
@@ -120,6 +136,7 @@
       </main>
     </section>
   </main>
+
   <script>
     (() => {
       const tabRoots = Array.from(document.querySelectorAll('[data-policy-tabs]'));

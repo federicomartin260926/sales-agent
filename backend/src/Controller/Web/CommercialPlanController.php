@@ -6,6 +6,7 @@ use App\Entity\CommercialPlan;
 use App\Entity\Tenant;
 use App\Repository\CommercialPlanRepository;
 use App\Service\ActiveTenantContext;
+use App\Service\CommercialTokenFormatter;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Bundle\SecurityBundle\Security;
@@ -257,9 +258,22 @@ final class CommercialPlanController extends AbstractController
             'yearlyPriceEur' => $plan->getYearlyPriceEur() ?? '—',
             'currency' => $plan->getCurrency(),
             'displayOrder' => $plan->getDisplayOrder(),
+            'tokensPerMonth' => $this->commercialPlanTokensPerMonthLabel($plan),
             'edit_url' => '/backend/plans/'.$plan->getId()->toRfc4122().'/edit',
             'summary' => $this->commercialPlanLabel($plan),
         ];
+    }
+
+    private function commercialPlanTokensPerMonthLabel(CommercialPlan $plan): string
+    {
+        $limits = $plan->getLimits();
+        $tokens = $limits['included_monthly_ai_tokens'] ?? null;
+
+        if (!is_numeric($tokens)) {
+            return '—';
+        }
+
+        return CommercialTokenFormatter::formatCommercialMillionTokens((int) round((float) $tokens));
     }
 
     private function commercialPlanLabel(CommercialPlan $plan): string

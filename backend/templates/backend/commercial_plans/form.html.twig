@@ -73,18 +73,6 @@
           <label for="plan-display-order">Orden</label>
           <input id="plan-display-order" name="displayOrder" type="number" value="{{ values.displayOrder }}" step="1">
         </div>
-        <div class="field">
-          <label for="plan-stripe-product">Stripe Product ID</label>
-          <input id="plan-stripe-product" name="stripeProductId" type="text" value="{{ values.stripeProductId }}" maxlength="255">
-        </div>
-        <div class="field">
-          <label for="plan-stripe-monthly">Stripe Monthly Price ID</label>
-          <input id="plan-stripe-monthly" name="stripeMonthlyPriceId" type="text" value="{{ values.stripeMonthlyPriceId }}" maxlength="255">
-        </div>
-        <div class="field">
-          <label for="plan-stripe-yearly">Stripe Yearly Price ID</label>
-          <input id="plan-stripe-yearly" name="stripeYearlyPriceId" type="text" value="{{ values.stripeYearlyPriceId }}" maxlength="255">
-        </div>
         <div class="field field-full">
           <label for="plan-features">Features JSON</label>
           <textarea id="plan-features" name="features" rows="9" spellcheck="false">{{ values.features }}</textarea>
@@ -94,8 +82,27 @@
           <label for="plan-limits">Limits JSON</label>
           <textarea id="plan-limits" name="limits" rows="9" spellcheck="false">{{ values.limits }}</textarea>
           <div class="field-note">JSON plano con límites numéricos o comerciales por plan.</div>
+          <div class="field-note">Tokens de referencia: 1000000 = 1M tokens incluidos/mes, 10000000 = 10M tokens incluidos/mes, 50000000 = 50M tokens incluidos/mes.</div>
         </div>
       </div>
+
+      <details class="mt-4">
+        <summary>Preparación Stripe (futuro)</summary>
+        <div class="form-grid mt-3">
+          <div class="field">
+            <label for="plan-stripe-product">Stripe Product ID</label>
+            <input id="plan-stripe-product" name="stripeProductId" type="text" value="{{ values.stripeProductId }}" maxlength="255">
+          </div>
+          <div class="field">
+            <label for="plan-stripe-monthly">Stripe Monthly Price ID</label>
+            <input id="plan-stripe-monthly" name="stripeMonthlyPriceId" type="text" value="{{ values.stripeMonthlyPriceId }}" maxlength="255">
+          </div>
+          <div class="field">
+            <label for="plan-stripe-yearly">Stripe Yearly Price ID</label>
+            <input id="plan-stripe-yearly" name="stripeYearlyPriceId" type="text" value="{{ values.stripeYearlyPriceId }}" maxlength="255">
+          </div>
+        </div>
+      </details>
 
       <div class="d-flex justify-content-end mt-4">
         <button class="primary-action" type="submit">{{ submit_label }}</button>
