@@ -1,0 +1,5 @@
+framework:
+  profiler:
+    collect: true
+    only_exceptions: false
+

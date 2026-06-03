@@ -65,6 +65,22 @@ make up
 
 `make up` levanta los servicios, instala dependencias PHP del backend y limpia la caché de Symfony para evitar que queden vistas compiladas antiguas.
 
+Comandos útiles:
+
+```bash
+make recreate
+make fix-perms
+make dev-diagnose
+```
+
+- `make recreate` baja y vuelve a crear la stack de desarrollo.
+- `make fix-perms` corrige permisos de `var/` dentro del backend.
+- `make dev-diagnose` muestra contenedores, mounts reales, permisos y una comprobación rápida de que el contenedor ve cambios del host.
+
+`restart` sólo reinicia contenedores existentes; no recrea mounts ni aplica cambios de Compose.
+
+En desarrollo Symfony corre con `APP_ENV=dev` y `APP_DEBUG=1`, con WebProfilerBundle activo. La toolbar/profiler debe cargar en `http://localhost:8080/backend/login` y en el resto de páginas del backend.
+
 Para ver logs:
 
 ```bash
@@ -84,6 +100,7 @@ make prod-up
 ```
 
 `make prod-up` levanta la stack de producción y recompila la caché de Symfony en el contenedor del backend.
+La imagen de nginx de producción copia `backend/public` en build; no usa bind mounts de código.
 
 En producción, `sales-agent-nginx` se publica por la red Docker compartida `proxy` y el runtime de la API usa `Authorization: Bearer ...` para llamadas de otros servicios.
 Cuando `sales-agent` y `crm` conviven en el mismo VPS, la API lee el CRM por la red interna compartida `commercial_internal` usando `CRM_BASE_URL=http://crm-nginx`.
@@ -177,6 +194,8 @@ En producción usa:
 make prod-schema-update
 make prod-bootstrap
 ```
+
+El archivo `.env` está ignorado por Git y no debe contener secretos versionados. `OPENAI_API_KEY` debe quedar vacío en `.env.example`; cualquier clave real debe rotarse y mantenerse fuera del repositorio.
 
 Credenciales iniciales:
 
