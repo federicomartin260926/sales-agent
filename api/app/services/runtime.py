@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import httpx
 import logging
 import uuid
@@ -8,6 +8,7 @@ from typing import Any
 
 import time
 
+from app.config import Settings
 from app.schemas.agent import AgentRequest, AgentResponse
 from app.schemas.llm import BackendAiUsageEventPayload
 from app.schemas.llm import McpRemoteConfig
@@ -54,6 +55,7 @@ class AgentRuntime:
         self.decision_engine = decision_engine
         self.ai_usage_guard = ai_usage_guard or AiUsageGuard(backend_client)
         backend_settings = getattr(backend_client, "settings", None)
+        self.settings = backend_settings if backend_settings is not None else Settings()
         runtime_settings_client = RuntimeSettingsClient(backend_settings) if backend_settings is not None else None
         self.audio_gateway_client = audio_gateway_client
         if self.audio_gateway_client is None and backend_settings is not None:
@@ -264,6 +266,8 @@ class AgentRuntime:
             if isinstance(conversation, dict) and isinstance(conversation.get("id"), str):
                 routing.conversation_id = conversation["id"]
 
+        previous_response_id = self._previous_response_id_from_conversation_result(conversation_result)
+
         explicit_handoff_request = False
         if audio_failure_handoff_response is not None:
             response = audio_failure_handoff_response
@@ -324,6 +328,7 @@ class AgentRuntime:
                     backend_context=backend_context,
                     contact_context=None,
                     mcp_config=mcp_config,
+                    previous_response_id=previous_response_id,
                 )
                 decision_latency_ms = int(round((time.perf_counter() - started_at) * 1000))
                 latency_ms = response.latency_ms if response.latency_ms is not None else decision_latency_ms
@@ -411,6 +416,39 @@ class AgentRuntime:
 
         return None
 
+    def _previous_response_id_from_conversation_result(self, conversation_result: dict[str, Any] | None) -> str | None:
+        if not self.settings.openai_conversation_state_enabled:
+            return None
+
+        if not isinstance(conversation_result, dict):
+            return None
+
+        conversation = conversation_result.get("conversation")
+        if not isinstance(conversation, dict):
+            return None
+
+        status = str(conversation.get("status") or "").strip().lower()
+        if status != "active":
+            return None
+
+        previous_response_id = self._normalize_telemetry_value(
+            conversation.get("lastOpenAiResponseId") or conversation.get("last_openai_response_id"),
+        )
+        if not isinstance(previous_response_id, str) or not previous_response_id.startswith("resp_"):
+            return None
+
+        last_response_at = self._parse_datetime_utc(
+            conversation.get("lastOpenAiResponseAt") or conversation.get("last_openai_response_at"),
+        )
+        if last_response_at is None:
+            return None
+
+        ttl_hours = max(1, self.settings.openai_conversation_state_ttl_hours)
+        if datetime.now(timezone.utc) - last_response_at > timedelta(hours=ttl_hours):
+            return None
+
+        return previous_response_id
+
     def _is_audio_message(self, payload: AgentRequest) -> bool:
         if str(payload.message.type or "").strip().lower() == "audio":
             return True
@@ -484,6 +522,24 @@ class AgentRuntime:
                 return str(value)
 
         return None
+
+    def _parse_datetime_utc(self, value: Any) -> datetime | None:
+        if not isinstance(value, str) or value.strip() == "":
+            return None
+
+        raw_value = value.strip()
+        if raw_value.endswith("Z"):
+            raw_value = raw_value[:-1] + "+00:00"
+
+        try:
+            parsed = datetime.fromisoformat(raw_value)
+        except ValueError:
+            return None
+
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+
+        return parsed.astimezone(timezone.utc)
 
     def _score_to_integer(self, score: float) -> int | None:
         try:

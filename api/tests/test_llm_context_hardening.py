@@ -214,6 +214,11 @@ def test_prompt_builder_enriches_prompt_with_mcp_runtime():
     assert "WhatsApp Business IA" in system_prompt
     assert "query='IA'" in system_prompt or "query=\"IA\"" in system_prompt
     assert "query='automatización'" in system_prompt or "query=\"automatización\"" in system_prompt
+    assert "service_id canónico" in system_prompt
+    assert "appointment_availability" in system_prompt
+    assert "appointment_confirm" in system_prompt
+    assert "appointment_booking_invitation" in system_prompt
+    assert "Nunca metas el slug o integration_key dentro de service_id" in system_prompt
     assert parsed["product"]["name"] == "Producto Demo"
     assert parsed["products"] == []
     assert parsed["sales_runtime"]["has_product_context"] is False

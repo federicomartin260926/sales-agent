@@ -4,6 +4,7 @@ namespace App\Tests\Unit;
 
 use App\Controller\Api\RoutingController;
 use App\Entity\Conversation;
+use App\Entity\ConversationMessage;
 use App\Entity\EntryPoint;
 use App\Entity\EntryPointUtm;
 use App\Entity\Playbook;
@@ -319,5 +320,238 @@ final class RoutingControllerTest extends TestCase
         self::assertFalse($data['created']);
         self::assertSame($entryPointUtm->getId()->toRfc4122(), $data['conversation']['entryPointUtmId']);
         self::assertSame('Ana García', $data['conversation']['customerName']);
+    }
+
+    public function testUpsertConversationIncludesOpenAiResponseCursorInPayload(): void
+    {
+        $tenant = $this->createTenant();
+        $conversation = new Conversation($tenant, '+34999999999');
+        $conversation->setLastOpenAiResponseId('resp_123');
+        $conversation->setLastOpenAiResponseAt(new \DateTimeImmutable('2026-06-08T10:00:00+00:00'));
+
+        $conversationRepository = new class($conversation) extends ConversationRepository {
+            public function __construct(private readonly Conversation $conversation)
+            {
+            }
+
+            public function findActiveByTenantPhone(Tenant $tenant, string $customerPhone): ?Conversation
+            {
+                return $this->conversation;
+            }
+
+            public function save(Conversation $conversation, bool $flush = true): void
+            {
+            }
+        };
+
+        $conversationService = new ConversationService($conversationRepository);
+        $tenantRepository = new class($tenant) extends TenantRepository {
+            public function __construct(private readonly Tenant $tenant)
+            {
+            }
+
+            public function find($id, $lockMode = null, $lockVersion = null): object|null
+            {
+                return $this->tenant;
+            }
+        };
+        $resolver = new RoutingResolver(
+            $this->createStub(EntryPointRepository::class),
+            $this->createStub(EntryPointUtmRepository::class),
+            $tenantRepository,
+        );
+        $controller = $this->createController(
+            $resolver,
+            null,
+            null,
+            $tenantRepository,
+            $this->createStub(EntryPointRepository::class),
+            $this->createStub(EntryPointUtmRepository::class),
+            $this->createStub(ProductRepository::class),
+            $conversationService,
+            $conversationRepository,
+        );
+
+        $response = $controller->upsertConversation(Request::create('/api/internal/conversations/upsert', 'POST', [], [], [], [], json_encode([
+            'tenant_id' => $tenant->getId()->toRfc4122(),
+            'customer_phone' => '+34999999999',
+        ])));
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        $data = json_decode((string) $response->getContent(), true);
+        self::assertSame('resp_123', $data['conversation']['lastOpenAiResponseId']);
+        self::assertSame('2026-06-08T10:00:00+00:00', $data['conversation']['lastOpenAiResponseAt']);
+    }
+
+    public function testCreateConversationMessagePersistsOpenAiResponseCursor(): void
+    {
+        $tenant = $this->createTenant();
+        $conversation = new Conversation($tenant, '+34999999999');
+
+        $conversationRepository = new class($conversation) extends ConversationRepository {
+            public function __construct(private readonly Conversation $conversation)
+            {
+            }
+
+            public function find($id, $lockMode = null, $lockVersion = null): object|null
+            {
+                return $this->conversation;
+            }
+
+            public function save(Conversation $conversation, bool $flush = true): void
+            {
+            }
+        };
+
+        $conversationMessages = new class extends ConversationMessageRepository {
+            public function __construct()
+            {
+            }
+
+            public function findOneByExternalMessageId(?string $externalMessageId): ?ConversationMessage
+            {
+                return null;
+            }
+
+            public function save(ConversationMessage $conversationMessage, bool $flush = true): void
+            {
+            }
+        };
+
+        $resolver = new RoutingResolver(
+            $this->createStub(EntryPointRepository::class),
+            $this->createStub(EntryPointUtmRepository::class),
+            $this->createStub(TenantRepository::class),
+        );
+
+        $controller = $this->createController(
+            $resolver,
+            null,
+            null,
+            $this->createStub(TenantRepository::class),
+            $this->createStub(EntryPointRepository::class),
+            $this->createStub(EntryPointUtmRepository::class),
+            $this->createStub(ProductRepository::class),
+            null,
+            $conversationRepository,
+            $conversationMessages,
+        );
+
+        $request = Request::create(
+            '/api/internal/conversations/messages',
+            'POST',
+            [],
+            [],
+            [],
+            ['HTTP_AUTHORIZATION' => 'Bearer test-internal-token'],
+            json_encode([
+                'conversation_id' => $conversation->getId()->toRfc4122(),
+                'direction' => 'outbound',
+                'role' => 'assistant',
+                'message_type' => 'text',
+                'body' => 'Perfecto, seguimos con la reserva.',
+                'provider' => 'openai',
+                'model' => 'gpt-4.1-mini',
+                'metadata' => [
+                    'response_id' => 'resp_123',
+                    'data_to_save' => [
+                        'topic' => 'agenda',
+                    ],
+                ],
+            ])
+        );
+
+        $response = $controller->createConversationMessage($request);
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        self::assertSame('resp_123', $conversation->getLastOpenAiResponseId());
+        self::assertNotNull($conversation->getLastOpenAiResponseAt());
+    }
+
+    public function testCreateConversationMessageClearsOpenAiResponseCursorWhenFallbackFlagIsPresent(): void
+    {
+        $tenant = $this->createTenant();
+        $conversation = new Conversation($tenant, '+34999999999');
+        $conversation->setLastOpenAiResponseId('resp_old');
+        $conversation->setLastOpenAiResponseAt(new \DateTimeImmutable('-1 hour'));
+
+        $conversationRepository = new class($conversation) extends ConversationRepository {
+            public function __construct(private readonly Conversation $conversation)
+            {
+            }
+
+            public function find($id, $lockMode = null, $lockVersion = null): object|null
+            {
+                return $this->conversation;
+            }
+
+            public function save(Conversation $conversation, bool $flush = true): void
+            {
+            }
+        };
+
+        $conversationMessages = new class extends ConversationMessageRepository {
+            public function __construct()
+            {
+            }
+
+            public function findOneByExternalMessageId(?string $externalMessageId): ?ConversationMessage
+            {
+                return null;
+            }
+
+            public function save(ConversationMessage $conversationMessage, bool $flush = true): void
+            {
+            }
+        };
+
+        $resolver = new RoutingResolver(
+            $this->createStub(EntryPointRepository::class),
+            $this->createStub(EntryPointUtmRepository::class),
+            $this->createStub(TenantRepository::class),
+        );
+
+        $controller = $this->createController(
+            $resolver,
+            null,
+            null,
+            $this->createStub(TenantRepository::class),
+            $this->createStub(EntryPointRepository::class),
+            $this->createStub(EntryPointUtmRepository::class),
+            $this->createStub(ProductRepository::class),
+            null,
+            $conversationRepository,
+            $conversationMessages,
+        );
+
+        $request = Request::create(
+            '/api/internal/conversations/messages',
+            'POST',
+            [],
+            [],
+            [],
+            ['HTTP_AUTHORIZATION' => 'Bearer test-internal-token'],
+            json_encode([
+                'conversation_id' => $conversation->getId()->toRfc4122(),
+                'direction' => 'outbound',
+                'role' => 'assistant',
+                'message_type' => 'text',
+                'body' => 'Perfecto, seguimos con la reserva.',
+                'provider' => 'openai',
+                'model' => 'gpt-4.1-mini',
+                'metadata' => [
+                    'response_id' => 'chatcmpl-1',
+                    'data_to_save' => [
+                        'openai_previous_response_id_invalid' => true,
+                    ],
+                ],
+            ])
+        );
+
+        $response = $controller->createConversationMessage($request);
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        self::assertNull($conversation->getLastOpenAiResponseId());
+        self::assertNull($conversation->getLastOpenAiResponseAt());
     }
 }

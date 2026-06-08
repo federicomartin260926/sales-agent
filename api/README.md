@@ -93,7 +93,7 @@ El prompt debe ordenarse para favorecer prompt caching:
 - primero contexto estable: `tenant`, `product`, `playbook`, `rules`, `sales_runtime`
 - después contexto dinámico: `summary`, últimos mensajes y `current_message`
 
-`previous_response_id` de OpenAI Responses API no se usa en esta fase.
+`previous_response_id` de OpenAI Responses API se usa cuando `OPENAI_CONVERSATION_STATE_ENABLED=true` para mantener continuidad corta entre turnos. Si el cursor expira o no aplica, el runtime vuelve al comportamiento anterior sin romper la conversación.
 
 Antes de activar RAG, ampliar el contexto CRM o sumar más tools, hay que mantener control de tamaño, medición de usage y límites por tenant.
 

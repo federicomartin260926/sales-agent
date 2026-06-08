@@ -239,6 +239,7 @@ final class RoutingController extends AbstractApiController
         $message->setMetadata(isset($data['metadata']) && is_array($data['metadata']) ? $data['metadata'] : null);
 
         $conversation->setLastMessageAt(new \DateTimeImmutable());
+        $this->syncOpenAiConversationCursor($conversation, $direction, $message->getProvider(), $message->getMetadata());
         if ($direction === 'outbound' && $message->isNeedsHuman()) {
             $conversation->setStatus('pending_human');
         }
@@ -319,5 +320,45 @@ final class RoutingController extends AbstractApiController
         $trimmed = trim($value);
 
         return $trimmed !== '' ? $trimmed : null;
+    }
+
+    /**
+     * @param array<string, mixed>|null $metadata
+     */
+    private function syncOpenAiConversationCursor(Conversation $conversation, string $direction, ?string $provider, ?array $metadata): void
+    {
+        if ($direction !== 'outbound') {
+            return;
+        }
+
+        $clearCursor = false;
+        if (is_array($metadata)) {
+            $dataToSave = $metadata['data_to_save'] ?? null;
+            if (is_array($dataToSave) && filter_var($dataToSave['openai_previous_response_id_invalid'] ?? false, FILTER_VALIDATE_BOOLEAN)) {
+                $clearCursor = true;
+            }
+        }
+
+        if ($clearCursor) {
+            $conversation->setLastOpenAiResponseId(null);
+            $conversation->setLastOpenAiResponseAt(null);
+            return;
+        }
+
+        if (!is_string($provider) || strtolower(trim($provider)) !== 'openai') {
+            return;
+        }
+
+        $responseId = null;
+        if (is_array($metadata)) {
+            $responseId = $this->normalizeNullableString($metadata['response_id'] ?? $metadata['llm_response_id'] ?? null);
+        }
+
+        if (!is_string($responseId) || !str_starts_with($responseId, 'resp_')) {
+            return;
+        }
+
+        $conversation->setLastOpenAiResponseId($responseId);
+        $conversation->setLastOpenAiResponseAt(new \DateTimeImmutable());
     }
 }

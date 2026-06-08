@@ -39,7 +39,12 @@ class LLMPromptBuilder:
             "Si no hay catálogo local o el catálogo local no es concluyente y services_search está disponible, úsalo como fuente principal antes de responder. "
             "Si tienes herramientas MCP nativas del tenant, úsalas cuando hagan falta para completar la respuesta. "
             "No inventes datos ni cites sistemas internos, CRM, n8n, webhooks, IDs internos, UTM, refs, tokens o detalles técnicos. "
-            "Mantén el tono breve, útil y orientado a conversación."
+            "Mantén el tono breve, útil y orientado a conversación. "
+            "La conversación es continua: usa el contexto previo relevante para mantener continuidad, "
+            "prioriza siempre el último mensaje del usuario si corrige o concreta un dato, "
+            "no repitas preguntas ya respondidas y combina el mensaje actual con la información previa útil "
+            "cuando hables de servicios, agenda, reservas, precios, preferencias, objeciones o handoff. "
+            "No arrastres detalles antiguos irrelevantes."
         )
         current_madrid_time = self._current_madrid_time()
         system_prompt += (
@@ -79,6 +84,9 @@ class LLMPromptBuilder:
                 "Usuario 'CRM con automatización de ventas' -> correcto query='CRM' o query='automatización', bookable=null; incorrecto query='CRM automatización ventas'. "
                 "Usuario 'soluciones de ventas con IA' -> correcto query='ventas' o query='IA', bookable=null; incorrecto query='soluciones ventas IA'. "
                 "Usuario 'quiero reservar una auditoría' -> correcto query='auditoría', bookable=true. "
+                "Si services_search devuelve items con id, usa item.id como service_id canónico en appointment_availability, appointment_confirm y appointment_booking_invitation. "
+                "Usa service_ref solo como fallback con slug, integration_key o referencia externa cuando no exista item.id. "
+                "Nunca metas el slug o integration_key dentro de service_id. "
                 "Cuando uses services_search, limita por defecto la búsqueda a 5 resultados salvo que "
                 "el usuario pida explícitamente ver más opciones. Usa 3-5 resultados para respuestas "
                 "conversacionales normales y máximo 6 para comparativas breves. "

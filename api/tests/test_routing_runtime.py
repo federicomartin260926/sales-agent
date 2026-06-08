@@ -1,7 +1,8 @@
+from datetime import datetime, timedelta, timezone
+
 import httpx
 import pytest
 
-from app.config import Settings
 from app.schemas.agent import AgentResponse
 from app.schemas.agent import AgentRequest, Contact
 from app.services.backend_client import BackendAiUsagePolicy, BackendAiUsageSnapshot, BackendExternalTool, BackendRoutingEntryPointUtmContext, BackendTenant, CommercialContext
@@ -19,11 +20,15 @@ class RecordingBackendClient:
         phone_context: dict[str, str] | None = None,
         mcp_config: McpRemoteConfig | None = None,
         handoff_tool: BackendExternalTool | None = None,
+        tenant_context: CommercialContext | None = None,
+        conversation_result: dict[str, object] | None = None,
     ) -> None:
         self.ref_context = ref_context
         self.phone_context = phone_context
         self.mcp_config = mcp_config
         self.handoff_tool = handoff_tool
+        self.tenant_context = tenant_context
+        self.conversation_result = conversation_result
         self.calls: list[tuple[str, tuple[object, ...]]] = []
 
     async def resolve_entrypoint_ref(self, ref: str) -> BackendRoutingEntryPointUtmContext | None:
@@ -36,7 +41,7 @@ class RecordingBackendClient:
 
     async def fetch_tenant_context(self, tenant_id: str, selected_product_id: str | None = None, selected_playbook_id: str | None = None, *args):
         self.calls.append(("fetch_tenant_context", (tenant_id, selected_product_id, selected_playbook_id, *args)))
-        return None
+        return self.tenant_context
 
     async def fetch_mcp_config(self, tenant_id: str) -> McpRemoteConfig:
         self.calls.append(("fetch_mcp_config", (tenant_id,)))
@@ -59,7 +64,7 @@ class RecordingBackendClient:
 
     async def upsert_conversation(self, payload):
         self.calls.append(("upsert_conversation", (payload.model_dump(by_alias=True),)))
-        return {"created": True, "conversation": {"id": "conversation-1"}}
+        return self.conversation_result or {"created": True, "conversation": {"id": "conversation-1", "status": "active"}}
 
     async def create_conversation_message(self, payload):
         self.calls.append(("create_conversation_message", (payload.model_dump(by_alias=True),)))
@@ -129,6 +134,29 @@ class RecordingAudioTranscriptionClient:
                 "latency_ms": 42,
             },
         )()
+
+
+def build_context() -> CommercialContext:
+    tenant = BackendTenant.model_validate(
+        {
+            "id": "tenant-1",
+            "name": "Negocio Demo",
+            "slug": "negocio-demo",
+            "businessContext": "Negocio especializado en automatización de WhatsApp.",
+            "tone": "consultivo",
+            "salesPolicy": {},
+            "isActive": True,
+            "createdAt": "2026-04-28T12:00:00+00:00",
+        }
+    )
+
+    return CommercialContext(
+        tenant=tenant,
+        products=[],
+        playbooks=[],
+        selected_product=None,
+        selected_playbook=None,
+    )
 
 
 class FailingAudioTranscriptionClient:
@@ -527,6 +555,176 @@ async def test_runtime_audio_transcription_failure_triggers_handoff_when_configu
 
 
 @pytest.mark.asyncio
+async def test_runtime_passes_recent_openai_cursor_to_llm(monkeypatch: pytest.MonkeyPatch):
+    previous_response_id = "resp_123"
+    last_response_at = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat()
+    backend = RecordingBackendClient(
+        phone_context={"tenant_id": "tenant-1", "tenant_slug": "negocio-demo"},
+        tenant_context=build_context(),
+        conversation_result={
+            "created": False,
+            "conversation": {
+                "id": "conversation-1",
+                "status": "active",
+                "lastOpenAiResponseId": previous_response_id,
+                "lastOpenAiResponseAt": last_response_at,
+            },
+        },
+    )
+
+    async def fake_fetch_tenant_context(*args, **kwargs):
+        backend.calls.append(("fetch_tenant_context", args))
+        return build_context()
+
+    seen: dict[str, object] = {}
+
+    async def fake_resolve_llm_response(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None, force_llm=False, previous_response_id=None):
+        seen["previous_response_id"] = previous_response_id
+        return AgentResponse(
+            reply="Respuesta con continuidad.",
+            intent="open_question",
+            score=0.9,
+            action="ask_question",
+            needs_human=False,
+            data_to_save={},
+            provider="openai",
+            model="gpt-4.1-mini",
+            latency_ms=12,
+        )
+
+    monkeypatch.setattr(backend, "fetch_tenant_context", fake_fetch_tenant_context)
+    monkeypatch.setattr(DecisionEngine, "resolve_llm_response", fake_resolve_llm_response)
+
+    runtime = AgentRuntime(
+        backend,
+        RuntimeRoutingResolver(backend),
+        DecisionEngine(backend),
+    )
+    payload = AgentRequest(
+        external_channel_id="phone-number-id-1",
+        message="Hola, seguimos hablando",
+        contact=Contact(phone="+34999999999"),
+    )
+
+    response = await runtime.respond(payload)
+
+    assert response.intent == "open_question"
+    assert seen["previous_response_id"] == previous_response_id
+
+
+@pytest.mark.asyncio
+async def test_runtime_does_not_pass_cursor_when_conversation_is_pending_human(monkeypatch: pytest.MonkeyPatch):
+    backend = RecordingBackendClient(
+        phone_context={"tenant_id": "tenant-1", "tenant_slug": "negocio-demo"},
+        tenant_context=build_context(),
+        conversation_result={
+            "created": False,
+            "conversation": {
+                "id": "conversation-1",
+                "status": "pending_human",
+                "lastOpenAiResponseId": "resp_123",
+                "lastOpenAiResponseAt": (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat(),
+            },
+        },
+    )
+
+    async def fake_fetch_tenant_context(*args, **kwargs):
+        backend.calls.append(("fetch_tenant_context", args))
+        return build_context()
+
+    seen: dict[str, object] = {}
+
+    async def fake_resolve_llm_response(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None, force_llm=False, previous_response_id=None):
+        seen["previous_response_id"] = previous_response_id
+        return AgentResponse(
+            reply="Respuesta sin cursor.",
+            intent="open_question",
+            score=0.9,
+            action="ask_question",
+            needs_human=False,
+            data_to_save={},
+            provider="openai",
+            model="gpt-4.1-mini",
+            latency_ms=12,
+        )
+
+    monkeypatch.setattr(backend, "fetch_tenant_context", fake_fetch_tenant_context)
+    monkeypatch.setattr(DecisionEngine, "resolve_llm_response", fake_resolve_llm_response)
+
+    runtime = AgentRuntime(
+        backend,
+        RuntimeRoutingResolver(backend),
+        DecisionEngine(backend),
+    )
+    payload = AgentRequest(
+        external_channel_id="phone-number-id-1",
+        message="Hola, seguimos hablando",
+        contact=Contact(phone="+34999999999"),
+    )
+
+    response = await runtime.respond(payload)
+
+    assert response.intent == "open_question"
+    assert seen["previous_response_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_runtime_does_not_pass_cursor_when_conversation_cursor_is_expired(monkeypatch: pytest.MonkeyPatch):
+    backend = RecordingBackendClient(
+        phone_context={"tenant_id": "tenant-1", "tenant_slug": "negocio-demo"},
+        tenant_context=build_context(),
+        conversation_result={
+            "created": False,
+            "conversation": {
+                "id": "conversation-1",
+                "status": "active",
+                "lastOpenAiResponseId": "resp_123",
+                "lastOpenAiResponseAt": (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat(),
+            },
+        },
+    )
+
+    async def fake_fetch_tenant_context(*args, **kwargs):
+        backend.calls.append(("fetch_tenant_context", args))
+        return build_context()
+
+    seen: dict[str, object] = {}
+
+    async def fake_resolve_llm_response(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None, force_llm=False, previous_response_id=None):
+        seen["previous_response_id"] = previous_response_id
+        return AgentResponse(
+            reply="Respuesta sin cursor.",
+            intent="open_question",
+            score=0.9,
+            action="ask_question",
+            needs_human=False,
+            data_to_save={},
+            provider="openai",
+            model="gpt-4.1-mini",
+            latency_ms=12,
+        )
+
+    monkeypatch.setattr(backend, "fetch_tenant_context", fake_fetch_tenant_context)
+    monkeypatch.setattr(DecisionEngine, "resolve_llm_response", fake_resolve_llm_response)
+
+    runtime = AgentRuntime(
+        backend,
+        RuntimeRoutingResolver(backend),
+        DecisionEngine(backend),
+    )
+    payload = AgentRequest(
+        external_channel_id="phone-number-id-1",
+        message="Hola, seguimos hablando",
+        contact=Contact(phone="+34999999999"),
+    )
+
+    response = await runtime.respond(payload)
+
+    assert response.intent == "open_question"
+    assert seen["previous_response_id"] is None
+
+
+@pytest.mark.asyncio
 async def test_runtime_short_circuits_explicit_handoff_for_manual_wa_link(monkeypatch: pytest.MonkeyPatch):
     backend = RecordingBackendClient(
         ref_context=BackendRoutingEntryPointUtmContext.model_validate(
@@ -578,7 +776,7 @@ async def test_runtime_short_circuits_explicit_handoff_for_manual_wa_link(monkey
         backend.calls.append(("fetch_tenant_context", args))
         return backend_context
 
-    async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None):
+    async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None, previous_response_id=None):
         raise AssertionError("LLM should not be called for explicit handoff requests")
 
     monkeypatch.setattr(backend, "fetch_tenant_context", fake_fetch_tenant_context)
@@ -669,7 +867,7 @@ async def test_runtime_appends_handoff_wa_link_and_attempts_webhook(monkeypatch:
         backend.calls.append(("fetch_tenant_context", args))
         return backend_context
 
-    async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None):
+    async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None, previous_response_id=None):
         nonlocal decide_called
         decide_called = True
         return AgentResponse(
@@ -789,7 +987,7 @@ async def test_runtime_webhook_failure_does_not_break_response(monkeypatch: pyte
         backend.calls.append(("fetch_tenant_context", args))
         return backend_context
 
-    async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None):
+    async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None, previous_response_id=None):
         nonlocal decide_called
         decide_called = True
         return AgentResponse(
@@ -866,7 +1064,7 @@ async def test_runtime_persists_mcp_metadata_for_openai_response(monkeypatch: py
         ),
     )
 
-    async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None):
+    async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None, previous_response_id=None):
         assert mcp_config is not None and mcp_config.enabled is True
         return AgentResponse(
             reply="Tu próxima cita es mañana a las 10:00.",
@@ -947,7 +1145,7 @@ async def test_runtime_does_not_short_circuit_agenda_lookup_messages(monkeypatch
         ),
     )
 
-    async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None):
+    async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None, previous_response_id=None):
         assert mcp_config is not None and mcp_config.enabled is True
         return AgentResponse(
             reply="Sí, tienes citas programadas en mayo.",
@@ -1030,7 +1228,7 @@ async def test_runtime_does_not_short_circuit_agenda_booking_when_appointment_av
         ),
     )
 
-    async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None):
+    async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None, previous_response_id=None):
         assert mcp_config is not None and mcp_config.enabled is True
         return AgentResponse(
             reply="Sí, veo huecos disponibles esta semana.",
@@ -1205,7 +1403,7 @@ async def test_runtime_skips_legacy_handoff_webhook_when_llm_used_handoff_reques
         backend.calls.append(("fetch_tenant_context", args))
         return backend_context
 
-    async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None):
+    async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None, previous_response_id=None):
         assert mcp_config is not None and mcp_config.enabled is True
         return AgentResponse(
             reply="He registrado el caso para revisión.",
@@ -1290,7 +1488,7 @@ async def test_runtime_skips_mcp_for_ollama_and_records_reason(monkeypatch: pyte
         ),
     )
 
-    async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None):
+    async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None, previous_response_id=None):
         return AgentResponse(
             reply="No puedo usar MCP con Ollama.",
             intent="open_question",
@@ -1381,7 +1579,7 @@ async def test_runtime_forces_llm_path_when_catalog_is_empty_and_mcp_search_is_a
             selected_playbook=None,
         )
 
-    async def fake_resolve_llm_response(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None, force_llm=False):
+    async def fake_resolve_llm_response(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None, force_llm=False, previous_response_id=None):
         assert force_llm is True
         assert mcp_config is not None and mcp_config.enabled is True
         return AgentResponse(

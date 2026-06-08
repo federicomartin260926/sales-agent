@@ -55,8 +55,10 @@ class LLMDecisionService:
         contact_context: dict[str, Any] | None = None,
         mcp_config: McpRemoteConfig | None = None,
         force_llm: bool = False,
+        previous_response_id: str | None = None,
     ) -> LLMDecisionDraft | None:
         self.last_mcp_skip_reason = None
+        self.llm_client.last_previous_response_id_invalid = False
         configuration = await self.llm_client.resolve_configuration()
         provider_profile = configuration.get("llm_default_profile", "").strip().lower()
         if mcp_config is not None and mcp_config.enabled and provider_profile != "openai":
@@ -88,7 +90,14 @@ class LLMDecisionService:
             started_at = time.perf_counter()
             try:
                 if provider == "openai" and mcp_config is not None and mcp_config.enabled:
-                    result = await self.llm_client.generate_with_mcp(provider, system_prompt, user_prompt, mcp_config, configuration)
+                    result = await self.llm_client.generate_with_mcp(
+                        provider,
+                        system_prompt,
+                        user_prompt,
+                        mcp_config,
+                        configuration,
+                        previous_response_id=previous_response_id,
+                    )
                 else:
                     result = await self.llm_client.generate(provider, system_prompt, user_prompt, configuration)
             except Exception as exc:
@@ -150,6 +159,8 @@ class LLMDecisionService:
                     errors.append(mcp_error.strip())
             if self.last_mcp_skip_reason is not None:
                 data_to_save.setdefault("mcp_skipped_reason", self.last_mcp_skip_reason)
+            if getattr(self.llm_client, "last_previous_response_id_invalid", False):
+                data_to_save["openai_previous_response_id_invalid"] = True
 
             return LLMDecisionDraft(
                 reply=draft.reply,

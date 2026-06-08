@@ -23,6 +23,7 @@ class LLMClient:
         self.transport = transport
         self.cost_estimator = LLMCostEstimator()
         self.last_mcp_error: str | None = None
+        self.last_previous_response_id_invalid: bool = False
 
     async def resolve_configuration(self) -> dict[str, str]:
         return await self.runtime_settings_client.effective_values()
@@ -34,6 +35,7 @@ class LLMClient:
         user_prompt: str,
         configuration: dict[str, str] | None = None,
     ) -> LLMResponseResult:
+        self.last_previous_response_id_invalid = False
         config = configuration if configuration is not None else await self.resolve_configuration()
         normalized_provider = provider.strip().lower()
         if normalized_provider == "openai":
@@ -50,16 +52,34 @@ class LLMClient:
         user_prompt: str,
         mcp_config: McpRemoteConfig,
         configuration: dict[str, str] | None = None,
+        previous_response_id: str | None = None,
     ) -> LLMResponseResult:
         self.last_mcp_error = None
+        self.last_previous_response_id_invalid = False
         config = configuration if configuration is not None else await self.resolve_configuration()
         normalized_provider = provider.strip().lower()
         if normalized_provider != "openai" or not mcp_config.enabled:
             return await self.generate(provider, system_prompt, user_prompt, config)
 
         try:
-            return await self._generate_openai_responses(system_prompt, user_prompt, config, mcp_config)
+            return await self._generate_openai_responses(system_prompt, user_prompt, config, mcp_config, previous_response_id=previous_response_id)
         except Exception as exc:
+            if previous_response_id is not None and self._is_previous_response_id_error(exc):
+                try:
+                    result = await self._generate_openai_responses(system_prompt, user_prompt, config, mcp_config, previous_response_id=None)
+                except Exception as retry_exc:
+                    self.last_previous_response_id_invalid = True
+                    self.last_mcp_error = f"responses_mcp_path_failed:{retry_exc.__class__.__name__}"
+                    logger.warning(
+                        "OpenAI Responses MCP path failed after previous_response_id retry, falling back to legacy chat completions: type=%s repr=%r",
+                        retry_exc.__class__.__name__,
+                        retry_exc,
+                        exc_info=True,
+                    )
+                    return await self._generate_openai(system_prompt, user_prompt, config)
+
+                return result
+
             self.last_mcp_error = f"responses_mcp_path_failed:{exc.__class__.__name__}"
             logger.warning(
                 "OpenAI Responses MCP path failed, falling back to legacy chat completions: type=%s repr=%r",
@@ -119,6 +139,7 @@ class LLMClient:
         user_prompt: str,
         configuration: dict[str, str],
         mcp_config: McpRemoteConfig,
+        previous_response_id: str | None = None,
     ) -> LLMResponseResult:
         base_url = configuration.get("openai_base_url", "").strip().rstrip("/")
         model = configuration.get("openai_model", "").strip()
@@ -138,6 +159,9 @@ class LLMClient:
             "temperature": 0.2,
             "text": {"format": {"type": "json_object"}},
         }
+        normalized_previous_response_id = self._normalize_previous_response_id(previous_response_id)
+        if normalized_previous_response_id is not None:
+            payload["previous_response_id"] = normalized_previous_response_id
 
         tools = self._build_openai_mcp_tools(mcp_config)
         if tools != []:
@@ -516,8 +540,62 @@ class LLMClient:
                 sanitized_tools.append(sanitized_tool)
 
             sanitized["tools"] = sanitized_tools
+        if "previous_response_id" in payload:
+            sanitized["previous_response_id"] = payload.get("previous_response_id")
 
         return sanitized
+
+    def _normalize_previous_response_id(self, value: str | None) -> str | None:
+        if not isinstance(value, str):
+            return None
+
+        normalized = value.strip()
+        if normalized == "":
+            return None
+
+        return normalized
+
+    def _is_previous_response_id_error(self, exc: Exception) -> bool:
+        normalized = ""
+        status_code = None
+
+        if isinstance(exc, httpx.HTTPStatusError):
+            status_code = exc.response.status_code if exc.response is not None else None
+            body = self._response_body_text(exc.response)
+            if isinstance(body, str):
+                normalized = body.lower()
+        else:
+            cause = exc.__cause__
+            if isinstance(cause, httpx.HTTPStatusError):
+                status_code = cause.response.status_code if cause.response is not None else None
+                body = self._response_body_text(cause.response)
+                if isinstance(body, str):
+                    normalized = body.lower()
+
+            if normalized == "":
+                normalized = f"{exc!r} {exc}".lower()
+                if status_code is None and "status_code=400" in normalized:
+                    status_code = 400
+
+        if status_code != 400 or normalized == "":
+            return False
+
+        if "previous_response_id" not in normalized and "previous response id" not in normalized:
+            return False
+
+        return any(
+            marker in normalized
+            for marker in (
+                "invalid",
+                "expired",
+                "not found",
+                "unknown",
+                "missing",
+                "does not exist",
+                "nonexistent",
+                "stale",
+            )
+        )
 
     def _log_openai_responses_mcp_request(self, model: str, tools: list[dict[str, Any]], mcp_config: McpRemoteConfig) -> None:
         if tools == []:

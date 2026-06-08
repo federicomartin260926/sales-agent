@@ -24,6 +24,7 @@ class DecisionEngine:
         backend_context: CommercialContext | None = None,
         contact_context: dict | None = None,
         mcp_config: McpRemoteConfig | None = None,
+        previous_response_id: str | None = None,
     ) -> AgentResponse:
         if backend_context is None:
             resolved_tenant_id = self._resolved_tenant_id(payload, routing)
@@ -49,18 +50,23 @@ class DecisionEngine:
             contact_context=contact_context,
             mcp_config=mcp_config,
             force_llm=should_defer_to_llm,
+            previous_response_id=previous_response_id,
         )
         if llm_response is not None:
             logger.debug("LLM decision accepted intent=%s action=%s", llm_response.intent, llm_response.action)
             return llm_response
 
+        previous_response_id_invalid = bool(getattr(self.llm_decision_service.llm_client, "last_previous_response_id_invalid", False))
         if should_defer_to_llm:
-            return self._deferred_mcp_response(payload, routing, backend_context, contact_context, mcp_config)
+            response = self._deferred_mcp_response(payload, routing, backend_context, contact_context, mcp_config)
+            return self._mark_previous_response_id_invalid(response) if previous_response_id_invalid else response
 
         if backend_context is not None:
-            return self._decide_with_context(payload, backend_context, routing, message, contact_context, mcp_config)
+            response = self._decide_with_context(payload, backend_context, routing, message, contact_context, mcp_config)
+            return self._mark_previous_response_id_invalid(response) if previous_response_id_invalid else response
 
-        return self._decide_without_context(payload, routing, message, contact_context)
+        response = self._decide_without_context(payload, routing, message, contact_context)
+        return self._mark_previous_response_id_invalid(response) if previous_response_id_invalid else response
 
     def resolve_agenda_response(
         self,
@@ -159,6 +165,22 @@ class DecisionEngine:
             provider=llm_decision.provider,
             model=llm_decision.model,
             latency_ms=llm_decision.latency_ms,
+        )
+
+    def _mark_previous_response_id_invalid(self, response: AgentResponse) -> AgentResponse:
+        data_to_save = dict(response.data_to_save)
+        data_to_save["openai_previous_response_id_invalid"] = True
+
+        return AgentResponse(
+            reply=response.reply,
+            intent=response.intent,
+            score=response.score,
+            action=response.action,
+            needs_human=response.needs_human,
+            data_to_save=data_to_save,
+            provider=response.provider,
+            model=response.model,
+            latency_ms=response.latency_ms,
         )
 
     def _decide_without_context(
@@ -633,6 +655,7 @@ class DecisionEngine:
         contact_context: dict[str, Any] | None = None,
         mcp_config: McpRemoteConfig | None = None,
         force_llm: bool = False,
+        previous_response_id: str | None = None,
     ) -> AgentResponse | None:
         llm_decision = await self.llm_decision_service.propose(
             payload,
@@ -641,6 +664,7 @@ class DecisionEngine:
             contact_context,
             mcp_config,
             force_llm=force_llm,
+            previous_response_id=previous_response_id,
         )
         if llm_decision is None:
             return None

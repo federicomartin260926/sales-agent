@@ -58,6 +58,12 @@ class Conversation
     #[ORM\Column(type: 'text', nullable: true)]
     private ?string $summary = null;
 
+    #[ORM\Column(name: 'last_openai_response_id', length: 255, nullable: true)]
+    private ?string $lastOpenAiResponseId = null;
+
+    #[ORM\Column(name: 'last_openai_response_at', type: 'datetime_immutable', nullable: true)]
+    private ?\DateTimeImmutable $lastOpenAiResponseAt = null;
+
     #[ORM\Column(type: 'datetime_immutable', nullable: true)]
     private ?\DateTimeImmutable $lastMessageAt = null;
 
@@ -214,6 +220,32 @@ class Conversation
         $this->updatedAt = new \DateTimeImmutable();
     }
 
+    public function getLastOpenAiResponseId(): ?string
+    {
+        return $this->lastOpenAiResponseId;
+    }
+
+    public function setLastOpenAiResponseId(?string $lastOpenAiResponseId): void
+    {
+        if (is_string($lastOpenAiResponseId)) {
+            $lastOpenAiResponseId = trim($lastOpenAiResponseId);
+        }
+
+        $this->lastOpenAiResponseId = $lastOpenAiResponseId !== '' ? $lastOpenAiResponseId : null;
+        $this->updatedAt = new \DateTimeImmutable();
+    }
+
+    public function getLastOpenAiResponseAt(): ?\DateTimeImmutable
+    {
+        return $this->lastOpenAiResponseAt;
+    }
+
+    public function setLastOpenAiResponseAt(?\DateTimeImmutable $lastOpenAiResponseAt): void
+    {
+        $this->lastOpenAiResponseAt = $lastOpenAiResponseAt;
+        $this->updatedAt = new \DateTimeImmutable();
+    }
+
     public function getLastMessageAt(): ?\DateTimeImmutable
     {
         return $this->lastMessageAt;
@@ -337,6 +369,8 @@ class Conversation
             'status' => $this->status,
             'firstMessage' => $this->firstMessage,
             'summary' => $this->summary,
+            'lastOpenAiResponseId' => $this->lastOpenAiResponseId,
+            'lastOpenAiResponseAt' => $this->lastOpenAiResponseAt?->format(\DateTimeInterface::ATOM),
             'lastMessageAt' => $this->lastMessageAt?->format(\DateTimeInterface::ATOM),
             'createdAt' => $this->createdAt->format(\DateTimeInterface::ATOM),
             'updatedAt' => $this->updatedAt?->format(\DateTimeInterface::ATOM),

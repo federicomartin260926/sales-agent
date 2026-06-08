@@ -211,6 +211,262 @@ async def test_llm_client_uses_openai_responses_with_mcp_tools(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_llm_client_sends_previous_response_id_only_to_openai_responses(monkeypatch):
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content.decode("utf-8"))
+        seen["payload"] = payload
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "id": "resp_2",
+                "output_text": json.dumps({"reply": "ok", "intent": "open_question", "score": 0.1, "action": "ask_question", "needs_human": False, "data_to_save": {}}),
+                "output": [],
+            },
+        )
+
+    monkeypatch.setenv("MCP_TEST_AUTHORIZATION", "")
+
+    client = LLMClient(
+        Settings(OPENAI_API_KEY="sk-test", OPENAI_TIMEOUT_SECONDS=15),
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await client.generate_with_mcp(
+        "openai",
+        "Eres un asistente de ventas.",
+        "Hola",
+        McpRemoteConfig(
+            enabled=True,
+            server_label="tenant_main_mcp",
+            server_url="https://mcp.example.test",
+            auth_type="bearer",
+            downstream_authorization_token="downstream-token",
+            allowed_tools=["search_properties"],
+            require_approval="auto",
+        ),
+        configuration={
+            "openai_base_url": "https://api.openai.com/v1",
+            "openai_model": "gpt-4.1-mini",
+            "openai_api_key": "sk-test",
+            "openai_timeout_seconds": "15",
+        },
+        previous_response_id="resp_1",
+    )
+
+    payload = seen["payload"]
+    assert isinstance(payload, dict)
+    assert payload["previous_response_id"] == "resp_1"
+    assert result.response_id == "resp_2"
+
+
+@pytest.mark.asyncio
+async def test_llm_client_omits_previous_response_id_when_not_provided(monkeypatch):
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content.decode("utf-8"))
+        seen["payload"] = payload
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "id": "resp_3",
+                "output_text": json.dumps({"reply": "ok", "intent": "open_question", "score": 0.1, "action": "ask_question", "needs_human": False, "data_to_save": {}}),
+                "output": [],
+            },
+        )
+
+    monkeypatch.setenv("MCP_TEST_AUTHORIZATION", "")
+
+    client = LLMClient(
+        Settings(OPENAI_API_KEY="sk-test", OPENAI_TIMEOUT_SECONDS=15),
+        transport=httpx.MockTransport(handler),
+    )
+
+    await client.generate_with_mcp(
+        "openai",
+        "Eres un asistente de ventas.",
+        "Hola",
+        McpRemoteConfig(
+            enabled=True,
+            server_label="tenant_main_mcp",
+            server_url="https://mcp.example.test",
+            auth_type="bearer",
+            downstream_authorization_token="downstream-token",
+            allowed_tools=["search_properties"],
+            require_approval="auto",
+        ),
+        configuration={
+            "openai_base_url": "https://api.openai.com/v1",
+            "openai_model": "gpt-4.1-mini",
+            "openai_api_key": "sk-test",
+            "openai_timeout_seconds": "15",
+        },
+    )
+
+    payload = seen["payload"]
+    assert isinstance(payload, dict)
+    assert "previous_response_id" not in payload
+
+
+@pytest.mark.asyncio
+async def test_llm_client_retries_openai_responses_without_previous_response_id_when_cursor_is_invalid(monkeypatch):
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content.decode("utf-8"))
+        calls.append((request.url.path, payload))
+
+        if request.url.path.endswith("/responses") and len(calls) == 1:
+            return httpx.Response(
+                400,
+                request=request,
+                json={
+                    "error": {
+                        "message": "Invalid previous_response_id: resp_1",
+                        "type": "invalid_request_error",
+                    }
+                },
+            )
+
+        if request.url.path.endswith("/responses") and len(calls) == 2:
+            assert "previous_response_id" not in payload
+            return httpx.Response(
+                200,
+                request=request,
+                json={
+                    "id": "resp_2",
+                    "output_text": json.dumps({"reply": "ok", "intent": "open_question", "score": 0.1, "action": "ask_question", "needs_human": False, "data_to_save": {}}),
+                    "output": [],
+                },
+            )
+
+        raise AssertionError(f"Unexpected request path {request.url.path}")
+
+    monkeypatch.setenv("MCP_TEST_AUTHORIZATION", "")
+
+    client = LLMClient(
+        Settings(OPENAI_API_KEY="sk-test", OPENAI_TIMEOUT_SECONDS=15),
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await client.generate_with_mcp(
+        "openai",
+        "Eres un asistente de ventas.",
+        "Hola",
+        McpRemoteConfig(
+            enabled=True,
+            server_label="tenant_main_mcp",
+            server_url="https://mcp.example.test",
+            auth_type="bearer",
+            downstream_authorization_token="downstream-token",
+            allowed_tools=["search_properties"],
+            require_approval="auto",
+        ),
+        configuration={
+            "openai_base_url": "https://api.openai.com/v1",
+            "openai_model": "gpt-4.1-mini",
+            "openai_api_key": "sk-test",
+            "openai_timeout_seconds": "15",
+        },
+        previous_response_id="resp_1",
+    )
+
+    assert result.response_id == "resp_2"
+    assert client.last_previous_response_id_invalid is False
+    assert len(calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_llm_client_clears_cursor_flag_when_openai_responses_falls_back_to_chat_completions(monkeypatch):
+    calls: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path)
+        payload = json.loads(request.content.decode("utf-8"))
+
+        if request.url.path.endswith("/responses"):
+            if len(calls) == 1:
+                return httpx.Response(
+                    400,
+                    request=request,
+                    json={
+                        "error": {
+                            "message": "Invalid previous_response_id: resp_1",
+                            "type": "invalid_request_error",
+                        }
+                    },
+                )
+
+            return httpx.Response(
+                400,
+                request=request,
+                json={
+                    "error": {
+                        "message": "Invalid previous_response_id: resp_1",
+                        "type": "invalid_request_error",
+                    }
+                },
+            )
+
+        if request.url.path.endswith("/chat/completions"):
+            assert payload["messages"][0]["role"] == "system"
+            assert payload["messages"][1]["role"] == "user"
+            return httpx.Response(
+                200,
+                request=request,
+                json={
+                    "id": "chatcmpl-1",
+                    "choices": [
+                        {
+                            "message": {
+                                "content": json.dumps({"reply": "ok", "intent": "open_question", "score": 0.1, "action": "ask_question", "needs_human": False, "data_to_save": {}}),
+                            }
+                        }
+                    ],
+                },
+            )
+
+        raise AssertionError(f"Unexpected request path {request.url.path}")
+
+    monkeypatch.setenv("MCP_TEST_AUTHORIZATION", "")
+
+    client = LLMClient(
+        Settings(OPENAI_API_KEY="sk-test", OPENAI_TIMEOUT_SECONDS=15),
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await client.generate_with_mcp(
+        "openai",
+        "Eres un asistente de ventas.",
+        "Hola",
+        McpRemoteConfig(
+            enabled=True,
+            server_label="tenant_main_mcp",
+            server_url="https://mcp.example.test",
+            auth_type="bearer",
+            downstream_authorization_token="downstream-token",
+            allowed_tools=["search_properties"],
+            require_approval="auto",
+        ),
+        configuration={
+            "openai_base_url": "https://api.openai.com/v1",
+            "openai_model": "gpt-4.1-mini",
+            "openai_api_key": "sk-test",
+            "openai_timeout_seconds": "15",
+        },
+        previous_response_id="resp_1",
+    )
+
+    assert result.response_id == "chatcmpl-1"
+    assert client.last_previous_response_id_invalid is True
+    assert calls == ["/v1/responses", "/v1/responses", "/v1/chat/completions"]
+
+
+@pytest.mark.asyncio
 async def test_llm_client_falls_back_to_legacy_bearer_token_when_downstream_missing(monkeypatch):
     seen: dict[str, object] = {}
 
