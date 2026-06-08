@@ -368,7 +368,12 @@ final class InternalAiUsageControllerTest extends TestCase
         self::assertCount(1, $eventsRepository->savedEvents);
         self::assertSame('openai', $eventsRepository->savedEvents[0]->getProvider());
         self::assertSame('gpt-4.1-mini', $eventsRepository->savedEvents[0]->getModel());
+        self::assertSame(120, $eventsRepository->savedEvents[0]->getInputTokens());
+        self::assertSame(32, $eventsRepository->savedEvents[0]->getOutputTokens());
+        self::assertSame(40, $eventsRepository->savedEvents[0]->getCachedTokens());
+        self::assertSame(152, $eventsRepository->savedEvents[0]->getTotalTokens());
         self::assertSame(0.000123, $eventsRepository->savedEvents[0]->getEstimatedCost());
+        self::assertSame(200, $eventsRepository->savedEvents[0]->getLatencyMs());
         self::assertSame('audio_transcription', $eventsRepository->savedEvents[0]->getUsageType());
     }
 }

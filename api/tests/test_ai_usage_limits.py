@@ -106,7 +106,13 @@ class FailingAudioGatewayClient:
 
 
 class FailingAudioTranscriptionClient:
-    async def transcribe(self, audio_bytes: bytes, content_type: str | None, media_id: str):
+    async def transcribe(
+        self,
+        audio_bytes: bytes,
+        content_type: str | None,
+        media_id: str,
+        duration_seconds: int | None = None,
+    ):
         raise AssertionError("Audio transcription should not be attempted when AI is blocked")
 
 
@@ -326,7 +332,7 @@ async def test_agent_respond_blocks_audio_before_download_when_tenant_ai_is_disa
                     "media_id": "media-123",
                     "mime_type": "audio/ogg",
                     "sha256": "abc123",
-                    "duration_seconds": 12,
+                    "duration_seconds": 60,
                 },
             },
             "contact": {"phone": "+34999999999", "name": "Ana"},
@@ -386,7 +392,7 @@ async def test_agent_respond_blocks_audio_when_duration_exceeds_tenant_limit(mon
                     "media_id": "media-123",
                     "mime_type": "audio/ogg",
                     "sha256": "abc123",
-                    "duration_seconds": 12,
+                    "duration_seconds": 60,
                 },
             },
             "contact": {"phone": "+34999999999", "name": "Ana"},
@@ -400,7 +406,7 @@ async def test_agent_respond_blocks_audio_when_duration_exceeds_tenant_limit(mon
     assert body["needs_human"] is False
     assert body["reply"] == "Audio demasiado largo para este tenant."
     assert body["data_to_save"]["audio_duration_limit_exceeded"] is True
-    assert body["data_to_save"]["audio_duration_seconds"] == 12
+    assert body["data_to_save"]["audio_duration_seconds"] == 60
     assert body["data_to_save"]["max_audio_transcription_seconds"] == 10
     assert body["data_to_save"]["audio_limit_exceeded_message"] == "Audio demasiado largo para este tenant."
     assert backend.ai_usage_event_payloads == []
@@ -450,7 +456,7 @@ async def test_agent_respond_blocks_audio_when_transcription_is_disabled(monkeyp
                     "media_id": "media-123",
                     "mime_type": "audio/ogg",
                     "sha256": "abc123",
-                    "duration_seconds": 12,
+                    "duration_seconds": 60,
                 },
             },
             "contact": {"phone": "+34999999999", "name": "Ana"},
@@ -509,7 +515,7 @@ async def test_agent_respond_blocks_audio_when_plan_disables_transcription(monke
                     "media_id": "media-123",
                     "mime_type": "audio/ogg",
                     "sha256": "abc123",
-                    "duration_seconds": 12,
+                    "duration_seconds": 60,
                 },
             },
             "contact": {"phone": "+34999999999", "name": "Ana"},
@@ -573,7 +579,7 @@ async def test_agent_respond_blocks_audio_when_estimated_cost_plus_reserve_excee
                     "media_id": "media-123",
                     "mime_type": "audio/ogg",
                     "sha256": "abc123",
-                    "duration_seconds": 12,
+                    "duration_seconds": 60,
                 },
             },
             "contact": {"phone": "+34999999999", "name": "Ana"},
