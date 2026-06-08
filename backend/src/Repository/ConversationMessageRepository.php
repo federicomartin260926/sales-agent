@@ -2,6 +2,7 @@
 
 namespace App\Repository;
 
+use App\Entity\Conversation;
 use App\Entity\ConversationMessage;
 use Doctrine\Bundle\DoctrineBundle\Repository\ServiceEntityRepository;
 use Doctrine\Persistence\ManagerRegistry;
@@ -53,5 +54,30 @@ class ConversationMessageRepository extends ServiceEntityRepository
             ->setMaxResults(1)
             ->getQuery()
             ->getOneOrNullResult();
+    }
+
+    /**
+     * @return list<ConversationMessage>
+     */
+    public function findRecentByConversation(Conversation $conversation, int $limit = 20): array
+    {
+        $limit = max(1, min(50, $limit));
+
+        $messages = $this->createQueryBuilder('m')
+            ->andWhere('m.conversation = :conversation')
+            ->setParameter('conversation', $conversation)
+            ->orderBy('m.createdAt', 'DESC')
+            ->setMaxResults($limit)
+            ->getQuery()
+            ->getResult();
+
+        if (!is_array($messages)) {
+            return [];
+        }
+
+        return array_reverse(array_values(array_filter(
+            $messages,
+            static fn ($message): bool => $message instanceof ConversationMessage,
+        )));
     }
 }

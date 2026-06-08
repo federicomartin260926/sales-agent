@@ -258,6 +258,33 @@ class BackendConversationMessageResult(BaseModel):
     message: BackendConversationMessage
 
 
+class BackendConversationSummaryMessage(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    conversation_id: str = Field(validation_alias=AliasChoices("conversation_id", "conversationId"))
+    direction: str
+    role: str | None = None
+    message_type: str | None = Field(default=None, validation_alias=AliasChoices("message_type", "messageType"))
+    body: str
+    provider: str | None = None
+    model: str | None = None
+    latency_ms: int | None = Field(default=None, validation_alias=AliasChoices("latency_ms", "latencyMs"))
+    intent: str | None = None
+    score: int | None = None
+    action: str | None = None
+    needs_human: bool = Field(default=False, validation_alias=AliasChoices("needs_human", "needsHuman"))
+    created_at: str | None = Field(default=None, validation_alias=AliasChoices("created_at", "createdAt"))
+
+
+class BackendConversationSummaryContext(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    conversation: dict[str, Any]
+    messages: list[BackendConversationSummaryMessage] = Field(default_factory=list)
+    limit: int | None = None
+
+
 class BackendAiUsageEventResult(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -757,6 +784,67 @@ class BackendClient:
             return None
 
         return BackendConversationMessageResult.model_validate(payload_data)
+
+    async def get_conversation_summary_context(self, conversation_id: str, limit: int = 20) -> BackendConversationSummaryContext | None:
+        base_url = self.settings.backend_base_url.strip().rstrip("/")
+        if base_url == "" or conversation_id.strip() == "":
+            return None
+
+        timeout = httpx.Timeout(5.0, connect=2.0)
+        params = {
+            "limit": str(max(1, min(20, limit))),
+        }
+        try:
+            async with httpx.AsyncClient(base_url=base_url, timeout=timeout, transport=self.transport) as client:
+                response = await client.get(
+                    f"/api/internal/conversations/{conversation_id.strip()}/summary-context",
+                    params=params,
+                    headers=self._auth_headers(),
+                )
+                if response.status_code == httpx.codes.NOT_FOUND:
+                    return None
+                if response.status_code >= 400:
+                    logger.warning(
+                        "Backend conversation summary context lookup failed for %s %s with status %s body=%s",
+                        response.request.method,
+                        response.request.url,
+                        response.status_code,
+                        self._response_snippet(response),
+                    )
+                    response.raise_for_status()
+
+                payload = response.json()
+        except (httpx.HTTPError, ValueError):
+            return None
+
+        if not isinstance(payload, dict):
+            return None
+
+        try:
+            return BackendConversationSummaryContext.model_validate(payload)
+        except ValidationError:
+            logger.warning("Backend conversation summary context payload validation failed for conversation=%s", conversation_id)
+            return None
+
+    async def update_conversation_summary(self, conversation_id: str, summary: str) -> dict[str, Any] | None:
+        base_url = self.settings.backend_base_url.strip().rstrip("/")
+        if base_url == "" or conversation_id.strip() == "":
+            return None
+
+        timeout = httpx.Timeout(5.0, connect=2.0)
+        try:
+            async with httpx.AsyncClient(base_url=base_url, timeout=timeout, transport=self.transport) as client:
+                response = await client.post(
+                    f"/api/internal/conversations/{conversation_id.strip()}/summary",
+                    json={"summary": summary},
+                    headers=self._auth_headers(),
+                )
+                response.raise_for_status()
+                payload = response.json()
+        except (httpx.HTTPError, ValueError):
+            return None
+
+        return payload if isinstance(payload, dict) else None
 
     async def _get_json(self, client: httpx.AsyncClient, path: str) -> Any:
         response = await client.get(path)

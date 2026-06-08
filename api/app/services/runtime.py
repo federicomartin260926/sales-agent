@@ -20,6 +20,7 @@ from app.services.backend_client import (
     BackendConversationUpsertPayload,
     CommercialContext,
 )
+from app.services.conversation_summary_service import ConversationSummaryService
 from app.services.decision_engine import DecisionEngine
 from app.services.routing_resolver import RoutingContext, RuntimeRoutingResolver
 from app.services.runtime_settings_client import RuntimeSettingsClient
@@ -49,6 +50,7 @@ class AgentRuntime:
         ai_usage_guard: AiUsageGuard | None = None,
         audio_gateway_client: AudioGatewayClient | None = None,
         audio_transcription_client: AudioTranscriptionClient | None = None,
+        conversation_summary_service: ConversationSummaryService | None = None,
     ) -> None:
         self.backend_client = backend_client
         self.routing_resolver = routing_resolver
@@ -63,6 +65,9 @@ class AgentRuntime:
         self.audio_transcription_client = audio_transcription_client
         if self.audio_transcription_client is None and backend_settings is not None:
             self.audio_transcription_client = AudioTranscriptionClient(backend_settings, runtime_settings_client)
+        self.conversation_summary_service = conversation_summary_service
+        if self.conversation_summary_service is None and backend_settings is not None:
+            self.conversation_summary_service = ConversationSummaryService(backend_settings, backend_client)
 
     async def respond(self, payload: AgentRequest) -> AgentResponse:
         routing = await self.routing_resolver.resolve(payload)
@@ -364,6 +369,7 @@ class AgentRuntime:
                 )
             )
             await self._report_ai_usage_event(response, routing, conversation_result, outbound_result)
+            await self._maybe_generate_conversation_summary(response, conversation_result, outbound_result)
         else:
             await self._report_ai_usage_event(response, routing, conversation_result, None)
 
@@ -415,6 +421,47 @@ class AgentRuntime:
             return conversation_id.strip()
 
         return None
+
+    def _should_generate_conversation_summary(self, response: AgentResponse) -> bool:
+        if response.needs_human:
+            return True
+
+        return response.action == "handoff_to_human"
+
+    async def _maybe_generate_conversation_summary(
+        self,
+        response: AgentResponse,
+        conversation_result: dict[str, Any] | None,
+        outbound_result: Any | None,
+    ) -> None:
+        if self.conversation_summary_service is None:
+            return
+
+        if not self._should_generate_conversation_summary(response):
+            return
+
+        conversation_id = self._conversation_id_from_result(conversation_result)
+        if conversation_id is None:
+            return
+
+        try:
+            summary = await self.conversation_summary_service.generate_and_persist(conversation_id, reason=response.action or "handoff")
+        except Exception:
+            logger.warning(
+                "Conversation summary generation failed conversation_id=%s response_action=%s",
+                conversation_id,
+                response.action,
+                exc_info=True,
+            )
+            return
+
+        if summary is None:
+            return
+
+        if isinstance(conversation_result, dict):
+            conversation = conversation_result.get("conversation")
+            if isinstance(conversation, dict):
+                conversation["summary"] = summary
 
     def _previous_response_id_from_conversation_result(self, conversation_result: dict[str, Any] | None) -> str | None:
         if not self.settings.openai_conversation_state_enabled:
@@ -924,6 +971,12 @@ class AgentRuntime:
 
         decision_reason = self._handoff_reason(response)
         decision_trigger = self._handoff_trigger(response)
+        conversation_summary = None
+        conversation = conversation_result.get("conversation") if isinstance(conversation_result, dict) else None
+        if isinstance(conversation, dict):
+            summary = conversation.get("summary")
+            if isinstance(summary, str) and summary.strip() != "":
+                conversation_summary = summary.strip()
 
         return {
             "event": "sales_agent.handoff_requested",
@@ -940,6 +993,7 @@ class AgentRuntime:
                 "channel": payload.channel_type or "whatsapp",
                 "external_conversation_id": payload.conversation.external_id,
                 "last_messages": last_messages,
+                "summary": conversation_summary,
             },
             "contact": {
                 "name": payload.contact.name,

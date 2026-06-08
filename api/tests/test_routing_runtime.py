@@ -163,6 +163,21 @@ class FailingAudioTranscriptionClient:
     async def transcribe(self, audio_bytes: bytes, content_type: str | None, media_id: str, duration_seconds: int | None = None):
         raise RuntimeError("OpenAI transcription rejected media media-123: 400 body=Invalid audio format")
 
+
+class RecordingConversationSummaryService:
+    def __init__(self, summary: str = "Resumen compacto para humano.") -> None:
+        self.summary = summary
+        self.calls: list[tuple[str, str, int]] = []
+        self.raise_on_call = False
+
+    async def generate_and_persist(self, conversation_id: str, reason: str, limit: int = 20) -> str | None:
+        self.calls.append((conversation_id, reason, limit))
+        if self.raise_on_call:
+            raise RuntimeError("summary service unavailable")
+
+        return self.summary
+
+
 @pytest.fixture(autouse=True)
 def force_heuristic_llm(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _skip_llm(*args, **kwargs):
@@ -552,6 +567,289 @@ async def test_runtime_audio_transcription_failure_triggers_handoff_when_configu
     assert "https://wa.me/34612345678" in response.reply
     assert "te paso con una persona" in response.reply.lower()
     assert ("get_external_tool", ("tenant-1", "handoff_webhook")) in backend.calls
+
+
+@pytest.mark.asyncio
+async def test_runtime_generates_summary_on_handoff(monkeypatch: pytest.MonkeyPatch):
+    backend = RecordingBackendClient(
+        phone_context={"tenant_id": "tenant-1", "tenant_slug": "negocio-demo"},
+        handoff_tool=BackendExternalTool.model_validate(
+            {
+                "id": "tool-1",
+                "tenantId": "tenant-1",
+                "name": "Handoff webhook",
+                "type": "handoff_webhook",
+                "provider": "n8n_webhook",
+                "webhookUrl": "https://n8n.example.test/webhook/handoff",
+                "authType": "none",
+                "timeoutSeconds": 3,
+                "config": {},
+            }
+        ),
+        conversation_result={
+            "created": True,
+            "conversation": {
+                "id": "conversation-1",
+                "status": "active",
+                "summary": None,
+            },
+        },
+    )
+    tenant = BackendTenant.model_validate(
+        {
+            "id": "tenant-1",
+            "name": "Negocio Demo",
+            "slug": "negocio-demo",
+            "businessContext": "Negocio especializado en automatización de WhatsApp.",
+            "tone": "consultivo",
+            "salesPolicy": {},
+            "isActive": True,
+            "handoff": {
+                "enabled": True,
+                "strategy": "manual_wa_link_and_n8n",
+                "whatsapp_public": "+34 612 345 678",
+                "message": "Prefiero que esto lo revise una persona del equipo.",
+            },
+            "createdAt": "2026-04-28T12:00:00+00:00",
+        }
+    )
+    backend_context = CommercialContext(
+        tenant=tenant,
+        products=[],
+        playbooks=[],
+        selected_product=None,
+        selected_playbook=None,
+    )
+
+    async def fake_fetch_tenant_context(*args, **kwargs):
+        backend.calls.append(("fetch_tenant_context", args))
+        return backend_context
+
+    async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None, previous_response_id=None):
+        return AgentResponse(
+            reply="¿Qué servicio necesitas?",
+            intent="open_question",
+            score=0.95,
+            action="handoff_to_human",
+            needs_human=True,
+            data_to_save={},
+            provider="openai",
+            model="gpt-4.1-mini",
+            latency_ms=42,
+        )
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            self.post_calls = []
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, json=None, headers=None):
+            self.post_calls.append((url, json, headers))
+            return FakeResponse()
+
+    summary_service = RecordingConversationSummaryService()
+
+    monkeypatch.setattr(backend, "fetch_tenant_context", fake_fetch_tenant_context)
+    monkeypatch.setattr(DecisionEngine, "decide", fake_decide)
+    monkeypatch.setattr("app.services.runtime.httpx.AsyncClient", FakeAsyncClient)
+
+    runtime = AgentRuntime(
+        backend,
+        RuntimeRoutingResolver(backend),
+        DecisionEngine(backend),
+        conversation_summary_service=summary_service,  # type: ignore[arg-type]
+    )
+    payload = AgentRequest(
+        tenant_id="tenant-ignored",
+        entrypoint_ref="abc123",
+        message="Hola",
+        contact=Contact(phone="+34999999999"),
+    )
+
+    response = await runtime.respond(payload)
+
+    assert response.needs_human is True
+    assert response.action == "handoff_to_human"
+    assert summary_service.calls == [("conversation-1", "handoff_to_human", 20)]
+
+
+@pytest.mark.asyncio
+async def test_runtime_does_not_generate_summary_on_normal_turn(monkeypatch: pytest.MonkeyPatch):
+    backend = RecordingBackendClient(
+        phone_context={"tenant_id": "tenant-1", "tenant_slug": "negocio-demo"},
+        conversation_result={
+            "created": True,
+            "conversation": {
+                "id": "conversation-1",
+                "status": "active",
+                "summary": None,
+            },
+        },
+    )
+    backend_context = build_context()
+
+    async def fake_fetch_tenant_context(*args, **kwargs):
+        backend.calls.append(("fetch_tenant_context", args))
+        return backend_context
+
+    async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None, previous_response_id=None):
+        return AgentResponse(
+            reply="Claro, te explico.",
+            intent="open_question",
+            score=0.95,
+            action="answer_question",
+            needs_human=False,
+            data_to_save={},
+            provider="openai",
+            model="gpt-4.1-mini",
+            latency_ms=42,
+        )
+
+    summary_service = RecordingConversationSummaryService()
+
+    monkeypatch.setattr(backend, "fetch_tenant_context", fake_fetch_tenant_context)
+    monkeypatch.setattr(DecisionEngine, "decide", fake_decide)
+
+    runtime = AgentRuntime(
+        backend,
+        RuntimeRoutingResolver(backend),
+        DecisionEngine(backend),
+        conversation_summary_service=summary_service,  # type: ignore[arg-type]
+    )
+    payload = AgentRequest(
+        tenant_id="tenant-ignored",
+        external_channel_id="phone-number-id-1",
+        message="Hola, ¿qué horario tenéis?",
+        contact=Contact(phone="+34999999999"),
+    )
+
+    response = await runtime.respond(payload)
+
+    assert response.needs_human is False
+    assert summary_service.calls == []
+
+
+@pytest.mark.asyncio
+async def test_runtime_keeps_handoff_response_when_summary_generation_fails(monkeypatch: pytest.MonkeyPatch):
+    backend = RecordingBackendClient(
+        phone_context={"tenant_id": "tenant-1", "tenant_slug": "negocio-demo"},
+        handoff_tool=BackendExternalTool.model_validate(
+            {
+                "id": "tool-1",
+                "tenantId": "tenant-1",
+                "name": "Handoff webhook",
+                "type": "handoff_webhook",
+                "provider": "n8n_webhook",
+                "webhookUrl": "https://n8n.example.test/webhook/handoff",
+                "authType": "none",
+                "timeoutSeconds": 3,
+                "config": {},
+            }
+        ),
+        conversation_result={
+            "created": True,
+            "conversation": {
+                "id": "conversation-1",
+                "status": "active",
+                "summary": None,
+            },
+        },
+    )
+    tenant = BackendTenant.model_validate(
+        {
+            "id": "tenant-1",
+            "name": "Negocio Demo",
+            "slug": "negocio-demo",
+            "businessContext": "Negocio especializado en automatización de WhatsApp.",
+            "tone": "consultivo",
+            "salesPolicy": {},
+            "isActive": True,
+            "handoff": {
+                "enabled": True,
+                "strategy": "manual_wa_link_and_n8n",
+                "whatsapp_public": "+34 612 345 678",
+                "message": "Prefiero que esto lo revise una persona del equipo.",
+            },
+            "createdAt": "2026-04-28T12:00:00+00:00",
+        }
+    )
+    backend_context = CommercialContext(
+        tenant=tenant,
+        products=[],
+        playbooks=[],
+        selected_product=None,
+        selected_playbook=None,
+    )
+
+    async def fake_fetch_tenant_context(*args, **kwargs):
+        backend.calls.append(("fetch_tenant_context", args))
+        return backend_context
+
+    async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None, previous_response_id=None):
+        return AgentResponse(
+            reply="¿Qué servicio necesitas?",
+            intent="open_question",
+            score=0.95,
+            action="handoff_to_human",
+            needs_human=True,
+            data_to_save={},
+            provider="openai",
+            model="gpt-4.1-mini",
+            latency_ms=42,
+        )
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            self.post_calls = []
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, json=None, headers=None):
+            self.post_calls.append((url, json, headers))
+            return FakeResponse()
+
+    summary_service = RecordingConversationSummaryService()
+    summary_service.raise_on_call = True
+
+    monkeypatch.setattr(backend, "fetch_tenant_context", fake_fetch_tenant_context)
+    monkeypatch.setattr(DecisionEngine, "decide", fake_decide)
+    monkeypatch.setattr("app.services.runtime.httpx.AsyncClient", FakeAsyncClient)
+
+    runtime = AgentRuntime(
+        backend,
+        RuntimeRoutingResolver(backend),
+        DecisionEngine(backend),
+        conversation_summary_service=summary_service,  # type: ignore[arg-type]
+    )
+    payload = AgentRequest(
+        tenant_id="tenant-ignored",
+        entrypoint_ref="abc123",
+        message="Hola",
+        contact=Contact(phone="+34999999999"),
+    )
+
+    response = await runtime.respond(payload)
+
+    assert response.needs_human is True
+    assert response.action == "handoff_to_human"
+    assert summary_service.calls == [("conversation-1", "handoff_to_human", 20)]
 
 
 @pytest.mark.asyncio

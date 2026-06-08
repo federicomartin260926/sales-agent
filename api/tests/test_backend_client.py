@@ -198,6 +198,55 @@ def transport_handler(request: httpx.Request) -> httpx.Response:
             },
         )
 
+    if request.method == "GET" and request.url.path == "/api/internal/conversations/conversation-1/summary-context":
+        assert request.headers.get("Authorization") == "Bearer test-internal-token"
+        assert request.url.params.get("limit") == "20"
+        return httpx.Response(
+            200,
+            json={
+                "conversation": {
+                    "id": "conversation-1",
+                    "tenant_id": "tenant-1",
+                    "status": "pending_human",
+                    "summary": "Resumen previo",
+                    "lastMessageAt": "2026-06-08T10:00:00+00:00",
+                },
+                "messages": [
+                    {
+                        "id": "message-1",
+                        "conversation_id": "conversation-1",
+                        "direction": "inbound",
+                        "role": "user",
+                        "message_type": "text",
+                        "body": "Quiero depilación láser",
+                        "provider": None,
+                        "model": None,
+                        "latency_ms": None,
+                        "intent": "agenda",
+                        "action": "offer_booking",
+                        "needs_human": False,
+                        "created_at": "2026-06-08T09:58:00+00:00",
+                    }
+                ],
+                "limit": 20,
+            },
+        )
+
+    if request.method == "POST" and request.url.path == "/api/internal/conversations/conversation-1/summary":
+        assert request.headers.get("Authorization") == "Bearer test-internal-token"
+        payload = json.loads(request.content.decode("utf-8"))
+        assert payload["summary"].startswith("Cliente interesado")
+        return httpx.Response(
+            200,
+            json={
+                "updated": True,
+                "conversation": {
+                    "id": "conversation-1",
+                    "summary": payload["summary"],
+                },
+            },
+        )
+
     if request.method == "GET" and request.url.path == "/api/internal/ai-usage/tenant-1/policy":
         assert request.headers.get("Authorization") == "Bearer test-internal-token"
         return httpx.Response(
@@ -489,6 +538,23 @@ async def test_backend_client_upserts_conversation_with_internal_bearer():
 
     assert result is not None
     assert result["created"] is True
+
+
+@pytest.mark.asyncio
+async def test_backend_client_loads_and_updates_conversation_summary():
+    client = BackendClient(
+        Settings(BACKEND_BASE_URL="http://sales-agent-nginx", SALES_AGENT_BEARER_TOKEN="test-internal-token"),
+        transport=httpx.MockTransport(transport_handler),
+    )
+
+    context = await client.get_conversation_summary_context("conversation-1")
+    assert context is not None
+    assert context.conversation["summary"] == "Resumen previo"
+    assert context.messages[0].body == "Quiero depilación láser"
+
+    result = await client.update_conversation_summary("conversation-1", "Cliente interesado en depilación láser.")
+    assert result is not None
+    assert result["conversation"]["summary"] == "Cliente interesado en depilación láser."
 
 
 @pytest.mark.asyncio
