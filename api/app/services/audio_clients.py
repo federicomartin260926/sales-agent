@@ -3,7 +3,7 @@ from __future__ import annotations
 import io
 import math
 import logging
-import mimetypes
+import re
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
@@ -93,7 +93,7 @@ class AudioTranscriptionClient:
         self,
         settings: Settings,
         runtime_settings_client: RuntimeSettingsClient | None = None,
-        ) -> None:
+    ) -> None:
         self.settings = settings
         self.runtime_settings_client = runtime_settings_client or RuntimeSettingsClient(settings)
 
@@ -117,9 +117,9 @@ class AudioTranscriptionClient:
             raise RuntimeError("OpenAI transcription configuration is incomplete.")
 
         timeout = httpx.Timeout(configuration.timeout_seconds, connect=2.0)
-        filename = self._filename_for_content_type(content_type, media_id)
+        normalized_content_type, filename = self._audio_upload_metadata(content_type)
         file_payload = io.BytesIO(audio_bytes)
-        files = {"file": (filename, file_payload, content_type or "application/octet-stream")}
+        files = {"file": (filename, file_payload, normalized_content_type)}
         data = {"model": configuration.model}
         headers = {"Authorization": f"Bearer {configuration.api_key}"}
 
@@ -128,7 +128,16 @@ class AudioTranscriptionClient:
                 response = await client.post("/audio/transcriptions", data=data, files=files, headers=headers)
                 response.raise_for_status()
         except httpx.HTTPStatusError as exc:
-            raise RuntimeError(f"OpenAI transcription rejected media {media_id}: {exc.response.status_code}") from exc
+            body = self._safe_response_body(exc.response)
+            logger.warning(
+                "OpenAI transcription rejected media_id=%s status_code=%s body=%s",
+                media_id,
+                exc.response.status_code,
+                body,
+            )
+            raise RuntimeError(
+                f"OpenAI transcription rejected media {media_id}: {exc.response.status_code} body={body}"
+            ) from exc
         except httpx.HTTPError as exc:
             raise RuntimeError(f"Unable to reach OpenAI transcription API for media {media_id}.") from exc
 
@@ -234,10 +243,47 @@ class AudioTranscriptionClient:
 
         return fallback
 
-    def _filename_for_content_type(self, content_type: str | None, media_id: str) -> str:
-        if isinstance(content_type, str) and content_type.strip() != "":
-            extension = mimetypes.guess_extension(content_type.split(";", 1)[0].strip())
-            if isinstance(extension, str) and extension != "":
-                return f"{media_id}{extension}"
+    def _audio_upload_metadata(self, content_type: str | None) -> tuple[str, str]:
+        normalized_content_type = self._normalized_audio_content_type(content_type)
+        extension = self._audio_extension_for_content_type(normalized_content_type)
+        return normalized_content_type, f"whatsapp-audio{extension}"
 
-        return f"{media_id}.audio"
+    def _normalized_audio_content_type(self, content_type: str | None) -> str:
+        if not isinstance(content_type, str):
+            return "audio/ogg"
+
+        normalized = content_type.split(";", 1)[0].strip().lower()
+        if normalized in {"audio/ogg", "audio/mpeg", "audio/mp4", "audio/m4a"}:
+            return normalized
+
+        return "audio/ogg"
+
+    def _audio_extension_for_content_type(self, content_type: str) -> str:
+        if content_type == "audio/mpeg":
+            return ".mp3"
+        if content_type in {"audio/mp4", "audio/m4a"}:
+            return ".m4a"
+        return ".ogg"
+
+    def _safe_response_body(self, response: httpx.Response) -> str:
+        try:
+            body = response.text
+        except Exception:
+            try:
+                body = response.content.decode("utf-8", errors="replace")
+            except Exception:
+                return "<unavailable>"
+
+        if not isinstance(body, str):
+            return "<unavailable>"
+
+        body = body.strip()
+        if body == "":
+            return "<empty>"
+
+        body = body.replace("\r", " ").replace("\n", " ")
+        body = re.sub(r"(Bearer\s+)[A-Za-z0-9._~-]+", r"\1[REDACTED]", body, flags=re.IGNORECASE)
+        if len(body) > 1000:
+            body = body[:1000] + "..."
+
+        return body
