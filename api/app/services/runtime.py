@@ -3,7 +3,6 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import httpx
 import logging
-import math
 import uuid
 from typing import Any
 
@@ -22,6 +21,7 @@ from app.services.backend_client import (
 )
 from app.services.decision_engine import DecisionEngine
 from app.services.routing_resolver import RoutingContext, RuntimeRoutingResolver
+from app.services.runtime_settings_client import RuntimeSettingsClient
 
 
 logger = logging.getLogger(__name__)
@@ -54,12 +54,13 @@ class AgentRuntime:
         self.decision_engine = decision_engine
         self.ai_usage_guard = ai_usage_guard or AiUsageGuard(backend_client)
         backend_settings = getattr(backend_client, "settings", None)
+        runtime_settings_client = RuntimeSettingsClient(backend_settings) if backend_settings is not None else None
         self.audio_gateway_client = audio_gateway_client
         if self.audio_gateway_client is None and backend_settings is not None:
-            self.audio_gateway_client = AudioGatewayClient(backend_settings)
+            self.audio_gateway_client = AudioGatewayClient(backend_settings, runtime_settings_client)
         self.audio_transcription_client = audio_transcription_client
         if self.audio_transcription_client is None and backend_settings is not None:
-            self.audio_transcription_client = AudioTranscriptionClient(backend_settings)
+            self.audio_transcription_client = AudioTranscriptionClient(backend_settings, runtime_settings_client)
 
     async def respond(self, payload: AgentRequest) -> AgentResponse:
         routing = await self.routing_resolver.resolve(payload)
@@ -83,6 +84,7 @@ class AgentRuntime:
                 data_to_save=self._misconfigured_routing_data(payload, routing),
             )
 
+        audio_transcription_error: Exception | None = None
         if self._is_audio_message(payload):
             if self.audio_gateway_client is None or self.audio_transcription_client is None:
                 logger.error("Audio clients are not configured for WhatsApp audio processing")
@@ -158,7 +160,7 @@ class AgentRuntime:
                 )
 
             try:
-                transcription_result = await self._transcribe_audio_message(payload, audio_configuration)
+                transcription_result = await self._transcribe_audio_message(payload, audio_configuration, duration_seconds)
             except Exception as exc:
                 wa_id = getattr(payload.contact, "wa_id", None) or payload.contact.phone
                 sender = getattr(payload.contact, "sender", None) or payload.contact.phone
@@ -168,10 +170,11 @@ class AgentRuntime:
                     wa_id,
                     sender,
                 )
-                return self._audio_transcription_failure_response(payload, routing, exc)
+                audio_transcription_error = exc
+            else:
+                payload.message.text = transcription_result.text
 
-            payload.message.text = transcription_result.text
-
+        audio_failure_handoff_response: AgentResponse | None = None
         backend_context = await self.backend_client.fetch_tenant_context(
             routing.tenant_id,
             routing.product_id,
@@ -182,6 +185,18 @@ class AgentRuntime:
             routing.external_channel_id or payload.external_channel_id,
             payload.message.text or "",
         )
+        if self._is_audio_message(payload) and audio_transcription_error is not None:
+            handoff_config = self._handoff_config_from_tenant(backend_context.tenant if backend_context is not None else None)
+            if handoff_config is None:
+                return self._audio_transcription_failure_response(payload, routing, audio_transcription_error)
+
+            audio_failure_handoff_response = self._audio_transcription_failure_response(
+                payload,
+                routing,
+                audio_transcription_error,
+                handoff_config=handoff_config,
+            )
+
         mcp_config = await self.backend_client.fetch_mcp_config(routing.tenant_id)
         self._log_mcp_config(routing.tenant_id, mcp_config)
 
@@ -234,77 +249,85 @@ class AgentRuntime:
                 )
 
             if self._is_audio_message(payload):
-                await self._report_audio_transcription_event(
-                    routing,
-                    conversation_result,
-                    inbound_result,
-                    transcription_result,
-                )
+                if audio_transcription_error is None:
+                    await self._report_audio_transcription_event(
+                        routing,
+                        conversation_result,
+                        inbound_result,
+                        transcription_result,
+                        audio_configuration,
+                        duration_seconds,
+                    )
 
         if isinstance(conversation_result, dict):
             conversation = conversation_result.get("conversation")
             if isinstance(conversation, dict) and isinstance(conversation.get("id"), str):
                 routing.conversation_id = conversation["id"]
 
-        agenda_tools_available = self._mcp_agenda_tools_available(mcp_config)
-        if not agenda_tools_available:
-            agenda_response = self.decision_engine.resolve_agenda_response(
-                payload,
-                routing=routing,
-                backend_context=backend_context,
-                contact_context=None,
-            )
-            if agenda_response is not None:
-                return agenda_response
-
-        explicit_handoff_request = self._is_explicit_handoff_request(payload)
-        handoff_config = self._handoff_config_from_tenant(backend_context.tenant if backend_context is not None else None)
-        short_circuited_handoff = (
-            explicit_handoff_request
-            and handoff_config is not None
-            and str(handoff_config.get("strategy") or "").strip().lower() == "manual_wa_link"
-        )
-
-        if short_circuited_handoff:
-            response = self._build_local_handoff_response(handoff_config)
-            mcp_config = None
-            latency_ms = response.latency_ms if response.latency_ms is not None else 0
+        explicit_handoff_request = False
+        if audio_failure_handoff_response is not None:
+            response = audio_failure_handoff_response
+            latency_ms = 0
         else:
-            mcp_config = await self.backend_client.fetch_mcp_config(routing.tenant_id)
-            self._log_mcp_config(routing.tenant_id, mcp_config)
+            agenda_tools_available = self._mcp_agenda_tools_available(mcp_config)
+            if not agenda_tools_available:
+                agenda_response = self.decision_engine.resolve_agenda_response(
+                    payload,
+                    routing=routing,
+                    backend_context=backend_context,
+                    contact_context=None,
+                )
+                if agenda_response is not None:
+                    return agenda_response
 
-            ai_usage_decision = await self.ai_usage_guard.evaluate(backend_context.tenant.id if backend_context is not None else None)
-            if not ai_usage_decision.allowed:
-                response = self._ai_usage_limit_response(ai_usage_decision)
-                if conversation_id is not None:
-                    await self.backend_client.create_conversation_message(
-                        BackendConversationMessagePayload(
-                            conversation_id=conversation_id,
-                            direction="outbound",
-                            role="assistant",
-                            message_type="text",
-                            body=response.reply,
-                            intent=response.intent,
-                            score=self._score_to_integer(response.score),
-                            action=response.action,
-                            needs_human=response.needs_human,
-                            raw_payload=response.model_dump(),
-                            metadata=self._outbound_metadata(response, mcp_config),
-                        )
-                    )
-                return response
-
-            started_at = time.perf_counter()
-            response = await self.decision_engine.decide(
-                payload,
-                routing=routing,
-                backend_context=backend_context,
-                contact_context=None,
-                mcp_config=mcp_config,
+            explicit_handoff_request = self._is_explicit_handoff_request(payload)
+            handoff_config = self._handoff_config_from_tenant(backend_context.tenant if backend_context is not None else None)
+            short_circuited_handoff = (
+                explicit_handoff_request
+                and handoff_config is not None
+                and str(handoff_config.get("strategy") or "").strip().lower() == "manual_wa_link"
             )
-            decision_latency_ms = int(round((time.perf_counter() - started_at) * 1000))
-            latency_ms = response.latency_ms if response.latency_ms is not None else decision_latency_ms
-            response = self._normalize_handoff_response(response, explicit_handoff_request)
+
+            if short_circuited_handoff:
+                response = self._build_local_handoff_response(handoff_config)
+                mcp_config = None
+                latency_ms = response.latency_ms if response.latency_ms is not None else 0
+            else:
+                mcp_config = await self.backend_client.fetch_mcp_config(routing.tenant_id)
+                self._log_mcp_config(routing.tenant_id, mcp_config)
+
+                ai_usage_decision = await self.ai_usage_guard.evaluate(backend_context.tenant.id if backend_context is not None else None)
+                if not ai_usage_decision.allowed:
+                    response = self._ai_usage_limit_response(ai_usage_decision)
+                    if conversation_id is not None:
+                        await self.backend_client.create_conversation_message(
+                            BackendConversationMessagePayload(
+                                conversation_id=conversation_id,
+                                direction="outbound",
+                                role="assistant",
+                                message_type="text",
+                                body=response.reply,
+                                intent=response.intent,
+                                score=self._score_to_integer(response.score),
+                                action=response.action,
+                                needs_human=response.needs_human,
+                                raw_payload=response.model_dump(),
+                                metadata=self._outbound_metadata(response, mcp_config),
+                            )
+                        )
+                    return response
+
+                started_at = time.perf_counter()
+                response = await self.decision_engine.decide(
+                    payload,
+                    routing=routing,
+                    backend_context=backend_context,
+                    contact_context=None,
+                    mcp_config=mcp_config,
+                )
+                decision_latency_ms = int(round((time.perf_counter() - started_at) * 1000))
+                latency_ms = response.latency_ms if response.latency_ms is not None else decision_latency_ms
+                response = self._normalize_handoff_response(response, explicit_handoff_request)
 
         response = await self._apply_handoff_policy(
             response,
@@ -402,6 +425,7 @@ class AgentRuntime:
         self,
         payload: AgentRequest,
         audio_configuration: Any | None = None,
+        duration_seconds: int | None = None,
     ) -> AudioTranscriptionResult:
         media = payload.message.media if isinstance(payload.message.media, dict) else None
         media_id = ""
@@ -416,6 +440,7 @@ class AgentRuntime:
             download_result.content,
             download_result.content_type,
             download_result.media_id,
+            duration_seconds=duration_seconds,
         )
 
         payload.message.text = transcription_result.text
@@ -988,6 +1013,7 @@ class AgentRuntime:
         payload: AgentRequest,
         routing: RoutingContext,
         error: Exception,
+        handoff_config: dict[str, Any] | None = None,
     ) -> AgentResponse:
         data: dict[str, Any] = {
             "audio_transcription_failed": True,
@@ -999,13 +1025,29 @@ class AgentRuntime:
         if routing.tenant_id.strip() != "":
             data["tenant_id"] = routing.tenant_id.strip()
 
+        if handoff_config is None:
+            return AgentResponse(
+                reply="He recibido tu audio, pero no he podido transcribirlo ahora mismo. ¿Puedes enviármelo por escrito?",
+                intent="audio",
+                score=0.0,
+                action="audio_transcription_failed",
+                needs_human=False,
+                data_to_save=data,
+                provider="rule_based",
+                model=None,
+                latency_ms=0,
+            )
+
         return AgentResponse(
             reply="He recibido tu audio, pero no he podido transcribirlo ahora mismo. Te paso con una persona del equipo.",
             intent="handoff",
             score=0.6,
-            action="audio_transcription_failed",
+            action="handoff_to_human",
             needs_human=True,
             data_to_save=data,
+            provider="rule_based",
+            model=None,
+            latency_ms=0,
         )
 
     def _audio_duration_limit_response(
@@ -1105,7 +1147,7 @@ class AgentRuntime:
         estimated_duration_seconds = duration_seconds if duration_seconds is not None else max_audio_seconds
         estimated_duration_seconds = max(0, int(estimated_duration_seconds))
         estimated_audio_cost_eur = self._estimate_audio_transcription_cost_eur(estimated_duration_seconds, audio_configuration)
-        reserve_cost_eur = self._audio_llm_followup_reserve_cost_eur()
+        reserve_cost_eur = self._audio_llm_followup_reserve_cost_eur(audio_configuration)
         required_cost_eur = estimated_audio_cost_eur + reserve_cost_eur
 
         daily_remaining_cost_eur = self._remaining_cost_eur(getattr(policy, "daily_cost_limit_eur", None), getattr(getattr(usage, "daily", None), "estimated_cost_eur", None))
@@ -1236,7 +1278,7 @@ class AgentRuntime:
         if cost_unit == "second":
             return round(duration_seconds * cost_per_unit, 8)
 
-        return math.ceil(duration_seconds / 60.0) * cost_per_unit
+        return round((duration_seconds / 60.0) * cost_per_unit, 8)
 
     def _audio_transcription_cost_per_unit_eur(self, audio_configuration: Any | None = None) -> float:
         if audio_configuration is not None:
@@ -1272,7 +1314,12 @@ class AgentRuntime:
 
         return "minute"
 
-    def _audio_llm_followup_reserve_cost_eur(self) -> float:
+    def _audio_llm_followup_reserve_cost_eur(self, audio_configuration: Any | None = None) -> float:
+        if audio_configuration is not None:
+            value = getattr(audio_configuration, "llm_followup_reserve_cost_eur", None)
+            if isinstance(value, (int, float)):
+                return max(0.0, float(value))
+
         settings = getattr(self.audio_transcription_client, "settings", None)
         if settings is None:
             settings = getattr(self.backend_client, "settings", None)
@@ -1326,6 +1373,8 @@ class AgentRuntime:
         conversation_result: dict[str, Any] | None,
         inbound_result: object | None,
         transcription_result: AudioTranscriptionResult,
+        audio_configuration: Any | None = None,
+        duration_seconds: int | None = None,
     ) -> None:
         if routing.tenant_id.strip() == "":
             return
@@ -1338,12 +1387,26 @@ class AgentRuntime:
             if isinstance(message_id, str) and message_id.strip() != "":
                 conversation_message_id = message_id.strip()
 
+        effective_duration_seconds = transcription_result.duration_seconds
+        if effective_duration_seconds is None:
+            effective_duration_seconds = duration_seconds
+
+        estimated_cost = None
+        if effective_duration_seconds is not None:
+            estimated_cost = self._estimate_audio_transcription_cost_eur(effective_duration_seconds, audio_configuration)
+
         payload = BackendAiUsageEventPayload(
             tenant_id=routing.tenant_id.strip(),
             conversation_id=conversation_id,
             conversation_message_id=conversation_message_id,
             provider=getattr(transcription_result, "provider", None) or "openai",
             model=transcription_result.model,
+            input_tokens=self._normalize_int_telemetry(getattr(transcription_result.usage, "input_tokens", None)),
+            output_tokens=self._normalize_int_telemetry(getattr(transcription_result.usage, "output_tokens", None)),
+            cached_tokens=self._normalize_int_telemetry(getattr(transcription_result.usage, "cached_tokens", None)),
+            total_tokens=self._normalize_int_telemetry(getattr(transcription_result.usage, "total_tokens", None)),
+            estimated_cost=estimated_cost,
+            latency_ms=self._normalize_int_telemetry(transcription_result.latency_ms),
             usage_type="audio_transcription",
         )
 
@@ -1371,8 +1434,8 @@ class AgentRuntime:
         model = str(
             getattr(
                 settings,
-                "audio_transcription_model",
-                getattr(settings, "openai_transcription_model", ""),
+                "openai_transcription_model",
+                getattr(settings, "audio_transcription_model", ""),
             )
         ).strip()
         enabled = self._parse_bool_setting(getattr(settings, "audio_transcription_enabled", True), True)

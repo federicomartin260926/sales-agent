@@ -5,7 +5,7 @@ from app.config import Settings
 from app.schemas.agent import AgentResponse
 from app.schemas.agent import AgentRequest, Contact
 from app.services.backend_client import BackendAiUsagePolicy, BackendAiUsageSnapshot, BackendExternalTool, BackendRoutingEntryPointUtmContext, BackendTenant, CommercialContext
-from app.schemas.llm import McpRemoteConfig
+from app.schemas.llm import LLMUsage, McpRemoteConfig
 from app.services.decision_engine import DecisionEngine
 from app.services.llm_decision_service import LLMDecisionService
 from app.services.routing_resolver import RuntimeRoutingResolver
@@ -106,7 +106,7 @@ class RecordingAudioTranscriptionClient:
     def __init__(self) -> None:
         self.calls: list[tuple[str, tuple[object, ...]]] = []
 
-    async def transcribe(self, audio_bytes: bytes, content_type: str | None, media_id: str):
+    async def transcribe(self, audio_bytes: bytes, content_type: str | None, media_id: str, duration_seconds: int | None = None):
         self.calls.append(("transcribe", (audio_bytes, content_type, media_id)))
         return type(
             "AudioTranscriptionResultStub",
@@ -114,8 +114,26 @@ class RecordingAudioTranscriptionClient:
             {
                 "text": "Hola, quiero información",
                 "model": "gpt-4o-mini-transcribe",
+                "provider": "openai",
+                "usage": LLMUsage(
+                    provider="openai",
+                    model="gpt-4o-mini-transcribe",
+                    input_tokens=73,
+                    output_tokens=24,
+                    cached_tokens=0,
+                    audio_tokens=73,
+                    total_tokens=97,
+                ),
+                "duration_seconds": duration_seconds,
+                "audio_bytes": len(audio_bytes),
+                "latency_ms": 42,
             },
         )()
+
+
+class FailingAudioTranscriptionClient:
+    async def transcribe(self, audio_bytes: bytes, content_type: str | None, media_id: str, duration_seconds: int | None = None):
+        raise RuntimeError("OpenAI transcription rejected media media-123: 400 body=Invalid audio format")
 
 @pytest.fixture(autouse=True)
 def force_heuristic_llm(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -312,17 +330,17 @@ async def test_runtime_transcribes_audio_before_continuing_flow():
         external_channel_id="phone-number-id-1",
         message={
             "type": "audio",
-            "media": {
-                "provider": "whatsapp_cloud_api",
-                "kind": "audio",
-                "media_id": "media-123",
-                "mime_type": "audio/ogg",
-                "sha256": "abc123",
-                "duration_seconds": 12,
+                "media": {
+                    "provider": "whatsapp_cloud_api",
+                    "kind": "audio",
+                    "media_id": "media-123",
+                    "mime_type": "audio/ogg",
+                    "sha256": "abc123",
+                    "duration_seconds": 30,
+                },
             },
-        },
-        contact=Contact(phone="+34999999999"),
-    )
+            contact=Contact(phone="+34999999999"),
+        )
 
     response = await runtime.respond(payload)
 
@@ -339,10 +357,173 @@ async def test_runtime_transcribes_audio_before_continuing_flow():
     assert inbound_payload["metadata"]["message_media"]["transcript"] == "Hola, quiero información"
     usage_calls = [call for call in backend.calls if call[0] == "create_ai_usage_event"]
     assert usage_calls
-    assert usage_calls[0][1][0]["usage_type"] == "audio_transcription"
+    audio_usage = usage_calls[0][1][0]
+    assert audio_usage["usage_type"] == "audio_transcription"
+    assert audio_usage["provider"] == "openai"
+    assert audio_usage["model"] == "gpt-4o-mini-transcribe"
+    assert audio_usage["input_tokens"] == 73
+    assert audio_usage["output_tokens"] == 24
+    assert audio_usage["cached_tokens"] == 0
+    assert audio_usage["total_tokens"] == 97
+    assert audio_usage["estimated_cost"] == pytest.approx(0.01)
+    assert audio_usage["latency_ms"] == 42
     if len(usage_calls) > 1:
         assert usage_calls[1][1][0]["usage_type"] == "llm_chat"
     assert response.action in {"greet", "ask_question", "propose_meeting", "none"}
+
+
+@pytest.mark.asyncio
+async def test_runtime_audio_transcription_failure_without_handoff_requests_text(monkeypatch: pytest.MonkeyPatch):
+    backend = RecordingBackendClient(
+        phone_context={"tenant_id": "tenant-1", "tenant_slug": "negocio-demo"},
+    )
+
+    async def fake_fetch_tenant_context(*args, **kwargs):
+        backend.calls.append(("fetch_tenant_context", args))
+        return None
+
+    async def fail_if_llm_is_called(*args, **kwargs):
+        raise AssertionError("LLM should not be called when audio transcription fails without handoff")
+
+    monkeypatch.setattr(backend, "fetch_tenant_context", fake_fetch_tenant_context)
+    monkeypatch.setattr(DecisionEngine, "decide", fail_if_llm_is_called)
+
+    runtime = AgentRuntime(
+        backend,
+        RuntimeRoutingResolver(backend),
+        DecisionEngine(backend),
+        audio_gateway_client=RecordingAudioGatewayClient(),  # type: ignore[arg-type]
+        audio_transcription_client=FailingAudioTranscriptionClient(),  # type: ignore[arg-type]
+    )
+    payload = AgentRequest(
+        external_channel_id="phone-number-id-1",
+        message={
+            "type": "audio",
+            "media": {
+                "provider": "whatsapp_cloud_api",
+                "kind": "audio",
+                "media_id": "media-123",
+                "mime_type": "audio/ogg; codecs=opus",
+                "sha256": "abc123",
+                "duration_seconds": 12,
+            },
+        },
+        contact=Contact(phone="+34999999999"),
+    )
+
+    response = await runtime.respond(payload)
+
+    assert response.action == "audio_transcription_failed"
+    assert response.intent == "audio"
+    assert response.needs_human is False
+    assert "por escrito" in response.reply
+    assert "te paso con una persona" not in response.reply.lower()
+
+
+@pytest.mark.asyncio
+async def test_runtime_audio_transcription_failure_triggers_handoff_when_configured(monkeypatch: pytest.MonkeyPatch):
+    backend = RecordingBackendClient(
+        phone_context={"tenant_id": "tenant-1", "tenant_slug": "negocio-demo"},
+        handoff_tool=BackendExternalTool.model_validate(
+            {
+                "id": "tool-1",
+                "tenantId": "tenant-1",
+                "name": "Handoff webhook",
+                "type": "handoff_webhook",
+                "provider": "n8n_webhook",
+                "webhookUrl": "https://n8n.example.test/webhook/handoff",
+                "authType": "none",
+                "timeoutSeconds": 3,
+                "config": {},
+            }
+        ),
+    )
+    tenant = BackendTenant.model_validate(
+        {
+            "id": "tenant-1",
+            "name": "Negocio Demo",
+            "slug": "negocio-demo",
+            "businessContext": "Negocio especializado en automatización de WhatsApp.",
+            "tone": "consultivo",
+            "salesPolicy": {},
+            "isActive": True,
+            "handoff": {
+                "enabled": True,
+                "strategy": "manual_wa_link_and_n8n",
+                "whatsapp_public": "+34 612 345 678",
+                "message": "Prefiero que esto lo revise una persona del equipo.",
+            },
+            "createdAt": "2026-04-28T12:00:00+00:00",
+        }
+    )
+    backend_context = CommercialContext(
+        tenant=tenant,
+        products=[],
+        playbooks=[],
+        selected_product=None,
+        selected_playbook=None,
+    )
+
+    async def fake_fetch_tenant_context(*args, **kwargs):
+        backend.calls.append(("fetch_tenant_context", args))
+        return backend_context
+
+    async def fail_if_llm_is_called(*args, **kwargs):
+        raise AssertionError("LLM should not be called when audio transcription fails and handoff is configured")
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            self.post_calls = []
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, json=None, headers=None):
+            self.post_calls.append((url, json, headers))
+            return FakeResponse()
+
+    monkeypatch.setattr(backend, "fetch_tenant_context", fake_fetch_tenant_context)
+    monkeypatch.setattr(DecisionEngine, "decide", fail_if_llm_is_called)
+    monkeypatch.setattr("app.services.runtime.httpx.AsyncClient", FakeAsyncClient)
+
+    runtime = AgentRuntime(
+        backend,
+        RuntimeRoutingResolver(backend),
+        DecisionEngine(backend),
+        audio_gateway_client=RecordingAudioGatewayClient(),  # type: ignore[arg-type]
+        audio_transcription_client=FailingAudioTranscriptionClient(),  # type: ignore[arg-type]
+    )
+    payload = AgentRequest(
+        external_channel_id="phone-number-id-1",
+        message={
+            "type": "audio",
+            "media": {
+                "provider": "whatsapp_cloud_api",
+                "kind": "audio",
+                "media_id": "media-123",
+                "mime_type": "audio/ogg; codecs=opus",
+                "sha256": "abc123",
+                "duration_seconds": 12,
+            },
+        },
+        contact=Contact(phone="+34999999999"),
+    )
+
+    response = await runtime.respond(payload)
+
+    assert response.action == "handoff_to_human"
+    assert response.intent == "handoff"
+    assert response.needs_human is True
+    assert "https://wa.me/34612345678" in response.reply
+    assert "te paso con una persona" in response.reply.lower()
+    assert ("get_external_tool", ("tenant-1", "handoff_webhook")) in backend.calls
 
 
 @pytest.mark.asyncio

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import io
-import math
 import logging
 import re
+import time
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
@@ -11,6 +11,7 @@ from urllib.parse import quote
 import httpx
 
 from app.config import Settings
+from app.schemas.llm import LLMUsage
 from app.services.runtime_settings_client import RuntimeSettingsClient
 
 
@@ -29,6 +30,18 @@ class AudioTranscriptionResult:
     text: str
     provider: str
     model: str
+    usage: LLMUsage | None = None
+    duration_seconds: int | None = None
+    audio_bytes: int | None = None
+    latency_ms: int | None = None
+
+
+@dataclass(slots=True)
+class AudioGatewayConfiguration:
+    base_url: str
+    bearer_token: str
+    timeout_seconds: int
+    max_bytes: int
 
 
 @dataclass(slots=True)
@@ -36,6 +49,7 @@ class AudioTranscriptionConfiguration:
     provider: str
     model: str
     enabled: bool
+    llm_followup_reserve_cost_eur: float
     cost_unit: str
     cost_per_unit_eur: float
     currency: str
@@ -46,31 +60,24 @@ class AudioTranscriptionConfiguration:
 
 
 class AudioGatewayClient:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, runtime_settings_client: RuntimeSettingsClient | None = None) -> None:
         self.settings = settings
-
-    def _auth_token(self) -> str:
-        token = self.settings.audio_gateway_bearer_token.strip()
-        if token != "":
-            return token
-
-        return self.settings.sales_agent_bearer_token.strip()
+        self.runtime_settings_client = runtime_settings_client or RuntimeSettingsClient(settings)
 
     async def download_whatsapp_media(self, media_id: str) -> AudioDownloadResult:
-        base_url = self.settings.audio_gateway_base_url.strip().rstrip("/")
-        if base_url == "":
+        configuration = await self._resolve_configuration()
+        if configuration.base_url == "":
             raise RuntimeError("Audio gateway base URL is not configured.")
 
-        token = self._auth_token()
-        if token == "":
+        if configuration.bearer_token == "":
             raise RuntimeError("Audio gateway bearer token is not configured.")
 
-        timeout = httpx.Timeout(self.settings.audio_timeout_seconds, connect=2.0)
+        timeout = httpx.Timeout(configuration.timeout_seconds, connect=2.0)
         media_path = quote(media_id.strip(), safe="")
-        headers = {"Authorization": f"Bearer {token}"}
+        headers = {"Authorization": f"Bearer {configuration.bearer_token}"}
 
         try:
-            async with httpx.AsyncClient(base_url=base_url, timeout=timeout) as client:
+            async with httpx.AsyncClient(base_url=configuration.base_url, timeout=timeout) as client:
                 response = await client.get(f"/internal/media/whatsapp/{media_path}", headers=headers)
                 response.raise_for_status()
         except httpx.HTTPStatusError as exc:
@@ -82,10 +89,50 @@ class AudioGatewayClient:
         if not isinstance(content_type, str) or content_type.strip() == "":
             content_type = None
 
-        if len(response.content) > self.settings.audio_max_bytes:
+        if len(response.content) > configuration.max_bytes:
             raise RuntimeError("Audio media exceeds the supported size limit.")
 
         return AudioDownloadResult(content=response.content, content_type=content_type, media_id=media_id)
+
+    async def _resolve_configuration(self) -> AudioGatewayConfiguration:
+        values = await self.runtime_settings_client.effective_values()
+        return self._gateway_configuration_from_values(values)
+
+    def _gateway_configuration_from_values(self, values: dict[str, Any]) -> AudioGatewayConfiguration:
+        base_url = str(values.get("audio_gateway_base_url", self.settings.audio_gateway_base_url)).strip().rstrip("/")
+        bearer_token = str(
+            values.get(
+                "audio_gateway_bearer_token",
+                self.settings.audio_gateway_bearer_token or self.settings.sales_agent_bearer_token,
+            )
+        ).strip()
+        timeout_seconds = self._parse_timeout(values.get("audio_timeout_seconds"), self.settings.audio_timeout_seconds)
+        max_bytes = self._parse_int(values.get("audio_max_bytes"), self.settings.audio_max_bytes)
+
+        return AudioGatewayConfiguration(
+            base_url=base_url,
+            bearer_token=bearer_token,
+            timeout_seconds=timeout_seconds,
+            max_bytes=max_bytes,
+        )
+
+    def _parse_timeout(self, raw_timeout: Any, fallback: int) -> int:
+        if isinstance(raw_timeout, str) and raw_timeout.strip().isdigit():
+            return max(1, int(raw_timeout.strip()))
+
+        if isinstance(raw_timeout, (int, float)):
+            return max(1, int(raw_timeout))
+
+        return fallback
+
+    def _parse_int(self, raw_value: Any, fallback: int) -> int:
+        if isinstance(raw_value, str) and raw_value.strip().isdigit():
+            return max(1, int(raw_value.strip()))
+
+        if isinstance(raw_value, (int, float)):
+            return max(1, int(raw_value))
+
+        return max(1, int(fallback))
 
 
 class AudioTranscriptionClient:
@@ -93,7 +140,7 @@ class AudioTranscriptionClient:
         self,
         settings: Settings,
         runtime_settings_client: RuntimeSettingsClient | None = None,
-    ) -> None:
+        ) -> None:
         self.settings = settings
         self.runtime_settings_client = runtime_settings_client or RuntimeSettingsClient(settings)
 
@@ -105,7 +152,13 @@ class AudioTranscriptionClient:
 
         return self._estimate_cost_from_configuration(seconds, config)
 
-    async def transcribe(self, audio_bytes: bytes, content_type: str | None, media_id: str) -> AudioTranscriptionResult:
+    async def transcribe(
+        self,
+        audio_bytes: bytes,
+        content_type: str | None,
+        media_id: str,
+        duration_seconds: int | None = None,
+    ) -> AudioTranscriptionResult:
         configuration = await self.resolve_configuration()
         if not configuration.enabled:
             raise RuntimeError("Audio transcription is disabled.")
@@ -122,6 +175,7 @@ class AudioTranscriptionClient:
         files = {"file": (filename, file_payload, normalized_content_type)}
         data = {"model": configuration.model}
         headers = {"Authorization": f"Bearer {configuration.api_key}"}
+        started_at = time.perf_counter()
 
         try:
             async with httpx.AsyncClient(base_url=configuration.base_url, timeout=timeout) as client:
@@ -145,7 +199,15 @@ class AudioTranscriptionClient:
         if text == "":
             raise RuntimeError("OpenAI transcription response did not contain text.")
 
-        return AudioTranscriptionResult(text=text, provider=configuration.provider, model=configuration.model)
+        return AudioTranscriptionResult(
+            text=text,
+            provider=configuration.provider,
+            model=configuration.model,
+            usage=self._extract_usage(response, configuration.provider, configuration.model),
+            duration_seconds=self._normalize_duration_seconds(duration_seconds),
+            audio_bytes=len(audio_bytes),
+            latency_ms=int(round((time.perf_counter() - started_at) * 1000)),
+        )
 
     async def resolve_configuration(self) -> AudioTranscriptionConfiguration:
         configuration = await self.runtime_settings_client.effective_values()
@@ -156,11 +218,20 @@ class AudioTranscriptionClient:
 
     def _configuration_from_values(self, values: dict[str, Any]) -> AudioTranscriptionConfiguration:
         provider = str(values.get("audio_transcription_provider", self.settings.audio_transcription_provider)).strip() or "openai"
-        model = str(values.get("audio_transcription_model", self.settings.audio_transcription_model or self.settings.openai_transcription_model)).strip()
+        model = str(
+            values.get(
+                "openai_transcription_model",
+                values.get("audio_transcription_model", self.settings.openai_transcription_model or self.settings.audio_transcription_model),
+            )
+        ).strip()
         base_url = str(values.get("openai_base_url", "https://api.openai.com/v1")).strip().rstrip("/")
         api_key = str(values.get("openai_api_key", self.settings.openai_api_key)).strip()
         timeout_seconds = self._parse_timeout(values.get("openai_timeout_seconds"), self.settings.openai_timeout_seconds)
         enabled = self._parse_bool(values.get("audio_transcription_enabled"), self.settings.audio_transcription_enabled)
+        reserve_cost = self._parse_float(
+            values.get("audio_llm_followup_reserve_cost_eur"),
+            self.settings.audio_llm_followup_reserve_cost_eur,
+        )
         cost_unit = str(values.get("audio_transcription_cost_unit", self.settings.audio_transcription_cost_unit)).strip().lower() or "minute"
         if cost_unit not in {"minute", "second"}:
             cost_unit = "minute"
@@ -177,6 +248,7 @@ class AudioTranscriptionClient:
             provider=provider,
             model=model,
             enabled=enabled,
+            llm_followup_reserve_cost_eur=reserve_cost,
             cost_unit=cost_unit,
             cost_per_unit_eur=cost_per_unit_eur,
             currency=currency,
@@ -194,7 +266,7 @@ class AudioTranscriptionClient:
         if configuration.cost_unit == "second":
             return round(duration_seconds * configuration.cost_per_unit_eur, 8)
 
-        return round(math.ceil(duration_seconds / 60.0) * configuration.cost_per_unit_eur, 8)
+        return round((duration_seconds / 60.0) * configuration.cost_per_unit_eur, 8)
 
     def _extract_text(self, response: httpx.Response) -> str:
         try:
@@ -208,6 +280,49 @@ class AudioTranscriptionClient:
                 return text.strip()
 
         return response.text.strip()
+
+    def _extract_usage(self, response: httpx.Response, provider: str, model: str) -> LLMUsage | None:
+        try:
+            payload = response.json()
+        except ValueError:
+            return None
+
+        if not isinstance(payload, dict):
+            return None
+
+        usage = payload.get("usage")
+        if not isinstance(usage, dict):
+            return None
+
+        input_tokens = self._normalize_int(usage.get("input_tokens"))
+        output_tokens = self._normalize_int(usage.get("output_tokens"))
+        cached_tokens = self._normalize_int(usage.get("cached_tokens"))
+        total_tokens = self._normalize_int(usage.get("total_tokens"))
+        prompt_tokens = self._normalize_int(usage.get("prompt_tokens"))
+        completion_tokens = self._normalize_int(usage.get("completion_tokens"))
+
+        input_token_details = usage.get("input_token_details")
+        audio_tokens = None
+        if isinstance(input_token_details, dict):
+            audio_tokens = self._normalize_int(input_token_details.get("audio_tokens"))
+
+        if total_tokens is None and input_tokens is not None and output_tokens is not None:
+            total_tokens = input_tokens + output_tokens
+
+        if all(value is None for value in [input_tokens, output_tokens, cached_tokens, audio_tokens, total_tokens, prompt_tokens, completion_tokens]):
+            return None
+
+        return LLMUsage(
+            provider=provider,
+            model=model,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            cached_tokens=cached_tokens if cached_tokens is not None else 0,
+            audio_tokens=audio_tokens,
+            total_tokens=total_tokens,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+        )
 
     def _parse_timeout(self, raw_timeout: Any, fallback: int) -> int:
         if isinstance(raw_timeout, str) and raw_timeout.strip().isdigit():
@@ -243,10 +358,40 @@ class AudioTranscriptionClient:
 
         return fallback
 
+    def _normalize_duration_seconds(self, value: int | None) -> int | None:
+        if value is None:
+            return None
+
+        return max(0, int(value))
+
+    def _normalize_int(self, raw_value: Any) -> int | None:
+        if isinstance(raw_value, bool):
+            return None
+
+        if isinstance(raw_value, int):
+            return raw_value
+
+        if isinstance(raw_value, float):
+            return int(raw_value)
+
+        if isinstance(raw_value, str) and raw_value.strip().isdigit():
+            return int(raw_value.strip())
+
+        return None
+
     def _audio_upload_metadata(self, content_type: str | None) -> tuple[str, str]:
         normalized_content_type = self._normalized_audio_content_type(content_type)
         extension = self._audio_extension_for_content_type(normalized_content_type)
         return normalized_content_type, f"whatsapp-audio{extension}"
+
+    def _parse_int(self, raw_value: Any, fallback: int) -> int:
+        if isinstance(raw_value, str) and raw_value.strip().isdigit():
+            return max(1, int(raw_value.strip()))
+
+        if isinstance(raw_value, (int, float)):
+            return max(1, int(raw_value))
+
+        return max(1, int(fallback))
 
     def _normalized_audio_content_type(self, content_type: str | None) -> str:
         if not isinstance(content_type, str):

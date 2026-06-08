@@ -1638,6 +1638,50 @@ final class BackendUiControllerTest extends TestCase
         self::assertStringContainsString('>100M<', $response->getContent());
     }
 
+    public function testAiUsagePageRendersAudioTranscriptionEventsAsRegisteredWhenTheyHaveData(): void
+    {
+        $tenant = new Tenant('Federico Martin Demo', 'federico-martin-demo');
+        $tenant->setActive(true);
+
+        $audioEvent = new AiUsageEvent($tenant);
+        $audioEvent->setProvider('openai');
+        $audioEvent->setModel('gpt-4o-mini-transcribe');
+        $audioEvent->setInputTokens(73);
+        $audioEvent->setOutputTokens(24);
+        $audioEvent->setCachedTokens(0);
+        $audioEvent->setTotalTokens(97);
+        $audioEvent->setEstimatedCost(0.01);
+        $audioEvent->setLatencyMs(42);
+        $audioEvent->setUsageType(AiUsageEvent::USAGE_TYPE_AUDIO_TRANSCRIPTION);
+
+        $security = $this->createStub(Security::class);
+        $security->method('getUser')->willReturn($this->createAuthenticatedUser('manager@example.com', ['manager'], 'María Manager'));
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => in_array($role, ['ROLE_MANAGER', 'ROLE_ADMIN'], true));
+
+        $csrfTokenManager = $this->createStub(CsrfTokenManagerInterface::class);
+        $csrfTokenManager->method('getToken')->willReturnCallback(
+            static fn (string $id): CsrfToken => new CsrfToken($id, 'token-'.$id)
+        );
+
+        $controller = $this->createControllerForActiveTenant($security, $tenant, null, null, $csrfTokenManager);
+        $response = $controller->aiUsage(
+            Request::create('/backend/ai-usage', 'GET'),
+            null,
+            $this->createAiUsageEventRepositoryFake([$audioEvent])
+        );
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        self::assertStringContainsString('Transcripción audio', $response->getContent());
+        self::assertStringContainsString('openai', $response->getContent());
+        self::assertStringContainsString('gpt-4o-mini-transcribe', $response->getContent());
+        self::assertStringContainsString('Input 0,000073M | Output 0,000024M | Cached 0M', $response->getContent());
+        self::assertStringContainsString('0,000097M', $response->getContent());
+        self::assertStringContainsString('0,01 €', $response->getContent());
+        self::assertStringContainsString('42 ms', $response->getContent());
+        self::assertStringContainsString('Registrado', $response->getContent());
+        self::assertStringNotContainsString('Sin datos', $response->getContent());
+    }
+
     public function testPlaybooksPageRendersCreateAndEditActions(): void
     {
         $tenant = new Tenant('Federico Martin Demo', 'federico-martin-demo');
@@ -2479,6 +2523,55 @@ final class BackendUiControllerTest extends TestCase
                         'configured' => false,
                         'value' => 'http://audio-gateway',
                     ],
+                    'audio_gateway_bearer_token' => [
+                        'key' => 'audio_gateway_bearer_token',
+                        'label' => 'Token Bearer del audio-gateway',
+                        'description' => '',
+                        'inputType' => 'password',
+                        'group' => 'audio',
+                        'options' => [],
+                        'defaultValue' => '',
+                        'secret' => true,
+                        'configured' => false,
+                        'value' => '',
+                        'fullWidth' => true,
+                    ],
+                    'audio_max_bytes' => [
+                        'key' => 'audio_max_bytes',
+                        'label' => 'Tamaño máximo de audio (bytes)',
+                        'description' => '',
+                        'inputType' => 'number',
+                        'group' => 'audio',
+                        'options' => [],
+                        'defaultValue' => '26214400',
+                        'secret' => false,
+                        'configured' => false,
+                        'value' => '26214400',
+                    ],
+                    'openai_transcription_model' => [
+                        'key' => 'openai_transcription_model',
+                        'label' => 'Modelo de transcripción OpenAI',
+                        'description' => '',
+                        'inputType' => 'text',
+                        'group' => 'audio',
+                        'options' => [],
+                        'defaultValue' => 'gpt-4o-mini-transcribe',
+                        'secret' => false,
+                        'configured' => false,
+                        'value' => 'gpt-4o-mini-transcribe',
+                    ],
+                    'audio_llm_followup_reserve_cost_eur' => [
+                        'key' => 'audio_llm_followup_reserve_cost_eur',
+                        'label' => 'Reserva mínima para respuesta LLM (€)',
+                        'description' => '',
+                        'inputType' => 'text',
+                        'group' => 'audio',
+                        'options' => [],
+                        'defaultValue' => '0.01',
+                        'secret' => false,
+                        'configured' => false,
+                        'value' => '0.01',
+                    ],
                 ],
                 'values' => [
                     'llm_default_profile' => 'auto',
@@ -2488,6 +2581,10 @@ final class BackendUiControllerTest extends TestCase
                     'ollama_base_url' => 'http://ollama-vpn-bridge:11434',
                     'ollama_model' => 'llama3.1',
                     'audio_gateway_base_url' => 'http://audio-gateway',
+                    'audio_gateway_bearer_token' => '',
+                    'audio_max_bytes' => '26214400',
+                    'openai_transcription_model' => 'gpt-4o-mini-transcribe',
+                    'audio_llm_followup_reserve_cost_eur' => '0.01',
                 ],
                 'status' => [
                     'overall' => ['status' => 'ready', 'message' => 'Listo'],
@@ -2533,7 +2630,12 @@ final class BackendUiControllerTest extends TestCase
             'ollama_model' => 'llama3.1',
             'ollama_timeout_seconds' => 'abc',
             'audio_gateway_base_url' => 'http://audio-gateway',
+            'audio_gateway_bearer_token' => '',
             'audio_timeout_seconds' => '0',
+            'audio_max_bytes' => '',
+            'openai_transcription_model' => '',
+            'audio_transcription_cost_per_unit_eur' => '',
+            'audio_llm_followup_reserve_cost_eur' => '',
         ];
 
         $runtimeConfigurationService->expects(self::once())
@@ -2633,6 +2735,55 @@ final class BackendUiControllerTest extends TestCase
                         'configured' => false,
                         'value' => 'http://audio-gateway',
                     ],
+                    'audio_gateway_bearer_token' => [
+                        'key' => 'audio_gateway_bearer_token',
+                        'label' => 'Token Bearer del audio-gateway',
+                        'description' => '',
+                        'inputType' => 'password',
+                        'group' => 'audio',
+                        'options' => [],
+                        'defaultValue' => '',
+                        'secret' => true,
+                        'configured' => false,
+                        'value' => '********',
+                        'fullWidth' => true,
+                    ],
+                    'audio_max_bytes' => [
+                        'key' => 'audio_max_bytes',
+                        'label' => 'Tamaño máximo de audio (bytes)',
+                        'description' => '',
+                        'inputType' => 'number',
+                        'group' => 'audio',
+                        'options' => [],
+                        'defaultValue' => '26214400',
+                        'secret' => false,
+                        'configured' => false,
+                        'value' => '26214400',
+                    ],
+                    'openai_transcription_model' => [
+                        'key' => 'openai_transcription_model',
+                        'label' => 'Modelo de transcripción OpenAI',
+                        'description' => '',
+                        'inputType' => 'text',
+                        'group' => 'audio',
+                        'options' => [],
+                        'defaultValue' => 'gpt-4o-mini-transcribe',
+                        'secret' => false,
+                        'configured' => false,
+                        'value' => 'gpt-4o-mini-transcribe',
+                    ],
+                    'audio_llm_followup_reserve_cost_eur' => [
+                        'key' => 'audio_llm_followup_reserve_cost_eur',
+                        'label' => 'Reserva mínima para respuesta LLM (€)',
+                        'description' => '',
+                        'inputType' => 'text',
+                        'group' => 'audio',
+                        'options' => [],
+                        'defaultValue' => '0.01',
+                        'secret' => false,
+                        'configured' => false,
+                        'value' => '0.01',
+                    ],
                 ],
                 'values' => [
                     'llm_default_profile' => 'auto',
@@ -2642,6 +2793,11 @@ final class BackendUiControllerTest extends TestCase
                     'ollama_base_url' => 'http://ollama-vpn-bridge:11434',
                     'ollama_model' => 'llama3.1',
                     'audio_gateway_base_url' => 'http://audio-gateway',
+                    'audio_gateway_bearer_token' => 'wrong-secret',
+                    'audio_max_bytes' => '26214400',
+                    'openai_transcription_model' => 'gpt-4o-mini-transcribe',
+                    'audio_transcription_cost_per_unit_eur' => '0.02',
+                    'audio_llm_followup_reserve_cost_eur' => '0.01',
                 ],
                 'status' => [
                     'overall' => ['status' => 'blocked', 'message' => 'Bloqueado'],
@@ -2670,6 +2826,11 @@ final class BackendUiControllerTest extends TestCase
             'ollama_timeout_seconds' => 'abc',
             'audio_gateway_base_url' => 'http://audio-gateway',
             'audio_timeout_seconds' => '0',
+            'audio_gateway_bearer_token' => '',
+            'audio_max_bytes' => '',
+            'openai_transcription_model' => '',
+            'audio_transcription_cost_per_unit_eur' => '',
+            'audio_llm_followup_reserve_cost_eur' => '',
         ]);
 
         $response = $controller->configuration($request);

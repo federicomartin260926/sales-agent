@@ -106,6 +106,11 @@ final class RuntimeSettingsManagerTest extends TestCase
         self::assertSame('15', $values['ollama_timeout_seconds']);
         self::assertSame('15', $values['audio_timeout_seconds']);
         self::assertSame('http://audio-gateway', $values['audio_gateway_base_url']);
+        self::assertSame('', $values['audio_gateway_bearer_token']);
+        self::assertSame((string) (25 * 1024 * 1024), $values['audio_max_bytes']);
+        self::assertSame('gpt-4o-mini-transcribe', $values['openai_transcription_model']);
+        self::assertSame('0.02', $values['audio_transcription_cost_per_unit_eur']);
+        self::assertSame('0.01', $values['audio_llm_followup_reserve_cost_eur']);
         self::assertSame('********', $state['openai_api_key']['value']);
         self::assertTrue($state['openai_api_key']['fullWidth']);
         self::assertSame([
@@ -120,6 +125,7 @@ final class RuntimeSettingsManagerTest extends TestCase
         $cipher = new RuntimeSettingCipher('test-secret-key');
         $repository = $this->createRepositoryFake([
             'openai_api_key' => new RuntimeSetting('openai_api_key', $cipher->encrypt('sk-old')),
+            'audio_gateway_bearer_token' => new RuntimeSetting('audio_gateway_bearer_token', $cipher->encrypt('sk-audio-old')),
         ]);
 
         $manager = new RuntimeSettingsManager($repository, new RuntimeSettingCatalog(), $cipher);
@@ -133,13 +139,17 @@ final class RuntimeSettingsManagerTest extends TestCase
             'ollama_model' => 'qwen2.5',
             'ollama_timeout_seconds' => '23',
             'audio_gateway_base_url' => 'http://audio-gateway',
+            'audio_gateway_bearer_token' => '********',
             'audio_timeout_seconds' => '17',
+            'audio_max_bytes' => '33554432',
+            'openai_transcription_model' => 'gpt-4o-mini-transcribe',
+            'audio_llm_followup_reserve_cost_eur' => '0.01',
         ]);
 
         self::assertContains('llm_default_profile', $result['saved']);
         self::assertContains('openai_base_url', $result['saved']);
         self::assertContains('audio_gateway_base_url', $result['saved']);
-        self::assertCount(16, $repository->saved);
+        self::assertCount(18, $repository->saved);
 
         $values = $manager->resolvedValues();
         self::assertSame('ollama', $values['llm_default_profile']);
@@ -149,6 +159,11 @@ final class RuntimeSettingsManagerTest extends TestCase
         self::assertSame('23', $values['ollama_timeout_seconds']);
         self::assertSame('sk-old', $values['openai_api_key']);
         self::assertSame('http://audio-gateway', $values['audio_gateway_base_url']);
+        self::assertSame('sk-audio-old', $values['audio_gateway_bearer_token']);
+        self::assertSame('33554432', $values['audio_max_bytes']);
+        self::assertSame('gpt-4o-mini-transcribe', $values['openai_transcription_model']);
+        self::assertSame('0.02', $values['audio_transcription_cost_per_unit_eur']);
+        self::assertSame('0.01', $values['audio_llm_followup_reserve_cost_eur']);
         self::assertSame('17', $values['audio_timeout_seconds']);
     }
 

@@ -5098,7 +5098,12 @@ final class BackendUiController
             'ollama_model' => trim((string) $request->request->get('ollama_model', '')),
             'ollama_timeout_seconds' => trim((string) $request->request->get('ollama_timeout_seconds', '')),
             'audio_gateway_base_url' => trim((string) $request->request->get('audio_gateway_base_url', '')),
+            'audio_gateway_bearer_token' => trim((string) $request->request->get('audio_gateway_bearer_token', '')),
             'audio_timeout_seconds' => trim((string) $request->request->get('audio_timeout_seconds', '')),
+            'audio_max_bytes' => trim((string) $request->request->get('audio_max_bytes', '')),
+            'openai_transcription_model' => trim((string) $request->request->get('openai_transcription_model', '')),
+            'audio_transcription_cost_per_unit_eur' => trim((string) $request->request->get('audio_transcription_cost_per_unit_eur', '')),
+            'audio_llm_followup_reserve_cost_eur' => trim((string) $request->request->get('audio_llm_followup_reserve_cost_eur', '')),
         ];
     }
 
@@ -5213,13 +5218,28 @@ final class BackendUiController
                 'fields' => $this->runtimeConfigurationFieldsForKeys($formState, [
                     'ollama_model',
                     'ollama_base_url',
-                    'audio_gateway_base_url',
                     'ollama_timeout_seconds',
-                    'audio_timeout_seconds',
                 ]),
                 'actions' => [
                     ['class' => 'secondary-action', 'name' => 'action', 'value' => 'test_ollama', 'label' => 'Probar conexión de Ollama'],
                 ],
+            ],
+            'audio' => [
+                'title' => 'AUDIO',
+                'subtitle' => 'Gateway y transcripción',
+                'note' => 'Estos valores se usan para descargar audios desde el gateway de WhatsApp y transcribirlos antes de continuar el flujo del agente.',
+                'badge_label' => 'Audio',
+                'badge_class' => $this->runtimeStatusClass((string) ($audioStatus['status'] ?? 'blocked')),
+                'fields' => $this->runtimeConfigurationFieldsForKeys($formState, [
+                    'audio_gateway_base_url',
+                    'audio_gateway_bearer_token',
+                    'openai_transcription_model',
+                    'audio_timeout_seconds',
+                    'audio_max_bytes',
+                    'audio_transcription_cost_per_unit_eur',
+                    'audio_llm_followup_reserve_cost_eur',
+                ]),
+                'actions' => [],
             ],
         ];
     }

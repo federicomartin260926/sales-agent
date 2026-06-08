@@ -49,6 +49,11 @@ class RuntimeSettingsClient:
             if isinstance(value, str):
                 merged[key] = value
 
+        if merged.get("openai_transcription_model", "") == "" and merged.get("audio_transcription_model", "") != "":
+            merged["openai_transcription_model"] = merged["audio_transcription_model"]
+        if merged.get("audio_transcription_model", "") == "" and merged.get("openai_transcription_model", "") != "":
+            merged["audio_transcription_model"] = merged["openai_transcription_model"]
+
         return merged
 
     def _fallback_values(self) -> dict[str, str]:
@@ -58,8 +63,12 @@ class RuntimeSettingsClient:
             "openai_base_url": "https://api.openai.com/v1",
             "openai_model": "gpt-4o-mini",
             "openai_transcription_model": self.settings.openai_transcription_model,
+            "audio_gateway_bearer_token": self.settings.audio_gateway_bearer_token,
+            "audio_gateway_base_url": self.settings.audio_gateway_base_url,
+            "audio_max_bytes": str(self.settings.audio_max_bytes),
+            "audio_llm_followup_reserve_cost_eur": str(self.settings.audio_llm_followup_reserve_cost_eur),
+            "audio_transcription_model": self.settings.openai_transcription_model,
             "audio_transcription_provider": self.settings.audio_transcription_provider,
-            "audio_transcription_model": self.settings.audio_transcription_model,
             "audio_transcription_cost_unit": self.settings.audio_transcription_cost_unit,
             "audio_transcription_cost_per_unit_eur": str(self.settings.audio_transcription_cost_per_unit_eur),
             "audio_transcription_enabled": "1" if self.settings.audio_transcription_enabled else "0",
@@ -69,6 +78,5 @@ class RuntimeSettingsClient:
             "ollama_base_url": self.settings.ollama_base_url,
             "ollama_model": "llama3.1",
             "ollama_timeout_seconds": str(self.settings.ollama_timeout_seconds),
-            "audio_gateway_base_url": "",
             "audio_timeout_seconds": str(self.settings.audio_timeout_seconds),
         }

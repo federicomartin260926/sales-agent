@@ -189,7 +189,7 @@ final class AiModelCostController extends AbstractController
     {
         $snapshot = $this->runtimeSnapshot();
         $values = $snapshot['values'] ?? [];
-        $reference = new AiModelCostReference(AiModelCostReference::USAGE_TYPE_AUDIO_TRANSCRIPTION, (string) ($values['audio_transcription_model'] ?? 'gpt-4o-mini-transcribe'));
+        $reference = new AiModelCostReference(AiModelCostReference::USAGE_TYPE_AUDIO_TRANSCRIPTION, (string) ($values['openai_transcription_model'] ?? $values['audio_transcription_model'] ?? 'gpt-4o-mini-transcribe'));
         $reference->setCostUnit((string) ($values['audio_transcription_cost_unit'] ?? AiModelCostReference::COST_UNIT_MINUTE));
         $reference->setCostPerUnit((float) ($values['audio_transcription_cost_per_unit_eur'] ?? 0.02));
         $reference->setCurrency((string) ($values['audio_transcription_currency'] ?? 'EUR'));

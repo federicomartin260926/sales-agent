@@ -19,6 +19,11 @@ final class RuntimeSettingsStatePresenterTest extends TestCase
             'ollama_base_url' => 'http://localhost:11434',
             'ollama_model' => 'llama3.1',
             'audio_gateway_base_url' => 'http://audio-gateway',
+            'audio_gateway_bearer_token' => 'runtime-token',
+            'openai_transcription_model' => 'gpt-4o-mini-transcribe',
+            'audio_max_bytes' => '26214400',
+            'audio_transcription_cost_per_unit_eur' => '0.02',
+            'audio_llm_followup_reserve_cost_eur' => '0.01',
         ]);
 
         self::assertSame('ready', $state['overall']['status']);
@@ -39,6 +44,11 @@ final class RuntimeSettingsStatePresenterTest extends TestCase
             'ollama_base_url' => 'http://localhost:11434',
             'ollama_model' => 'llama3.1',
             'audio_gateway_base_url' => '',
+            'audio_gateway_bearer_token' => '',
+            'openai_transcription_model' => '',
+            'audio_max_bytes' => '',
+            'audio_transcription_cost_per_unit_eur' => '',
+            'audio_llm_followup_reserve_cost_eur' => '',
         ]);
 
         self::assertSame('blocked', $state['overall']['status']);

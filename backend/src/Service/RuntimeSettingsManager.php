@@ -65,7 +65,7 @@ final class RuntimeSettingsManager
                 'secret' => $definition['secret'],
                 'configured' => $configured,
                 'value' => $value,
-                'fullWidth' => in_array($key, ['openai_api_key', 'audio_transcription_notes'], true),
+                'fullWidth' => in_array($key, ['openai_api_key', 'audio_gateway_bearer_token', 'audio_transcription_notes'], true),
                 'min' => $definition['min'] ?? null,
             ];
         }
@@ -171,11 +171,21 @@ final class RuntimeSettingsManager
                 continue;
             }
 
-            if ($key === 'audio_transcription_cost_per_unit_eur') {
+            if (in_array($key, ['audio_transcription_cost_per_unit_eur', 'audio_llm_followup_reserve_cost_eur'], true)) {
                 if (!is_numeric(str_replace(',', '.', $rawValue))) {
-                    $errors[] = 'El coste de transcripción debe ser numérico.';
+                    $errors[] = sprintf('El valor de "%s" debe ser numérico.', $definition['label']);
                 } elseif ((float) str_replace(',', '.', $rawValue) < 0) {
-                    $errors[] = 'El coste de transcripción no puede ser negativo.';
+                    $errors[] = sprintf('El valor de "%s" no puede ser negativo.', $definition['label']);
+                }
+
+                continue;
+            }
+
+            if ($key === 'audio_max_bytes') {
+                if (filter_var($rawValue, FILTER_VALIDATE_INT) === false) {
+                    $errors[] = 'El tamaño máximo de audio debe ser un entero valido.';
+                } elseif ((int) $rawValue < 1) {
+                    $errors[] = 'El tamaño máximo de audio debe ser mayor o igual que 1.';
                 }
 
                 continue;

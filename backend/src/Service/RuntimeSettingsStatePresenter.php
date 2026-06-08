@@ -102,11 +102,14 @@ final class RuntimeSettingsStatePresenter
     private function presentAudio(array $settings): array
     {
         $baseUrl = trim($settings['audio_gateway_base_url'] ?? '');
+        $token = trim($settings['audio_gateway_bearer_token'] ?? '');
         $enabled = trim($settings['audio_transcription_enabled'] ?? '1');
         $provider = trim($settings['audio_transcription_provider'] ?? 'openai');
-        $model = trim($settings['audio_transcription_model'] ?? '');
+        $model = trim($settings['openai_transcription_model'] ?? $settings['audio_transcription_model'] ?? '');
         $costUnit = trim($settings['audio_transcription_cost_unit'] ?? 'minute');
         $costPerUnit = trim($settings['audio_transcription_cost_per_unit_eur'] ?? '');
+        $reserveCost = trim($settings['audio_llm_followup_reserve_cost_eur'] ?? '');
+        $maxBytes = trim($settings['audio_max_bytes'] ?? '');
 
         if ($enabled === '0') {
             return $this->state('blocked', 'La transcripción de audio está desactivada.', null);
@@ -116,12 +119,24 @@ final class RuntimeSettingsStatePresenter
             return $this->state('blocked', 'Falta el endpoint de audio-gateway.', null);
         }
 
+        if ($token === '') {
+            return $this->state('partial', 'Falta el token del audio-gateway.', null);
+        }
+
         if ($provider === '' || $model === '') {
             return $this->state('partial', 'Falta completar el proveedor o el modelo de transcripción de audio.', null);
         }
 
         if ($costPerUnit === '' || !is_numeric(str_replace(',', '.', $costPerUnit))) {
             return $this->state('partial', 'La referencia de coste de audio está incompleta.', null);
+        }
+
+        if ($reserveCost === '' || !is_numeric(str_replace(',', '.', $reserveCost))) {
+            return $this->state('partial', 'La reserva mínima para audio está incompleta.', null);
+        }
+
+        if ($maxBytes === '' || !ctype_digit($maxBytes) || (int) $maxBytes < 1) {
+            return $this->state('partial', 'El tamaño máximo de audio está incompleto.', null);
         }
 
         return $this->state('ready', sprintf('Audio configurado para uso operativo (%s / %s, %s).', $provider, $model, $costUnit), null);
