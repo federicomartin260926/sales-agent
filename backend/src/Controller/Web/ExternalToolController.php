@@ -34,6 +34,7 @@ final class ExternalToolController extends AbstractController
     private const AUTH_TYPES = ['none', 'bearer'];
     private const TEST_TOOL_TYPE = 'contact_context';
     private const MCP_TOOL_TYPE = 'mcp_remote';
+    private const MCP_TOOL_PROVIDER = 'mcp_remote';
     private const HANDOFF_TOOL_TYPE = 'handoff_webhook';
     private const MCP_PROVIDER = 'openai_remote_mcp';
     private const MCP_PROVIDER_ALTERNATE = 'mcp_remote';
@@ -72,7 +73,7 @@ final class ExternalToolController extends AbstractController
             );
         }
 
-        $tools = $this->externalTools->findByTenantOrdered($activeTenant);
+        $tools = $this->mcpToolsForTenant($activeTenant);
         $hasRuntimeDefault = $this->externalTools->findRuntimeDefaultMcpByTenant($activeTenant) instanceof ExternalTool;
         $runtimeState = $this->tenantMcpRuntimeState($activeTenant);
 
@@ -344,7 +345,7 @@ final class ExternalToolController extends AbstractController
             'page_title' => sprintf('Servidores MCP de %s', $activeTenant->getName()),
             'page_subtitle' => 'Configuración de servidores MCP remotos del negocio activo.',
             'active_nav' => 'admin-external-tools',
-            'tools' => array_map([$this, 'toolRow'], $this->externalTools->findByTenantOrdered($activeTenant)),
+            'tools' => array_map([$this, 'toolRow'], $this->mcpToolsForTenant($activeTenant)),
             'has_runtime_default' => $this->externalTools->findRuntimeDefaultMcpByTenant($activeTenant) instanceof ExternalTool,
             'runtime_state' => $this->tenantMcpRuntimeState($activeTenant),
             'test_result' => $testResult,
@@ -379,7 +380,7 @@ final class ExternalToolController extends AbstractController
             'tenantName' => $tool->getTenant()->getName(),
             'name' => $tool->getName(),
             'type' => $tool->getType(),
-            'provider' => $tool->getProvider(),
+            'provider' => $tool->getType() === self::MCP_TOOL_TYPE ? self::MCP_TOOL_PROVIDER : $tool->getProvider(),
             'webhookUrl' => $tool->getWebhookUrl() ?? '',
             'authType' => $tool->getAuthType() ?? 'none',
             'hasBearerToken' => $tool->hasDownstreamAuthorizationToken(),
@@ -403,16 +404,12 @@ final class ExternalToolController extends AbstractController
     {
         $config = $tool?->getConfig() ?? [];
         $tenantRuntimeDefault = $tenant instanceof Tenant ? $this->externalTools->findRuntimeDefaultMcpByTenant($tenant) : null;
-        $type = $tool?->getType() ?? self::MCP_TOOL_TYPE;
         $authType = $tool?->getAuthType() ?? ($tool?->hasDownstreamAuthorizationToken() ? 'bearer' : 'none');
-        if ($type === self::HANDOFF_TOOL_TYPE) {
-            $authType = 'none';
-        }
         return [
             'name' => $tool?->getName() ?? '',
             'tenantId' => $tenant?->getId()->toRfc4122() ?? $tool?->getTenant()?->getId()->toRfc4122() ?? '',
-            'type' => $type,
-            'provider' => $tool?->getProvider() ?? ($type === self::MCP_TOOL_TYPE ? self::MCP_PROVIDER : 'n8n_webhook'),
+            'type' => self::MCP_TOOL_TYPE,
+            'provider' => self::MCP_TOOL_PROVIDER,
             'webhookUrl' => $tool?->getWebhookUrl() ?? '',
             'authType' => $authType,
             'bearerToken' => '',
@@ -424,7 +421,7 @@ final class ExternalToolController extends AbstractController
             'serverLabel' => $this->configStringField($config, 'server_label'),
             'allowedTools' => $this->configAllowedToolsField($config),
             'requireApproval' => $this->configStringField($config, 'require_approval', 'auto'),
-            'enabledForLlm' => $this->configBoolField($config, 'enabled_for_llm', $tool?->getType() === self::MCP_TOOL_TYPE),
+            'enabledForLlm' => $this->configBoolField($config, 'enabled_for_llm', true),
             'notes' => $this->configStringField($config, 'notes'),
         ];
     }
@@ -437,8 +434,8 @@ final class ExternalToolController extends AbstractController
         return [
             'name' => trim((string) $request->request->get('name', '')),
             'tenantId' => trim((string) $request->request->get('tenantId', '')),
-            'type' => trim((string) $request->request->get('type', self::TEST_TOOL_TYPE)),
-            'provider' => trim((string) $request->request->get('provider', self::PROVIDERS[0])),
+            'type' => self::MCP_TOOL_TYPE,
+            'provider' => self::MCP_TOOL_PROVIDER,
             'webhookUrl' => trim((string) $request->request->get('webhookUrl', '')),
             'authType' => trim((string) $request->request->get('authType', 'none')),
             'bearerToken' => trim((string) $request->request->get('bearerToken', '')),
@@ -468,24 +465,12 @@ final class ExternalToolController extends AbstractController
             $errors[] = 'El nombre es obligatorio.';
         }
 
-        if (!in_array($values['type'], self::TOOL_TYPES, true)) {
-            $errors[] = 'El tipo de herramienta no es válido.';
+        if ($values['type'] !== self::MCP_TOOL_TYPE) {
+            $errors[] = 'En la pantalla de Servidores MCP el tipo queda fijado a servidor MCP remoto.';
         }
 
-        if (!in_array($values['provider'], self::PROVIDERS, true)) {
-            $errors[] = 'El proveedor no es válido.';
-        }
-
-        if (in_array($values['type'], [self::TEST_TOOL_TYPE, self::HANDOFF_TOOL_TYPE], true) && $values['provider'] !== 'n8n_webhook') {
-            $errors[] = 'contact_context/handoff_webhook sólo mantienen compatibilidad con n8n_webhook.';
-        }
-
-        if ($values['type'] === self::MCP_TOOL_TYPE && !in_array($values['provider'], [self::MCP_PROVIDER, self::MCP_PROVIDER_ALTERNATE], true)) {
-            $errors[] = 'mcp_remote sólo puede usar un proveedor MCP remoto.';
-        }
-
-        if ($values['type'] === self::HANDOFF_TOOL_TYPE && $values['authType'] !== 'none') {
-            $errors[] = 'handoff_webhook no usa autorización bearer todavía.';
+        if ($values['provider'] !== self::MCP_TOOL_PROVIDER) {
+            $errors[] = 'En la pantalla de Servidores MCP el provider queda fijado a mcp_remote.';
         }
 
         if ($values['webhookUrl'] === '') {
@@ -516,36 +501,16 @@ final class ExternalToolController extends AbstractController
             }
         }
 
-        if ($values['type'] === self::MCP_TOOL_TYPE) {
-            if ($values['serverLabel'] === '') {
-                $errors[] = 'El server label es obligatorio para MCP remoto.';
-            }
-
-            if (!in_array($values['requireApproval'], ['auto', 'never', 'always'], true)) {
-                $errors[] = 'El modo de aprobación MCP no es válido.';
-            }
-
-            if ($values['isRuntimeDefault'] && !$values['isActive']) {
-                $errors[] = 'El MCP principal debe estar activo.';
-            }
+        if ($values['serverLabel'] === '') {
+            $errors[] = 'El server label es obligatorio para MCP remoto.';
         }
 
-        if ($values['type'] === self::HANDOFF_TOOL_TYPE) {
-            if ($values['provider'] !== 'n8n_webhook') {
-                $errors[] = 'handoff_webhook sólo puede usar el proveedor n8n_webhook.';
-            }
-
-            if ($values['authType'] !== 'none') {
-                $errors[] = 'handoff_webhook no admite bearer token en esta primera fase.';
-            }
-
-            if ($values['bearerToken'] !== '') {
-                $errors[] = 'handoff_webhook no admite bearer token.';
-            }
+        if (!in_array($values['requireApproval'], ['auto', 'never', 'always'], true)) {
+            $errors[] = 'El modo de aprobación MCP no es válido.';
         }
 
-        if ($values['authType'] === 'bearer' && $tool === null && $values['bearerToken'] === '') {
-            // Permitido por ahora: se muestra la advertencia en la UI.
+        if ($values['isRuntimeDefault'] && !$values['isActive']) {
+            $errors[] = 'El MCP principal debe estar activo.';
         }
 
         return $errors;
@@ -983,6 +948,17 @@ final class ExternalToolController extends AbstractController
     private function canTestTool(ExternalTool $tool): bool
     {
         return $tool->getType() === self::MCP_TOOL_TYPE && $tool->isEnabledForLlm();
+    }
+
+    /**
+     * @return list<ExternalTool>
+     */
+    private function mcpToolsForTenant(Tenant $tenant): array
+    {
+        return array_values(array_filter(
+            $this->externalTools->findByTenantOrdered($tenant),
+            static fn (ExternalTool $tool): bool => $tool->getType() === self::MCP_TOOL_TYPE
+        ));
     }
 
     /**

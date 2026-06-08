@@ -149,6 +149,7 @@ Pendiente:
 - [ ] Definir catálogo/inventario externo como tool MCP/n8n genérica.
 - [ ] Mantener separación de tokens:
   - downstream authorization ≠ webhook token ≠ tokens OpenAI.
+- [ ] Evaluar en el futuro una sección separada de integraciones/webhooks operativos directos con n8n para casos deterministas muy puntuales. Por defecto, SA debe seguir delegando tools conversacionales en LLM + MCP remoto. Cualquier integración directa con n8n deberá implementarse como herramienta externa separada, no dentro de Servidores MCP.
 
 ## 7. Handoff humano
 
