@@ -324,16 +324,43 @@ def test_prompt_builder_includes_crm_contact_submit_guidance_when_available():
 
     system_prompt, _ = LLMPromptBuilder().build(payload, None, build_backend_context(), None, mcp_config)
 
-    assert "contact_context" in system_prompt
-    assert "lead o customer existente" in system_prompt
-    assert "Si contact_context no devuelve contexto suficiente" in system_prompt
     assert "crm_contact_submit" in system_prompt
     assert "contact.name" in system_prompt
     assert "conversation.summary" in system_prompt
+    assert "source y channel como el origen o canal comercial del contacto" in system_prompt
+    assert 'nunca uses tenant_id como source' in system_prompt
+    assert 'source="whatsapp" y channel="whatsapp"' in system_prompt
+    assert "tenant_id solo debe usarse si la tool lo pide como argumento separado" in system_prompt
     assert "metadata.origin=sales_agent" in system_prompt
     assert "metadata.sa_conversation_id" in system_prompt
     assert "No decidas si el resultado debe ser lead, customer o note" in system_prompt
     assert "No llames crm_contact_submit en cada mensaje" in system_prompt
+
+
+def test_prompt_builder_keeps_crm_contact_submit_guidance_but_not_contact_context_when_not_allowed():
+    payload = AgentRequest(
+        tenant_id="tenant-1",
+        message="Tenemos nueva información comercial",
+        contact=Contact(phone="+34600000000", name="Ana"),
+        conversation={"last_messages": []},
+    )
+
+    mcp_config = McpRemoteConfig(
+        enabled=True,
+        server_label="tenant_main_mcp",
+        server_url="https://mcp.example.test",
+        allowed_tools=["crm_contact_submit"],
+        require_approval="never",
+    )
+
+    system_prompt, _ = LLMPromptBuilder().build(payload, None, build_backend_context(), None, mcp_config)
+
+    assert "crm_contact_submit" in system_prompt
+    assert "source y channel como el origen o canal comercial del contacto" in system_prompt
+    assert 'nunca uses tenant_id como source' in system_prompt
+    assert "source=\"whatsapp\" y channel=\"whatsapp\"" in system_prompt
+    assert "Si entre las herramientas autorizadas está contact_context" not in system_prompt
+    assert "lead o customer existente" not in system_prompt
 
 
 def test_prompt_builder_shows_candidate_products_and_clarification():
