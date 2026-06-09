@@ -147,6 +147,7 @@ Pendiente:
 - [ ] Añadir test de tools MCP con mock de n8n/CRM.
 - [ ] Mejorar mensajes cuando MCP no está configurado o falla.
 - [ ] Definir catálogo/inventario externo como tool MCP/n8n genérica.
+- [ ] Mantener `crm_contact_submit` como contrato de escritura CRM en SA y evaluar más adelante si hace falta una variante más genérica (`contact_sync`) sobre `POST /api/integrations/contacts`.
 - [ ] Mantener separación de tokens:
   - downstream authorization ≠ webhook token ≠ tokens OpenAI.
 - [ ] Evaluar en el futuro una sección separada de integraciones/webhooks operativos directos con n8n para casos deterministas muy puntuales. Por defecto, SA debe seguir delegando tools conversacionales en LLM + MCP remoto. Cualquier integración directa con n8n deberá implementarse como herramienta externa separada, no dentro de Servidores MCP.
@@ -180,6 +181,7 @@ Pendiente:
 - [ ] Integrar waitlist CRM como posible fallback cuando no hay huecos.
 - [ ] Registrar `lead_id`, `customer_id`, cita o booking invitation en conversación.
 - [ ] Añadir fallback a handoff si CRM/n8n falla.
+- [ ] Mantener `contact_context` como lectura inicial cuando haya teléfono/email y el tenant esté integrado con CRM.
 - [ ] Documentar contratos MCP/n8n definitivos.
 
 ## 9. RAG por tenant/producto

@@ -26,6 +26,7 @@ El proyecto está preparado para integrarse más adelante con:
 - [Tokens](../platform/tokens.md)
 - [Handoff humano](docs/handoff.md)
 - [MCP - n8n contact context](docs/mcp-n8n-contact-context.md)
+- [Contrato de CRM](docs/crm-contract.md)
 
 ## Arquitectura
 
@@ -160,13 +161,25 @@ La configuración operativa de LLM y audio ahora vive en `runtime_settings` y se
 Los secretos de esa pantalla se cifran en base de datos y el runtime consulta la snapshot interna en `GET /api/internal/runtime-settings` con `Authorization: Bearer ...`.
 Todas las rutas `/api/internal/*` usan `Authorization: Bearer <SALES_AGENT_BEARER_TOKEN>` y no JWT de usuario.
 
+## CRM integrado
+
+`sales-agent` puede funcionar con o sin CRM conectado.
+
+- Sin CRM, el runtime sigue operando con contexto local, playbooks y herramientas disponibles.
+- Con CRM, el agente conversa, cualifica y entrega contexto estructurado, pero no decide internamente si crear lead, cliente, nota o cambiar estados.
+- El CRM es el sistema maestro de contactos, agenda, notas, actividades y pipeline.
+- El flujo recomendado es `WhatsApp -> wa-gateway-api -> Sales Agent -> LLM/MCP -> mcp-gateway -> n8n -> CRM Integration API`.
+
 Handoff humano:
 
 - la política funcional vive en `Tenant`
 - el handoff explícito rule-based añade un enlace `wa.me` hacia un número humano configurado por tenant y no llama al LLM
 - el handoff inferido por LLM usa la tool MCP `handoff_request` cuando está disponible en MCP y está en `allowed_tools`
+- cuando `contact_context` está disponible y hay teléfono o email, el runtime la consulta primero para no tratar como nuevo a un lead o customer ya existente
+- cuando `crm_contact_submit` está disponible, el LLM la usa para enviar contexto comercial útil al flujo CRM/n8n; el CRM decide si el resultado acaba en lead, customer, note o activity
 - el webhook operativo de n8n se mantiene como `ExternalTool` separado como alternativa/fallback
 - el token downstream CRM/MCP sigue siendo tenant-scoped y cifrado; no se reutiliza como auth del webhook de handoff
+- la autorización downstream para `crm_contact_submit` requiere scope `contacts:write`
 - `api/app/services/llm_client.py` sigue pasando la autorización downstream al MCP remoto como header seguro, sin llevar ese token al prompt ni al payload operativo
 - el evento de handoff es `sales_agent.handoff_requested` y viaja sin secretos; n8n decide si crea tareas, avisa por email/Telegram/WhatsApp o mapea a CRM
 

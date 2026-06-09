@@ -151,7 +151,8 @@ Las `Herramientas externas` permiten registrar:
 - `mcp_remote` para dejar configurado el servidor MCP remoto del tenant que usará OpenAI Responses API
 
 La configuración MCP queda guardada en `ExternalTool.config` con campos como `server_label`, `allowed_tools`, `require_approval`, `enabled_for_llm` y `notes`.
-Para el MCP principal del tenant, `allowed_tools` suele incluir las tools que el LLM puede usar sin secretos visibles, como `services_search` y `handoff_request`.
+Para el MCP principal del tenant, `allowed_tools` suele incluir las tools que el LLM puede usar sin secretos visibles, como `contact_context`, `services_search`, `handoff_request`, `appointment_*` y `crm_contact_submit`.
+`crm_contact_submit` es la tool de escritura comercial hacia CRM/n8n: el CRM decide si el resultado acaba en lead, customer, note o activity. Requiere downstream authorization tenant-scoped con scope `contacts:write`.
 El token técnico downstream se guarda cifrado en `ExternalTool.bearer_token`, pero en UI y contrato interno se trata como autorización downstream para MCP/n8n. Si no se rellena, la configuración conserva el valor existente; si se marca la opción de borrado explícito, se elimina. Si se pega un token nuevo, el formulario lo trata como `bearer` automáticamente para evitar que se pierda al guardar.
 Además, `ExternalTool.is_runtime_default` marca el MCP principal del tenant para runtime. Si no hay un principal explícito, la API interna sólo cae a un único MCP activo; no elige arbitrariamente por fecha.
 Cuando el runtime usa un perfil no compatible con Responses API, el MCP se ignora y se registra la causa en la traza del mensaje.

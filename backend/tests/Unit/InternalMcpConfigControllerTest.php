@@ -42,7 +42,7 @@ final class InternalMcpConfigControllerTest extends TestCase
         $toolOne->setConfig([
             'enabled_for_llm' => true,
             'server_label' => 'tenant_main_mcp',
-            'allowed_tools' => ['search_properties', 'appointment_availability'],
+            'allowed_tools' => ['search_properties', 'appointment_availability', 'crm_contact_submit'],
             'require_approval' => 'never',
             'notes' => 'Tenant MCP',
         ]);
@@ -70,7 +70,7 @@ final class InternalMcpConfigControllerTest extends TestCase
         self::assertSame('mcp-token', $payload['bearer_token']);
         self::assertSame('mcp-token', $payload['downstream_authorization_token']);
         self::assertTrue($payload['downstream_authorization_configured']);
-        self::assertSame(['search_properties', 'appointment_availability'], $payload['allowed_tools']);
+        self::assertSame(['search_properties', 'appointment_availability', 'crm_contact_submit'], $payload['allowed_tools']);
         self::assertSame('never', $payload['require_approval']);
     }
 
@@ -84,7 +84,7 @@ final class InternalMcpConfigControllerTest extends TestCase
         $tool->setConfig([
             'enabled_for_llm' => true,
             'server_label' => 'tenant_main_mcp',
-            'allowed_tools' => ['search_properties', 'appointment_availability'],
+            'allowed_tools' => ['search_properties', 'appointment_availability', 'crm_contact_submit'],
             'require_approval' => 'never',
             'notes' => 'Tenant MCP',
         ]);

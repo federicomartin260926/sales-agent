@@ -19,7 +19,7 @@ def mcp_transport_handler(request: httpx.Request) -> httpx.Response:
     assert payload["tools"][0]["type"] == "mcp"
     assert payload["tools"][0]["server_label"] == "tenant_main_mcp"
     assert payload["tools"][0]["server_url"] == "https://mcp.example.test"
-    assert payload["tools"][0]["allowed_tools"] == ["search_properties"]
+    assert payload["tools"][0]["allowed_tools"] == ["search_properties", "crm_contact_submit"]
     assert payload["tools"][0]["require_approval"] == "never"
     assert payload["tools"][0]["authorization"] == "downstream-token"
 
@@ -105,7 +105,7 @@ async def test_llm_client_uses_dedicated_timeout_for_openai_responses(monkeypatc
             server_url="https://mcp.example.test",
             auth_type="bearer",
             downstream_authorization_token="downstream-token",
-            allowed_tools=["search_properties"],
+            allowed_tools=["search_properties", "crm_contact_submit"],
             require_approval="auto",
         ),
         configuration={
@@ -183,7 +183,7 @@ async def test_llm_client_uses_openai_responses_with_mcp_tools(monkeypatch):
             server_url="https://mcp.example.test",
             auth_type="bearer",
             downstream_authorization_token="downstream-token",
-            allowed_tools=["search_properties"],
+            allowed_tools=["search_properties", "crm_contact_submit"],
             require_approval="auto",
         ),
         configuration={

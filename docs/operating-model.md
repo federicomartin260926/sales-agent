@@ -75,6 +75,18 @@ El CRM sigue siendo el sistema maestro de:
 
 `sales-agent` puede leer contexto del CRM, pero no debe convertirse en la fuente principal de verdad para esos datos.
 
+Con CRM integrado:
+
+- si la tool `contact_context` está disponible, el runtime puede consultar primero el contexto cuando haya teléfono o email
+- el agente evita preguntar datos ya conocidos
+- el agente cualifica sólo lo que falte para orientar la siguiente acción
+- el agente entrega contexto estructurado para que CRM decida qué persistir
+
+Sin CRM:
+
+- el runtime sigue funcionando con contexto local, playbooks y herramientas disponibles
+- si falta una tool externa, el agente continúa de forma útil y puede derivar a humano según la política configurada
+
 ## Routing y atribución
 
 La atribución comercial debe ser explícita.
@@ -304,6 +316,8 @@ Una vez identificado el tenant, el runtime debe cargar:
 - conversación previa
 - señales externas si existen
 
+Si el tenant está integrado con CRM y la tool `contact_context` está disponible, la carga de contexto puede intentar enriquecer la conversación con ese contexto antes de entrar a la fase de cualificación.
+
 ### 5. Orquestación
 
 El runtime decide si necesita apoyo adicional:
@@ -313,6 +327,8 @@ El runtime decide si necesita apoyo adicional:
 - LLM, para redactar o razonar sobre la respuesta
 
 No siempre debe llamar a todo. La idea es usar la mínima cantidad de contexto necesaria para tomar una buena decisión.
+
+Cuando esté disponible el flujo de sincronización CRM, el runtime puede preparar un paquete de contexto estructurado para que CRM decida si eso termina como lead, customer, note, activity o timeline.
 
 ### 6. Decisión
 
@@ -326,6 +342,8 @@ Salida esperada:
 - `action`
 - `needs_human`
 - `data_to_save`
+
+`data_to_save` es contexto operativo para integraciones posteriores, no una escritura directa al CRM desde `sales-agent`.
 
 Ejemplo conceptual:
 
@@ -371,6 +389,7 @@ Debe:
 - leer contexto del CRM cuando lo necesite
 - devolver datos estructurados para que otros componentes puedan decidir qué hacer con ellos
 - evitar duplicar la fuente de verdad de leads y clientes
+- seguir funcionando si el CRM no está configurado o no responde
 
 El CRM sigue siendo el sistema maestro para:
 

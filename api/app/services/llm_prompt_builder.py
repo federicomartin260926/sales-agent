@@ -57,7 +57,8 @@ class LLMPromptBuilder:
         )
 
         if mcp_config is not None and mcp_config.enabled and (mcp_config.server_label or "").strip() != "":
-            allowed_tools = ", ".join(mcp_config.allowed_tools) if mcp_config.allowed_tools else "las herramientas autorizadas"
+            allowed_tools_list = [tool.strip() for tool in mcp_config.allowed_tools if tool.strip() != ""]
+            allowed_tools = ", ".join(allowed_tools_list) if allowed_tools_list else "las herramientas autorizadas"
             system_prompt += (
                 f" Tienes acceso a un MCP remoto nativo del tenant llamado {mcp_config.server_label.strip()}. "
                 f"Úsalo cuando necesites datos o acciones cubiertas por {allowed_tools}. "
@@ -94,8 +95,14 @@ class LLMPromptBuilder:
                 "responde usando esos resultados de forma breve, clara y comercial. "
                 "Si no devuelve resultados o falla, orienta de forma general y pide una aclaración breve."
             )
+            if "contact_context" in allowed_tools_list:
+                system_prompt += (
+                    " Si entre las herramientas autorizadas está contact_context y tienes teléfono o email, "
+                    "úsala primero para saber si hablas con un lead o customer existente antes de asumir que el contacto es nuevo. "
+                    "Si contact_context no devuelve contexto suficiente, sigue cualificando de forma natural según la política comercial del negocio."
+                )
             handoff_strategy = self._handoff_strategy(backend_context)
-            if "handoff_request" in [tool.strip() for tool in mcp_config.allowed_tools] and handoff_strategy in {"n8n_webhook", "manual_wa_link_and_n8n"}:
+            if "handoff_request" in allowed_tools_list and handoff_strategy in {"n8n_webhook", "manual_wa_link_and_n8n"}:
                 system_prompt += (
                     " Si entre las herramientas autorizadas está handoff_request y la estrategia de handoff del tenant "
                     "requiere tool externa, úsala cuando detectes frustración, queja, bloqueo, riesgo, caso sensible "
@@ -114,6 +121,18 @@ class LLMPromptBuilder:
                     "Si la estrategia es manual_wa_link_and_n8n, además puedes incluir wa.me en la respuesta al cliente. "
                     "Si handoff_request devuelve error, no afirmes que has avisado o registrado nada; explica de forma "
                     "breve que no se pudo registrar el handoff y ofrece continuar o reintentar."
+                )
+            if "crm_contact_submit" in allowed_tools_list:
+                system_prompt += (
+                    " Si entre las herramientas autorizadas está crm_contact_submit, úsala cuando haya información comercial útil, "
+                    "cuando el contacto quede cualificado, cuando se solicite cita, cuando se pida handoff, waitlist o resumen, "
+                    "o cuando aparezcan datos nuevos relevantes del contacto. "
+                    "Envía contact.name, contact.phone y contact.email si los tienes; source y channel; qualification; "
+                    "conversation.summary; conversation.intent; actions.booking_requested, handoff_requested y waitlist_requested "
+                    "cuando apliquen; metadata.origin=sales_agent; metadata.sa_conversation_id si está disponible; "
+                    "metadata.service_slug y metadata.service_integration_key si están disponibles. "
+                    "No decidas si el resultado debe ser lead, customer o note: lo decide CRM según su configuración. "
+                    "No llames crm_contact_submit en cada mensaje si no hay información nueva útil."
                 )
 
         user_payload = {
