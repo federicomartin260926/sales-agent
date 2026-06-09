@@ -300,6 +300,7 @@ Para WhatsApp real, cada tenant debe tener un `whatsappPhoneNumberId` único. En
 
 - [Modelo de dominio](docs/domain-model.md)
 - [Contrato de CRM](docs/crm-contract.md)
+- [Ensamblado de contexto LLM](docs/llm-context-assembly.md)
 - [MCP - n8n contact context](docs/mcp-n8n-contact-context.md)
 - [Matriz de acceso](docs/access-matrix.md)
 - [Guía funcional del sistema](docs/operating-model.md)
