@@ -148,7 +148,7 @@ def test_prompt_builder_limits_history_and_keeps_summary_before_messages():
     assert "Devuelve solo JSON válido" in system_prompt
 
     parsed = json.loads(user_prompt)
-    assert list(parsed.keys())[:6] == ["tenant", "product", "products", "product_selection", "playbook", "entry_point"]
+    assert list(parsed.keys())[:7] == ["temporal_context", "tenant", "product", "products", "product_selection", "playbook", "entry_point"]
     assert "effective_context" not in parsed
     assert list(parsed.keys())[-1] == "current_message"
     assert list(parsed["conversation"].keys())[:3] == ["external_id", "summary", "last_messages"]
@@ -445,3 +445,50 @@ def test_prompt_builder_includes_temporal_context(monkeypatch):
     assert "timezone Europe/Madrid" in system_prompt
     assert "Si el usuario menciona un mes sin año, usa el año actual" in system_prompt
     assert "No uses años pasados salvo que el usuario lo pida explícitamente." in system_prompt
+
+
+def test_prompt_builder_resolves_relative_availability_against_current_turn(monkeypatch):
+    payload = AgentRequest(
+        tenant_id="tenant-1",
+        message="Buenas tardes. Dime disponibilidad de María para láser cuerpo entero para mañana por la tarde. Gracias.",
+        contact=Contact(phone="+34600000000"),
+        conversation={
+            "summary": "Historial con referencias temporales previas",
+            "last_messages": [
+                "2026-06-08: ¿Qué disponibilidad tienes para mañana láser cuerpo entero?",
+                "2026-06-08: Por la tarde no tienes nada disponible?",
+            ],
+        },
+    )
+
+    fixed_now = datetime(2026, 6, 9, 19, 22, 0, tzinfo=ZoneInfo("Europe/Madrid"))
+    monkeypatch.setattr(LLMPromptBuilder, "_current_madrid_time", lambda self: fixed_now)
+
+    mcp_config = McpRemoteConfig(
+        enabled=True,
+        server_label="tenant_main_mcp",
+        server_url="https://mcp.example.test",
+        allowed_tools=["services_search", "appointment_availability"],
+        require_approval="never",
+    )
+
+    system_prompt, user_prompt = LLMPromptBuilder().build(payload, None, build_backend_context(), None, mcp_config)
+    parsed = json.loads(user_prompt)
+
+    assert "current_datetime=2026-06-09T19:22:00+02:00" in system_prompt
+    assert "current_date=2026-06-09" in system_prompt
+    assert "timezone=Europe/Madrid" in system_prompt
+    assert "mañana = current_date + 1 día" in system_prompt
+    assert "pasado mañana = current_date + 2 días" in system_prompt
+    assert "por la mañana" in system_prompt
+    assert "09:00 a 14:00" in system_prompt
+    assert "por la tarde" in system_prompt
+    assert "15:00 a 20:00 o 21:00" in system_prompt
+    assert "nunca empieces a las 12:00" in system_prompt
+    assert "No arrastres el 'mañana' de mensajes anteriores" in system_prompt
+    assert parsed["temporal_context"]["current_datetime"] == "2026-06-09T19:22:00+02:00"
+    assert parsed["temporal_context"]["current_date"] == "2026-06-09"
+    assert parsed["temporal_context"]["timezone"] == "Europe/Madrid"
+    assert parsed["current_message"] == "Buenas tardes. Dime disponibilidad de María para láser cuerpo entero para mañana por la tarde. Gracias."
+    assert parsed["conversation"]["last_messages"][0].startswith("2026-06-08:")
+    assert parsed["conversation"]["last_messages"][1].startswith("2026-06-08:")

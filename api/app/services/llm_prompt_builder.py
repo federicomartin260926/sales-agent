@@ -47,9 +47,16 @@ class LLMPromptBuilder:
             "No arrastres detalles antiguos irrelevantes."
         )
         current_madrid_time = self._current_madrid_time()
+        current_timezone = getattr(current_madrid_time.tzinfo, "key", "Europe/Madrid")
+        current_date = current_madrid_time.date().isoformat()
         system_prompt += (
-            f" Contexto temporal explícito: fecha y hora actual {current_madrid_time.isoformat()} "
-            "en timezone Europe/Madrid. "
+            f" Contexto temporal explícito: current_datetime={current_madrid_time.isoformat()}, "
+            f"current_date={current_date}, timezone={current_timezone}. Usa timezone Europe/Madrid como referencia local. "
+            "Las expresiones relativas como hoy, mañana, pasado mañana, esta tarde o mañana por la tarde "
+            "se resuelven siempre respecto al mensaje actual y a este contexto temporal del turno, "
+            "no respecto a mensajes anteriores, resúmenes históricos ni referencias temporales previas. "
+            "Si el historial menciona fechas relativas antiguas, ignóralas para esta nueva petición salvo "
+            "que el usuario diga explícitamente que quiere reutilizar ese contexto. "
             "Si el usuario menciona un mes sin año, usa el año actual salvo que el contexto indique otro año. "
             "Para consultas de agenda o citas, envía date_from/date_to en formato ISO YYYY-MM-DD "
             "o ISO datetime coherente con la fecha actual. "
@@ -95,7 +102,11 @@ class LLMPromptBuilder:
                 "el usuario pida explícitamente ver más opciones. Usa 3-5 resultados para respuestas "
                 "conversacionales normales y máximo 6 para comparativas breves. "
                 "Para appointment_availability, si el usuario pide una franja como por la tarde, mañana por la tarde o cualquier rango horario concreto, envía date_from y date_to como ISO datetime completo con timezone, no como fechas sueltas sin hora. "
+                "Regla práctica: mañana = current_date + 1 día; pasado mañana = current_date + 2 días. "
+                "Para 'por la mañana' usa un rango aproximado de 09:00 a 14:00. "
+                "Para 'por la tarde' usa un rango aproximado de 15:00 a 20:00 o 21:00, pero nunca empieces a las 12:00 salvo que el usuario lo pida explícitamente. "
                 "Si el usuario dice mañana o pasado y está pidiendo disponibilidad, convierte eso en días futuros concretos con horas reales; no uses rangos ambiguos sin hora. "
+                "No arrastres el 'mañana' de mensajes anteriores: cada nueva consulta relativa se resuelve con el current_message y el current_datetime de este turno. "
                 "Si no puedes resolver el servicio con suficiente confianza, pide una aclaración breve o usa services_search antes de intentar appointment_availability. "
                 "No inventes productos, precios ni disponibilidad. Si services_search devuelve resultados, "
                 "responde usando esos resultados de forma breve, clara y comercial. "
@@ -146,6 +157,11 @@ class LLMPromptBuilder:
                 )
 
         user_payload = {
+            "temporal_context": {
+                "current_datetime": current_madrid_time.isoformat(),
+                "current_date": current_date,
+                "timezone": current_timezone,
+            },
             "tenant": self._tenant_payload(backend_context),
             "product": self._product_payload(backend_context),
             "products": self._products_payload(backend_context),

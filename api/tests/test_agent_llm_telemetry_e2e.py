@@ -253,7 +253,7 @@ def test_agent_respond_persists_prompt_limit_and_llm_telemetry(monkeypatch):
 
     prompt = prompts[0]
     assert list(prompt.keys())[-1] == "current_message"
-    assert list(prompt.keys())[:6] == ["tenant", "product", "products", "product_selection", "playbook", "entry_point"]
+    assert list(prompt.keys())[:7] == ["temporal_context", "tenant", "product", "products", "product_selection", "playbook", "entry_point"]
     assert prompt["conversation"]["summary"] == "Lead ya cualificado en llamada anterior."
     assert len(prompt["conversation"]["last_messages"]) == LLMContextHelper.MAX_CONVERSATION_MESSAGES
     assert prompt["current_message"] == "Necesito información comercial"
@@ -301,7 +301,7 @@ def test_agent_respond_persists_prompt_limit_and_llm_telemetry(monkeypatch):
 
     prompt = prompts[1]
     assert prompt["conversation"]["summary"] is None
-    assert list(prompt.keys())[:6] == ["tenant", "product", "products", "product_selection", "playbook", "entry_point"]
+    assert list(prompt.keys())[:7] == ["temporal_context", "tenant", "product", "products", "product_selection", "playbook", "entry_point"]
     assert prompt["conversation"]["last_messages"] == ["Hola", "¿Qué tal?"]
     assert prompt["current_message"] == "Hola"
 
