@@ -227,6 +227,37 @@ def test_prompt_builder_enriches_prompt_with_mcp_runtime():
     assert parsed["tenant"]["tone"] == "cercano"
 
 
+def test_prompt_builder_guides_service_lookup_before_availability_and_uses_iso_datetimes():
+    payload = AgentRequest(
+        tenant_id="tenant-1",
+        message="Quiero disponibilidad para láser axilas por la tarde",
+        contact=Contact(phone="+34600000000"),
+        conversation={"last_messages": []},
+    )
+
+    mcp_config = McpRemoteConfig(
+        enabled=True,
+        server_label="tenant_main_mcp",
+        server_url="https://mcp.example.test",
+        allowed_tools=["services_search", "appointment_availability"],
+        require_approval="never",
+    )
+
+    system_prompt, _ = LLMPromptBuilder().build(payload, None, build_backend_context(), None, mcp_config)
+
+    assert "usa primero services_search antes de appointment_availability" in system_prompt
+    assert "Prioriza siempre el service_id UUID devuelto por services_search" in system_prompt
+    assert "service_ref solo como fallback" in system_prompt
+    assert "no inventes service_ref simplificados como laser-axilas" in system_prompt
+    assert "Nunca metas el slug o integration_key dentro de service_id" in system_prompt
+    assert "Usa duration_minutes real del servicio devuelto por services_search" in system_prompt
+    assert "ISO datetime completo con timezone" in system_prompt
+    assert "fechas sueltas sin hora" in system_prompt
+    assert "mañana o pasado" in system_prompt
+    assert "no uses rangos ambiguos sin hora" in system_prompt
+    assert "pide una aclaración breve o usa services_search" in system_prompt
+
+
 def test_prompt_builder_includes_contact_context_guidance_only_when_available():
     payload = AgentRequest(
         tenant_id="tenant-1",
