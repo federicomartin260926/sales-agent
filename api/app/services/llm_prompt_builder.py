@@ -107,6 +107,7 @@ class LLMPromptBuilder:
                 "Para 'por la tarde' usa un rango aproximado de 15:00 a 20:00 o 21:00, pero nunca empieces a las 12:00 salvo que el usuario lo pida explícitamente. "
                 "Si el usuario dice mañana o pasado y está pidiendo disponibilidad, convierte eso en días futuros concretos con horas reales; no uses rangos ambiguos sin hora. "
                 "No arrastres el 'mañana' de mensajes anteriores: cada nueva consulta relativa se resuelve con el current_message y el current_datetime de este turno. "
+                "For any new availability or scheduling request, call appointment_availability before answering availability or unavailability; never reuse previous availability results or previous_response_id for that kind of turn. "
                 "Si no puedes resolver el servicio con suficiente confianza, pide una aclaración breve o usa services_search antes de intentar appointment_availability. "
                 "No inventes productos, precios ni disponibilidad. Si services_search devuelve resultados, "
                 "responde usando esos resultados de forma breve, clara y comercial. "

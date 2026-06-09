@@ -219,6 +219,7 @@ def test_prompt_builder_enriches_prompt_with_mcp_runtime():
     assert "appointment_confirm" in system_prompt
     assert "appointment_booking_invitation" in system_prompt
     assert "Nunca metas el slug o integration_key dentro de service_id" in system_prompt
+    assert "never reuse previous availability results or previous_response_id" in system_prompt
     assert "contact_context está disponible" not in system_prompt
     assert "crm_contact_submit" not in system_prompt
     assert parsed["product"]["name"] == "Producto Demo"

@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import httpx
 import logging
+import unicodedata
 import uuid
 from typing import Any
 
@@ -272,6 +273,8 @@ class AgentRuntime:
                 routing.conversation_id = conversation["id"]
 
         previous_response_id = self._previous_response_id_from_conversation_result(conversation_result)
+        if previous_response_id is not None and self._requires_fresh_availability_turn(payload):
+            previous_response_id = None
 
         explicit_handoff_request = False
         if audio_failure_handoff_response is not None:
@@ -1111,6 +1114,50 @@ class AgentRuntime:
             "persona",
         )
         return any(term in message for term in explicit_terms)
+
+    def _requires_fresh_availability_turn(self, payload: AgentRequest) -> bool:
+        message = self._normalize_text(payload.message.text)
+        if message == "":
+            return False
+
+        normalized = unicodedata.normalize("NFKD", message).encode("ascii", "ignore").decode("ascii").lower().strip()
+        if normalized == "":
+            return False
+
+        availability_terms = (
+            "disponibilidad",
+            "disponible",
+            "disponibles",
+            "hueco",
+            "huecos",
+            "agenda",
+            "horario",
+            "horarios",
+            "cita",
+            "citas",
+            "reservar",
+            "reserva",
+            "agendar",
+            "booking",
+            "appointment",
+        )
+        temporal_terms = (
+            "hoy",
+            "manana",
+            "pasado manana",
+            "esta tarde",
+            "por la tarde",
+            "por la manana",
+            "esta manana",
+            "tarde",
+            "manana por la tarde",
+            "manana por la manana",
+            "esta semana",
+            "la semana que viene",
+            "proxima semana",
+        )
+
+        return any(term in normalized for term in availability_terms) or any(term in normalized for term in temporal_terms)
 
     def _normalize_text(self, value: Any) -> str:
         if not isinstance(value, str):

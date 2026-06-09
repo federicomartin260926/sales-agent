@@ -911,6 +911,69 @@ async def test_runtime_passes_recent_openai_cursor_to_llm(monkeypatch: pytest.Mo
 
 
 @pytest.mark.asyncio
+async def test_runtime_omits_cursor_for_fresh_availability_request(monkeypatch: pytest.MonkeyPatch):
+    backend = RecordingBackendClient(
+        phone_context={"tenant_id": "tenant-1", "tenant_slug": "negocio-demo"},
+        tenant_context=build_context(),
+        mcp_config=McpRemoteConfig(
+            enabled=True,
+            server_label="mary_main_mcp",
+            server_url="https://mcp.example.test",
+            allowed_tools=["appointment_availability"],
+            require_approval="never",
+        ),
+        conversation_result={
+            "created": False,
+            "conversation": {
+                "id": "conversation-1",
+                "status": "active",
+                "lastOpenAiResponseId": "resp_123",
+                "lastOpenAiResponseAt": (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat(),
+            },
+        },
+    )
+
+    async def fake_fetch_tenant_context(*args, **kwargs):
+        backend.calls.append(("fetch_tenant_context", args))
+        return build_context()
+
+    seen: dict[str, object] = {}
+
+    async def fake_resolve_llm_response(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None, force_llm=False, previous_response_id=None):
+        seen["previous_response_id"] = previous_response_id
+        return AgentResponse(
+            reply="Respuesta con disponibilidad fresca.",
+            intent="agenda",
+            score=0.9,
+            action="answer_question",
+            needs_human=False,
+            data_to_save={},
+            provider="openai",
+            model="gpt-4.1-mini",
+            latency_ms=12,
+        )
+
+    monkeypatch.setattr(backend, "fetch_tenant_context", fake_fetch_tenant_context)
+    monkeypatch.setattr(DecisionEngine, "resolve_llm_response", fake_resolve_llm_response)
+
+    runtime = AgentRuntime(
+        backend,
+        RuntimeRoutingResolver(backend),
+        DecisionEngine(backend),
+    )
+    payload = AgentRequest(
+        external_channel_id="phone-number-id-1",
+        message="Buenas tardes. Dime disponibilidad de María para láser cuerpo entero para mañana por la tarde. Gracias.",
+        contact=Contact(phone="+34999999999"),
+    )
+
+    response = await runtime.respond(payload)
+
+    assert response.intent == "agenda"
+    assert seen["previous_response_id"] is None
+
+
+@pytest.mark.asyncio
 async def test_runtime_does_not_pass_cursor_when_conversation_is_pending_human(monkeypatch: pytest.MonkeyPatch):
     backend = RecordingBackendClient(
         phone_context={"tenant_id": "tenant-1", "tenant_slug": "negocio-demo"},
