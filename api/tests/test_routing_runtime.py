@@ -22,6 +22,7 @@ class RecordingBackendClient:
         handoff_tool: BackendExternalTool | None = None,
         tenant_context: CommercialContext | None = None,
         conversation_result: dict[str, object] | None = None,
+        summary_context: object | None = None,
     ) -> None:
         self.ref_context = ref_context
         self.phone_context = phone_context
@@ -29,6 +30,7 @@ class RecordingBackendClient:
         self.handoff_tool = handoff_tool
         self.tenant_context = tenant_context
         self.conversation_result = conversation_result
+        self.summary_context = summary_context
         self.calls: list[tuple[str, tuple[object, ...]]] = []
 
     async def resolve_entrypoint_ref(self, ref: str) -> BackendRoutingEntryPointUtmContext | None:
@@ -88,6 +90,10 @@ class RecordingBackendClient:
                 "event": {"id": "usage-event-1"},
             },
         )()
+
+    async def get_conversation_summary_context(self, conversation_id: str, limit: int = 20):
+        self.calls.append(("get_conversation_summary_context", (conversation_id, limit)))
+        return self.summary_context
 
 
 class RecordingAudioGatewayClient:
@@ -859,6 +865,13 @@ async def test_runtime_passes_recent_openai_cursor_to_llm(monkeypatch: pytest.Mo
     backend = RecordingBackendClient(
         phone_context={"tenant_id": "tenant-1", "tenant_slug": "negocio-demo"},
         tenant_context=build_context(),
+        mcp_config=McpRemoteConfig(
+            enabled=True,
+            server_label="mary_main_mcp",
+            server_url="https://mcp.example.test",
+            allowed_tools=["appointment_availability"],
+            require_approval="never",
+        ),
         conversation_result={
             "created": False,
             "conversation": {
@@ -908,6 +921,129 @@ async def test_runtime_passes_recent_openai_cursor_to_llm(monkeypatch: pytest.Mo
 
     assert response.intent == "open_question"
     assert seen["previous_response_id"] == previous_response_id
+
+
+@pytest.mark.asyncio
+async def test_runtime_keeps_cursor_for_slot_selection_followup(monkeypatch: pytest.MonkeyPatch):
+    previous_response_id = "resp_123"
+    last_response_at = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat()
+
+    availability_trace = {
+        "type": "mcp_call",
+        "server_label": "mary_main_mcp",
+        "tool_name": "appointment_availability",
+        "arguments": {
+            "service_id": "service-uuid",
+            "timezone": "Europe/Madrid",
+        },
+        "output": {
+            "available": True,
+            "slots": [
+                {
+                    "start": "2026-06-11T17:35:00+02:00",
+                    "end": "2026-06-11T19:05:00+02:00",
+                    "service_id": "service-uuid",
+                    "owner_id": "owner-uuid",
+                    "owner_ref": "owner-ref-1",
+                    "timezone": "Europe/Madrid",
+                }
+            ],
+        },
+        "status": "completed",
+    }
+
+    class SummaryMessageStub:
+        def __init__(self, payload: dict[str, object]) -> None:
+            self.payload = payload
+
+        def model_dump(self):
+            return self.payload
+
+    backend = RecordingBackendClient(
+        phone_context={"tenant_id": "tenant-1", "tenant_slug": "negocio-demo"},
+        tenant_context=build_context(),
+        mcp_config=McpRemoteConfig(
+            enabled=True,
+            server_label="mary_main_mcp",
+            server_url="https://mcp.example.test",
+            allowed_tools=["appointment_availability"],
+            require_approval="never",
+        ),
+        summary_context=type(
+            "SummaryContextStub",
+            (),
+            {
+                "messages": [
+                    SummaryMessageStub(
+                        {
+                            "id": "message-availability-1",
+                            "direction": "outbound",
+                            "role": "assistant",
+                            "message_type": "text",
+                            "body": "Para mañana por la tarde hay disponibilidad a las 17:35 y a las 19:10.",
+                            "intent": "agenda",
+                            "action": "answer_question",
+                            "needs_human": False,
+                            "metadata": {
+                                "mcp_tool_traces": [availability_trace],
+                                "mcp_response_id": "resp_availability_123",
+                            },
+                        }
+                    )
+                ]
+            },
+        )(),
+        conversation_result={
+            "created": False,
+            "conversation": {
+                "id": "conversation-1",
+                "status": "active",
+                "lastOpenAiResponseId": previous_response_id,
+                "lastOpenAiResponseAt": last_response_at,
+            },
+        },
+    )
+
+    async def fake_fetch_tenant_context(*args, **kwargs):
+        backend.calls.append(("fetch_tenant_context", args))
+        return build_context()
+
+    seen: dict[str, object] = {}
+
+    async def fake_resolve_llm_response(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None, force_llm=False, previous_response_id=None):
+        seen["previous_response_id"] = previous_response_id
+        seen["context_messages"] = payload.conversation.context_messages
+        return AgentResponse(
+            reply="Perfecto, confirmo la cita.",
+            intent="agenda",
+            score=0.94,
+            action="answer_question",
+            needs_human=False,
+            data_to_save={},
+            provider="openai",
+            model="gpt-4.1-mini",
+            latency_ms=10,
+        )
+
+    monkeypatch.setattr(backend, "fetch_tenant_context", fake_fetch_tenant_context)
+    monkeypatch.setattr(DecisionEngine, "resolve_llm_response", fake_resolve_llm_response)
+
+    runtime = AgentRuntime(
+        backend,
+        RuntimeRoutingResolver(backend),
+        DecisionEngine(backend),
+    )
+    payload = AgentRequest(
+        external_channel_id="phone-number-id-1",
+        message="Elijo las 17:35. ¿Me puedes confirmar la cita?",
+        contact=Contact(phone="+34999999999"),
+    )
+
+    response = await runtime.respond(payload)
+
+    assert response.intent == "agenda"
+    assert seen["previous_response_id"] == previous_response_id
+    assert seen["context_messages"][0]["metadata"]["mcp_tool_traces"][0]["output"]["slots"][0]["owner_id"] == "owner-uuid"
 
 
 @pytest.mark.asyncio
@@ -1644,6 +1780,89 @@ async def test_runtime_does_not_short_circuit_agenda_booking_when_appointment_av
     assert outbound_payload["metadata"]["mcp_enabled"] is True
     assert outbound_payload["metadata"]["mcp_server_label"] == "tech_investments_mcp"
     assert outbound_payload["metadata"]["mcp_tool_traces"][0]["tool_name"] == "appointment_availability"
+
+
+@pytest.mark.asyncio
+async def test_runtime_does_not_affirm_failed_appointment_confirmation(monkeypatch: pytest.MonkeyPatch):
+    backend = RecordingBackendClient(
+        ref_context=BackendRoutingEntryPointUtmContext.model_validate(
+            {
+                "entry_point_utm_id": "utm-1",
+                "ref": "abc123",
+                "entry_point_id": "entrypoint-1",
+                "entry_point_code": "crm-demo",
+                "tenant_id": "tenant-1",
+                "tenant_slug": "negocio-demo",
+                "product_id": "product-1",
+                "product_name": "CRM Automation",
+                "playbook_id": "playbook-1",
+                "crm_branch_ref": "branch-1",
+                "utm_source": "google",
+                "utm_medium": "cpc",
+                "utm_campaign": "crm_pymes",
+                "status": "matched",
+            }
+        ),
+        mcp_config=McpRemoteConfig(
+            enabled=True,
+            server_label="tech_investments_mcp",
+            server_url="https://mcp.tech-investments.net/mcp",
+            allowed_tools=["appointment_confirm", "contact_context_mock"],
+            timeout_seconds=15,
+        ),
+    )
+
+    async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None, previous_response_id=None):
+        return AgentResponse(
+            reply="He reservado para ti la cita.",
+            intent="agenda",
+            score=0.95,
+            action="answer_question",
+            needs_human=False,
+            data_to_save={
+                "topic": "agenda",
+                "mcp_enabled": True,
+                "mcp_server_label": "tech_investments_mcp",
+                "mcp_response_id": "resp_confirm_123",
+                "mcp_tool_traces": [
+                    {
+                        "type": "mcp_call",
+                        "server_label": "tech_investments_mcp",
+                        "tool_name": "appointment_confirm",
+                        "arguments": {
+                            "service_id": "service-uuid",
+                            "owner_id": "owner-uuid",
+                        },
+                        "output": {
+                            "ok": False,
+                            "confirmed": False,
+                            "error_code": "validation_error",
+                            "message": "ownerId/owner_id/ownerRef/owner_ref is required.",
+                        },
+                        "status": "completed",
+                    }
+                ],
+            },
+            provider="openai",
+            model="gpt-4.1-mini",
+            latency_ms=80,
+        )
+
+    monkeypatch.setattr(DecisionEngine, "decide", fake_decide)
+
+    runtime = AgentRuntime(backend, RuntimeRoutingResolver(backend), DecisionEngine(backend))  # type: ignore[arg-type]
+    payload = AgentRequest(
+        tenant_id="tenant-ignored",
+        entrypoint_ref="abc123",
+        message="17:35 por favor",
+        contact=Contact(phone="+34999999999"),
+        conversation={"last_messages": []},
+    )
+
+    response = await runtime.respond(payload)
+
+    assert "reserv" not in response.reply.lower()
+    assert "confirm" not in response.reply.lower() or "no he podido" in response.reply.lower()
 
 
 @pytest.mark.asyncio

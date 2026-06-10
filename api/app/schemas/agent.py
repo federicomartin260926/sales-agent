@@ -86,6 +86,7 @@ class Conversation(BaseModel):
     external_id: str | None = Field(default=None, validation_alias=AliasChoices("external_id", "externalId"))
     summary: str | None = None
     last_messages: list[str] = Field(default_factory=list)
+    context_messages: list[dict[str, Any]] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod
@@ -113,6 +114,7 @@ class Conversation(BaseModel):
         if self.summary is not None:
             self.summary = self.summary.strip() or None
         self.last_messages = [message.strip() for message in self.last_messages if isinstance(message, str) and message.strip() != ""]
+        self.context_messages = [message for message in self.context_messages if isinstance(message, dict)]
         return self
 
 

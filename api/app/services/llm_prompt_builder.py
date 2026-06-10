@@ -55,6 +55,7 @@ class LLMPromptBuilder:
         current_timezone, current_timezone_source = self._resolve_business_timezone_details(backend_context)
         current_business_time = self._current_business_time(current_timezone)
         current_date = current_business_time.date().isoformat()
+        appointment_context = self._appointment_context_payload(payload.conversation.context_messages)
         system_prompt += (
             f" Contexto temporal explícito: current_datetime={current_business_time.isoformat()}, "
             f"current_date={current_date}, timezone={current_timezone}. "
@@ -118,7 +119,13 @@ class LLMPromptBuilder:
                 "Para 'por la tarde' usa un rango aproximado de 15:00 a 20:00 o 21:00, pero nunca empieces a las 12:00 salvo que el usuario lo pida explícitamente. "
                 "Si el usuario dice mañana o pasado y está pidiendo disponibilidad, convierte eso en días futuros concretos con horas reales; no uses rangos ambiguos sin hora. "
                 "No arrastres el 'mañana' de mensajes anteriores: cada nueva consulta relativa se resuelve con el current_message y el current_datetime de este turno. "
-                "For any new availability or scheduling request, call appointment_availability before answering availability or unavailability; never reuse previous availability results or previous_response_id for that kind of turn. "
+                "For any new availability or scheduling request that starts from scratch, call appointment_availability before answering availability or unavailability; never reuse previous availability results or previous_response_id for a fresh search turn. "
+                "Si el usuario elige uno de los slots que acabas de ofrecer (por ejemplo: elijo las 17:35, me quedo con la primera, confirma esa, sí, reserva), trátalo como una confirmación del slot previo: reutiliza el slot ofrecido inmediatamente antes, conserva service_id/date/timezone/duration y también owner_id/owner_ref/ownerId/ownerRef si estaban presentes en el slot, no vuelvas a llamar services_search ni appointment_availability desde cero, y usa la herramienta de confirmación o booking si existe. "
+                "Si conversation.appointment_context contiene offered_slots, usa exactamente el slot seleccionado desde ese bloque y copia literalmente sus campos start/end/timezone/service_id/owner_id/owner_ref antes de confirmar. "
+                "Si conversation.context_messages incluye el último turno del asistente con trazas MCP de appointment_availability, toma de ahí el slot exacto ofrecido y sus campos owner/service/time/date antes de confirmar. "
+                "owner_id y owner_ref son obligatorios para appointment_confirm: si no puedes identificar el owner del slot seleccionado, no llames a appointment_confirm y pide aclaración o deriva el caso en lugar de intentar reservar incompleto. "
+                "Para appointment_confirm, sólo puedes afirmar que la cita quedó reservada o confirmada si la tool devuelve ok=true y/o confirmed=true. "
+                "Si appointment_confirm devuelve ok=false, confirmed=false, validation_error, crm_error o cualquier otro error, no digas que la cita está reservada o confirmada; explica que no se pudo confirmar y ofrece una alternativa o handoff humano si procede. "
                 "Si no puedes resolver el servicio con suficiente confianza, pide una aclaración breve o usa services_search antes de intentar appointment_availability. "
                 "No inventes productos, precios ni disponibilidad. Si services_search devuelve resultados, "
                 "responde usando esos resultados de forma breve, clara y comercial. "
@@ -191,7 +198,12 @@ class LLMPromptBuilder:
             },
             "conversation": {
                 "external_id": self.context_helper.sanitize_text(payload.conversation.external_id, max_chars=128),
-                **self.context_helper.build_conversation_payload(payload.conversation.summary, payload.conversation.last_messages),
+                **self.context_helper.build_conversation_payload(
+                    payload.conversation.summary,
+                    payload.conversation.last_messages,
+                    payload.conversation.context_messages,
+                ),
+                **({"appointment_context": appointment_context} if appointment_context is not None else {}),
             },
             "current_message": self.context_helper.sanitize_text(payload.message.text or "", max_chars=2000),
         }
@@ -508,6 +520,59 @@ class LLMPromptBuilder:
         )
 
         return payload
+
+    def _appointment_context_payload(self, context_messages: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+        if not isinstance(context_messages, list):
+            return None
+
+        for message in reversed(context_messages):
+            if not isinstance(message, dict):
+                continue
+
+            metadata = message.get("metadata")
+            if not isinstance(metadata, dict):
+                continue
+
+            traces = metadata.get("mcp_tool_traces")
+            if not isinstance(traces, list):
+                continue
+
+            for trace in reversed(traces):
+                if not isinstance(trace, dict):
+                    continue
+
+                tool_name = self._clean_string(trace.get("tool_name") or trace.get("toolName") or trace.get("name"))
+                if tool_name != "appointment_availability":
+                    continue
+
+                output = trace.get("output")
+                if not isinstance(output, dict):
+                    raw_output = trace.get("raw")
+                    output = raw_output if isinstance(raw_output, dict) else {}
+
+                slots = output.get("slots")
+                if not isinstance(slots, list) or not slots:
+                    continue
+
+                offered_slots = self.context_helper.sanitize_jsonish(slots, max_depth=9, max_items=6)
+                if not isinstance(offered_slots, list) or offered_slots == []:
+                    continue
+
+                raw_summary = output.get("raw_summary")
+                appointment_context: dict[str, Any] = {
+                    "source_message_id": self._clean_string(message.get("id")),
+                    "tool_name": "appointment_availability",
+                    "offered_slots": offered_slots,
+                }
+
+                if isinstance(raw_summary, dict):
+                    sanitized_raw_summary = self.context_helper.sanitize_jsonish(raw_summary, max_depth=5, max_items=8)
+                    if sanitized_raw_summary not in (None, {}):
+                        appointment_context["raw_summary"] = sanitized_raw_summary
+
+                return appointment_context
+
+        return None
 
     def _clean_contact(self, contact: Any) -> dict[str, Any] | None:
         if not isinstance(contact, dict):

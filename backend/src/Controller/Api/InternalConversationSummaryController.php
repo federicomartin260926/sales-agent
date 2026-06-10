@@ -53,6 +53,7 @@ final class InternalConversationSummaryController extends AbstractApiController
                     'score' => $message->getScore(),
                     'action' => $message->getAction(),
                     'needs_human' => $message->isNeedsHuman(),
+                    'metadata' => $this->normalizeMetadata($message->getMetadata()),
                     'created_at' => $message->getCreatedAt()->format(\DateTimeInterface::ATOM),
                 ],
                 $messages,
@@ -108,5 +109,38 @@ final class InternalConversationSummaryController extends AbstractApiController
         $limit = (int) $value;
 
         return max(1, min(20, $limit));
+    }
+
+    /**
+     * @param array<string, mixed>|null $metadata
+     *
+     * @return array<string, mixed>|null
+     */
+    private function normalizeMetadata(?array $metadata): ?array
+    {
+        if (!is_array($metadata) || $metadata === []) {
+            return null;
+        }
+
+        $safeKeys = [
+            'mcp_tool_traces',
+            'mcp_response_id',
+            'mcp_errors',
+            'mcp_enabled',
+            'mcp_server_label',
+            'mcp_server_url',
+            'mcp_allowed_tools',
+            'mcp_require_approval',
+            'openai_previous_response_id_invalid',
+        ];
+
+        $safeMetadata = [];
+        foreach ($safeKeys as $key) {
+            if (array_key_exists($key, $metadata)) {
+                $safeMetadata[$key] = $metadata[$key];
+            }
+        }
+
+        return $safeMetadata === [] ? null : $safeMetadata;
     }
 }

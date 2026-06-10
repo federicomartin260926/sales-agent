@@ -75,6 +75,24 @@ final class InternalConversationSummaryControllerTest extends TestCase
         $secondMessage->setIntent('handoff');
         $secondMessage->setAction('handoff_to_human');
         $secondMessage->setNeedsHuman(true);
+        $secondMessage->setMetadata([
+            'mcp_tool_traces' => [
+                [
+                    'tool_name' => 'appointment_availability',
+                    'output' => [
+                        'available' => true,
+                        'slots' => [
+                            [
+                                'start' => '2026-06-11T17:35:00+02:00',
+                                'owner_id' => 'owner-uuid',
+                                'owner_ref' => 'owner-ref-1',
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+            'authorization' => 'Bearer secret-token',
+        ]);
 
         $conversations = new class($conversation) extends ConversationRepository {
             public function __construct(private readonly Conversation $conversation)
@@ -121,7 +139,10 @@ final class InternalConversationSummaryControllerTest extends TestCase
         self::assertSame('Hola, quiero reservar', $payload['messages'][0]['body']);
         self::assertIsString($payload['messages'][0]['created_at']);
         self::assertArrayNotHasKey('rawPayload', $payload['messages'][0]);
-        self::assertArrayNotHasKey('metadata', $payload['messages'][0]);
+        self::assertNull($payload['messages'][0]['metadata']);
+        self::assertSame('appointment_availability', $payload['messages'][1]['metadata']['mcp_tool_traces'][0]['tool_name']);
+        self::assertSame('owner-uuid', $payload['messages'][1]['metadata']['mcp_tool_traces'][0]['output']['slots'][0]['owner_id']);
+        self::assertArrayNotHasKey('authorization', $payload['messages'][1]['metadata']);
         self::assertStringNotContainsString('Bearer secret-token', (string) $response->getContent());
         self::assertStringNotContainsString('downstream-secret-token', (string) $response->getContent());
     }

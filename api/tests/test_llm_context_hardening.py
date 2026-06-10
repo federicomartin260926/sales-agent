@@ -334,6 +334,15 @@ def test_prompt_builder_guides_service_lookup_before_availability_and_uses_iso_d
     assert "mañana o pasado" in system_prompt
     assert "no uses rangos ambiguos sin hora" in system_prompt
     assert "pide una aclaración breve o usa services_search" in system_prompt
+    assert "Si el usuario elige uno de los slots que acabas de ofrecer" in system_prompt
+    assert "reutiliza el slot ofrecido inmediatamente antes" in system_prompt
+    assert "no vuelvas a llamar services_search ni appointment_availability desde cero" in system_prompt
+    assert "usa la herramienta de confirmación o booking si existe" in system_prompt
+    assert "owner_id/owner_ref/ownerId/ownerRef" in system_prompt
+    assert "Si conversation.context_messages incluye el último turno del asistente" in system_prompt
+    assert "appointment_confirm, sólo puedes afirmar" in system_prompt
+    assert "ok=true y/o confirmed=true" in system_prompt
+    assert "no digas que la cita está reservada o confirmada" in system_prompt
 
 
 def test_prompt_builder_includes_contact_context_guidance_only_when_available():
@@ -715,3 +724,71 @@ def test_prompt_builder_resolves_relative_availability_against_current_turn(monk
     assert parsed["current_message"] == "Buenas tardes. Dime disponibilidad de María para láser cuerpo entero para mañana por la tarde. Gracias."
     assert parsed["conversation"]["last_messages"][0].startswith("2026-06-08:")
     assert parsed["conversation"]["last_messages"][1].startswith("2026-06-08:")
+
+
+def test_prompt_builder_keeps_previous_slot_context_with_owner_for_confirmation(monkeypatch):
+    payload = AgentRequest(
+        tenant_id="tenant-1",
+        message="17:35 por favor",
+        contact=Contact(phone="+34600000000"),
+        conversation={
+            "last_messages": [
+                "SA: Para mañana por la tarde hay disponibilidad a las 17:35 y a las 19:10.",
+            ],
+            "context_messages": [
+                {
+                    "id": "message-availability-1",
+                    "direction": "outbound",
+                    "role": "assistant",
+                    "message_type": "text",
+                    "body": "Para mañana por la tarde hay disponibilidad a las 17:35 y a las 19:10.",
+                    "metadata": {
+                        "mcp_tool_traces": [
+                            {
+                                "tool_name": "appointment_availability",
+                                "output": {
+                                    "available": True,
+                                    "slots": [
+                                        {
+                                            "start": "2026-06-11T17:35:00+02:00",
+                                            "end": "2026-06-11T19:05:00+02:00",
+                                            "service_id": "service-uuid",
+                                            "owner_id": "owner-uuid",
+                                            "owner_ref": "owner-ref-1",
+                                            "timezone": "Europe/Madrid",
+                                        }
+                                    ],
+                                },
+                            }
+                        ]
+                    },
+                }
+            ],
+        },
+    )
+
+    fixed_now = datetime(2026, 6, 11, 12, 0, 0, tzinfo=ZoneInfo("Europe/Madrid"))
+    monkeypatch.setattr(LLMPromptBuilder, "_current_business_time", lambda self, timezone_name: fixed_now)
+
+    mcp_config = McpRemoteConfig(
+        enabled=True,
+        server_label="tenant_main_mcp",
+        server_url="https://mcp.example.test",
+        allowed_tools=["services_search", "appointment_availability", "appointment_confirm"],
+        require_approval="never",
+    )
+
+    system_prompt, user_prompt = LLMPromptBuilder(settings=Settings()).build(payload, None, build_backend_context(), None, mcp_config)
+    parsed = json.loads(user_prompt)
+
+    assert "owner_id/owner_ref/ownerId/ownerRef" in system_prompt
+    assert "Si conversation.appointment_context contiene offered_slots" in system_prompt
+    assert parsed["conversation"]["appointment_context"]["tool_name"] == "appointment_availability"
+    assert parsed["conversation"]["appointment_context"]["source_message_id"] == "message-availability-1"
+    assert parsed["conversation"]["appointment_context"]["offered_slots"][0]["start"] == "2026-06-11T17:35:00+02:00"
+    assert parsed["conversation"]["appointment_context"]["offered_slots"][0]["end"] == "2026-06-11T19:05:00+02:00"
+    assert parsed["conversation"]["appointment_context"]["offered_slots"][0]["owner_id"] == "owner-uuid"
+    assert parsed["conversation"]["appointment_context"]["offered_slots"][0]["owner_ref"] == "owner-ref-1"
+    assert parsed["conversation"]["context_messages"][0]["metadata"]["mcp_tool_traces"][0]["output"]["slots"][0]["owner_id"] == "owner-uuid"
+    assert parsed["conversation"]["context_messages"][0]["metadata"]["mcp_tool_traces"][0]["output"]["slots"][0]["owner_ref"] == "owner-ref-1"
+    assert parsed["conversation"]["context_messages"][0]["metadata"]["mcp_tool_traces"][0]["output"]["slots"][0]["service_id"] == "service-uuid"

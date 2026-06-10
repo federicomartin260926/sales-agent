@@ -43,7 +43,12 @@ class LLMContextHelper:
 
         return self._sanitize_jsonish(value, depth, items, string_chars)
 
-    def build_conversation_payload(self, summary: Any, last_messages: list[str] | None) -> dict[str, Any]:
+    def build_conversation_payload(
+        self,
+        summary: Any,
+        last_messages: list[str] | None,
+        context_messages: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
         messages, truncated = self.limit_history(last_messages or [])
 
         payload: dict[str, Any] = {
@@ -52,6 +57,12 @@ class LLMContextHelper:
         }
         if truncated:
             payload["history_truncated"] = True
+        if context_messages:
+            sanitized_context_messages = self.sanitize_jsonish(context_messages, max_depth=9, max_items=6)
+            if sanitized_context_messages != []:
+                payload["context_messages"] = sanitized_context_messages
+                if isinstance(sanitized_context_messages, list) and sanitized_context_messages != context_messages:
+                    payload["context_messages_truncated"] = True
 
         return payload
 

@@ -272,6 +272,16 @@ class AgentRuntime:
             if isinstance(conversation, dict) and isinstance(conversation.get("id"), str):
                 routing.conversation_id = conversation["id"]
 
+        normalized_message = unicodedata.normalize("NFKD", self._normalize_text(payload.message.text)).encode("ascii", "ignore").decode("ascii").lower().strip()
+        if routing.conversation_id is not None and self._is_slot_selection_followup(normalized_message):
+            try:
+                conversation_summary_context = await self.backend_client.get_conversation_summary_context(routing.conversation_id, limit=8)
+            except Exception:
+                conversation_summary_context = None
+
+            if conversation_summary_context is not None and conversation_summary_context.messages:
+                payload.conversation.context_messages = [message.model_dump() for message in conversation_summary_context.messages]
+
         previous_response_id = self._previous_response_id_from_conversation_result(conversation_result)
         if previous_response_id is not None and self._requires_fresh_availability_turn(payload):
             previous_response_id = None
@@ -340,6 +350,7 @@ class AgentRuntime:
                 )
                 decision_latency_ms = int(round((time.perf_counter() - started_at) * 1000))
                 latency_ms = response.latency_ms if response.latency_ms is not None else decision_latency_ms
+                response = self._normalize_failed_appointment_confirmation(response)
                 response = self._normalize_handoff_response(response, explicit_handoff_request)
 
         response = await self._apply_handoff_policy(
@@ -859,6 +870,61 @@ class AgentRuntime:
             latency_ms=response.latency_ms,
         )
 
+    def _normalize_failed_appointment_confirmation(self, response: AgentResponse) -> AgentResponse:
+        if not self._appointment_confirmation_failed(response):
+            return response
+
+        reply = (response.reply or "").lower()
+        if not any(keyword in reply for keyword in ("reserv", "confirmad", "he reservado", "ya está", "listo")):
+            return response
+
+        return AgentResponse(
+            reply="No he podido confirmar la cita. Si quieres, puedo intentar otro horario o pasar el caso a una persona del equipo.",
+            intent=response.intent,
+            score=response.score,
+            action=response.action,
+            needs_human=response.needs_human,
+            data_to_save=response.data_to_save,
+            provider=response.provider,
+            model=response.model,
+            latency_ms=response.latency_ms,
+        )
+
+    def _appointment_confirmation_failed(self, response: AgentResponse) -> bool:
+        traces = response.data_to_save.get("mcp_tool_traces")
+        if not isinstance(traces, list):
+            return False
+
+        for trace in reversed(traces):
+            if not isinstance(trace, dict):
+                continue
+
+            tool_name = trace.get("tool_name") or trace.get("toolName") or trace.get("name")
+            if not isinstance(tool_name, str) or tool_name.strip() != "appointment_confirm":
+                continue
+
+            output = trace.get("output")
+            if not isinstance(output, dict):
+                output = trace.get("raw") if isinstance(trace.get("raw"), dict) else {}
+
+            if not isinstance(output, dict):
+                return False
+
+            if any(output.get(key) is False for key in ("ok", "confirmed")):
+                return True
+
+            error_code = output.get("error_code") or output.get("errorCode")
+            if isinstance(error_code, str) and error_code.strip() != "":
+                return True
+
+            status = output.get("status")
+            if isinstance(status, str) and status.strip().lower() in {"error", "failed", "failure", "validation_error", "crm_error"}:
+                return True
+
+            return False
+
+        return False
+
     async def _send_handoff_webhook(
         self,
         response: AgentResponse,
@@ -1124,6 +1190,9 @@ class AgentRuntime:
         if normalized == "":
             return False
 
+        if self._is_slot_selection_followup(normalized):
+            return False
+
         availability_terms = (
             "disponibilidad",
             "disponible",
@@ -1158,6 +1227,48 @@ class AgentRuntime:
         )
 
         return any(term in normalized for term in availability_terms) or any(term in normalized for term in temporal_terms)
+
+    def _is_slot_selection_followup(self, normalized_message: str) -> bool:
+        if normalized_message == "":
+            return False
+
+        direct_selection_terms = (
+            "elijo",
+            "me quedo con",
+            "me quedo con la",
+            "me quedo con el",
+            "la primera",
+            "la segunda",
+            "primer horario",
+            "segundo horario",
+            "ese horario",
+            "esa hora",
+            "ese hueco",
+            "ese turno",
+            "la de las",
+            "la de la",
+            "la de los",
+            "la de el",
+        )
+        if any(term in normalized_message for term in direct_selection_terms):
+            return True
+
+        if normalized_message.startswith(("si, confirma", "si confirma", "si, reserva", "si reserva")):
+            return True
+
+        if "confirmo" in normalized_message and any(
+            marker in normalized_message
+            for marker in ("primer", "primera", "segund", "ese", "esa", "horario", "hora", "hueco", "turno")
+        ):
+            return True
+
+        if "confirma" in normalized_message and any(
+            marker in normalized_message
+            for marker in ("primer", "primera", "segund", "ese", "esa", "horario", "hora", "hueco", "turno")
+        ):
+            return True
+
+        return False
 
     def _normalize_text(self, value: Any) -> str:
         if not isinstance(value, str):
