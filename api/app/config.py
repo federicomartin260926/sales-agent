@@ -46,8 +46,6 @@ class Settings(BaseSettings):
     audio_gateway_bearer_token: str = Field(default="", alias="AUDIO_GATEWAY_BEARER_TOKEN")
     audio_max_bytes: int = Field(default=25 * 1024 * 1024, alias="AUDIO_MAX_BYTES")
     backend_base_url: str = Field(default="http://sales-agent-nginx", alias="BACKEND_BASE_URL")
-    crm_base_url: str = Field(default="", alias="CRM_BASE_URL")
-    crm_integrations_bearer_token: str = Field(default="", alias="CRM_INTEGRATIONS_BEARER_TOKEN")
     rag_api_url: str = Field(default="", alias="RAG_API_URL")
     sales_agent_bearer_token: str = Field(default="", alias="SALES_AGENT_BEARER_TOKEN")
     mcp_test_authorization: str = Field(default="", alias="MCP_TEST_AUTHORIZATION")

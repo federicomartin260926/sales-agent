@@ -23,6 +23,7 @@ from app.services.backend_client import (
 )
 from app.services.conversation_summary_service import ConversationSummaryService
 from app.services.decision_engine import DecisionEngine
+from app.services.external_tool_client import ExternalToolClient
 from app.services.routing_resolver import RoutingContext, RuntimeRoutingResolver
 from app.services.runtime_settings_client import RuntimeSettingsClient
 
@@ -52,6 +53,7 @@ class AgentRuntime:
         audio_gateway_client: AudioGatewayClient | None = None,
         audio_transcription_client: AudioTranscriptionClient | None = None,
         conversation_summary_service: ConversationSummaryService | None = None,
+        external_tool_client: ExternalToolClient | None = None,
     ) -> None:
         self.backend_client = backend_client
         self.routing_resolver = routing_resolver
@@ -69,6 +71,9 @@ class AgentRuntime:
         self.conversation_summary_service = conversation_summary_service
         if self.conversation_summary_service is None and backend_settings is not None:
             self.conversation_summary_service = ConversationSummaryService(backend_settings, backend_client)
+        self.external_tool_client = external_tool_client
+        if self.external_tool_client is None and backend_settings is not None:
+            self.external_tool_client = ExternalToolClient(self.settings, backend_client)
 
     async def respond(self, payload: AgentRequest) -> AgentResponse:
         routing = await self.routing_resolver.resolve(payload)
@@ -317,6 +322,13 @@ class AgentRuntime:
             else:
                 mcp_config = await self.backend_client.fetch_mcp_config(routing.tenant_id)
                 self._log_mcp_config(routing.tenant_id, mcp_config)
+                contact_context = await self._resolve_contact_context(
+                    payload,
+                    routing,
+                    backend_context,
+                    conversation_id,
+                    mcp_config,
+                )
 
                 ai_usage_decision = await self.ai_usage_guard.evaluate(backend_context.tenant.id if backend_context is not None else None)
                 if not ai_usage_decision.allowed:
@@ -344,7 +356,7 @@ class AgentRuntime:
                     payload,
                     routing=routing,
                     backend_context=backend_context,
-                    contact_context=None,
+                    contact_context=contact_context,
                     mcp_config=mcp_config,
                     previous_response_id=previous_response_id,
                 )
@@ -615,6 +627,44 @@ class AgentRuntime:
         return any(
             tool.strip().startswith("appointment_")
             for tool in mcp_config.allowed_tools
+        )
+
+    def _mcp_contact_context_available(self, mcp_config: McpRemoteConfig | None) -> bool:
+        if mcp_config is None or not mcp_config.enabled:
+            return False
+
+        return any(tool.strip() == "contact_context" for tool in mcp_config.allowed_tools)
+
+    async def _resolve_contact_context(
+        self,
+        payload: AgentRequest,
+        routing: RoutingContext,
+        backend_context: CommercialContext | None,
+        conversation_id: str | None,
+        mcp_config: McpRemoteConfig | None,
+    ) -> dict[str, Any] | None:
+        if self.external_tool_client is None:
+            return None
+
+        if not self._mcp_contact_context_available(mcp_config):
+            return None
+
+        if not self._mcp_agenda_tools_available(mcp_config):
+            return None
+
+        tenant_slug = backend_context.tenant.slug if backend_context is not None else None
+        last_messages = payload.conversation.last_messages if isinstance(payload.conversation.last_messages, list) else []
+
+        return await self.external_tool_client.fetch_contact_context(
+            routing.tenant_id,
+            tenant_slug,
+            payload.channel_type,
+            routing.external_channel_id or payload.external_channel_id,
+            payload.contact,
+            conversation_id,
+            last_messages,
+            payload.message.text or "",
+            self._raw_event_field(payload.raw_event, "whatsapp_message_id", "whatsappMessageId", "message_id", "id"),
         )
 
     def _log_mcp_config(self, tenant_id: str, mcp_config: McpRemoteConfig | None) -> None:

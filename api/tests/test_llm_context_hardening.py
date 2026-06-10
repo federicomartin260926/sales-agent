@@ -164,48 +164,50 @@ def build_backend_context_with_timezone(timezone: str) -> CommercialContext:
     )
 
 
-def build_backend_context_with_crm_timezone(crm_timezone: str, sa_timezone: str) -> CommercialContext:
-    tenant = BackendTenant.model_validate(
-        {
-            "id": "tenant-1",
-            "name": "Negocio Demo",
-            "slug": "negocio-demo",
-            "businessContext": "Contexto estable del negocio",
-            "tone": "cercano",
-            "salesPolicy": {"positioning": "Mensaje"},
-            "isActive": True,
-            "timezone": sa_timezone,
-        }
-    )
-    entry_point = BackendEntryPoint.model_validate(
-        {
-            "id": "entrypoint-1",
-            "code": "demo",
-            "name": "Entrada Demo",
-            "description": "Descripcion del entrypoint",
-            "initial_message": "Hola",
-            "crm_branch_ref": "branch-1",
-            "is_active": True,
-        }
-    )
-
-    return CommercialContext(
-        tenant=tenant,
-        crm_context={"timezone": crm_timezone, "timezone_source": "crm_branch"},
-        products=[],
-        product_selection={
-            "selection_source": "explicit_product_id",
-            "candidate_count": 1,
-            "needs_service_clarification": False,
-            "fallback_to_mcp_allowed": False,
-            "reason": "explicit product requested",
+def build_contact_context(timezone: str, timezone_source: str = "contact_context", needs_branch_selection: bool = False) -> dict[str, object]:
+    return {
+        "available": True,
+        "configured": True,
+        "provider": "n8n_webhook",
+        "ok": True,
+        "found": True,
+        "error_code": None,
+        "data": {
+            "source": "contact_context",
+            "summary": "Contexto externo resuelto",
+            "timezone": timezone,
+            "timezone_source": timezone_source,
+            "needs_branch_selection": needs_branch_selection,
+            "branch": {
+                "id": "branch-1",
+                "name": "Centro Demo",
+            },
+            "selected_branch": {
+                "id": "branch-1",
+                "name": "Centro Demo",
+            },
+            "branches": [
+                {
+                    "id": "branch-1",
+                    "name": "Centro Demo",
+                },
+                {
+                    "id": "branch-2",
+                    "name": "Centro Norte",
+                },
+            ],
+            "contact": {
+                "name": "Ana García",
+                "phone": "+34600000000",
+                "status": "lead",
+            },
+            "flags": {
+                "needs_human": False,
+                "do_not_contact": False,
+                "existing_customer": True,
+            },
         },
-        playbooks=[],
-        entry_point=entry_point,
-        sales_runtime=BackendSalesRuntime(),
-        selected_product=None,
-        selected_playbook=None,
-    )
+    }
 
 
 def test_prompt_builder_limits_history_and_keeps_summary_before_messages():
@@ -384,9 +386,9 @@ def test_prompt_builder_includes_contact_context_guidance_only_when_available():
     )
 
     assert "Si entre las herramientas autorizadas está contact_context" not in system_prompt_without_contact
-    assert "lead o customer existente" not in system_prompt_without_contact
     assert "Si entre las herramientas autorizadas está contact_context" in system_prompt_with_contact
-    assert "lead o customer existente" in system_prompt_with_contact
+    assert "primera herramienta obligatoria" in system_prompt_with_contact
+    assert "needs_branch_selection=true" in system_prompt_with_contact
     assert "Si contact_context no devuelve contexto suficiente" in system_prompt_with_contact
 
 
@@ -579,7 +581,7 @@ def test_prompt_builder_uses_business_timezone_when_context_provides_it(monkeypa
     assert "Usa temporal_context.timezone como referencia local del negocio o sucursal." in system_prompt
 
 
-def test_prompt_builder_uses_crm_timezone_over_sa_timezone(monkeypatch):
+def test_prompt_builder_prefers_contact_context_timezone_over_sa_timezone(monkeypatch):
     payload = AgentRequest(
         tenant_id="tenant-1",
         message="Tengo citas programadas para mayo?",
@@ -591,41 +593,58 @@ def test_prompt_builder_uses_crm_timezone_over_sa_timezone(monkeypatch):
     monkeypatch.setattr(LLMPromptBuilder, "_current_business_time", lambda self, timezone_name: fixed_now)
 
     builder = LLMPromptBuilder(settings=Settings())
-    backend_context = build_backend_context_with_crm_timezone("Atlantic/Canary", "Europe/Madrid")
-    assert builder._resolve_business_timezone(backend_context) == "Atlantic/Canary"
+    backend_context = build_backend_context_with_timezone("Europe/Madrid")
+    contact_context = build_contact_context("Atlantic/Canary")
+    assert builder._resolve_business_timezone(backend_context, builder._external_context_payload(contact_context)) == "Atlantic/Canary"
 
-    _, user_prompt = builder.build(payload, None, backend_context, None, None)
+    _, user_prompt = builder.build(payload, None, backend_context, contact_context, None)
     parsed = json.loads(user_prompt)
 
     assert parsed["temporal_context"]["timezone"] == "Atlantic/Canary"
-    assert parsed["temporal_context"]["timezone_source"] == "crm_branch"
+    assert parsed["temporal_context"]["timezone_source"] == "contact_context"
     assert parsed["temporal_context"]["current_datetime"] == "2026-05-12T13:30:00+01:00"
     assert parsed["temporal_context"]["current_date"] == "2026-05-12"
+    assert parsed["contact_context"]["timezone"] == "Atlantic/Canary"
+    assert parsed["contact_context"]["timezone_source"] == "contact_context"
 
 
-def test_prompt_builder_uses_crm_tenant_timezone_source_when_available(monkeypatch):
+def test_prompt_builder_guides_contact_context_before_agenda_and_branch_selection(monkeypatch):
     payload = AgentRequest(
         tenant_id="tenant-1",
-        message="Quiero disponibilidad",
+        message="Buenas tardes. Dime disponibilidad de María para láser cuerpo entero para mañana por la tarde. Gracias.",
         contact=Contact(phone="+34600000000"),
         conversation={"last_messages": []},
     )
 
-    fixed_now = datetime(2026, 5, 12, 13, 30, 0, tzinfo=ZoneInfo("Atlantic/Canary"))
+    fixed_now = datetime(2026, 6, 9, 19, 22, 0, tzinfo=ZoneInfo("Europe/Madrid"))
     monkeypatch.setattr(LLMPromptBuilder, "_current_business_time", lambda self, timezone_name: fixed_now)
 
-    builder = LLMPromptBuilder(settings=Settings())
-    backend_context = build_backend_context_with_crm_timezone("Atlantic/Canary", "Europe/Madrid")
-    backend_context.crm_context["timezone_source"] = "crm_tenant"
+    backend_context = build_backend_context_with_timezone("Europe/Madrid")
+    contact_context = build_contact_context("Atlantic/Canary", needs_branch_selection=True)
+    mcp_config = McpRemoteConfig(
+        enabled=True,
+        server_label="tenant_main_mcp",
+        server_url="https://mcp.example.test",
+        allowed_tools=["contact_context", "services_search", "appointment_availability"],
+        require_approval="never",
+    )
 
-    _, user_prompt = builder.build(payload, None, backend_context, None, None)
+    system_prompt, user_prompt = LLMPromptBuilder(settings=Settings()).build(payload, None, backend_context, contact_context, mcp_config)
     parsed = json.loads(user_prompt)
 
+    assert "primera herramienta obligatoria" in system_prompt
+    assert "timezone, sucursal y contexto externo del contacto" in system_prompt
+    assert "needs_branch_selection=true" in system_prompt
+    assert "pregunta la sucursal antes de continuar" in system_prompt
+    assert "No inventes branch_id, branch, service_id, owner_id ni timezone" in system_prompt
     assert parsed["temporal_context"]["timezone"] == "Atlantic/Canary"
-    assert parsed["temporal_context"]["timezone_source"] == "crm_tenant"
+    assert parsed["contact_context"]["needs_branch_selection"] is True
+    assert parsed["contact_context"]["branch"]["id"] == "branch-1"
+    assert parsed["contact_context"]["branches"][1]["name"] == "Centro Norte"
+    assert parsed["contact_context"]["selected_branch"]["name"] == "Centro Demo"
 
 
-def test_prompt_builder_ignores_invalid_crm_timezone_and_uses_sa_timezone(monkeypatch):
+def test_prompt_builder_ignores_invalid_contact_context_timezone_and_uses_sa_timezone(monkeypatch):
     payload = AgentRequest(
         tenant_id="tenant-1",
         message="Tengo citas programadas para mayo?",
@@ -637,11 +656,12 @@ def test_prompt_builder_ignores_invalid_crm_timezone_and_uses_sa_timezone(monkey
     monkeypatch.setattr(LLMPromptBuilder, "_current_business_time", lambda self, timezone_name: fixed_now)
 
     builder = LLMPromptBuilder(settings=Settings())
-    backend_context = build_backend_context_with_crm_timezone("Invalid/Zone", "America/New_York")
+    backend_context = build_backend_context_with_timezone("America/New_York")
+    contact_context = build_contact_context("Invalid/Zone", timezone_source="contact_context")
 
-    assert builder._resolve_business_timezone(backend_context) == "America/New_York"
+    assert builder._resolve_business_timezone(backend_context, contact_context) == "America/New_York"
 
-    _, user_prompt = builder.build(payload, None, backend_context, None, None)
+    _, user_prompt = builder.build(payload, None, backend_context, contact_context, None)
     parsed = json.loads(user_prompt)
 
     assert parsed["temporal_context"]["timezone"] == "America/New_York"

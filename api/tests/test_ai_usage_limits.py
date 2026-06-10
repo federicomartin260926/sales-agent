@@ -176,7 +176,6 @@ def build_context() -> CommercialContext:
 def configure_environment() -> None:
     os.environ["SALES_AGENT_BEARER_TOKEN"] = "test-internal-token"
     os.environ["BACKEND_BASE_URL"] = ""
-    os.environ["CRM_BASE_URL"] = ""
     os.environ["OPENAI_AUDIO_TRANSCRIPTION_COST_PER_MINUTE_EUR"] = "0.02"
     os.environ["AUDIO_TRANSCRIPTION_ENABLED"] = "1"
     os.environ["AUDIO_LLM_FOLLOWUP_RESERVE_COST_EUR"] = "0.01"

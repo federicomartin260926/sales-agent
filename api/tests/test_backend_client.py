@@ -31,50 +31,6 @@ def transport_handler(request: httpx.Request) -> httpx.Response:
             },
         )
 
-    if request.method == "GET" and request.url.path == "/api/integrations/contact-context":
-        phone = request.url.params.get("phone")
-        assert phone in {None, "", "+34999999999"}
-        assert request.headers.get("Authorization") == "Bearer mcp-token"
-        return httpx.Response(
-            200,
-            json={
-                "contact": {
-                    "phone": phone or "+34999999999",
-                    "name": "Ana García" if phone else None,
-                    "email": "ana@example.com" if phone else None,
-                },
-                "lead": {
-                    "id": "lead-1",
-                    "status": "qualified",
-                    "stage": "proposal",
-                    "ownerName": "Carlos",
-                    "score": 82,
-                    "source": "whatsapp",
-                    "isQualified": True,
-                    "lastInteractionAt": "2026-04-28T11:30:00+00:00",
-                    "lastTouchSummary": "Pidió información de precios.",
-                },
-                "opportunity": {
-                    "id": "opp-1",
-                    "pipeline": "default",
-                    "stage": "proposal",
-                    "nextAction": "schedule_demo",
-                    "amount": 1200,
-                },
-                "flags": {
-                    "alreadyContacted": True,
-                    "askedForPrice": True,
-                    "askedForDemo": False,
-                    "needsHuman": False,
-                },
-                "recentNotes": ["Le interesa automatizar WhatsApp."],
-                "lastActivityAt": "2026-04-28T11:30:00+00:00",
-                "summary": "Lead cualificado y en propuesta.",
-                "timezone": "Atlantic/Canary",
-                "timezone_source": "crm_tenant",
-            },
-        )
-
     if request.method == "GET" and request.url.path == "/api/internal/commercial-context":
         assert request.headers.get("Authorization") == "Bearer test-internal-token"
         assert request.url.params.get("tenant_id") == "tenant-1"
@@ -422,81 +378,10 @@ async def test_backend_client_loads_tenant_context():
 
 
 @pytest.mark.asyncio
-async def test_backend_client_merges_crm_timezone_into_context():
-    client = BackendClient(
-        Settings(
-            BACKEND_BASE_URL="http://sales-agent-nginx",
-            SALES_AGENT_BEARER_TOKEN="test-internal-token",
-            CRM_BASE_URL="http://crm.example",
-        ),
-        transport=httpx.MockTransport(transport_handler),
-    )
-
-    context = await client.fetch_tenant_context("tenant-1", customer_phone="+34999999999")
-
-    assert context is not None
-    assert context.crm_context is not None
-    assert context.timezone == "Atlantic/Canary"
-    assert context.timezone_source == "crm_tenant"
-    assert context.crm_context["timezone"] == "Atlantic/Canary"
-    assert context.crm_context["timezone_source"] == "crm_tenant"
-
-
-@pytest.mark.asyncio
-async def test_backend_client_merges_crm_timezone_without_customer_phone_into_context():
-    client = BackendClient(
-        Settings(
-            BACKEND_BASE_URL="http://sales-agent-nginx",
-            SALES_AGENT_BEARER_TOKEN="test-internal-token",
-            CRM_BASE_URL="http://crm.example",
-        ),
-        transport=httpx.MockTransport(transport_handler),
-    )
-
-    context = await client.fetch_tenant_context("tenant-1")
-
-    assert context is not None
-    assert context.crm_context is not None
-    assert context.timezone == "Atlantic/Canary"
-    assert context.timezone_source == "crm_tenant"
-    assert context.crm_context["timezone"] == "Atlantic/Canary"
-    assert context.crm_context["timezone_source"] == "crm_tenant"
-
-
-@pytest.mark.asyncio
-async def test_backend_client_uses_tenant_scoped_crm_token_when_available():
-    seen: dict[str, str | None] = {}
+async def test_backend_client_does_not_call_crm_contact_context_during_tenant_context_lookup():
+    crm_calls: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        if request.method == "GET" and request.url.path == "/api/internal/mcp/tenant-1/config":
-            return httpx.Response(
-                200,
-                json={
-                    "enabled": True,
-                    "server_label": "tenant_main_mcp",
-                    "server_url": "https://mcp.example.test",
-                    "auth_type": "bearer",
-                    "bearer_token": "mcp-token",
-                    "downstream_authorization_token": "mcp-token",
-                    "downstream_authorization_configured": True,
-                    "allowed_tools": ["search_properties"],
-                    "require_approval": "never",
-                    "timeout_seconds": 15,
-                    "config": {},
-                },
-            )
-
-        if request.method == "GET" and request.url.path == "/api/integrations/contact-context":
-            seen["authorization"] = request.headers.get("Authorization")
-            return httpx.Response(
-                200,
-                json={
-                    "contact": None,
-                    "timezone": "Atlantic/Canary",
-                    "timezone_source": "crm_tenant",
-                },
-            )
-
         if request.method == "GET" and request.url.path == "/api/internal/commercial-context":
             return httpx.Response(
                 200,
@@ -528,8 +413,6 @@ async def test_backend_client_uses_tenant_scoped_crm_token_when_available():
         Settings(
             BACKEND_BASE_URL="http://sales-agent-nginx",
             SALES_AGENT_BEARER_TOKEN="test-internal-token",
-            CRM_BASE_URL="http://crm.example",
-            CRM_INTEGRATIONS_BEARER_TOKEN="global-fallback",
         ),
         transport=httpx.MockTransport(handler),
     )
@@ -537,69 +420,26 @@ async def test_backend_client_uses_tenant_scoped_crm_token_when_available():
     context = await client.fetch_tenant_context("tenant-1")
 
     assert context is not None
-    assert context.timezone == "Atlantic/Canary"
-    assert context.timezone_source == "crm_tenant"
-    assert seen["authorization"] == "Bearer mcp-token"
+    assert context.crm_context is None
+    assert context.timezone is None
+    assert context.timezone_source is None
+    assert crm_calls == []
 
 
 @pytest.mark.asyncio
-async def test_backend_client_merges_crm_timezone_when_contact_is_null():
-    def handler(request: httpx.Request) -> httpx.Response:
-        if request.method == "GET" and request.url.path == "/api/integrations/contact-context":
-            assert request.url.params.get("phone") in {None, ""}
-            return httpx.Response(
-                200,
-                json={
-                    "contact": None,
-                    "timezone": "Atlantic/Canary",
-                    "timezone_source": "crm_tenant",
-                },
-            )
-
-        if request.method == "GET" and request.url.path == "/api/internal/commercial-context":
-            return httpx.Response(
-                200,
-                json={
-                    "tenant": {
-                        "id": "tenant-1",
-                        "name": "Negocio Demo",
-                        "slug": "negocio-demo",
-                        "businessContext": "Contexto comercial",
-                        "tone": "consultivo",
-                        "salesPolicy": {},
-                        "isActive": True,
-                        "createdAt": "2026-04-28T12:00:00+00:00",
-                    },
-                    "sales_runtime": {
-                        "has_product_context": False,
-                        "has_playbook_context": False,
-                        "has_entry_point_context": False,
-                        "handoff_enabled": False,
-                        "booking_enabled": False,
-                        "rag_enabled": False,
-                    },
-                },
-            )
-
-        return httpx.Response(404, json={"detail": "not found"})
-
+async def test_backend_client_loads_external_tool_configuration_for_contact_context():
     client = BackendClient(
-        Settings(
-            BACKEND_BASE_URL="http://sales-agent-nginx",
-            SALES_AGENT_BEARER_TOKEN="test-internal-token",
-            CRM_BASE_URL="http://crm.example",
-        ),
-        transport=httpx.MockTransport(handler),
+        Settings(BACKEND_BASE_URL="http://sales-agent-nginx", SALES_AGENT_BEARER_TOKEN="test-internal-token"),
+        transport=httpx.MockTransport(transport_handler),
     )
 
-    context = await client.fetch_tenant_context("tenant-1")
+    tool = await client.get_external_tool("tenant-1", "contact_context")
 
-    assert context is not None
-    assert context.crm_context is not None
-    assert context.timezone == "Atlantic/Canary"
-    assert context.timezone_source == "crm_tenant"
-    assert context.crm_context["timezone"] == "Atlantic/Canary"
-    assert context.crm_context["timezone_source"] == "crm_tenant"
+    assert tool is not None
+    assert tool.provider == "crm_http"
+    assert tool.auth_type == "bearer"
+    assert tool.bearer_token == "tenant-scoped-token"
+    assert tool.downstream_authorization_token == "tenant-scoped-token"
 
 
 @pytest.mark.asyncio

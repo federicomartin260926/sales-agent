@@ -52,7 +52,13 @@ class LLMPromptBuilder:
             "cuando hables de servicios, agenda, reservas, precios, preferencias, objeciones o handoff. "
             "No arrastres detalles antiguos irrelevantes."
         )
-        current_timezone, current_timezone_source = self._resolve_business_timezone_details(backend_context)
+        contact_context_payload = self._external_context_payload(contact_context)
+        recent_contact_context_payload = self._recent_contact_context_payload(payload.conversation.context_messages)
+        effective_contact_context_payload = contact_context_payload or recent_contact_context_payload
+        current_timezone, current_timezone_source = self._resolve_business_timezone_details(
+            backend_context,
+            effective_contact_context_payload,
+        )
         current_business_time = self._current_business_time(current_timezone)
         current_date = current_business_time.date().isoformat()
         appointment_context = self._appointment_context_payload(payload.conversation.context_messages)
@@ -133,8 +139,11 @@ class LLMPromptBuilder:
             )
             if "contact_context" in allowed_tools_list:
                 system_prompt += (
-                    " Si entre las herramientas autorizadas está contact_context y tienes teléfono o email, "
-                    "úsala primero para saber si hablas con un lead o customer existente antes de asumir que el contacto es nuevo. "
+                    " Si entre las herramientas autorizadas está contact_context, úsala como primera herramienta obligatoria para cualquier flujo de agenda o disponibilidad cuando no haya un contact_context reciente ya resuelto. "
+                    "contact_context es la fuente obligatoria de timezone, sucursal y contexto externo del contacto. "
+                    "Si contact_context devuelve needs_branch_selection=true, pregunta la sucursal antes de continuar con services_search o appointment_availability. "
+                    "Si contact_context devuelve timezone, úsala exactamente para interpretar hoy, mañana, esta tarde, por la tarde y cualquier franja relativa. "
+                    "No inventes branch_id, branch, service_id, owner_id ni timezone. "
                     "Si contact_context no devuelve contexto suficiente, sigue cualificando de forma natural según la política comercial del negocio."
                 )
             handoff_strategy = self._handoff_strategy(backend_context)
@@ -190,6 +199,7 @@ class LLMPromptBuilder:
             "entry_point": self._entry_point_payload(backend_context),
             "sales_runtime": self._sales_runtime_payload(backend_context),
             "routing": self._routing_payload(routing),
+            **({"contact_context": effective_contact_context_payload} if effective_contact_context_payload is not None else {}),
             "contact": {
                 "phone": self.context_helper.sanitize_text(payload.contact.phone, max_chars=64),
                 "name": self.context_helper.sanitize_text(payload.contact.name, max_chars=255),
@@ -213,13 +223,17 @@ class LLMPromptBuilder:
     def _current_business_time(self, timezone_name: str) -> datetime:
         return datetime.now(ZoneInfo(timezone_name))
 
-    def _resolve_business_timezone(self, backend_context: CommercialContext | None) -> str:
-        return self._resolve_business_timezone_details(backend_context)[0]
+    def _resolve_business_timezone(self, backend_context: CommercialContext | None, contact_context: dict[str, Any] | None = None) -> str:
+        return self._resolve_business_timezone_details(backend_context, contact_context)[0]
 
-    def _resolve_business_timezone_details(self, backend_context: CommercialContext | None) -> tuple[str, str | None]:
+    def _resolve_business_timezone_details(
+        self,
+        backend_context: CommercialContext | None,
+        contact_context: dict[str, Any] | None = None,
+    ) -> tuple[str, str | None]:
         # TODO: cuando el backend exponga un timezone estable por tenant o sucursal,
         # este helper lo leerá primero y seguirá cayendo al fallback configurado como respaldo.
-        for source_label, source in self._business_timezone_sources(backend_context):
+        for source_label, source in self._business_timezone_sources(backend_context, contact_context):
             candidate, candidate_source = self._first_timezone_candidate(source)
             if candidate is None:
                 continue
@@ -261,14 +275,18 @@ class LLMPromptBuilder:
 
         return True
 
-    def _business_timezone_sources(self, backend_context: CommercialContext | None) -> list[tuple[str, Any]]:
-        if backend_context is None:
-            return []
-
+    def _business_timezone_sources(
+        self,
+        backend_context: CommercialContext | None,
+        contact_context: dict[str, Any] | None = None,
+    ) -> list[tuple[str, Any]]:
         sources: list[tuple[str, Any]] = []
-        crm_context = getattr(backend_context, "crm_context", None)
-        if crm_context is not None:
-            sources.append(("crm_context", crm_context))
+
+        if contact_context is not None:
+            sources.append(("contact_context", contact_context))
+
+        if backend_context is None:
+            return sources
 
         sources.append(("backend_context", backend_context))
         for attribute in ("tenant", "entry_point", "sales_runtime"):
@@ -510,6 +528,16 @@ class LLMPromptBuilder:
             {
                 "source": self._clean_string(data.get("source")),
                 "summary": self._clean_string(data.get("summary")),
+                "timezone": self._clean_string(data.get("timezone")),
+                "timezone_source": self._clean_string(data.get("timezone_source") or data.get("timezoneSource")),
+                "needs_branch_selection": bool(data.get("needs_branch_selection", data.get("needsBranchSelection", False))),
+                "branch": self._clean_branch(data.get("branch")),
+                "selected_branch": self._clean_branch(
+                    data.get("selected_branch") if "selected_branch" in data else data.get("selectedBranch")
+                ),
+                "branches": self.context_helper.sanitize_jsonish(
+                    data.get("branches"), max_depth=5, max_items=5
+                ),
                 "contact": self._clean_contact(contact),
                 "recent_activity": self._clean_list_of_dicts(recent_activity, max_items=5),
                 "open_opportunities": self._clean_list_of_dicts(open_opportunities, max_items=5),
@@ -574,6 +602,71 @@ class LLMPromptBuilder:
 
         return None
 
+    def _recent_contact_context_payload(self, context_messages: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+        if not isinstance(context_messages, list):
+            return None
+
+        for message in reversed(context_messages):
+            if not isinstance(message, dict):
+                continue
+
+            metadata = message.get("metadata")
+            if not isinstance(metadata, dict):
+                continue
+
+            data_to_save = metadata.get("data_to_save")
+            if not isinstance(data_to_save, dict):
+                data_to_save = metadata
+
+            if not isinstance(data_to_save, dict):
+                continue
+
+            timezone = self._clean_string(data_to_save.get("external_context_timezone"))
+            timezone_source = self._clean_string(data_to_save.get("external_context_timezone_source"))
+            branch = data_to_save.get("external_context_branch")
+            selected_branch = data_to_save.get("external_context_selected_branch")
+
+            if timezone is None and timezone_source is None and branch is None and selected_branch is None:
+                continue
+
+            payload: dict[str, Any] = {
+                "available": bool(data_to_save.get("external_context_available", False)),
+                "configured": bool(data_to_save.get("external_context_configured", False)),
+                "provider": self._clean_string(data_to_save.get("external_context_provider")),
+                "ok": bool(data_to_save.get("external_context_available", False)),
+                "found": bool(data_to_save.get("external_context_available", False)),
+                "error_code": self._clean_string(data_to_save.get("external_context_error_code")),
+                "data": {
+                    "source": self._clean_string(data_to_save.get("external_context_source")),
+                    "summary": self._clean_string(data_to_save.get("external_context_summary")),
+                    "timezone": timezone,
+                    "timezone_source": timezone_source,
+                    "needs_branch_selection": bool(data_to_save.get("external_context_needs_branch_selection", False)),
+                    "branch": self._clean_branch(branch),
+                    "selected_branch": self._clean_branch(selected_branch),
+                    "contact": {
+                        "name": self._clean_string(data_to_save.get("external_contact_name")),
+                        "phone": self._clean_string(data_to_save.get("external_contact_phone")),
+                        "status": self._clean_string(data_to_save.get("external_contact_status")),
+                        "stage": self._clean_string(data_to_save.get("external_contact_stage")),
+                        "owner": self._clean_string(data_to_save.get("external_contact_owner")),
+                    },
+                    "flags": {
+                        "needs_human": bool(data_to_save.get("external_flag_needs_human", False)),
+                        "do_not_contact": bool(data_to_save.get("external_flag_do_not_contact", False)),
+                        "existing_customer": bool(data_to_save.get("external_flag_existing_customer", False)),
+                    },
+                },
+            }
+
+            branches = data_to_save.get("external_context_branches")
+            if branches is not None:
+                payload["data"]["branches"] = self.context_helper.sanitize_jsonish(branches, max_depth=5, max_items=5)
+
+            return self._external_context_payload(payload)
+
+        return None
+
     def _clean_contact(self, contact: Any) -> dict[str, Any] | None:
         if not isinstance(contact, dict):
             return None
@@ -587,6 +680,13 @@ class LLMPromptBuilder:
                 cleaned[key] = value
 
         return cleaned or None
+
+    def _clean_branch(self, branch: Any) -> dict[str, Any] | str | None:
+        if isinstance(branch, dict):
+            cleaned = self.context_helper.sanitize_jsonish(branch, max_depth=4, max_items=8, max_string_chars=255)
+            return cleaned if isinstance(cleaned, dict) and cleaned != {} else None
+
+        return self._clean_string(branch)
 
     def _clean_flags(self, flags: Any) -> dict[str, bool]:
         if not isinstance(flags, dict):

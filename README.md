@@ -11,11 +11,9 @@
 El proyecto está preparado para integrarse más adelante con:
 
 - `wa-gateway-api` para WhatsApp Cloud
-- el CRM existente
 - `ai-stack` para RAG
 - OpenAI u Ollama para LLM
 - routing explícito de WhatsApp mediante entrypoints y atribución por click
-- importación de productos/servicios desde CRM usando `integration_key`
 - selector de negocio activo en la UI backend para trabajar dentro de una ficha tenant concreta
 
 ## Documentación común
@@ -26,7 +24,6 @@ El proyecto está preparado para integrarse más adelante con:
 - [Tokens](../platform/tokens.md)
 - [Handoff humano](docs/handoff.md)
 - [MCP - n8n contact context](docs/mcp-n8n-contact-context.md)
-- [Contrato de CRM](docs/crm-contract.md)
 
 ## Arquitectura
 
@@ -104,8 +101,7 @@ make prod-up
 La imagen de nginx de producción copia `backend/public` en build; no usa bind mounts de código.
 
 En producción, `sales-agent-nginx` se publica por la red Docker compartida `proxy` y el runtime de la API usa `Authorization: Bearer ...` para llamadas de otros servicios.
-Cuando `sales-agent` y `crm` conviven en el mismo VPS, la API lee el CRM por la red interna compartida `commercial_internal` usando `CRM_BASE_URL=http://crm-nginx`.
-El contexto de integraciones del CRM usa primero la autorización downstream tenant-scoped configurada en el MCP del tenant. `CRM_INTEGRATIONS_BEARER_TOKEN` queda sólo como fallback local/dev para `GET /api/integrations/contact-context` cuando no hay token tenant-scoped.
+El contexto externo del runtime se obtiene vía `ExternalTool` y MCP/n8n, no con una conexión directa a CRM.
 
 ## Puertos y rutas
 
@@ -164,20 +160,20 @@ Todas las rutas `/api/internal/*` usan `Authorization: Bearer <SALES_AGENT_BEARE
 
 ## CRM integrado
 
-`sales-agent` puede funcionar con o sin CRM conectado.
+`sales-agent` puede funcionar con o sin contexto externo conectado.
 
-- Sin CRM, el runtime sigue operando con contexto local, playbooks y herramientas disponibles.
-- Con CRM, el agente conversa, cualifica y entrega contexto estructurado, pero no decide internamente si crear lead, cliente, nota o cambiar estados.
-- El CRM es el sistema maestro de contactos, agenda, notas, actividades y pipeline.
-- El flujo recomendado es `WhatsApp -> wa-gateway-api -> Sales Agent -> LLM/MCP -> mcp-gateway -> n8n -> CRM Integration API`.
+- Sin contexto externo, el runtime sigue operando con contexto local, playbooks y herramientas disponibles.
+- Con `contact_context` vía ExternalTool/MCP/n8n, el agente conversa, cualifica y entrega contexto estructurado sin acoplarse al sistema aguas abajo.
+- El sistema externo detrás de `contact_context` es responsable de contactos, agenda, notas, actividades y pipeline.
+- El flujo recomendado es `WhatsApp -> wa-gateway-api -> Sales Agent -> LLM/MCP -> mcp-gateway -> n8n -> sistema externo`.
 
 Handoff humano:
 
 - la política funcional vive en `Tenant`
 - el handoff explícito rule-based añade un enlace `wa.me` hacia un número humano configurado por tenant y no llama al LLM
 - el handoff inferido por LLM usa la tool MCP `handoff_request` cuando está disponible en MCP y está en `allowed_tools`
-- cuando `contact_context` está disponible y hay teléfono o email, el runtime la consulta primero para no tratar como nuevo a un lead o customer ya existente
-- cuando `crm_contact_submit` está disponible, el LLM la usa para enviar contexto comercial útil al flujo CRM/n8n; el CRM decide si el resultado acaba en lead, customer, note o activity
+- cuando `contact_context` está disponible, el runtime la consulta primero para no tratar como nuevo a un lead o customer ya existente
+- cuando `crm_contact_submit` está disponible, el LLM la usa para enviar contexto comercial útil al flujo externo; el sistema externo decide si el resultado acaba en lead, customer, note o activity
 - el webhook operativo de n8n se mantiene como `ExternalTool` separado como alternativa/fallback
 - el token downstream CRM/MCP sigue siendo tenant-scoped y cifrado; no se reutiliza como auth del webhook de handoff
 - la autorización downstream para `crm_contact_submit` requiere scope `contacts:write`

@@ -8,7 +8,6 @@ import httpx
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from app.config import Settings
-from app.services.crm_client import CRMClient
 from app.schemas.llm import (
     BackendAiUsageEventPayload,
     BackendAiUsagePolicy,
@@ -418,38 +417,14 @@ class BackendClient:
         entry_point = BackendEntryPoint.model_validate(entry_point_payload) if entry_point_payload is not None else None
         sales_runtime = BackendSalesRuntime.model_validate(sales_runtime_payload) if sales_runtime_payload is not None else BackendSalesRuntime()
 
-        crm_context_fetch_attempted = False
-        if crm_context_payload is None:
-            crm_context_fetch_attempted = True
-            crm_context_payload = await self._fetch_crm_context(tenant_id, customer_phone)
-        crm_context_fetched = crm_context_payload is not None
-        if crm_context_payload is not None:
-            crm_timezone = self._first_timezone_candidate(crm_context_payload)[0]
-            crm_timezone_source = self._first_string_value(
-                crm_context_payload,
-                ("timezone_source", "timezoneSource", "business_timezone_source", "businessTimezoneSource"),
-            )
-            if isinstance(crm_timezone, str) and crm_timezone.strip() != "":
-                timezone = crm_timezone.strip()
-                timezone_source = crm_timezone_source or "crm_tenant"
-
         if timezone is None:
             timezone = self._first_timezone_candidate(tenant_model)[0] if tenant_model is not None else None
         if timezone_source is None and timezone is not None:
             timezone_source = "sa_tenant" if getattr(tenant_model, "timezone", None) else None
 
-        has_customer_phone = isinstance(customer_phone, str) and customer_phone.strip() != ""
         logger.info(
-            "Commercial context timezone resolution tenant_id=%s has_customer_phone=%s crm_context_fetch_attempted=%s crm_context_fetched=%s crm_timezone=%s crm_timezone_source=%s commercial_context.timezone=%s commercial_context.timezone_source=%s",
+            "Commercial context timezone resolution tenant_id=%s commercial_context.timezone=%s commercial_context.timezone_source=%s",
             tenant_id,
-            has_customer_phone,
-            crm_context_fetch_attempted,
-            crm_context_fetched,
-            self._first_timezone_candidate(crm_context_payload)[0] if crm_context_payload is not None else None,
-            self._first_string_value(
-                crm_context_payload,
-                ("timezone_source", "timezoneSource", "business_timezone_source", "businessTimezoneSource"),
-            ) if crm_context_payload is not None else None,
             timezone,
             timezone_source,
         )
@@ -460,8 +435,8 @@ class BackendClient:
         return CommercialContext(
             tenant=tenant_model,
             crm_context=crm_context_payload,
-            crm_context_fetch_attempted=crm_context_fetch_attempted,
-            crm_context_fetched=crm_context_fetched,
+            crm_context_fetch_attempted=False,
+            crm_context_fetched=crm_context_payload is not None,
             timezone=timezone,
             timezone_source=timezone_source,
             products=products,
@@ -533,36 +508,6 @@ class BackendClient:
             return None
 
         return payload if isinstance(payload, dict) else None
-
-    async def _fetch_crm_context(self, tenant_id: str, customer_phone: str | None) -> dict[str, Any] | None:
-        crm_base_url = self.settings.crm_base_url.strip().rstrip("/")
-        if crm_base_url == "":
-            return None
-
-        try:
-            crm_client = CRMClient(self.settings, transport=self.transport)
-            authorization_token = await self._resolve_crm_authorization_token(tenant_id)
-            crm_context = await crm_client.fetch_contact_context(customer_phone, authorization_token=authorization_token)
-        except Exception:
-            return None
-
-        if crm_context is None:
-            return None
-
-        return crm_context.model_dump(exclude_none=True)
-
-    async def _resolve_crm_authorization_token(self, tenant_id: str) -> str | None:
-        if tenant_id.strip() == "":
-            return None
-
-        mcp_config = await self.fetch_mcp_config(tenant_id)
-        token = None
-        if mcp_config is not None:
-            token = mcp_config.downstream_authorization_token or mcp_config.bearer_token
-        if not self._is_non_empty_string(token):
-            return None
-
-        return token.strip()
 
     async def resolve_whatsapp_phone(self, phone_number_id: str) -> dict[str, Any] | None:
         base_url = self.settings.backend_base_url.strip().rstrip("/")

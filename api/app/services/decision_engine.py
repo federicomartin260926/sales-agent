@@ -987,6 +987,29 @@ class DecisionEngine:
             for key in ("needs_human", "do_not_contact", "existing_customer"):
                 data[f"external_flag_{key}"] = bool(flags.get(key, False))
 
+        timezone = payload_data.get("timezone")
+        if isinstance(timezone, str) and timezone.strip() != "":
+            data["external_context_timezone"] = timezone.strip()
+
+        timezone_source = payload_data.get("timezone_source")
+        if isinstance(timezone_source, str) and timezone_source.strip() != "":
+            data["external_context_timezone_source"] = timezone_source.strip()
+
+        if isinstance(payload_data.get("needs_branch_selection"), bool):
+            data["external_context_needs_branch_selection"] = bool(payload_data.get("needs_branch_selection", False))
+
+        branch = payload_data.get("branch")
+        if isinstance(branch, (dict, str)):
+            data["external_context_branch"] = branch
+
+        selected_branch = payload_data.get("selected_branch")
+        if isinstance(selected_branch, (dict, str)):
+            data["external_context_selected_branch"] = selected_branch
+
+        branches = payload_data.get("branches")
+        if isinstance(branches, list):
+            data["external_context_branches"] = branches
+
         self._apply_agenda_context_data(data, contact_context)
 
     def _apply_agenda_context_data(self, data: dict, contact_context: dict | None) -> None:

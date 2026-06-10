@@ -145,7 +145,6 @@ def build_context() -> CommercialContext:
 def configure_environment() -> None:
     os.environ["SALES_AGENT_BEARER_TOKEN"] = "test-internal-token"
     os.environ["BACKEND_BASE_URL"] = ""
-    os.environ["CRM_BASE_URL"] = ""
     get_settings.cache_clear()
 
 

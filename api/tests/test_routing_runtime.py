@@ -1783,6 +1783,135 @@ async def test_runtime_does_not_short_circuit_agenda_booking_when_appointment_av
 
 
 @pytest.mark.asyncio
+async def test_runtime_fetches_contact_context_before_agenda_turns(monkeypatch: pytest.MonkeyPatch):
+    backend = RecordingBackendClient(
+        ref_context=BackendRoutingEntryPointUtmContext.model_validate(
+            {
+                "entry_point_utm_id": "utm-1",
+                "ref": "abc123",
+                "entry_point_id": "entrypoint-1",
+                "entry_point_code": "crm-demo",
+                "tenant_id": "tenant-1",
+                "tenant_slug": "negocio-demo",
+                "product_id": "product-1",
+                "product_name": "CRM Automation",
+                "playbook_id": "playbook-1",
+                "crm_branch_ref": "branch-1",
+                "utm_source": "google",
+                "utm_medium": "cpc",
+                "utm_campaign": "crm_pymes",
+                "status": "matched",
+            }
+        ),
+        tenant_context=build_context(),
+        mcp_config=McpRemoteConfig(
+            enabled=True,
+            server_label="tech_investments_mcp",
+            server_url="https://mcp.tech-investments.net/mcp",
+            allowed_tools=["contact_context", "appointment_availability"],
+            timeout_seconds=15,
+        ),
+    )
+
+    class RecordingExternalToolClient:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        async def fetch_contact_context(
+            self,
+            tenant_id,
+            tenant_slug,
+            channel,
+            external_channel_id,
+            contact,
+            conversation_id,
+            last_messages,
+            message_text,
+            external_message_id,
+        ):
+            self.calls.append(
+                {
+                    "tenant_id": tenant_id,
+                    "tenant_slug": tenant_slug,
+                    "channel": channel,
+                    "external_channel_id": external_channel_id,
+                    "conversation_id": conversation_id,
+                    "message_text": message_text,
+                    "external_message_id": external_message_id,
+                }
+            )
+            return {
+                "available": True,
+                "configured": True,
+                "tool_type": "contact_context",
+                "provider": "n8n_webhook",
+                "ok": True,
+                "found": True,
+                "latency_ms": 12,
+                "error_code": None,
+                "data": {
+                    "source": "contact_context",
+                    "timezone": "Atlantic/Canary",
+                    "timezone_source": "contact_context",
+                    "needs_branch_selection": False,
+                    "contact": {
+                        "name": "Ana García",
+                        "phone": "+34999999999",
+                    },
+                },
+            }
+
+    external_tool_client = RecordingExternalToolClient()
+    seen: dict[str, object] = {}
+
+    async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None, previous_response_id=None):
+        assert contact_context is not None
+        assert contact_context["data"]["timezone"] == "Atlantic/Canary"
+        assert contact_context["data"]["timezone_source"] == "contact_context"
+        return AgentResponse(
+            reply="Sí, hay huecos.",
+            intent="agenda",
+            score=0.93,
+            action="answer_question",
+            needs_human=False,
+            data_to_save={
+                "topic": "agenda",
+                "mcp_enabled": True,
+                "mcp_server_label": "tech_investments_mcp",
+                "mcp_tool_traces": [],
+            },
+            provider="openai",
+            model="gpt-4.1-mini",
+            latency_ms=88,
+        )
+
+    monkeypatch.setattr(DecisionEngine, "decide", fake_decide)
+
+    runtime = AgentRuntime(
+        backend,
+        RuntimeRoutingResolver(backend),
+        DecisionEngine(backend),
+        external_tool_client=external_tool_client,
+    )  # type: ignore[arg-type]
+    payload = AgentRequest(
+        tenant_id="tenant-ignored",
+        entrypoint_ref="abc123",
+        message="Buenas tardes. Dime disponibilidad de María para láser cuerpo entero para mañana por la tarde. Gracias.",
+        contact=Contact(phone="+34999999999"),
+    )
+
+    response = await runtime.respond(payload)
+
+    assert response.provider == "openai"
+    assert response.model == "gpt-4.1-mini"
+    assert response.action == "answer_question"
+    assert external_tool_client.calls[0]["tenant_id"] == "tenant-1"
+    assert external_tool_client.calls[0]["tenant_slug"] == "negocio-demo"
+    assert external_tool_client.calls[0]["external_channel_id"] is None
+    assert external_tool_client.calls[0]["message_text"] == "Buenas tardes. Dime disponibilidad de María para láser cuerpo entero para mañana por la tarde. Gracias."
+
+
+@pytest.mark.asyncio
 async def test_runtime_does_not_affirm_failed_appointment_confirmation(monkeypatch: pytest.MonkeyPatch):
     backend = RecordingBackendClient(
         ref_context=BackendRoutingEntryPointUtmContext.model_validate(
