@@ -6,19 +6,20 @@ from app.services.crm_client import CRMClient
 
 
 def crm_transport_handler(request: httpx.Request) -> httpx.Response:
-    if request.method != "GET" or request.url.path != "/api/agent/contact-context":
+    if request.method != "GET" or request.url.path != "/api/integrations/contact-context":
         return httpx.Response(404, json={"detail": "not found"})
 
-    if request.url.params.get("phone") != "+34999999999":
+    phone = request.url.params.get("phone")
+    if phone not in {None, "", "+34999999999"}:
         return httpx.Response(404, json={"detail": "not found"})
 
     return httpx.Response(
         200,
         json={
             "contact": {
-                "phone": "+34999999999",
-                "name": "Ana García",
-                "email": "ana@example.com",
+                "phone": phone or "+34999999999",
+                "name": "Ana García" if phone else None,
+                "email": "ana@example.com" if phone else None,
             },
             "lead": {
                 "id": "lead-1",
@@ -86,6 +87,50 @@ async def test_crm_client_returns_none_for_missing_contact():
     assert context is None
 
 
+@pytest.mark.asyncio
+async def test_crm_client_loads_tenant_contact_context_without_phone():
+    client = CRMClient(
+        Settings(CRM_BASE_URL="http://crm.example"),
+        transport=httpx.MockTransport(crm_transport_handler),
+    )
+
+    context = await client.fetch_contact_context()
+
+    assert context is not None
+    assert context.contact.phone == "+34999999999"
+    assert context.timezone == "Atlantic/Canary"
+    assert context.timezone_source == "crm_tenant"
+
+
+@pytest.mark.asyncio
+async def test_crm_client_loads_context_when_contact_is_null():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method != "GET" or request.url.path != "/api/integrations/contact-context":
+            return httpx.Response(404, json={"detail": "not found"})
+
+        assert request.url.params.get("phone") == "+34999999999"
+        return httpx.Response(
+            200,
+            json={
+                "contact": None,
+                "timezone": "Atlantic/Canary",
+                "timezone_source": "crm_tenant",
+            },
+        )
+
+    client = CRMClient(
+        Settings(CRM_BASE_URL="http://crm.example"),
+        transport=httpx.MockTransport(handler),
+    )
+
+    context = await client.fetch_contact_context("+34999999999")
+
+    assert context is not None
+    assert context.contact.phone == "+34999999999"
+    assert context.timezone == "Atlantic/Canary"
+    assert context.timezone_source == "crm_tenant"
+
+
 def test_crm_update_payload_shape():
     client = CRMClient(Settings(CRM_BASE_URL="http://crm.example"))
 
@@ -105,3 +150,96 @@ def test_crm_update_payload_shape():
     assert payload.tenant_id == "tenant-1"
     assert payload.needs_human is False
     assert payload.data_to_save["topic"] == "pricing"
+
+
+@pytest.mark.asyncio
+async def test_crm_client_sends_integration_bearer_token():
+    seen: dict[str, str | None] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method != "GET" or request.url.path != "/api/integrations/contact-context":
+            return httpx.Response(404, json={"detail": "not found"})
+
+        seen["authorization"] = request.headers.get("Authorization")
+        return httpx.Response(
+            200,
+            json={
+                "contact": {
+                    "phone": "+34999999999",
+                },
+                "timezone": "Atlantic/Canary",
+                "timezone_source": "crm_tenant",
+            },
+        )
+
+    client = CRMClient(
+        Settings(CRM_BASE_URL="http://crm.example", CRM_INTEGRATIONS_BEARER_TOKEN="crm-bearer-token"),
+        transport=httpx.MockTransport(handler),
+    )
+
+    context = await client.fetch_contact_context()
+
+    assert context is not None
+    assert seen["authorization"] == "Bearer crm-bearer-token"
+
+
+@pytest.mark.asyncio
+async def test_crm_client_prefers_explicit_authorization_token_over_env():
+    seen: dict[str, str | None] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method != "GET" or request.url.path != "/api/integrations/contact-context":
+            return httpx.Response(404, json={"detail": "not found"})
+
+        seen["authorization"] = request.headers.get("Authorization")
+        return httpx.Response(
+            200,
+            json={
+                "contact": {
+                    "phone": "+34999999999",
+                },
+                "timezone": "Atlantic/Canary",
+                "timezone_source": "crm_tenant",
+            },
+        )
+
+    client = CRMClient(
+        Settings(CRM_BASE_URL="http://crm.example", CRM_INTEGRATIONS_BEARER_TOKEN="global-fallback"),
+        transport=httpx.MockTransport(handler),
+    )
+
+    context = await client.fetch_contact_context("+34999999999", authorization_token="tenant-scoped-token")
+
+    assert context is not None
+    assert seen["authorization"] == "Bearer tenant-scoped-token"
+
+
+@pytest.mark.asyncio
+async def test_crm_client_uses_env_fallback_when_explicit_authorization_missing():
+    seen: dict[str, str | None] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method != "GET" or request.url.path != "/api/integrations/contact-context":
+            return httpx.Response(404, json={"detail": "not found"})
+
+        seen["authorization"] = request.headers.get("Authorization")
+        return httpx.Response(
+            200,
+            json={
+                "contact": {
+                    "phone": "+34999999999",
+                },
+                "timezone": "Atlantic/Canary",
+                "timezone_source": "crm_tenant",
+            },
+        )
+
+    client = CRMClient(
+        Settings(CRM_BASE_URL="http://crm.example", CRM_INTEGRATIONS_BEARER_TOKEN="global-fallback"),
+        transport=httpx.MockTransport(handler),
+    )
+
+    context = await client.fetch_contact_context("+34999999999")
+
+    assert context is not None
+    assert seen["authorization"] == "Bearer global-fallback"

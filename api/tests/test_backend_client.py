@@ -8,15 +8,40 @@ from app.services.backend_client import BackendAiUsageEventPayload, BackendClien
 
 
 def transport_handler(request: httpx.Request) -> httpx.Response:
-    if request.method == "GET" and request.url.path == "/api/agent/contact-context":
-        assert request.url.params.get("phone") == "+34999999999"
+    if request.method == "GET" and request.url.path == "/api/internal/external-tools/tenant-1/contact_context":
+        assert request.headers.get("Authorization") == "Bearer test-internal-token"
+        return httpx.Response(
+            200,
+            json={
+                "ok": True,
+                "tool": {
+                    "id": "tool-1",
+                    "tenant_id": "tenant-1",
+                    "name": "CRM contact context",
+                    "type": "contact_context",
+                    "provider": "crm_http",
+                    "webhook_url": None,
+                    "auth_type": "bearer",
+                    "bearer_token": "tenant-scoped-token",
+                    "downstream_authorization_token": "tenant-scoped-token",
+                    "downstream_authorization_configured": True,
+                    "timeout_seconds": 5,
+                    "config": {},
+                },
+            },
+        )
+
+    if request.method == "GET" and request.url.path == "/api/integrations/contact-context":
+        phone = request.url.params.get("phone")
+        assert phone in {None, "", "+34999999999"}
+        assert request.headers.get("Authorization") == "Bearer mcp-token"
         return httpx.Response(
             200,
             json={
                 "contact": {
-                    "phone": "+34999999999",
-                    "name": "Ana García",
-                    "email": "ana@example.com",
+                    "phone": phone or "+34999999999",
+                    "name": "Ana García" if phone else None,
+                    "email": "ana@example.com" if phone else None,
                 },
                 "lead": {
                     "id": "lead-1",
@@ -408,6 +433,166 @@ async def test_backend_client_merges_crm_timezone_into_context():
     )
 
     context = await client.fetch_tenant_context("tenant-1", customer_phone="+34999999999")
+
+    assert context is not None
+    assert context.crm_context is not None
+    assert context.timezone == "Atlantic/Canary"
+    assert context.timezone_source == "crm_tenant"
+    assert context.crm_context["timezone"] == "Atlantic/Canary"
+    assert context.crm_context["timezone_source"] == "crm_tenant"
+
+
+@pytest.mark.asyncio
+async def test_backend_client_merges_crm_timezone_without_customer_phone_into_context():
+    client = BackendClient(
+        Settings(
+            BACKEND_BASE_URL="http://sales-agent-nginx",
+            SALES_AGENT_BEARER_TOKEN="test-internal-token",
+            CRM_BASE_URL="http://crm.example",
+        ),
+        transport=httpx.MockTransport(transport_handler),
+    )
+
+    context = await client.fetch_tenant_context("tenant-1")
+
+    assert context is not None
+    assert context.crm_context is not None
+    assert context.timezone == "Atlantic/Canary"
+    assert context.timezone_source == "crm_tenant"
+    assert context.crm_context["timezone"] == "Atlantic/Canary"
+    assert context.crm_context["timezone_source"] == "crm_tenant"
+
+
+@pytest.mark.asyncio
+async def test_backend_client_uses_tenant_scoped_crm_token_when_available():
+    seen: dict[str, str | None] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/api/internal/mcp/tenant-1/config":
+            return httpx.Response(
+                200,
+                json={
+                    "enabled": True,
+                    "server_label": "tenant_main_mcp",
+                    "server_url": "https://mcp.example.test",
+                    "auth_type": "bearer",
+                    "bearer_token": "mcp-token",
+                    "downstream_authorization_token": "mcp-token",
+                    "downstream_authorization_configured": True,
+                    "allowed_tools": ["search_properties"],
+                    "require_approval": "never",
+                    "timeout_seconds": 15,
+                    "config": {},
+                },
+            )
+
+        if request.method == "GET" and request.url.path == "/api/integrations/contact-context":
+            seen["authorization"] = request.headers.get("Authorization")
+            return httpx.Response(
+                200,
+                json={
+                    "contact": None,
+                    "timezone": "Atlantic/Canary",
+                    "timezone_source": "crm_tenant",
+                },
+            )
+
+        if request.method == "GET" and request.url.path == "/api/internal/commercial-context":
+            return httpx.Response(
+                200,
+                json={
+                    "tenant": {
+                        "id": "tenant-1",
+                        "name": "Negocio Demo",
+                        "slug": "negocio-demo",
+                        "businessContext": "Contexto comercial",
+                        "tone": "consultivo",
+                        "salesPolicy": {},
+                        "isActive": True,
+                        "createdAt": "2026-04-28T12:00:00+00:00",
+                    },
+                    "sales_runtime": {
+                        "has_product_context": False,
+                        "has_playbook_context": False,
+                        "has_entry_point_context": False,
+                        "handoff_enabled": False,
+                        "booking_enabled": False,
+                        "rag_enabled": False,
+                    },
+                },
+            )
+
+        return httpx.Response(404, json={"detail": "not found"})
+
+    client = BackendClient(
+        Settings(
+            BACKEND_BASE_URL="http://sales-agent-nginx",
+            SALES_AGENT_BEARER_TOKEN="test-internal-token",
+            CRM_BASE_URL="http://crm.example",
+            CRM_INTEGRATIONS_BEARER_TOKEN="global-fallback",
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+
+    context = await client.fetch_tenant_context("tenant-1")
+
+    assert context is not None
+    assert context.timezone == "Atlantic/Canary"
+    assert context.timezone_source == "crm_tenant"
+    assert seen["authorization"] == "Bearer mcp-token"
+
+
+@pytest.mark.asyncio
+async def test_backend_client_merges_crm_timezone_when_contact_is_null():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET" and request.url.path == "/api/integrations/contact-context":
+            assert request.url.params.get("phone") in {None, ""}
+            return httpx.Response(
+                200,
+                json={
+                    "contact": None,
+                    "timezone": "Atlantic/Canary",
+                    "timezone_source": "crm_tenant",
+                },
+            )
+
+        if request.method == "GET" and request.url.path == "/api/internal/commercial-context":
+            return httpx.Response(
+                200,
+                json={
+                    "tenant": {
+                        "id": "tenant-1",
+                        "name": "Negocio Demo",
+                        "slug": "negocio-demo",
+                        "businessContext": "Contexto comercial",
+                        "tone": "consultivo",
+                        "salesPolicy": {},
+                        "isActive": True,
+                        "createdAt": "2026-04-28T12:00:00+00:00",
+                    },
+                    "sales_runtime": {
+                        "has_product_context": False,
+                        "has_playbook_context": False,
+                        "has_entry_point_context": False,
+                        "handoff_enabled": False,
+                        "booking_enabled": False,
+                        "rag_enabled": False,
+                    },
+                },
+            )
+
+        return httpx.Response(404, json={"detail": "not found"})
+
+    client = BackendClient(
+        Settings(
+            BACKEND_BASE_URL="http://sales-agent-nginx",
+            SALES_AGENT_BEARER_TOKEN="test-internal-token",
+            CRM_BASE_URL="http://crm.example",
+        ),
+        transport=httpx.MockTransport(handler),
+    )
+
+    context = await client.fetch_tenant_context("tenant-1")
 
     assert context is not None
     assert context.crm_context is not None

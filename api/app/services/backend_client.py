@@ -177,6 +177,14 @@ class BackendExternalTool(BaseModel):
     webhook_url: str | None = Field(default=None, validation_alias=AliasChoices("webhookUrl", "webhook_url"))
     auth_type: str | None = Field(default=None, validation_alias=AliasChoices("authType", "auth_type"))
     bearer_token: str | None = Field(default=None, validation_alias=AliasChoices("bearerToken", "bearer_token"))
+    downstream_authorization_token: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("downstreamAuthorizationToken", "downstream_authorization_token"),
+    )
+    downstream_authorization_configured: bool | None = Field(
+        default=None,
+        validation_alias=AliasChoices("downstreamAuthorizationConfigured", "downstream_authorization_configured"),
+    )
     timeout_seconds: int = Field(default=5, validation_alias=AliasChoices("timeoutSeconds", "timeout_seconds"))
     config: dict[str, Any] = Field(default_factory=dict)
 
@@ -305,6 +313,8 @@ class CommercialContext(BaseModel):
 
     tenant: BackendTenant
     crm_context: dict[str, Any] | None = Field(default=None, validation_alias=AliasChoices("crmContext", "crm_context"))
+    crm_context_fetch_attempted: bool = False
+    crm_context_fetched: bool = False
     timezone: str | None = Field(default=None, validation_alias=AliasChoices("timezone", "business_timezone"))
     timezone_source: str | None = Field(default=None, validation_alias=AliasChoices("timezoneSource", "timezone_source"))
     products: list[BackendProduct] = Field(default_factory=list)
@@ -408,8 +418,11 @@ class BackendClient:
         entry_point = BackendEntryPoint.model_validate(entry_point_payload) if entry_point_payload is not None else None
         sales_runtime = BackendSalesRuntime.model_validate(sales_runtime_payload) if sales_runtime_payload is not None else BackendSalesRuntime()
 
-        if crm_context_payload is None and customer_phone is not None and customer_phone.strip() != "":
-            crm_context_payload = await self._fetch_crm_context(customer_phone)
+        crm_context_fetch_attempted = False
+        if crm_context_payload is None:
+            crm_context_fetch_attempted = True
+            crm_context_payload = await self._fetch_crm_context(tenant_id, customer_phone)
+        crm_context_fetched = crm_context_payload is not None
         if crm_context_payload is not None:
             crm_timezone = self._first_timezone_candidate(crm_context_payload)[0]
             crm_timezone_source = self._first_string_value(
@@ -425,12 +438,30 @@ class BackendClient:
         if timezone_source is None and timezone is not None:
             timezone_source = "sa_tenant" if getattr(tenant_model, "timezone", None) else None
 
+        has_customer_phone = isinstance(customer_phone, str) and customer_phone.strip() != ""
+        logger.info(
+            "Commercial context timezone resolution tenant_id=%s has_customer_phone=%s crm_context_fetch_attempted=%s crm_context_fetched=%s crm_timezone=%s crm_timezone_source=%s commercial_context.timezone=%s commercial_context.timezone_source=%s",
+            tenant_id,
+            has_customer_phone,
+            crm_context_fetch_attempted,
+            crm_context_fetched,
+            self._first_timezone_candidate(crm_context_payload)[0] if crm_context_payload is not None else None,
+            self._first_string_value(
+                crm_context_payload,
+                ("timezone_source", "timezoneSource", "business_timezone_source", "businessTimezoneSource"),
+            ) if crm_context_payload is not None else None,
+            timezone,
+            timezone_source,
+        )
+
         products = product_candidates
         playbooks = [selected_playbook] if selected_playbook is not None else []
 
         return CommercialContext(
             tenant=tenant_model,
             crm_context=crm_context_payload,
+            crm_context_fetch_attempted=crm_context_fetch_attempted,
+            crm_context_fetched=crm_context_fetched,
             timezone=timezone,
             timezone_source=timezone_source,
             products=products,
@@ -503,14 +534,15 @@ class BackendClient:
 
         return payload if isinstance(payload, dict) else None
 
-    async def _fetch_crm_context(self, customer_phone: str) -> dict[str, Any] | None:
+    async def _fetch_crm_context(self, tenant_id: str, customer_phone: str | None) -> dict[str, Any] | None:
         crm_base_url = self.settings.crm_base_url.strip().rstrip("/")
         if crm_base_url == "":
             return None
 
         try:
             crm_client = CRMClient(self.settings, transport=self.transport)
-            crm_context = await crm_client.fetch_contact_context(customer_phone)
+            authorization_token = await self._resolve_crm_authorization_token(tenant_id)
+            crm_context = await crm_client.fetch_contact_context(customer_phone, authorization_token=authorization_token)
         except Exception:
             return None
 
@@ -518,6 +550,19 @@ class BackendClient:
             return None
 
         return crm_context.model_dump(exclude_none=True)
+
+    async def _resolve_crm_authorization_token(self, tenant_id: str) -> str | None:
+        if tenant_id.strip() == "":
+            return None
+
+        mcp_config = await self.fetch_mcp_config(tenant_id)
+        token = None
+        if mcp_config is not None:
+            token = mcp_config.downstream_authorization_token or mcp_config.bearer_token
+        if not self._is_non_empty_string(token):
+            return None
+
+        return token.strip()
 
     async def resolve_whatsapp_phone(self, phone_number_id: str) -> dict[str, Any] | None:
         base_url = self.settings.backend_base_url.strip().rstrip("/")

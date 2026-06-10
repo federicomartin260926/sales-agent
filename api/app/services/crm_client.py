@@ -86,16 +86,37 @@ class CRMClient:
         self.settings = settings
         self.transport = transport
 
-    async def fetch_contact_context(self, phone: str) -> CRMContactContext | None:
+    def _auth_headers(self, authorization_token: str | None = None) -> dict[str, str]:
+        bearer_token = authorization_token.strip() if isinstance(authorization_token, str) else ""
+        if bearer_token == "":
+            bearer_token = self.settings.crm_integrations_bearer_token.strip()
+        if bearer_token == "":
+            return {}
+
+        return {
+            "Authorization": f"Bearer {bearer_token}",
+        }
+
+    async def fetch_contact_context(
+        self,
+        phone: str | None = None,
+        authorization_token: str | None = None,
+    ) -> CRMContactContext | None:
         base_url = self.settings.crm_base_url.strip().rstrip("/")
         if base_url == "":
             return None
 
         timeout = httpx.Timeout(5.0, connect=2.0)
-        params = {"phone": phone.strip()}
+        params: dict[str, str] = {}
+        if phone is not None and phone.strip() != "":
+            params["phone"] = phone.strip()
         try:
             async with httpx.AsyncClient(base_url=base_url, timeout=timeout, transport=self.transport) as client:
-                response = await client.get("/api/agent/contact-context", params=params)
+                response = await client.get(
+                    "/api/integrations/contact-context",
+                    params=params,
+                    headers=self._auth_headers(authorization_token),
+                )
                 if response.status_code == httpx.codes.NOT_FOUND:
                     return None
 
@@ -107,7 +128,7 @@ class CRMClient:
         if not isinstance(payload, dict):
             return None
 
-        return self._parse_context(payload)
+        return self._parse_context(payload, phone=phone)
 
     def build_update_payload(
         self,
@@ -133,15 +154,23 @@ class CRMClient:
             data_to_save=data_to_save or {},
         )
 
-    def _parse_context(self, payload: dict[str, Any]) -> CRMContactContext:
+    def _parse_context(self, payload: dict[str, Any], phone: str | None = None) -> CRMContactContext:
         contact_payload = payload.get("contact") if isinstance(payload.get("contact"), dict) else {}
         lead_payload = payload.get("lead") if isinstance(payload.get("lead"), dict) else None
         opportunity_payload = payload.get("opportunity") if isinstance(payload.get("opportunity"), dict) else None
         flags_payload = payload.get("flags") if isinstance(payload.get("flags"), dict) else {}
         recent_notes = payload.get("recentNotes")
 
-        if not isinstance(contact_payload, dict) or "phone" not in contact_payload:
-            raise ValueError("CRM contact context must include a contact.phone field")
+        if not isinstance(contact_payload, dict):
+            contact_payload = {}
+
+        contact_phone = contact_payload.get("phone")
+        if not isinstance(contact_phone, str) or contact_phone.strip() == "":
+            fallback_phone = phone.strip() if isinstance(phone, str) and phone.strip() != "" else ""
+            contact_payload = {
+                **contact_payload,
+                "phone": fallback_phone,
+            }
 
         return CRMContactContext(
             contact=CRMContact.model_validate(contact_payload or {}),
