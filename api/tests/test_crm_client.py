@@ -47,6 +47,8 @@ def crm_transport_handler(request: httpx.Request) -> httpx.Response:
             "recentNotes": ["Le interesa automatizar WhatsApp."],
             "lastActivityAt": "2026-04-28T11:30:00+00:00",
             "summary": "Lead cualificado y en propuesta.",
+            "timezone": "Atlantic/Canary",
+            "timezone_source": "crm_tenant",
         },
     )
 
@@ -68,6 +70,8 @@ async def test_crm_client_loads_contact_context():
     assert context.opportunity.next_action == "schedule_demo"
     assert context.flags.asked_for_price is True
     assert context.summary == "Lead cualificado y en propuesta."
+    assert context.timezone == "Atlantic/Canary"
+    assert context.timezone_source == "crm_tenant"
 
 
 @pytest.mark.asyncio

@@ -8,6 +8,7 @@ import httpx
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from app.config import Settings
+from app.services.crm_client import CRMClient
 from app.schemas.llm import (
     BackendAiUsageEventPayload,
     BackendAiUsagePolicy,
@@ -281,6 +282,7 @@ class BackendConversationSummaryMessage(BaseModel):
     action: str | None = None
     needs_human: bool = Field(default=False, validation_alias=AliasChoices("needs_human", "needsHuman"))
     created_at: str | None = Field(default=None, validation_alias=AliasChoices("created_at", "createdAt"))
+    metadata: dict[str, Any] | None = None
 
 
 class BackendConversationSummaryContext(BaseModel):
@@ -406,6 +408,23 @@ class BackendClient:
         entry_point = BackendEntryPoint.model_validate(entry_point_payload) if entry_point_payload is not None else None
         sales_runtime = BackendSalesRuntime.model_validate(sales_runtime_payload) if sales_runtime_payload is not None else BackendSalesRuntime()
 
+        if crm_context_payload is None and customer_phone is not None and customer_phone.strip() != "":
+            crm_context_payload = await self._fetch_crm_context(customer_phone)
+        if crm_context_payload is not None:
+            crm_timezone = self._first_timezone_candidate(crm_context_payload)[0]
+            crm_timezone_source = self._first_string_value(
+                crm_context_payload,
+                ("timezone_source", "timezoneSource", "business_timezone_source", "businessTimezoneSource"),
+            )
+            if isinstance(crm_timezone, str) and crm_timezone.strip() != "":
+                timezone = crm_timezone.strip()
+                timezone_source = crm_timezone_source or "crm_tenant"
+
+        if timezone is None:
+            timezone = self._first_timezone_candidate(tenant_model)[0] if tenant_model is not None else None
+        if timezone_source is None and timezone is not None:
+            timezone_source = "sa_tenant" if getattr(tenant_model, "timezone", None) else None
+
         products = product_candidates
         playbooks = [selected_playbook] if selected_playbook is not None else []
 
@@ -483,6 +502,22 @@ class BackendClient:
             return None
 
         return payload if isinstance(payload, dict) else None
+
+    async def _fetch_crm_context(self, customer_phone: str) -> dict[str, Any] | None:
+        crm_base_url = self.settings.crm_base_url.strip().rstrip("/")
+        if crm_base_url == "":
+            return None
+
+        try:
+            crm_client = CRMClient(self.settings, transport=self.transport)
+            crm_context = await crm_client.fetch_contact_context(customer_phone)
+        except Exception:
+            return None
+
+        if crm_context is None:
+            return None
+
+        return crm_context.model_dump(exclude_none=True)
 
     async def resolve_whatsapp_phone(self, phone_number_id: str) -> dict[str, Any] | None:
         base_url = self.settings.backend_base_url.strip().rstrip("/")
@@ -916,6 +951,53 @@ class BackendClient:
 
     def _is_non_empty_string(self, value: Any) -> bool:
         return isinstance(value, str) and value.strip() != ""
+
+    def _first_timezone_candidate(self, source: Any) -> tuple[str | None, str | None]:
+        field_names = (
+            "branch_timezone",
+            "timezone",
+            "time_zone",
+            "business_timezone",
+            "businessTimezone",
+            "local_timezone",
+            "localTimezone",
+            "tenant_timezone",
+            "tenantTimezone",
+            "crm_timezone",
+            "crmTimezone",
+            "effective_timezone",
+            "effectiveTimezone",
+        )
+        source_name_fields = ("timezone_source", "timezoneSource", "business_timezone_source", "businessTimezoneSource")
+
+        if isinstance(source, dict):
+            for field_name in field_names:
+                value = source.get(field_name)
+                if isinstance(value, str) and value.strip() != "":
+                    return value.strip(), self._first_string_value(source, source_name_fields)
+            return None, None
+
+        for field_name in field_names:
+            value = getattr(source, field_name, None)
+            if isinstance(value, str) and value.strip() != "":
+                return value.strip(), self._first_string_value(source, source_name_fields)
+
+        return None, None
+
+    def _first_string_value(self, source: Any, field_names: tuple[str, ...]) -> str | None:
+        if isinstance(source, dict):
+            for field_name in field_names:
+                value = source.get(field_name)
+                if isinstance(value, str) and value.strip() != "":
+                    return value.strip()
+            return None
+
+        for field_name in field_names:
+            value = getattr(source, field_name, None)
+            if isinstance(value, str) and value.strip() != "":
+                return value.strip()
+
+        return None
 
     def _filter_active_products(self, payload: Any, tenant_id: str) -> list[BackendProduct]:
         if not isinstance(payload, list):

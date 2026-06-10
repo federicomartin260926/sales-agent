@@ -8,6 +8,48 @@ from app.services.backend_client import BackendAiUsageEventPayload, BackendClien
 
 
 def transport_handler(request: httpx.Request) -> httpx.Response:
+    if request.method == "GET" and request.url.path == "/api/agent/contact-context":
+        assert request.url.params.get("phone") == "+34999999999"
+        return httpx.Response(
+            200,
+            json={
+                "contact": {
+                    "phone": "+34999999999",
+                    "name": "Ana García",
+                    "email": "ana@example.com",
+                },
+                "lead": {
+                    "id": "lead-1",
+                    "status": "qualified",
+                    "stage": "proposal",
+                    "ownerName": "Carlos",
+                    "score": 82,
+                    "source": "whatsapp",
+                    "isQualified": True,
+                    "lastInteractionAt": "2026-04-28T11:30:00+00:00",
+                    "lastTouchSummary": "Pidió información de precios.",
+                },
+                "opportunity": {
+                    "id": "opp-1",
+                    "pipeline": "default",
+                    "stage": "proposal",
+                    "nextAction": "schedule_demo",
+                    "amount": 1200,
+                },
+                "flags": {
+                    "alreadyContacted": True,
+                    "askedForPrice": True,
+                    "askedForDemo": False,
+                    "needsHuman": False,
+                },
+                "recentNotes": ["Le interesa automatizar WhatsApp."],
+                "lastActivityAt": "2026-04-28T11:30:00+00:00",
+                "summary": "Lead cualificado y en propuesta.",
+                "timezone": "Atlantic/Canary",
+                "timezone_source": "crm_tenant",
+            },
+        )
+
     if request.method == "GET" and request.url.path == "/api/internal/commercial-context":
         assert request.headers.get("Authorization") == "Bearer test-internal-token"
         assert request.url.params.get("tenant_id") == "tenant-1"
@@ -225,6 +267,23 @@ def transport_handler(request: httpx.Request) -> httpx.Response:
                         "intent": "agenda",
                         "action": "offer_booking",
                         "needs_human": False,
+                        "metadata": {
+                            "mcp_tool_traces": [
+                                {
+                                    "tool_name": "appointment_availability",
+                                    "output": {
+                                        "available": True,
+                                        "slots": [
+                                            {
+                                                "start": "2026-06-11T17:35:00+02:00",
+                                                "owner_id": "owner-uuid",
+                                                "owner_ref": "owner-ref-1",
+                                            }
+                                        ],
+                                    },
+                                }
+                            ]
+                        },
                         "created_at": "2026-06-08T09:58:00+00:00",
                     }
                 ],
@@ -335,6 +394,27 @@ async def test_backend_client_loads_tenant_context():
     assert context.selected_product.external_reference == "pack-starter"
     assert context.product_selection == {}
     assert context.context_summary() == "Negocio Demo · WhatsApp Automation · Guía comercial WhatsApp · Entrada Demo"
+
+
+@pytest.mark.asyncio
+async def test_backend_client_merges_crm_timezone_into_context():
+    client = BackendClient(
+        Settings(
+            BACKEND_BASE_URL="http://sales-agent-nginx",
+            SALES_AGENT_BEARER_TOKEN="test-internal-token",
+            CRM_BASE_URL="http://crm.example",
+        ),
+        transport=httpx.MockTransport(transport_handler),
+    )
+
+    context = await client.fetch_tenant_context("tenant-1", customer_phone="+34999999999")
+
+    assert context is not None
+    assert context.crm_context is not None
+    assert context.timezone == "Atlantic/Canary"
+    assert context.timezone_source == "crm_tenant"
+    assert context.crm_context["timezone"] == "Atlantic/Canary"
+    assert context.crm_context["timezone_source"] == "crm_tenant"
 
 
 @pytest.mark.asyncio
@@ -551,6 +631,7 @@ async def test_backend_client_loads_and_updates_conversation_summary():
     assert context is not None
     assert context.conversation["summary"] == "Resumen previo"
     assert context.messages[0].body == "Quiero depilación láser"
+    assert context.messages[0].metadata["mcp_tool_traces"][0]["output"]["slots"][0]["owner_id"] == "owner-uuid"
 
     result = await client.update_conversation_summary("conversation-1", "Cliente interesado en depilación láser.")
     assert result is not None

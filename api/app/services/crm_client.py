@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import httpx
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from app.config import Settings
 
@@ -60,6 +60,8 @@ class CRMContactContext(BaseModel):
     recent_notes: list[str] = Field(default_factory=list, alias="recentNotes")
     last_activity_at: str | None = Field(default=None, alias="lastActivityAt")
     summary: str | None = None
+    timezone: str | None = Field(default=None, validation_alias=AliasChoices("timezone", "business_timezone"))
+    timezone_source: str | None = Field(default=None, validation_alias=AliasChoices("timezoneSource", "timezone_source"))
 
     def has_active_opportunity(self) -> bool:
         return self.opportunity is not None and self.opportunity.stage not in {None, "", "closed_lost", "closed_won"}
@@ -149,4 +151,6 @@ class CRMClient:
             recent_notes=recent_notes if isinstance(recent_notes, list) else [],
             last_activity_at=payload.get("lastActivityAt"),
             summary=payload.get("summary"),
+            timezone=payload.get("timezone") if isinstance(payload.get("timezone"), str) else None,
+            timezone_source=payload.get("timezone_source") if isinstance(payload.get("timezone_source"), str) else None,
         )
