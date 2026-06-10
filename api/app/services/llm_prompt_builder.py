@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from app.config import Settings, get_settings
 from app.schemas.agent import AgentRequest
 from app.services.backend_client import CommercialContext
 from app.schemas.llm import McpRemoteConfig
@@ -13,8 +14,15 @@ from app.services.llm_context_helper import LLMContextHelper
 
 
 class LLMPromptBuilder:
-    def __init__(self, context_helper: LLMContextHelper | None = None) -> None:
+    _safety_fallback_timezone = "Europe/Madrid"
+
+    def __init__(
+        self,
+        context_helper: LLMContextHelper | None = None,
+        settings: Settings | None = None,
+    ) -> None:
         self.context_helper = context_helper or LLMContextHelper()
+        self.settings = settings or get_settings()
 
     def build(
         self,
@@ -46,12 +54,15 @@ class LLMPromptBuilder:
             "cuando hables de servicios, agenda, reservas, precios, preferencias, objeciones o handoff. "
             "No arrastres detalles antiguos irrelevantes."
         )
-        current_madrid_time = self._current_madrid_time()
-        current_timezone = getattr(current_madrid_time.tzinfo, "key", "Europe/Madrid")
-        current_date = current_madrid_time.date().isoformat()
+        current_timezone, current_timezone_source = self._resolve_business_timezone_details(backend_context)
+        current_business_time = self._current_business_time(current_timezone)
+        current_date = current_business_time.date().isoformat()
         system_prompt += (
-            f" Contexto temporal explícito: current_datetime={current_madrid_time.isoformat()}, "
-            f"current_date={current_date}, timezone={current_timezone}. Usa timezone Europe/Madrid como referencia local. "
+            f" Contexto temporal explícito: current_datetime={current_business_time.isoformat()}, "
+            f"current_date={current_date}, timezone={current_timezone}. "
+            "Usa temporal_context.timezone como referencia local del negocio o sucursal. "
+            "Si el backend no proporciona timezone específica, ya se habrá aplicado el fallback configurado por el sistema. "
+            "No inventes otra zona horaria. "
             "Las expresiones relativas como hoy, mañana, pasado mañana, esta tarde o mañana por la tarde "
             "se resuelven siempre respecto al mensaje actual y a este contexto temporal del turno, "
             "no respecto a mensajes anteriores, resúmenes históricos ni referencias temporales previas. "
@@ -102,6 +113,8 @@ class LLMPromptBuilder:
                 "el usuario pida explícitamente ver más opciones. Usa 3-5 resultados para respuestas "
                 "conversacionales normales y máximo 6 para comparativas breves. "
                 "Para appointment_availability, si el usuario pide una franja como por la tarde, mañana por la tarde o cualquier rango horario concreto, envía date_from y date_to como ISO datetime completo con timezone, no como fechas sueltas sin hora. "
+                "Si la tool de agenda acepta timezone, envíala explícitamente usando temporal_context.timezone. "
+                "No uses UTC para franjas comerciales. "
                 "Regla práctica: mañana = current_date + 1 día; pasado mañana = current_date + 2 días. "
                 "Para 'por la mañana' usa un rango aproximado de 09:00 a 14:00. "
                 "Para 'por la tarde' usa un rango aproximado de 15:00 a 20:00 o 21:00, pero nunca empieces a las 12:00 salvo que el usuario lo pida explícitamente. "
@@ -159,9 +172,10 @@ class LLMPromptBuilder:
 
         user_payload = {
             "temporal_context": {
-                "current_datetime": current_madrid_time.isoformat(),
+                "current_datetime": current_business_time.isoformat(),
                 "current_date": current_date,
                 "timezone": current_timezone,
+                **({"timezone_source": current_timezone_source} if current_timezone_source is not None else {}),
             },
             "tenant": self._tenant_payload(backend_context),
             "product": self._product_payload(backend_context),
@@ -186,8 +200,120 @@ class LLMPromptBuilder:
 
         return system_prompt, json.dumps(user_payload, ensure_ascii=False, indent=2)
 
-    def _current_madrid_time(self) -> datetime:
-        return datetime.now(ZoneInfo("Europe/Madrid"))
+    def _current_business_time(self, timezone_name: str) -> datetime:
+        return datetime.now(ZoneInfo(timezone_name))
+
+    def _resolve_business_timezone(self, backend_context: CommercialContext | None) -> str:
+        return self._resolve_business_timezone_details(backend_context)[0]
+
+    def _resolve_business_timezone_details(self, backend_context: CommercialContext | None) -> tuple[str, str | None]:
+        # TODO: cuando el backend exponga un timezone estable por tenant o sucursal,
+        # este helper lo leerá primero y seguirá cayendo al fallback configurado como respaldo.
+        for source_label, source in self._business_timezone_sources(backend_context):
+            candidate, candidate_source = self._first_timezone_candidate(source)
+            if candidate is None:
+                continue
+
+            normalized = candidate.strip()
+            if not normalized:
+                continue
+
+            if not self._is_valid_timezone(normalized):
+                continue
+
+            return normalized, candidate_source or source_label
+
+        configured_fallback = self._configured_default_business_timezone()
+        if configured_fallback is not None:
+            return configured_fallback, "settings.default_business_timezone"
+
+        return self._safety_fallback_timezone, "safety_fallback"
+
+    def _configured_default_business_timezone(self) -> str | None:
+        candidate = getattr(self.settings, "default_business_timezone", None)
+        if not isinstance(candidate, str):
+            return None
+
+        normalized = candidate.strip()
+        if not normalized:
+            return None
+
+        if not self._is_valid_timezone(normalized):
+            return None
+
+        return normalized
+
+    def _is_valid_timezone(self, timezone_name: str) -> bool:
+        try:
+            ZoneInfo(timezone_name)
+        except Exception:
+            return False
+
+        return True
+
+    def _business_timezone_sources(self, backend_context: CommercialContext | None) -> list[tuple[str, Any]]:
+        if backend_context is None:
+            return []
+
+        sources: list[tuple[str, Any]] = []
+        crm_context = getattr(backend_context, "crm_context", None)
+        if crm_context is not None:
+            sources.append(("crm_context", crm_context))
+
+        sources.append(("backend_context", backend_context))
+        for attribute in ("tenant", "entry_point", "sales_runtime"):
+            source = getattr(backend_context, attribute, None)
+            if source is not None:
+                sources.append((attribute, source))
+
+        return sources
+
+    def _first_timezone_candidate(self, source: Any) -> tuple[str | None, str | None]:
+        field_names = (
+            "branch_timezone",
+            "timezone",
+            "time_zone",
+            "business_timezone",
+            "businessTimezone",
+            "local_timezone",
+            "localTimezone",
+            "tenant_timezone",
+            "tenantTimezone",
+            "crm_timezone",
+            "crmTimezone",
+            "effective_timezone",
+            "effectiveTimezone",
+        )
+        source_name_fields = ("timezone_source", "timezoneSource", "business_timezone_source", "businessTimezoneSource")
+
+        if isinstance(source, dict):
+            for field_name in field_names:
+                value = source.get(field_name)
+                if isinstance(value, str) and value.strip():
+                    return value, self._first_string_value(source, source_name_fields)
+            return None, None
+
+        for field_name in field_names:
+            value = getattr(source, field_name, None)
+            if isinstance(value, str) and value.strip():
+                return value, self._first_string_value(source, source_name_fields)
+
+        return None, None
+
+    def _first_string_value(self, source: Any, field_names: tuple[str, ...]) -> str | None:
+        if isinstance(source, dict):
+            for field_name in field_names:
+                value = source.get(field_name)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+            return None
+
+        for field_name in field_names:
+            value = getattr(source, field_name, None)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+        return None
 
     def _handoff_strategy(self, backend_context: CommercialContext | None) -> str:
         if backend_context is None:

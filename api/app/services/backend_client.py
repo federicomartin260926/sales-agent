@@ -29,6 +29,8 @@ class BackendTenant(BaseModel):
     tone: str | None = None
     sales_policy: dict[str, Any] = Field(default_factory=dict, validation_alias=AliasChoices("salesPolicy", "sales_policy"))
     is_active: bool = Field(validation_alias=AliasChoices("isActive", "is_active"))
+    timezone: str | None = Field(default=None, validation_alias=AliasChoices("timezone", "businessTimezone", "business_timezone"))
+    timezone_source: str | None = Field(default=None, validation_alias=AliasChoices("timezoneSource", "timezone_source"))
     whatsapp_phone_number_id: str | None = Field(default=None, validation_alias=AliasChoices("whatsappPhoneNumberId", "whatsapp_phone_number_id"))
     whatsapp_public_phone: str | None = Field(default=None, validation_alias=AliasChoices("whatsappPublicPhone", "whatsapp_public_phone"))
     handoff: dict[str, Any] = Field(default_factory=dict, validation_alias=AliasChoices("handoff"))
@@ -122,6 +124,8 @@ class BackendEntryPoint(BaseModel):
     description: str | None = None
     initial_message: str | None = None
     crm_branch_ref: str | None = None
+    timezone: str | None = Field(default=None, validation_alias=AliasChoices("timezone", "businessTimezone", "business_timezone"))
+    timezone_source: str | None = Field(default=None, validation_alias=AliasChoices("timezoneSource", "timezone_source"))
     is_active: bool = Field(validation_alias=AliasChoices("is_active", "isActive"))
 
 
@@ -134,6 +138,8 @@ class BackendSalesRuntime(BaseModel):
     handoff_enabled: bool = False
     booking_enabled: bool = False
     rag_enabled: bool = False
+    timezone: str | None = Field(default=None, validation_alias=AliasChoices("timezone", "business_timezone"))
+    timezone_source: str | None = Field(default=None, validation_alias=AliasChoices("timezoneSource", "timezone_source"))
 
 
 class BackendRoutingEntryPointUtmContext(BaseModel):
@@ -296,6 +302,9 @@ class CommercialContext(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     tenant: BackendTenant
+    crm_context: dict[str, Any] | None = Field(default=None, validation_alias=AliasChoices("crmContext", "crm_context"))
+    timezone: str | None = Field(default=None, validation_alias=AliasChoices("timezone", "business_timezone"))
+    timezone_source: str | None = Field(default=None, validation_alias=AliasChoices("timezoneSource", "timezone_source"))
     products: list[BackendProduct] = Field(default_factory=list)
     product_selection: dict[str, Any] = Field(default_factory=dict)
     playbooks: list[BackendPlaybook] = Field(default_factory=list)
@@ -374,6 +383,9 @@ class BackendClient:
         product_payload = payload.get("product") if isinstance(payload.get("product"), dict) else None
         products_payload = payload.get("products") if isinstance(payload.get("products"), list) else []
         product_selection_payload = payload.get("product_selection") if isinstance(payload.get("product_selection"), dict) else {}
+        crm_context_payload = payload.get("crm_context") if isinstance(payload.get("crm_context"), dict) else None
+        timezone = payload.get("timezone") if isinstance(payload.get("timezone"), str) else None
+        timezone_source = payload.get("timezone_source") if isinstance(payload.get("timezone_source"), str) else None
         playbook_payload = payload.get("playbook") if isinstance(payload.get("playbook"), dict) else None
         entry_point_payload = payload.get("entry_point") if isinstance(payload.get("entry_point"), dict) else None
         sales_runtime_payload = payload.get("sales_runtime") if isinstance(payload.get("sales_runtime"), dict) else None
@@ -399,6 +411,9 @@ class BackendClient:
 
         return CommercialContext(
             tenant=tenant_model,
+            crm_context=crm_context_payload,
+            timezone=timezone,
+            timezone_source=timezone_source,
             products=products,
             product_selection=product_selection,
             playbooks=playbooks,

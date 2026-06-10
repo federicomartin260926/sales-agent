@@ -2,6 +2,7 @@ import json
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from app.config import Settings
 from app.schemas.agent import AgentRequest, Contact
 from app.schemas.llm import McpRemoteConfig
 from app.services.backend_client import BackendEntryPoint, BackendPlaybook, BackendProduct, BackendSalesRuntime, BackendTenant, CommercialContext
@@ -125,6 +126,82 @@ def build_backend_context_with_candidates() -> CommercialContext:
         },
         playbooks=[],
         entry_point=None,
+        sales_runtime=BackendSalesRuntime(),
+        selected_product=None,
+        selected_playbook=None,
+    )
+
+
+def build_backend_context_with_timezone(timezone: str) -> CommercialContext:
+    tenant = BackendTenant.model_validate(
+        {
+            "id": "tenant-1",
+            "name": "Negocio Demo",
+            "slug": "negocio-demo",
+            "businessContext": "Contexto estable del negocio",
+            "tone": "cercano",
+            "salesPolicy": {"positioning": "Mensaje"},
+            "isActive": True,
+            "timezone": timezone,
+        }
+    )
+
+    return CommercialContext(
+        tenant=tenant,
+        products=[],
+        product_selection={
+            "selection_source": "explicit_product_id",
+            "candidate_count": 1,
+            "needs_service_clarification": False,
+            "fallback_to_mcp_allowed": False,
+            "reason": "explicit product requested",
+        },
+        playbooks=[],
+        entry_point=None,
+        sales_runtime=BackendSalesRuntime(),
+        selected_product=None,
+        selected_playbook=None,
+    )
+
+
+def build_backend_context_with_crm_timezone(crm_timezone: str, sa_timezone: str) -> CommercialContext:
+    tenant = BackendTenant.model_validate(
+        {
+            "id": "tenant-1",
+            "name": "Negocio Demo",
+            "slug": "negocio-demo",
+            "businessContext": "Contexto estable del negocio",
+            "tone": "cercano",
+            "salesPolicy": {"positioning": "Mensaje"},
+            "isActive": True,
+            "timezone": sa_timezone,
+        }
+    )
+    entry_point = BackendEntryPoint.model_validate(
+        {
+            "id": "entrypoint-1",
+            "code": "demo",
+            "name": "Entrada Demo",
+            "description": "Descripcion del entrypoint",
+            "initial_message": "Hola",
+            "crm_branch_ref": "branch-1",
+            "is_active": True,
+        }
+    )
+
+    return CommercialContext(
+        tenant=tenant,
+        crm_context={"timezone": crm_timezone, "timezone_source": "crm_branch"},
+        products=[],
+        product_selection={
+            "selection_source": "explicit_product_id",
+            "candidate_count": 1,
+            "needs_service_clarification": False,
+            "fallback_to_mcp_allowed": False,
+            "reason": "explicit product requested",
+        },
+        playbooks=[],
+        entry_point=entry_point,
         sales_runtime=BackendSalesRuntime(),
         selected_product=None,
         selected_playbook=None,
@@ -429,7 +506,7 @@ def test_prompt_builder_sanitizes_long_commercial_fields():
     assert LLMContextHelper.TRUNCATION_MARKER in parsed["playbook"]["config"]["notes"]
 
 
-def test_prompt_builder_includes_temporal_context(monkeypatch):
+def test_prompt_builder_uses_default_business_timezone_when_context_has_none(monkeypatch):
     payload = AgentRequest(
         tenant_id="tenant-1",
         message="Tengo citas programadas para mayo?",
@@ -438,14 +515,157 @@ def test_prompt_builder_includes_temporal_context(monkeypatch):
     )
 
     fixed_now = datetime(2026, 5, 12, 14, 30, 0, tzinfo=ZoneInfo("Europe/Madrid"))
-    monkeypatch.setattr(LLMPromptBuilder, "_current_madrid_time", lambda self: fixed_now)
+    monkeypatch.setattr(LLMPromptBuilder, "_current_business_time", lambda self, timezone_name: fixed_now)
 
-    system_prompt, _ = LLMPromptBuilder().build(payload, None, build_backend_context(), None, None)
+    builder = LLMPromptBuilder(settings=Settings())
+    backend_context = build_backend_context()
+    assert builder._resolve_business_timezone(backend_context) == "Europe/Madrid"
+
+    system_prompt, user_prompt = builder.build(payload, None, backend_context, None, None)
+    parsed = json.loads(user_prompt)
 
     assert "2026-05-12T14:30:00+02:00" in system_prompt
-    assert "timezone Europe/Madrid" in system_prompt
+    assert "timezone=Europe/Madrid" in system_prompt
+    assert "Usa temporal_context.timezone como referencia local del negocio o sucursal." in system_prompt
+    assert "Si el backend no proporciona timezone específica, ya se habrá aplicado el fallback configurado por el sistema." in system_prompt
     assert "Si el usuario menciona un mes sin año, usa el año actual" in system_prompt
     assert "No uses años pasados salvo que el usuario lo pida explícitamente." in system_prompt
+    assert parsed["temporal_context"]["timezone"] == "Europe/Madrid"
+    assert parsed["temporal_context"]["timezone_source"] == "settings.default_business_timezone"
+
+
+def test_prompt_builder_uses_business_timezone_when_context_provides_it(monkeypatch):
+    payload = AgentRequest(
+        tenant_id="tenant-1",
+        message="Buenas tardes. Dime disponibilidad de María para láser cuerpo entero para mañana por la tarde. Gracias.",
+        contact=Contact(phone="+34600000000"),
+        conversation={"last_messages": []},
+    )
+
+    backend_context = build_backend_context_with_timezone("America/New_York")
+    fixed_now = datetime(2026, 5, 12, 8, 30, 0, tzinfo=ZoneInfo("America/New_York"))
+    monkeypatch.setattr(LLMPromptBuilder, "_current_business_time", lambda self, timezone_name: fixed_now)
+
+    builder = LLMPromptBuilder(settings=Settings())
+    assert builder._resolve_business_timezone(backend_context) == "America/New_York"
+
+    mcp_config = McpRemoteConfig(
+        enabled=True,
+        server_label="tenant_main_mcp",
+        server_url="https://mcp.example.test",
+        allowed_tools=["services_search", "appointment_availability"],
+        require_approval="never",
+    )
+
+    system_prompt, user_prompt = builder.build(payload, None, backend_context, None, mcp_config)
+    parsed = json.loads(user_prompt)
+
+    assert "current_datetime=2026-05-12T08:30:00-04:00" in system_prompt
+    assert "current_date=2026-05-12" in system_prompt
+    assert "timezone=America/New_York" in system_prompt
+    assert parsed["temporal_context"]["timezone"] == "America/New_York"
+    assert parsed["temporal_context"]["current_datetime"] == "2026-05-12T08:30:00-04:00"
+    assert parsed["temporal_context"]["current_date"] == "2026-05-12"
+    assert parsed["temporal_context"]["timezone_source"] == "tenant"
+    assert "Usa temporal_context.timezone como referencia local del negocio o sucursal." in system_prompt
+
+
+def test_prompt_builder_uses_crm_timezone_over_sa_timezone(monkeypatch):
+    payload = AgentRequest(
+        tenant_id="tenant-1",
+        message="Tengo citas programadas para mayo?",
+        contact=Contact(phone="+34600000000"),
+        conversation={"last_messages": []},
+    )
+
+    fixed_now = datetime(2026, 5, 12, 13, 30, 0, tzinfo=ZoneInfo("Atlantic/Canary"))
+    monkeypatch.setattr(LLMPromptBuilder, "_current_business_time", lambda self, timezone_name: fixed_now)
+
+    builder = LLMPromptBuilder(settings=Settings())
+    backend_context = build_backend_context_with_crm_timezone("Atlantic/Canary", "Europe/Madrid")
+    assert builder._resolve_business_timezone(backend_context) == "Atlantic/Canary"
+
+    _, user_prompt = builder.build(payload, None, backend_context, None, None)
+    parsed = json.loads(user_prompt)
+
+    assert parsed["temporal_context"]["timezone"] == "Atlantic/Canary"
+    assert parsed["temporal_context"]["timezone_source"] == "crm_branch"
+    assert parsed["temporal_context"]["current_datetime"] == "2026-05-12T13:30:00+01:00"
+    assert parsed["temporal_context"]["current_date"] == "2026-05-12"
+
+
+def test_prompt_builder_ignores_invalid_crm_timezone_and_uses_sa_timezone(monkeypatch):
+    payload = AgentRequest(
+        tenant_id="tenant-1",
+        message="Tengo citas programadas para mayo?",
+        contact=Contact(phone="+34600000000"),
+        conversation={"last_messages": []},
+    )
+
+    fixed_now = datetime(2026, 5, 12, 8, 30, 0, tzinfo=ZoneInfo("America/New_York"))
+    monkeypatch.setattr(LLMPromptBuilder, "_current_business_time", lambda self, timezone_name: fixed_now)
+
+    builder = LLMPromptBuilder(settings=Settings())
+    backend_context = build_backend_context_with_crm_timezone("Invalid/Zone", "America/New_York")
+
+    assert builder._resolve_business_timezone(backend_context) == "America/New_York"
+
+    _, user_prompt = builder.build(payload, None, backend_context, None, None)
+    parsed = json.loads(user_prompt)
+
+    assert parsed["temporal_context"]["timezone"] == "America/New_York"
+    assert parsed["temporal_context"]["timezone_source"] == "tenant"
+    assert parsed["temporal_context"]["current_datetime"] == "2026-05-12T08:30:00-04:00"
+    assert parsed["temporal_context"]["current_date"] == "2026-05-12"
+
+
+def test_prompt_builder_uses_configured_fallback_timezone_when_context_has_none(monkeypatch):
+    payload = AgentRequest(
+        tenant_id="tenant-1",
+        message="Tengo citas programadas para mayo?",
+        contact=Contact(phone="+34600000000"),
+        conversation={"last_messages": []},
+    )
+
+    fixed_now = datetime(2026, 5, 12, 13, 30, 0, tzinfo=ZoneInfo("Atlantic/Canary"))
+    monkeypatch.setattr(LLMPromptBuilder, "_current_business_time", lambda self, timezone_name: fixed_now)
+
+    builder = LLMPromptBuilder(settings=Settings(SA_DEFAULT_BUSINESS_TIMEZONE="Atlantic/Canary"))
+    backend_context = build_backend_context()
+
+    assert builder._resolve_business_timezone(backend_context) == "Atlantic/Canary"
+
+    _, user_prompt = builder.build(payload, None, backend_context, None, None)
+    parsed = json.loads(user_prompt)
+
+    assert parsed["temporal_context"]["timezone"] == "Atlantic/Canary"
+    assert parsed["temporal_context"]["timezone_source"] == "settings.default_business_timezone"
+    assert parsed["temporal_context"]["current_datetime"] == "2026-05-12T13:30:00+01:00"
+    assert parsed["temporal_context"]["current_date"] == "2026-05-12"
+
+
+def test_prompt_builder_falls_back_to_madrid_when_configured_timezone_is_invalid(monkeypatch):
+    payload = AgentRequest(
+        tenant_id="tenant-1",
+        message="Tengo citas programadas para mayo?",
+        contact=Contact(phone="+34600000000"),
+        conversation={"last_messages": []},
+    )
+
+    fixed_now = datetime(2026, 5, 12, 14, 30, 0, tzinfo=ZoneInfo("Europe/Madrid"))
+    monkeypatch.setattr(LLMPromptBuilder, "_current_business_time", lambda self, timezone_name: fixed_now)
+
+    builder = LLMPromptBuilder(settings=Settings(SA_DEFAULT_BUSINESS_TIMEZONE="Invalid/Zone"))
+    backend_context = build_backend_context()
+
+    assert builder._resolve_business_timezone(backend_context) == "Europe/Madrid"
+
+    _, user_prompt = builder.build(payload, None, backend_context, None, None)
+    parsed = json.loads(user_prompt)
+
+    assert parsed["temporal_context"]["timezone"] == "Europe/Madrid"
+    assert parsed["temporal_context"]["timezone_source"] == "safety_fallback"
+    assert parsed["temporal_context"]["current_datetime"] == "2026-05-12T14:30:00+02:00"
 
 
 def test_prompt_builder_resolves_relative_availability_against_current_turn(monkeypatch):
@@ -463,7 +683,7 @@ def test_prompt_builder_resolves_relative_availability_against_current_turn(monk
     )
 
     fixed_now = datetime(2026, 6, 9, 19, 22, 0, tzinfo=ZoneInfo("Europe/Madrid"))
-    monkeypatch.setattr(LLMPromptBuilder, "_current_madrid_time", lambda self: fixed_now)
+    monkeypatch.setattr(LLMPromptBuilder, "_current_business_time", lambda self, timezone_name: fixed_now)
 
     mcp_config = McpRemoteConfig(
         enabled=True,
@@ -473,7 +693,7 @@ def test_prompt_builder_resolves_relative_availability_against_current_turn(monk
         require_approval="never",
     )
 
-    system_prompt, user_prompt = LLMPromptBuilder().build(payload, None, build_backend_context(), None, mcp_config)
+    system_prompt, user_prompt = LLMPromptBuilder(settings=Settings()).build(payload, None, build_backend_context(), None, mcp_config)
     parsed = json.loads(user_prompt)
 
     assert "current_datetime=2026-06-09T19:22:00+02:00" in system_prompt
@@ -487,6 +707,8 @@ def test_prompt_builder_resolves_relative_availability_against_current_turn(monk
     assert "15:00 a 20:00 o 21:00" in system_prompt
     assert "nunca empieces a las 12:00" in system_prompt
     assert "No arrastres el 'mañana' de mensajes anteriores" in system_prompt
+    assert "Si la tool de agenda acepta timezone, envíala explícitamente usando temporal_context.timezone." in system_prompt
+    assert "No uses UTC para franjas comerciales." in system_prompt
     assert parsed["temporal_context"]["current_datetime"] == "2026-06-09T19:22:00+02:00"
     assert parsed["temporal_context"]["current_date"] == "2026-06-09"
     assert parsed["temporal_context"]["timezone"] == "Europe/Madrid"

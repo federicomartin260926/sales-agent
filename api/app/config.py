@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     openai_transcription_model: str = Field(default="gpt-4o-mini-transcribe", alias="OPENAI_TRANSCRIPTION_MODEL")
     openai_conversation_state_enabled: bool = Field(default=True, alias="OPENAI_CONVERSATION_STATE_ENABLED")
     openai_conversation_state_ttl_hours: int = Field(default=24, alias="OPENAI_CONVERSATION_STATE_TTL_HOURS")
+    default_business_timezone: str = Field(default="Europe/Madrid", alias="SA_DEFAULT_BUSINESS_TIMEZONE")
     audio_transcription_provider: str = Field(default="openai", alias="AUDIO_TRANSCRIPTION_PROVIDER")
     audio_transcription_model: str = Field(default="gpt-4o-mini-transcribe", alias="AUDIO_TRANSCRIPTION_MODEL")
     audio_transcription_cost_unit: str = Field(default="minute", alias="AUDIO_TRANSCRIPTION_COST_UNIT")

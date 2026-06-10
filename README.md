@@ -209,6 +209,7 @@ make prod-bootstrap
 ```
 
 El archivo `.env` está ignorado por Git y no debe contener secretos versionados. `OPENAI_API_KEY` debe quedar vacío en `.env.example`; cualquier clave real debe rotarse y mantenerse fuera del repositorio.
+La timezone base de negocio para cálculo temporal se configura con `SA_DEFAULT_BUSINESS_TIMEZONE`; si no se define, el sistema usa `Europe/Madrid`.
 
 Credenciales iniciales:
 
