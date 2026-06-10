@@ -603,6 +603,28 @@ def test_prompt_builder_uses_crm_timezone_over_sa_timezone(monkeypatch):
     assert parsed["temporal_context"]["current_date"] == "2026-05-12"
 
 
+def test_prompt_builder_uses_crm_tenant_timezone_source_when_available(monkeypatch):
+    payload = AgentRequest(
+        tenant_id="tenant-1",
+        message="Quiero disponibilidad",
+        contact=Contact(phone="+34600000000"),
+        conversation={"last_messages": []},
+    )
+
+    fixed_now = datetime(2026, 5, 12, 13, 30, 0, tzinfo=ZoneInfo("Atlantic/Canary"))
+    monkeypatch.setattr(LLMPromptBuilder, "_current_business_time", lambda self, timezone_name: fixed_now)
+
+    builder = LLMPromptBuilder(settings=Settings())
+    backend_context = build_backend_context_with_crm_timezone("Atlantic/Canary", "Europe/Madrid")
+    backend_context.crm_context["timezone_source"] = "crm_tenant"
+
+    _, user_prompt = builder.build(payload, None, backend_context, None, None)
+    parsed = json.loads(user_prompt)
+
+    assert parsed["temporal_context"]["timezone"] == "Atlantic/Canary"
+    assert parsed["temporal_context"]["timezone_source"] == "crm_tenant"
+
+
 def test_prompt_builder_ignores_invalid_crm_timezone_and_uses_sa_timezone(monkeypatch):
     payload = AgentRequest(
         tenant_id="tenant-1",
