@@ -1,4 +1,7 @@
 from functools import lru_cache
+from typing import ClassVar
+
+from zoneinfo import ZoneInfo
 
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -6,6 +9,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+    SAFE_DEFAULT_BUSINESS_TIMEZONE: ClassVar[str] = "Europe/Madrid"
 
     app_name: str = "sales-agent-api"
     app_env: str = Field(default="dev", alias="APP_ENV")
@@ -45,6 +50,17 @@ class Settings(BaseSettings):
     rag_api_url: str = Field(default="", alias="RAG_API_URL")
     sales_agent_bearer_token: str = Field(default="", alias="SALES_AGENT_BEARER_TOKEN")
     mcp_test_authorization: str = Field(default="", alias="MCP_TEST_AUTHORIZATION")
+
+    def safe_default_business_timezone(self) -> str:
+        candidate = self.default_business_timezone.strip()
+        if candidate:
+            try:
+                ZoneInfo(candidate)
+            except Exception:
+                return self.SAFE_DEFAULT_BUSINESS_TIMEZONE
+            return candidate
+
+        return self.SAFE_DEFAULT_BUSINESS_TIMEZONE
 
 
 @lru_cache

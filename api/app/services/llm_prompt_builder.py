@@ -14,8 +14,6 @@ from app.services.llm_context_helper import LLMContextHelper
 
 
 class LLMPromptBuilder:
-    _safety_fallback_timezone = "Europe/Madrid"
-
     def __init__(
         self,
         context_helper: LLMContextHelper | None = None,
@@ -227,7 +225,7 @@ class LLMPromptBuilder:
         if configured_fallback is not None:
             return configured_fallback, "settings.default_business_timezone"
 
-        return self._safety_fallback_timezone, "safety_fallback"
+        return self.settings.safe_default_business_timezone(), "safety_fallback"
 
     def _configured_default_business_timezone(self) -> str | None:
         candidate = getattr(self.settings, "default_business_timezone", None)
