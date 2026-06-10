@@ -105,6 +105,7 @@ La imagen de nginx de producción copia `backend/public` en build; no usa bind m
 
 En producción, `sales-agent-nginx` se publica por la red Docker compartida `proxy` y el runtime de la API usa `Authorization: Bearer ...` para llamadas de otros servicios.
 Cuando `sales-agent` y `crm` conviven en el mismo VPS, la API lee el CRM por la red interna compartida `commercial_internal` usando `CRM_BASE_URL=http://crm-nginx`.
+El contexto de integraciones del CRM usa primero la autorización downstream tenant-scoped configurada en el MCP del tenant. `CRM_INTEGRATIONS_BEARER_TOKEN` queda sólo como fallback local/dev para `GET /api/integrations/contact-context` cuando no hay token tenant-scoped.
 
 ## Puertos y rutas
 
