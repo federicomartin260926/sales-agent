@@ -28,6 +28,8 @@ Reglas:
 
 - `Authorization` protege el webhook de n8n
 - `X-Downstream-Authorization` transporta el token tenant-scoped que n8n puede usar para consultar CRM
+- `Authorization` corresponde al `bearer_token` configurado en la `ExternalTool` de tipo `contact_context` y provider `n8n_webhook`
+- `X-Downstream-Authorization` corresponde a `downstream_authorization_token` si la integración aguas abajo lo necesita
 - ninguno de los dos tokens va en el body
 - ninguno de los dos tokens va al prompt
 - ninguno de los dos tokens se usa como argumento de tool
@@ -125,6 +127,21 @@ El cliente de herramientas externas:
 - envía `Authorization` con la credencial del webhook si está configurada
 - envía `X-Downstream-Authorization` con el token downstream del tenant cuando corresponda
 - normaliza la respuesta a `available`, `configured`, `ok`, `found`, `error_code` y `data`
+
+### Diagnósticos que conserva SA
+
+Cuando resuelve `contact_context`, SA conserva indicadores operativos como:
+
+- `contact_context_resolver_called`
+- `contact_context_available`
+- `contact_context_source`
+- `contact_context_external_tool_called`
+- `contact_context_external_tool_available`
+- `contact_context_cache_lookup`
+- `contact_context_cache_hit`
+- `effective_timezone`
+- `effective_timezone_source`
+- `operational_context`
 
 ## Relación con CRM
 

@@ -23,6 +23,7 @@ El proyecto está preparado para integrarse más adelante con:
 - [Networking](../platform/networking.md)
 - [Tokens](../platform/tokens.md)
 - [Handoff humano](docs/handoff.md)
+- [Ensamblado de contexto LLM](docs/llm-context-assembly.md)
 - [MCP - n8n contact context](docs/mcp-n8n-contact-context.md)
 
 ## Arquitectura

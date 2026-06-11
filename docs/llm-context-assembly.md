@@ -307,6 +307,208 @@ La decisión de generar summary hoy se activa cuando:
 - `response.needs_human` es `true`
 - o `response.action == "handoff_to_human"`
 
+## 12. Contexto operativo que SA entrega al LLM
+
+Sales Agent no pasa únicamente texto al modelo. Construye un contexto operativo estructurado que mezcla:
+
+- contexto de tenant y negocio
+- contexto de producto / servicio
+- contexto de contacto externo
+- contexto de agenda y timezone
+- continuidad conversacional
+- estado operativo del turno
+
+El bloque clave es `operational_context`, que resume la verdad operativa del turno y se inyecta en el prompt junto con `temporal_context`.
+
+Ejemplo simplificado:
+
+```json
+{
+  "tenant_id": "019e4a9a-c85f-72d4-8748-b756073c324c",
+  "channel": "whatsapp",
+  "contact": {
+    "phone": "+34...",
+    "email": null,
+    "name": "Cliente"
+  },
+  "effective_timezone": "Atlantic/Canary",
+  "appointment_tool_timezone": "Atlantic/Canary",
+  "contact_context_available": true,
+  "effective_timezone_source": "crm_tenant",
+  "contact_context_source": "external_tool:n8n"
+}
+```
+
+### Qué significa cada campo
+
+- `effective_timezone`: timezone operativa real del turno
+- `effective_timezone_source`: fuente de esa timezone
+- `appointment_tool_timezone`: timezone que debe usar `appointment_availability` / `appointment_confirm`
+- `technical_fallback_timezone`: fallback técnico de seguridad cuando no hay timezone fiable
+- `technical_fallback_timezone_source`: origen del fallback técnico
+- `timezone_guardrail_blocked`: indica si se bloqueó una tool por inconsistencia temporal
+- `timezone_guardrail_reason`: motivo del bloqueo
+- `timezone_mismatch_detected`: diferencia entre timezone esperada y la usada por la tool
+- `expected_timezone`: timezone que SA esperaba que usara la tool
+- `actual_timezone`: timezone realmente observada en la tool trace
+- `mismatched_tool`: nombre de la tool conflictiva cuando el guardrail bloquea
+
+Regla crítica:
+
+- el fallback técnico, por ejemplo `Europe/Madrid`, solo se usa si no hay una timezone operativa fiable
+- si el CRM o el contexto del negocio aporta `Atlantic/Canary` u otro timezone válido, ese valor gana
+- las tools de agenda deben seguir `appointment_tool_timezone`, no el fallback técnico
+
+## 13. `contact_context` vía ExternalTool n8n
+
+El contexto externo del contacto se obtiene a través de una `ExternalTool` por tenant con:
+
+- `type = contact_context`
+- `provider = n8n_webhook`
+
+La llamada operacional es:
+
+`SA -> ExternalTool contact_context -> n8n -> CRM`
+
+### Separación de tokens
+
+Hay dos credenciales distintas:
+
+- `Authorization: Bearer <N8N_WEBHOOK_TOKEN>` para proteger el webhook de n8n
+- `X-Downstream-Authorization: Bearer <CRM_DOWNSTREAM_TOKEN>` para que n8n consulte CRM u otra fuente aguas abajo
+
+No se deben mezclar:
+
+- webhook auth ≠ downstream auth
+- el token downstream no va al prompt
+- el token downstream no va en `data_to_save`
+- el token downstream no debe aparecer en logs ni respuestas
+
+### Flags que SA conserva
+
+Cuando se resuelve `contact_context`, SA conserva y/o publica:
+
+- `contact_context_resolver_called`
+- `contact_context_available`
+- `contact_context_source`
+- `contact_context_external_tool_called`
+- `contact_context_external_tool_available`
+- `contact_context_cache_lookup`
+- `contact_context_cache_hit`
+- `contact_context_error_code`
+- `contact_context_error_message`
+- `effective_timezone`
+- `effective_timezone_source`
+- `operational_context`
+
+### Cache de `contact_context`
+
+SA usa `ExternalContactContextCache` para evitar repetir llamadas innecesarias al contexto externo.
+
+Orden operativo observado:
+
+1. `context_messages` recientes, si ya contienen un contexto confiable
+2. cache persistente por tenant/contact_key
+3. ExternalTool directa `contact_context` en n8n
+4. fallback legacy MCP solo si sigue configurado
+5. bloqueo seguro si no hay timezone fiable
+
+### Relación con agenda
+
+Si `contact_context` aporta timezone o `business_context.timezone`, esa timezone se usa para:
+
+- interpretar `hoy`, `mañana`, `pasado mañana`, `esta tarde`, `por la tarde`
+- construir `temporal_context`
+- validar herramientas de agenda
+
+## 14. Continuidad de conversación
+
+Hay dos niveles de continuidad:
+
+### A. Continuidad interna de SA
+
+SA conserva:
+
+- `conversation_id`
+- `messages`
+- `context_messages`
+- `summary`
+- `traces`
+- `data_to_save`
+- `llm_response_id`
+
+Ese estado sirve para:
+
+- recuperar el hilo
+- conservar slots ofrecidos
+- guardar contexto externo
+- postprocesar resultados de tool calls
+
+### B. Continuidad de OpenAI
+
+Cuando el runtime usa OpenAI Responses API, también puede reutilizar:
+
+- `previous_response_id`
+- `lastOpenAiResponseId` / `last_openai_response_id`
+
+Eso ayuda a mantener continuidad del hilo LLM, pero no sustituye al estado estructurado del runtime.
+
+### Regla práctica
+
+- `previous_response_id` ayuda a continuar una conversación
+- `context_messages`, `operational_context` y `appointment_context` son la verdad operativa
+- si el modelo se desvía, SA sigue postprocesando y corrigiendo el resultado final
+
+## 15. Offered slots y `selected_slot`
+
+Cuando `appointment_availability` devuelve slots, SA conserva ese resultado como contexto estructurado en `context_messages` y en `conversation.appointment_context`.
+
+Un slot típico puede verse así:
+
+```json
+{
+  "start": "2026-06-16T19:30:00+01:00",
+  "end": "2026-06-16T21:00:00+01:00",
+  "owner": {
+    "id": "019eb05e-5bab-7038-877b-3c73f988ab68",
+    "name": "María Gutiérrez"
+  }
+}
+```
+
+Con ese bloque, SA puede resolver follow-ups como:
+
+- `Prefiero el de las 19:30 con María Gutiérrez.`
+
+### Selección determinista
+
+SA resuelve `selected_slot` de forma determinista cuando el mensaje es inequívoco:
+
+- hora + owner correcto -> `selected_slot`
+- hora única sin owner -> `selected_slot`
+- hora ambigua sin owner -> no `selected_slot`
+- owner incorrecto -> no `selected_slot`
+
+### Campo de acción obligatoria
+
+Cuando el slot es confirmable, SA añade `required_next_action` para reforzar al LLM que debe llamar `appointment_confirm` inmediatamente con el slot seleccionado.
+
+## 16. Confirmación de cita
+
+La confirmación de cita sigue un patrón seguro:
+
+1. el usuario elige un slot inequívoco
+2. SA prepara `selected_slot` y `required_next_action`
+3. el LLM llama `appointment_confirm`
+4. SA inspecciona `mcp_tool_traces`
+5. si `ok=true` y `confirmed=true`, SA reescribe la reply final a una confirmación clara
+6. si falla, SA no afirma que la cita quedó cerrada
+
+Regla de postproceso:
+
+- si la tool confirma con éxito, la respuesta final debe ser explícita, breve y sin duplicar mensajes del tool
+- si la tool devuelve error o `confirmed=false`, SA no debe decir que la cita está reservada
+
 ## 4. Qué contexto viene de BD/backend
 
 ### Tenant
