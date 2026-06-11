@@ -1613,6 +1613,13 @@ body.ai-assistant-modal-open {
   flex: 0 0 36px;
 }
 
+.tool-actions-inline .badge-live {
+  align-self: center;
+  flex: 0 0 auto;
+  white-space: nowrap;
+  line-height: 1;
+}
+
 .table-header {
   display: flex;
   justify-content: space-between;

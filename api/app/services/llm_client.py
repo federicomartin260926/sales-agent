@@ -53,6 +53,8 @@ class LLMClient:
         mcp_config: McpRemoteConfig,
         configuration: dict[str, str] | None = None,
         previous_response_id: str | None = None,
+        tool_choice: Any | None = None,
+        parallel_tool_calls: bool | None = None,
     ) -> LLMResponseResult:
         self.last_mcp_error = None
         self.last_previous_response_id_invalid = False
@@ -62,11 +64,27 @@ class LLMClient:
             return await self.generate(provider, system_prompt, user_prompt, config)
 
         try:
-            return await self._generate_openai_responses(system_prompt, user_prompt, config, mcp_config, previous_response_id=previous_response_id)
+            return await self._generate_openai_responses(
+                system_prompt,
+                user_prompt,
+                config,
+                mcp_config,
+                previous_response_id=previous_response_id,
+                tool_choice=tool_choice,
+                parallel_tool_calls=parallel_tool_calls,
+            )
         except Exception as exc:
             if previous_response_id is not None and self._is_previous_response_id_error(exc):
                 try:
-                    result = await self._generate_openai_responses(system_prompt, user_prompt, config, mcp_config, previous_response_id=None)
+                    result = await self._generate_openai_responses(
+                        system_prompt,
+                        user_prompt,
+                        config,
+                        mcp_config,
+                        previous_response_id=None,
+                        tool_choice=tool_choice,
+                        parallel_tool_calls=parallel_tool_calls,
+                    )
                 except Exception as retry_exc:
                     self.last_previous_response_id_invalid = True
                     self.last_mcp_error = f"responses_mcp_path_failed:{retry_exc.__class__.__name__}"
@@ -140,6 +158,8 @@ class LLMClient:
         configuration: dict[str, str],
         mcp_config: McpRemoteConfig,
         previous_response_id: str | None = None,
+        tool_choice: Any | None = None,
+        parallel_tool_calls: bool | None = None,
     ) -> LLMResponseResult:
         base_url = configuration.get("openai_base_url", "").strip().rstrip("/")
         model = configuration.get("openai_model", "").strip()
@@ -166,6 +186,10 @@ class LLMClient:
         tools = self._build_openai_mcp_tools(mcp_config)
         if tools != []:
             payload["tools"] = tools
+        if tool_choice is not None:
+            payload["tool_choice"] = tool_choice
+        if parallel_tool_calls is not None:
+            payload["parallel_tool_calls"] = parallel_tool_calls
         self._log_openai_responses_mcp_request(model, tools, mcp_config)
 
         timeout = httpx.Timeout(timeout_seconds, connect=2.0)

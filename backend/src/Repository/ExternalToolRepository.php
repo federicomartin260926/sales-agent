@@ -64,6 +64,28 @@ class ExternalToolRepository extends ServiceEntityRepository
             ->getResult();
     }
 
+    /**
+     * @return ExternalTool[]
+     */
+    public function findByTenantAndProviderOrdered(Tenant $tenant, string $provider): array
+    {
+        $provider = trim($provider);
+        if ($provider === '') {
+            return [];
+        }
+
+        return $this->createQueryBuilder('t')
+            ->join('t.tenant', 'tenant')
+            ->addSelect('tenant')
+            ->andWhere('t.tenant = :tenant')
+            ->andWhere('t.provider = :provider')
+            ->setParameter('tenant', $tenant)
+            ->setParameter('provider', $provider)
+            ->orderBy('t.name', 'ASC')
+            ->getQuery()
+            ->getResult();
+    }
+
     public function findActiveByTenantAndType(Tenant $tenant, string $type): ?ExternalTool
     {
         return $this->createQueryBuilder('t')
@@ -74,6 +96,28 @@ class ExternalToolRepository extends ServiceEntityRepository
             ->andWhere('t.isActive = true')
             ->setParameter('tenant', $tenant)
             ->setParameter('type', trim($type))
+            ->setMaxResults(1)
+            ->getQuery()
+            ->getOneOrNullResult();
+    }
+
+    public function findActiveByTenantTypeAndProvider(Tenant $tenant, string $type, string $provider): ?ExternalTool
+    {
+        $provider = trim($provider);
+        if ($provider === '') {
+            return null;
+        }
+
+        return $this->createQueryBuilder('t')
+            ->join('t.tenant', 'tenant')
+            ->addSelect('tenant')
+            ->andWhere('t.tenant = :tenant')
+            ->andWhere('t.type = :type')
+            ->andWhere('t.provider = :provider')
+            ->andWhere('t.isActive = true')
+            ->setParameter('tenant', $tenant)
+            ->setParameter('type', trim($type))
+            ->setParameter('provider', $provider)
             ->setMaxResults(1)
             ->getQuery()
             ->getOneOrNullResult();

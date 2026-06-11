@@ -2425,7 +2425,10 @@ final class BackendUiController
             return 0;
         }
 
-        return count($externalTools->findByTenantOrdered($tenant));
+        return count(array_filter(
+            $externalTools->findByTenantOrdered($tenant),
+            static fn (ExternalTool $tool): bool => $tool->getType() === 'mcp_remote' && in_array($tool->getProvider(), ['openai_remote_mcp', 'mcp_remote'], true)
+        ));
     }
 
     /**

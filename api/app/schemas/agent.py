@@ -8,6 +8,7 @@ class Contact(BaseModel):
 
     phone: str = Field(validation_alias=AliasChoices("phone", "wa_id", "from"), min_length=1)
     name: str | None = None
+    email: str | None = None
 
     @model_validator(mode="before")
     @classmethod
@@ -23,6 +24,9 @@ class Contact(BaseModel):
         if normalized.get("name") is None and isinstance(profile, dict):
             normalized["name"] = profile.get("name")
 
+        if normalized.get("email") is None and isinstance(profile, dict):
+            normalized["email"] = profile.get("email")
+
         return normalized
 
     @model_validator(mode="after")
@@ -30,6 +34,8 @@ class Contact(BaseModel):
         self.phone = self.phone.strip()
         if self.name is not None:
             self.name = self.name.strip() or None
+        if self.email is not None:
+            self.email = self.email.strip() or None
 
         return self
 
@@ -84,6 +90,7 @@ class Conversation(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     external_id: str | None = Field(default=None, validation_alias=AliasChoices("external_id", "externalId"))
+    channel: str | None = Field(default=None, validation_alias=AliasChoices("channel", "channel_type"))
     summary: str | None = None
     last_messages: list[str] = Field(default_factory=list)
     context_messages: list[dict[str, Any]] = Field(default_factory=list)
@@ -101,6 +108,12 @@ class Conversation(BaseModel):
         elif isinstance(normalized.get("externalId"), str):
             normalized["externalId"] = normalized["externalId"].strip()
 
+        channel = normalized.get("channel")
+        if isinstance(channel, str):
+            normalized["channel"] = channel.strip()
+        elif isinstance(normalized.get("channel_type"), str):
+            normalized["channel_type"] = normalized["channel_type"].strip()
+
         summary = normalized.get("summary")
         if isinstance(summary, str):
             normalized["summary"] = summary.strip()
@@ -111,6 +124,8 @@ class Conversation(BaseModel):
     def normalize_conversation_values(self) -> "Conversation":
         if self.external_id is not None:
             self.external_id = self.external_id.strip() or None
+        if self.channel is not None:
+            self.channel = self.channel.strip() or None
         if self.summary is not None:
             self.summary = self.summary.strip() or None
         self.last_messages = [message.strip() for message in self.last_messages if isinstance(message, str) and message.strip() != ""]

@@ -1,0 +1,123 @@
+{% extends 'backend/layout.html.twig' %}
+
+{% block content %}
+  {% if tenant_required_html is defined and tenant_required_html is not null %}
+    {{ tenant_required_html|raw }}
+  {% else %}
+    <section class="hero-panel">
+      <div class="hero-copy">
+        <div class="eyebrow-dark">Servicios n8n</div>
+        <h2>Servicios n8n de {{ active_tenant_name }}</h2>
+        <p>
+          Configura webhooks n8n que Sales Agent puede llamar directamente desde el runtime para contexto operativo,
+          handoff o sincronizaciones internas. No son herramientas MCP expuestas a OpenAI.
+        </p>
+      </div>
+      <div class="hero-aside">
+        <div class="badge-live">Admin</div>
+        <div class="hero-aside-title">Uso interno</div>
+        <p>Estos servicios se invocan directamente por Sales Agent y deben ser rápidos, estables y con contrato JSON claro.</p>
+        <p class="subtle">Úsalos para <code>contact_context</code>, handoff, CRM o integraciones internas similares.</p>
+      </div>
+    </section>
+
+    {% for message in app.flashes('success') %}
+      <div class="alert alert-success">{{ message }}</div>
+    {% endfor %}
+
+  {% for message in app.flashes('error') %}
+    <div class="alert alert-error">{{ message }}</div>
+  {% endfor %}
+
+  {% if test_result is defined and test_result is not null %}
+    <div class="alert {{ test_result.ok ? 'alert-success' : 'alert-warning' }}">
+      <strong>Resultado de prueba de conexión</strong>
+      <div class="subtle">
+        ok: {{ test_result.ok ? 'true' : 'false' }}
+        | reachable: {{ test_result.reachable ? 'true' : 'false' }}
+        | {% if test_result.status_code is not null and test_result.status_code != 404 %}status_code: {{ test_result.status_code }}{% else %}status_code: no validado{% endif %}
+        | latency_ms: {{ test_result.latency_ms|default(0) }}
+        | error_code: {{ test_result.error_code|default('null') }}
+      </div>
+      <div>{{ test_result.summary|default('') }}</div>
+      {% if test_result.error_message is defined and test_result.error_message|default('') != '' %}
+        <div class="subtle">error_message: {{ test_result.error_message }}</div>
+      {% endif %}
+    </div>
+  {% endif %}
+
+    <section class="table-card">
+      <div class="table-header">
+        <div>
+          <h3>Servicios n8n de {{ active_tenant_name }}</h3>
+          <p>Se listan únicamente las herramientas con <code>provider=n8n_webhook</code> del negocio activo.</p>
+        </div>
+        <a class="primary-action" href="/backend/n8n-services/new">Nuevo servicio n8n</a>
+      </div>
+
+      <div class="table-responsive">
+        <table>
+          <thead>
+            <tr>
+              <th>Servicio</th>
+              <th>Tipo</th>
+              <th>Webhook</th>
+              <th>Auth</th>
+              <th>Timeout</th>
+              <th>Estado</th>
+              <th class="text-right">Acciones</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for service in tools %}
+              <tr>
+                <td>
+                  <strong>{{ service.name }}</strong>
+                  <div class="subtle">Config: {{ service.configSummary }}</div>
+                </td>
+                <td>{{ service.type }}</td>
+                <td><code>{{ service.webhookUrl ?: '—' }}</code></td>
+                <td>
+                  <div>{{ service.authType }}</div>
+                  {% if service.hasWebhookToken %}
+                    <div class="subtle">Token del webhook n8n: configurado</div>
+                  {% else %}
+                    <div class="subtle">Token del webhook n8n: no configurado</div>
+                  {% endif %}
+                  {% if service.hasDownstreamAuthorizationToken %}
+                    <div class="subtle">Token downstream CRM: configurado</div>
+                  {% else %}
+                    <div class="subtle">Token downstream CRM: no configurado</div>
+                  {% endif %}
+                </td>
+                <td>{{ service.timeoutSeconds }}s</td>
+                <td>{% if service.isActive %}<span class="status-ok">Activo</span>{% else %}<span class="status-off">Inactivo</span>{% endif %}</td>
+                <td class="text-right">
+                  <div class="tool-actions-inline">
+                    <a class="icon-action tool-action-icon-button" href="/backend/n8n-services/{{ service.id }}/edit" title="Editar servicio n8n" aria-label="Editar servicio n8n">✎</a>
+                    <form method="post" action="/backend/n8n-services/{{ service.id }}/test-connection" style="display:inline-flex;">
+                      <input type="hidden" name="_csrf_token" value="{{ service.testConnectionToken }}">
+                      <button class="icon-action tool-action-icon-button" type="submit" title="Probar conexión con el webhook" aria-label="Probar conexión con el webhook">↻</button>
+                    </form>
+                    <form method="post" action="/backend/n8n-services/{{ service.id }}/toggle" style="display:inline-flex;">
+                      <input type="hidden" name="_csrf_token" value="{{ service.toggleToken }}">
+                      <button class="icon-action tool-action-icon-button" type="submit" title="{{ service.isActive ? 'Desactivar' : 'Activar' }}" aria-label="{{ service.isActive ? 'Desactivar' : 'Activar' }}">{{ service.isActive ? '⏸' : '▶' }}</button>
+                    </form>
+                    <form method="post" action="/backend/n8n-services/{{ service.id }}/delete" onsubmit="return confirm('¿Eliminar este servicio n8n?');" style="display:inline-flex;">
+                      <input type="hidden" name="_csrf_token" value="{{ service.deleteToken }}">
+                      <button class="icon-action icon-action-danger tool-action-icon-button" type="submit" title="Eliminar servicio n8n" aria-label="Eliminar servicio n8n">🗑</button>
+                    </form>
+                  </div>
+                </td>
+              </tr>
+            {% else %}
+              <tr>
+                <td colspan="7" class="empty-row">No hay servicios n8n todavía.</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  {% endif %}
+{% endblock %}

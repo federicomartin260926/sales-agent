@@ -1,0 +1,182 @@
+{% extends 'backend/layout.html.twig' %}
+
+{% block content %}
+  <section class="hero-panel">
+    <div class="hero-copy">
+      <div class="eyebrow-dark">Servicios n8n</div>
+      <h2>{{ hero_title }}</h2>
+      <p>
+        Configura el webhook n8n que Sales Agent llamará directamente para obtener contexto operativo o ejecutar integraciones internas.
+        Este flujo no pasa por OpenAI como tool MCP.
+      </p>
+    </div>
+    <div class="hero-aside">
+      <div class="badge-live">Admin</div>
+      <div class="hero-aside-title">Autorización separada</div>
+      <p>Hay dos credenciales: una para llamar el webhook n8n y otra downstream para que n8n hable con CRM u otros servicios internos.</p>
+    </div>
+  </section>
+
+  {% if errors is not empty %}
+    <div class="alert alert-error">
+      <strong>Revisa el formulario</strong>
+      <ul>
+        {% for error in errors %}
+          <li>{{ error }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+  {% endif %}
+
+  <section class="table-card">
+    <div class="table-header">
+      <div>
+        <h3>Ficha del servicio</h3>
+        <p>Reutiliza la tabla `external_tools` pero con `provider=n8n_webhook` y tipos de servicio internos.</p>
+      </div>
+      <a class="secondary-action" href="/backend/n8n-services">Volver al listado</a>
+    </div>
+
+    <form method="post" action="{{ action_url }}" class="tenant-form" data-external-tool-form>
+      <input type="hidden" name="_csrf_token" value="{{ form_token }}">
+      <input type="hidden" name="tenantId" value="{{ values.tenantId }}">
+      <input type="hidden" name="provider" value="n8n_webhook">
+
+      <ul class="nav nav-tabs mb-4" id="n8n-service-form-tabs" role="tablist">
+        <li class="nav-item" role="presentation">
+          <button class="nav-link active" id="n8n-service-ficha-tab" data-bs-toggle="tab" data-bs-target="#n8n-service-ficha-panel" type="button" role="tab" aria-controls="n8n-service-ficha-panel" aria-selected="true">Ficha</button>
+        </li>
+        <li class="nav-item" role="presentation">
+          <button class="nav-link" id="n8n-service-connection-tab" data-bs-toggle="tab" data-bs-target="#n8n-service-connection-panel" type="button" role="tab" aria-controls="n8n-service-connection-panel" aria-selected="false">Conexión</button>
+        </li>
+        <li class="nav-item" role="presentation">
+          <button class="nav-link" id="n8n-service-auth-tab" data-bs-toggle="tab" data-bs-target="#n8n-service-auth-panel" type="button" role="tab" aria-controls="n8n-service-auth-panel" aria-selected="false">Autorización</button>
+        </li>
+        <li class="nav-item" role="presentation">
+          <button class="nav-link" id="n8n-service-advanced-tab" data-bs-toggle="tab" data-bs-target="#n8n-service-advanced-panel" type="button" role="tab" aria-controls="n8n-service-advanced-panel" aria-selected="false">Avanzado</button>
+        </li>
+      </ul>
+
+      <div class="tab-content pt-4">
+        <div class="tab-pane fade show active" id="n8n-service-ficha-panel" role="tabpanel" aria-labelledby="n8n-service-ficha-tab" tabindex="0">
+          <div class="field field-full">
+            <div class="section-label">Identidad del servicio</div>
+            <div class="section-note">Los servicios n8n son integraciones internas por tenant y se llaman directamente desde el runtime.</div>
+            <div class="form-grid">
+              <div class="field">
+                <label for="tool-tenant">Negocio</label>
+                <input id="tool-tenant" type="text" value="{{ active_tenant_name ?: 'Sin negocio seleccionado' }}" readonly>
+                <div class="field-note">El servicio se guardará en el negocio activo.</div>
+              </div>
+
+              <div class="field">
+                <label for="tool-name">Nombre</label>
+                <input id="tool-name" name="name" type="text" value="{{ values.name }}" maxlength="255" required>
+                <div class="field-note">Nombre visible para el equipo. Ejemplo: “Contact Context Mary”.</div>
+              </div>
+
+              <div class="field">
+                <label for="tool-type">Tipo</label>
+                <select id="tool-type" name="type">
+                  {% for type in service_types %}
+                    <option value="{{ type }}"{{ values.type == type ? ' selected' : '' }}>{{ type }}</option>
+                  {% endfor %}
+                </select>
+                <div class="field-note">Tipos iniciales: <code>contact_context</code>, <code>handoff_webhook</code>, <code>crm_contact_submit</code> y <code>custom</code>.</div>
+              </div>
+
+              <div class="field field-check">
+                <label for="tool-active">Estado / servicio activo</label>
+                <label class="checkbox-inline" for="tool-active">
+                  <input id="tool-active" name="isActive" type="checkbox" value="1"{{ values.isActive ? ' checked' : '' }}>
+                  <span>Servicio activo</span>
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="tab-pane fade" id="n8n-service-connection-panel" role="tabpanel" aria-labelledby="n8n-service-connection-tab" tabindex="0">
+          <div class="field field-full">
+            <div class="section-label">Conexión</div>
+            <div class="section-note">Sales Agent llamará directamente este webhook. No pasa por OpenAI como tool MCP.</div>
+            <div class="form-grid">
+              <div class="field field-full">
+                <label for="tool-webhook">Webhook URL</label>
+                <input id="tool-webhook" name="webhookUrl" type="url" value="{{ values.webhookUrl }}" maxlength="2048" placeholder="https://n8n.example.test/webhook/contact-context">
+                <div class="field-note">URL pública del webhook n8n que resolverá este servicio.</div>
+              </div>
+
+              <div class="field">
+                <label for="tool-timeout">Timeout segundos</label>
+                <input id="tool-timeout" name="timeoutSeconds" type="number" min="1" max="30" step="1" value="{{ values.timeoutSeconds }}">
+                <div class="field-note">Tiempo máximo de espera para la llamada remota.</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="tab-pane fade" id="n8n-service-auth-panel" role="tabpanel" aria-labelledby="n8n-service-auth-tab" tabindex="0">
+          <div class="field field-full">
+            <div class="section-label">Autorización</div>
+            <div class="section-note">Se separan la auth hacia el webhook n8n y la autorización downstream hacia CRM o servicios internos.</div>
+            <div class="form-grid">
+              <div class="field">
+                <label for="tool-auth">Auth type hacia n8n</label>
+                <select id="tool-auth" name="authType">
+                  <option value="none"{{ values.authType == 'none' ? ' selected' : '' }}>none</option>
+                  <option value="bearer"{{ values.authType == 'bearer' ? ' selected' : '' }}>bearer</option>
+                </select>
+                <div class="field-note">Se enviará como <code>Authorization: Bearer ...</code> al llamar el webhook n8n.</div>
+                <div class="field-note">No se envía al LLM, prompt, trazas ni <code>data_to_save</code>.</div>
+              </div>
+
+              <div class="field field-full">
+                <label for="tool-webhook-token">Token del webhook n8n</label>
+                <input id="tool-webhook-token" name="bearerToken" type="password" value="" autocomplete="new-password" placeholder="{{ has_webhook_token ? '•••••••• configurado — dejar vacío para conservar' : 'Pega el token Bearer del webhook n8n' }}" data-default-placeholder="{{ has_webhook_token ? '•••••••• configurado — dejar vacío para conservar' : 'Pega el token Bearer del webhook n8n' }}">
+                <div class="field-note">Solo se usa para auth hacia el webhook. El valor no se repuebla en el input por seguridad.</div>
+                <div class="field-note">Estado webhook: {{ has_webhook_token ? 'Configurado' : 'No configurado' }}</div>
+                {% if is_edit and has_webhook_token %}
+                  <label class="checkbox-inline mt-2" for="tool-webhook-token-clear">
+                    <input id="tool-webhook-token-clear" name="clearBearerToken" type="checkbox" value="1">
+                    <span>Eliminar token del webhook</span>
+                  </label>
+                {% endif %}
+              </div>
+
+              <div class="field field-full">
+                <label for="tool-downstream-token">Token downstream CRM</label>
+                <input id="tool-downstream-token" name="downstreamAuthorizationToken" type="password" value="" autocomplete="new-password" placeholder="{{ has_downstream_authorization_token ? '•••••••• configurado — dejar vacío para conservar' : 'Pega el token downstream CRM' }}" data-default-placeholder="{{ has_downstream_authorization_token ? '•••••••• configurado — dejar vacío para conservar' : 'Pega el token downstream CRM' }}">
+                <div class="field-note">Se enviará a n8n como <code>X-Downstream-Authorization: Bearer ...</code> para que n8n pueda llamar a CRM u otros servicios internos.</div>
+                <div class="field-note">No se envía al LLM, prompt, trazas ni <code>data_to_save</code>.</div>
+                <div class="field-note">Estado downstream: {{ has_downstream_authorization_token ? 'Configurado' : 'No configurado' }}</div>
+                {% if is_edit and has_downstream_authorization_token %}
+                  <label class="checkbox-inline mt-2" for="tool-downstream-token-clear">
+                    <input id="tool-downstream-token-clear" name="clearDownstreamAuthorizationToken" type="checkbox" value="1">
+                    <span>Eliminar token downstream</span>
+                  </label>
+                {% endif %}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="tab-pane fade" id="n8n-service-advanced-panel" role="tabpanel" aria-labelledby="n8n-service-advanced-tab" tabindex="0">
+          <div class="field field-full">
+            <div class="section-label">Avanzado</div>
+            <div class="section-note">Configuración interna y contrato JSON del webhook n8n.</div>
+            <div class="field field-full">
+              <label for="tool-config">Config JSON</label>
+              <textarea id="tool-config" name="config" rows="8" spellcheck="false" placeholder="{}">{{ values.config }}</textarea>
+              <div class="field-note">Si lo dejas vacío se guardará como <code>{}</code>. Debe ser JSON válido.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="form-actions">
+        <button class="primary-action" type="submit">{{ submit_label }}</button>
+      </div>
+    </form>
+  </section>
+{% endblock %}

@@ -19,13 +19,14 @@ def transport_handler(request: httpx.Request) -> httpx.Response:
                     "tenant_id": "tenant-1",
                     "name": "CRM contact context",
                     "type": "contact_context",
-                    "provider": "crm_http",
+                    "provider": "n8n_webhook",
                     "webhook_url": None,
                     "auth_type": "bearer",
-                    "bearer_token": "tenant-scoped-token",
-                    "downstream_authorization_token": "tenant-scoped-token",
+                    "bearer_token": "webhook-token",
+                    "downstream_authorization_token": "downstream-token",
                     "downstream_authorization_configured": True,
                     "timeout_seconds": 5,
+                    "is_active": True,
                     "config": {},
                 },
             },
@@ -354,6 +355,116 @@ def transport_handler(request: httpx.Request) -> httpx.Response:
             },
         )
 
+    if request.method == "GET" and request.url.path == "/api/internal/contact-context-cache":
+        assert request.headers.get("Authorization") == "Bearer test-internal-token"
+        assert request.url.params.get("tenant_id") == "tenant-1"
+        assert request.url.params.get("contact_key") == "phone:+34999999999"
+        assert request.url.params.get("provider") == "contact_context"
+        return httpx.Response(
+            200,
+            json={
+                "cache": {
+                    "id": "cache-1",
+                    "tenant_id": "tenant-1",
+                    "channel": "whatsapp",
+                    "external_channel_id": "external-channel-1",
+                    "external_conversation_id": "external-conversation-1",
+                    "contact_phone": "+34999999999",
+                    "contact_email": "ana@example.com",
+                    "contact_key": "phone:+34999999999",
+                    "provider": "contact_context",
+                    "source": "mcp",
+                    "status": "success",
+                    "context_json": {
+                        "available": True,
+                        "configured": True,
+                        "provider": "n8n_webhook",
+                        "ok": True,
+                        "found": True,
+                        "data": {
+                            "timezone": "Atlantic/Canary",
+                            "timezone_source": "crm_tenant",
+                        },
+                    },
+                    "fetched_at": "2026-06-10T12:00:00+00:00",
+                    "expires_at": "2026-06-10T18:00:00+00:00",
+                    "created_at": "2026-06-10T12:00:00+00:00",
+                    "updated_at": "2026-06-10T12:00:00+00:00",
+                }
+            },
+        )
+
+    if request.method == "POST" and request.url.path == "/api/internal/contact-context-cache":
+        assert request.headers.get("Authorization") == "Bearer test-internal-token"
+        payload = json.loads(request.content.decode("utf-8"))
+        assert payload["tenant_id"] == "tenant-1"
+        assert payload["contact_key"] == "phone:+34999999999"
+        assert payload["provider"] == "contact_context"
+        assert payload["source"] == "mcp"
+        assert payload["status"] == "success"
+        return httpx.Response(
+            200,
+            json={
+                "cache": {
+                    "id": "cache-1",
+                    "tenant_id": "tenant-1",
+                    "channel": payload.get("channel"),
+                    "external_channel_id": payload.get("external_channel_id"),
+                    "external_conversation_id": payload.get("external_conversation_id"),
+                    "contact_phone": payload.get("contact_phone"),
+                    "contact_email": payload.get("contact_email"),
+                    "contact_key": payload["contact_key"],
+                    "provider": "contact_context",
+                    "source": payload["source"],
+                    "status": payload["status"],
+                    "context_json": payload["context_json"],
+                    "fetched_at": payload["fetched_at"],
+                    "expires_at": payload["expires_at"],
+                    "created_at": "2026-06-10T12:00:00+00:00",
+                    "updated_at": "2026-06-10T12:00:00+00:00",
+                }
+            },
+        )
+
+    if request.method == "POST" and request.url.path == "/api/internal/contact-context-cache/invalidate":
+        assert request.headers.get("Authorization") == "Bearer test-internal-token"
+        payload = json.loads(request.content.decode("utf-8"))
+        assert payload["tenant_id"] == "tenant-1"
+        assert payload["contact_key"] == "phone:+34999999999"
+        return httpx.Response(
+            200,
+            json={
+                "cache": {
+                    "id": "cache-1",
+                    "tenant_id": "tenant-1",
+                    "channel": "whatsapp",
+                    "external_channel_id": "external-channel-1",
+                    "external_conversation_id": "external-conversation-1",
+                    "contact_phone": "+34999999999",
+                    "contact_email": "ana@example.com",
+                    "contact_key": "phone:+34999999999",
+                    "provider": "contact_context",
+                    "source": "mcp",
+                    "status": "stale",
+                    "context_json": {
+                        "available": True,
+                        "configured": True,
+                        "provider": "n8n_webhook",
+                        "ok": True,
+                        "found": True,
+                        "data": {
+                            "timezone": "Atlantic/Canary",
+                            "timezone_source": "crm_tenant",
+                        },
+                    },
+                    "fetched_at": "2026-06-10T12:00:00+00:00",
+                    "expires_at": "2026-06-10T11:59:59+00:00",
+                    "created_at": "2026-06-10T12:00:00+00:00",
+                    "updated_at": "2026-06-10T12:00:00+00:00",
+                }
+            },
+        )
+
     return httpx.Response(404, json={"detail": "not found"})
 
 
@@ -436,10 +547,61 @@ async def test_backend_client_loads_external_tool_configuration_for_contact_cont
     tool = await client.get_external_tool("tenant-1", "contact_context")
 
     assert tool is not None
-    assert tool.provider == "crm_http"
+    assert tool.provider == "n8n_webhook"
     assert tool.auth_type == "bearer"
-    assert tool.bearer_token == "tenant-scoped-token"
-    assert tool.downstream_authorization_token == "tenant-scoped-token"
+    assert tool.bearer_token == "webhook-token"
+    assert tool.downstream_authorization_token == "downstream-token"
+    assert tool.downstream_authorization_configured is True
+    assert tool.is_active is True
+
+
+@pytest.mark.asyncio
+async def test_backend_client_manages_contact_context_cache():
+    client = BackendClient(
+        Settings(BACKEND_BASE_URL="http://sales-agent-nginx", SALES_AGENT_BEARER_TOKEN="test-internal-token"),
+        transport=httpx.MockTransport(transport_handler),
+    )
+
+    cache = await client.get_contact_context_cache("tenant-1", "phone:+34999999999")
+    assert cache is not None
+    assert cache.tenant_id == "tenant-1"
+    assert cache.contact_key == "phone:+34999999999"
+    assert cache.context_json is not None
+    assert cache.context_json["data"]["timezone"] == "Atlantic/Canary"
+
+    saved = await client.save_contact_context_cache(
+        {
+            "tenant_id": "tenant-1",
+            "contact_key": "phone:+34999999999",
+            "provider": "contact_context",
+            "source": "mcp",
+            "status": "success",
+            "context_json": {
+                "available": True,
+                "configured": True,
+                "provider": "n8n_webhook",
+                "ok": True,
+                "found": True,
+                "data": {
+                    "timezone": "Atlantic/Canary",
+                    "timezone_source": "crm_tenant",
+                },
+            },
+            "fetched_at": "2026-06-10T12:00:00+00:00",
+            "expires_at": "2026-06-10T18:00:00+00:00",
+            "ttl_minutes": 360,
+        }
+    )
+    assert saved is not None
+    assert saved.source == "mcp"
+    assert saved.status == "success"
+    assert saved.context_json is not None
+    assert saved.context_json["data"]["timezone_source"] == "crm_tenant"
+
+    invalidated = await client.invalidate_contact_context_cache("tenant-1", "phone:+34999999999")
+    assert invalidated is not None
+    assert invalidated.status == "stale"
+    assert invalidated.contact_key == "phone:+34999999999"
 
 
 @pytest.mark.asyncio

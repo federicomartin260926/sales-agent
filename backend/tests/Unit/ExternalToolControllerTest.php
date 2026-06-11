@@ -268,6 +268,66 @@ final class ExternalToolControllerTest extends TestCase
         self::assertStringContainsString('/backend/api-health', $response->getContent());
     }
 
+    public function testIndexDoesNotListN8nWebhookToolsEvenIfTheyUseMcpType(): void
+    {
+        $tenant = new Tenant('Tech Investments', 'tech-investments');
+        $mcpTool = new ExternalTool($tenant, 'MCP principal', 'mcp_remote', 'openai_remote_mcp');
+        $mcpTool->setWebhookUrl('https://mcp.example.test');
+        $mcpTool->setConfig(['enabled_for_llm' => true, 'server_label' => 'principal_mcp']);
+        $n8nTool = new ExternalTool($tenant, 'Contact Context Mary', 'mcp_remote', 'n8n_webhook');
+        $n8nTool->setWebhookUrl('https://n8n.example.test/webhook/contact-context');
+        $n8nTool->setConfig(['summary' => 'Contexto operativo']);
+
+        $security = $this->createStub(Security::class);
+        $security->method('isGranted')->willReturnCallback(static fn (string $role): bool => $role === 'ROLE_SUPER_ADMIN');
+        $security->method('getUser')->willReturn(new User('admin@example.com', ['admin']));
+
+        $tenantRepository = new class($tenant) extends TenantRepository {
+            public function __construct(private readonly Tenant $tenant)
+            {
+            }
+
+            public function findAllOrdered(): array
+            {
+                return [$this->tenant];
+            }
+        };
+
+        $externalToolRepository = new class($mcpTool, $n8nTool) extends ExternalToolRepository {
+            public function __construct(
+                private readonly ExternalTool $mcpTool,
+                private readonly ExternalTool $n8nTool,
+            ) {
+            }
+
+            public function findByTenantOrdered(\App\Entity\Tenant $tenant): array
+            {
+                return [$this->mcpTool, $this->n8nTool];
+            }
+
+            public function findRuntimeDefaultMcpByTenant(\App\Entity\Tenant $tenant): ?\App\Entity\ExternalTool
+            {
+                return $this->mcpTool;
+            }
+
+            public function findActiveMcpCandidatesByTenant(\App\Entity\Tenant $tenant): array
+            {
+                return [$this->mcpTool];
+            }
+        };
+
+        $controller = $this->createController($security, null, null, $tenantRepository, $externalToolRepository, $this->createActiveTenantContext($tenant));
+        $container = new Container();
+        $container->set('twig', $this->createTwigEnvironment());
+        $controller->setContainer($container);
+
+        $response = $controller->index(new Request());
+
+        self::assertSame(Response::HTTP_OK, $response->getStatusCode());
+        self::assertStringContainsString('MCP principal', $response->getContent());
+        self::assertStringNotContainsString('Contact Context Mary', $response->getContent());
+    }
+
     public function testIndexShowsDownstreamAuthorizationStatusWithoutExposingToken(): void
     {
         $tenant = new Tenant('Tech Investments', 'tech-investments');

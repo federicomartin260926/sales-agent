@@ -63,14 +63,8 @@ final class InternalMcpConfigController extends AbstractApiController
 
     private function payload(ExternalTool $tool): array
     {
-        $bearerToken = null;
-        if ($tool->getAuthType() === 'bearer' && $tool->getBearerToken() !== null) {
-            try {
-                $bearerToken = $this->cipher->decrypt($tool->getBearerToken());
-            } catch (\Throwable) {
-                $bearerToken = null;
-            }
-        }
+        $bearerToken = $this->decryptToken($tool->getBearerToken());
+        $downstreamAuthorizationToken = $this->decryptToken($tool->getDownstreamAuthorizationToken()) ?? $bearerToken;
 
         return [
             'enabled' => true,
@@ -82,13 +76,28 @@ final class InternalMcpConfigController extends AbstractApiController
             'server_url' => $tool->getWebhookUrl(),
             'auth_type' => $tool->getAuthType(),
             'bearer_token' => $bearerToken,
-            'downstream_authorization_token' => $bearerToken,
-            'downstream_authorization_configured' => $bearerToken !== null && $bearerToken !== '',
+            'downstream_authorization_token' => $downstreamAuthorizationToken,
+            'downstream_authorization_configured' => $downstreamAuthorizationToken !== null && $downstreamAuthorizationToken !== '',
             'allowed_tools' => $tool->getAllowedTools(),
             'require_approval' => $tool->getRequireApproval() ?? 'auto',
             'timeout_seconds' => $tool->getTimeoutSeconds(),
             'config' => $this->normalizeObjectLike($tool->getConfig()),
         ];
+    }
+
+    private function decryptToken(?string $token): ?string
+    {
+        if ($token === null || trim($token) === '') {
+            return null;
+        }
+
+        try {
+            $decrypted = $this->cipher->decrypt($token);
+        } catch (\Throwable) {
+            return null;
+        }
+
+        return trim($decrypted) !== '' ? trim($decrypted) : null;
     }
 
     private function normalizeObjectLike(mixed $value): mixed

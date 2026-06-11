@@ -80,27 +80,22 @@
       <a class="primary-action" href="/backend/external-tools/new">Nuevo servidor MCP</a>
     </div>
     <div class="table-responsive">
-      <table>
-        <thead>
-          <tr>
-            <th>Tenant</th>
-            <th>Herramienta</th>
-            <th>Tipo / proveedor</th>
-            <th>Webhook</th>
-            <th>Auth</th>
+        <table>
+          <thead>
+            <tr>
+              <th>Herramienta</th>
+              <th>Tipo / proveedor</th>
+              <th>Webhook</th>
+              <th>Auth</th>
             <th>Timeout</th>
             <th>Principal</th>
             <th>Estado</th>
             <th class="text-right">Acciones</th>
           </tr>
         </thead>
-        <tbody>
+          <tbody>
           {% for tool in tools %}
             <tr>
-              <td>
-                <strong>{{ tool.tenantName }}</strong>
-                <div class="subtle">{{ tool.tenantId }}</div>
-              </td>
               <td>
                 <strong>{{ tool.name }}</strong>
                 <div class="subtle">Config: {{ tool.configSummary }}</div>
@@ -148,7 +143,7 @@
                     <button class="icon-action tool-action-icon-button" type="submit" title="{{ tool.isActive ? 'Desactivar' : 'Activar' }}" aria-label="{{ tool.isActive ? 'Desactivar' : 'Activar' }}">{{ tool.isActive ? '⏸' : '▶' }}</button>
                   </form>
                   {% if tool.isRuntimeDefault %}
-                    <span class="badge-live">Runtime</span>
+                    <span class="badge-live" title="MCP principal del runtime">Runtime principal</span>
                   {% endif %}
                   <form method="post" action="/backend/external-tools/{{ tool.id }}/delete" onsubmit="return confirm('¿Eliminar esta herramienta externa?');" style="display:inline-flex;">
                     <input type="hidden" name="_csrf_token" value="{{ tool.deleteToken }}">
@@ -159,7 +154,7 @@
             </tr>
           {% else %}
             <tr>
-              <td colspan="9" class="empty-row">No hay herramientas externas todavía.</td>
+              <td colspan="8" class="empty-row">No hay herramientas externas todavía.</td>
             </tr>
           {% endfor %}
         </tbody>

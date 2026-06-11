@@ -57,6 +57,14 @@ class ExternalToolClient:
                 "error_code": "not_configured",
             }
 
+        if tool.is_active is False:
+            return {
+                **base_response,
+                "configured": False,
+                "provider": tool.provider,
+                "error_code": "not_configured",
+            }
+
         provider = tool.provider.strip().lower()
         if provider != "n8n_webhook":
             return {
@@ -95,6 +103,9 @@ class ExternalToolClient:
         timeout_seconds = tool.timeout_seconds if tool.timeout_seconds > 0 else 5
         timeout = httpx.Timeout(timeout_seconds, connect=2.0)
         headers = self._tool_headers(tool)
+        downstream_authorization_token = self._normalize_header_token(getattr(tool, "downstream_authorization_token", None))
+        if tool.provider.strip().lower() == "n8n_webhook" and downstream_authorization_token is not None:
+            headers["X-Downstream-Authorization"] = f"Bearer {downstream_authorization_token}"
         started_at = time.perf_counter()
 
         try:
@@ -196,12 +207,14 @@ class ExternalToolClient:
     def _normalize_contact(self, contact: Any) -> dict[str, Any]:
         phone = self._contact_value(contact, "phone")
         name = self._contact_value(contact, "name")
+        email = self._contact_value(contact, "email")
         wa_id = self._contact_value(contact, "wa_id", fallback=phone)
 
         return {
             "wa_id": wa_id,
             "phone": phone,
             "name": name,
+            "email": email,
         }
 
     def _contact_value(self, contact: Any, *names: str, fallback: Any | None = None) -> Any | None:
@@ -226,6 +239,13 @@ class ExternalToolClient:
             headers["Authorization"] = f"Bearer {tool.bearer_token.strip()}"
 
         return headers
+
+    def _normalize_header_token(self, value: Any) -> str | None:
+        if not isinstance(value, str):
+            return None
+
+        token = value.strip()
+        return token if token != "" else None
 
     def _latency_ms(self, started_at: float) -> int:
         return int(round((time.perf_counter() - started_at) * 1000))

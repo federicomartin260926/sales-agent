@@ -185,6 +185,7 @@ class BackendExternalTool(BaseModel):
         validation_alias=AliasChoices("downstreamAuthorizationConfigured", "downstream_authorization_configured"),
     )
     timeout_seconds: int = Field(default=5, validation_alias=AliasChoices("timeoutSeconds", "timeout_seconds"))
+    is_active: bool | None = Field(default=None, validation_alias=AliasChoices("isActive", "is_active"))
     config: dict[str, Any] = Field(default_factory=dict)
 
     @field_validator("config", mode="before")
@@ -194,6 +195,30 @@ class BackendExternalTool(BaseModel):
             return value
 
         return {}
+
+
+class BackendContactContextCache(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    id: str
+    tenant_id: str = Field(validation_alias=AliasChoices("tenant_id", "tenantId"))
+    channel: str | None = None
+    external_channel_id: str | None = Field(default=None, validation_alias=AliasChoices("external_channel_id", "externalChannelId"))
+    external_conversation_id: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("external_conversation_id", "externalConversationId"),
+    )
+    contact_phone: str | None = Field(default=None, validation_alias=AliasChoices("contact_phone", "contactPhone"))
+    contact_email: str | None = Field(default=None, validation_alias=AliasChoices("contact_email", "contactEmail"))
+    contact_key: str = Field(validation_alias=AliasChoices("contact_key", "contactKey"))
+    provider: str = "contact_context"
+    source: str = "mcp"
+    status: str = "success"
+    context_json: dict[str, Any] | None = Field(default=None, validation_alias=AliasChoices("context_json", "contextJson"))
+    fetched_at: str = Field(validation_alias=AliasChoices("fetched_at", "fetchedAt"))
+    expires_at: str = Field(validation_alias=AliasChoices("expires_at", "expiresAt"))
+    created_at: str = Field(validation_alias=AliasChoices("created_at", "createdAt"))
+    updated_at: str = Field(validation_alias=AliasChoices("updated_at", "updatedAt"))
 
 class BackendConversationUpsertPayload(BaseModel):
     model_config = ConfigDict(extra="ignore", populate_by_name=True)
@@ -626,6 +651,121 @@ class BackendClient:
             return BackendExternalTool.model_validate(tool)
         except ValidationError:
             logger.warning("Backend external tool payload validation failed for tenant=%s type=%s", tenant_id, tool_type)
+            return None
+
+    async def get_contact_context_cache(self, tenant_id: str, contact_key: str, provider: str = "contact_context") -> BackendContactContextCache | None:
+        base_url = self.settings.backend_base_url.strip().rstrip("/")
+        if base_url == "" or tenant_id.strip() == "" or contact_key.strip() == "":
+            return None
+
+        timeout = httpx.Timeout(5.0, connect=2.0)
+        params = {
+            "tenant_id": tenant_id.strip(),
+            "contact_key": contact_key.strip(),
+            "provider": provider.strip() or "contact_context",
+        }
+        try:
+            async with httpx.AsyncClient(base_url=base_url, timeout=timeout, transport=self.transport) as client:
+                response = await client.get("/api/internal/contact-context-cache", params=params, headers=self._auth_headers())
+                if response.status_code == httpx.codes.NOT_FOUND:
+                    return None
+                if response.status_code >= 400:
+                    logger.warning(
+                        "Backend contact context cache lookup failed for %s %s with status %s body=%s",
+                        response.request.method,
+                        response.request.url,
+                        response.status_code,
+                        self._response_snippet(response),
+                    )
+                    response.raise_for_status()
+
+                payload = response.json()
+        except (httpx.HTTPError, ValueError):
+            return None
+
+        if not isinstance(payload, dict):
+            return None
+
+        cache = payload.get("cache")
+        if not isinstance(cache, dict):
+            return None
+
+        try:
+            return BackendContactContextCache.model_validate(cache)
+        except ValidationError:
+            logger.warning("Backend contact context cache payload validation failed tenant=%s contact_key=%s", tenant_id, contact_key)
+            return None
+
+    async def save_contact_context_cache(self, payload: dict[str, Any]) -> BackendContactContextCache | None:
+        base_url = self.settings.backend_base_url.strip().rstrip("/")
+        tenant_id = (payload.get("tenant_id") or payload.get("tenantId") or "").strip() if isinstance(payload.get("tenant_id") or payload.get("tenantId"), str) else ""
+        contact_key = (payload.get("contact_key") or payload.get("contactKey") or "").strip() if isinstance(payload.get("contact_key") or payload.get("contactKey"), str) else ""
+        if base_url == "" or tenant_id == "" or contact_key == "":
+            return None
+
+        timeout = httpx.Timeout(5.0, connect=2.0)
+        try:
+            async with httpx.AsyncClient(base_url=base_url, timeout=timeout, transport=self.transport) as client:
+                response = await client.post("/api/internal/contact-context-cache", json=payload, headers=self._auth_headers())
+                response.raise_for_status()
+                payload_data = response.json()
+        except (httpx.HTTPError, ValueError):
+            return None
+
+        if not isinstance(payload_data, dict):
+            return None
+
+        cache = payload_data.get("cache")
+        if not isinstance(cache, dict):
+            return None
+
+        try:
+            return BackendContactContextCache.model_validate(cache)
+        except ValidationError:
+            logger.warning("Backend contact context cache upsert payload validation failed tenant=%s contact_key=%s", tenant_id, contact_key)
+            return None
+
+    async def invalidate_contact_context_cache(self, tenant_id: str, contact_key: str, provider: str = "contact_context") -> BackendContactContextCache | None:
+        base_url = self.settings.backend_base_url.strip().rstrip("/")
+        if base_url == "" or tenant_id.strip() == "" or contact_key.strip() == "":
+            return None
+
+        timeout = httpx.Timeout(5.0, connect=2.0)
+        payload = {
+            "tenant_id": tenant_id.strip(),
+            "contact_key": contact_key.strip(),
+            "provider": provider.strip() or "contact_context",
+        }
+        try:
+            async with httpx.AsyncClient(base_url=base_url, timeout=timeout, transport=self.transport) as client:
+                response = await client.post("/api/internal/contact-context-cache/invalidate", json=payload, headers=self._auth_headers())
+                if response.status_code == httpx.codes.NOT_FOUND:
+                    return None
+                if response.status_code >= 400:
+                    logger.warning(
+                        "Backend contact context cache invalidation failed for %s %s with status %s body=%s",
+                        response.request.method,
+                        response.request.url,
+                        response.status_code,
+                        self._response_snippet(response),
+                    )
+                    response.raise_for_status()
+
+                payload_data = response.json()
+        except (httpx.HTTPError, ValueError):
+            return None
+
+        if not isinstance(payload_data, dict):
+            return None
+
+        cache = payload_data.get("cache")
+        if not isinstance(cache, dict):
+            return None
+
+        try:
+            return BackendContactContextCache.model_validate(cache)
+        except ValidationError:
+            logger.warning("Backend contact context cache invalidation payload validation failed tenant=%s contact_key=%s", tenant_id, contact_key)
             return None
 
     async def fetch_mcp_config(self, tenant_id: str) -> McpRemoteConfig:

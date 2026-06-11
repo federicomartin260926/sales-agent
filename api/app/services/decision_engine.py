@@ -1010,6 +1010,35 @@ class DecisionEngine:
         if isinstance(branches, list):
             data["external_context_branches"] = branches
 
+        business_context = payload_data.get("business_context")
+        if isinstance(business_context, dict):
+            business_timezone = business_context.get("timezone")
+            if isinstance(business_timezone, str) and business_timezone.strip() != "":
+                data["external_business_context_timezone"] = business_timezone.strip()
+
+            business_timezone_source = business_context.get("timezone_source") or business_context.get("timezoneSource")
+            if isinstance(business_timezone_source, str) and business_timezone_source.strip() != "":
+                data["external_business_context_timezone_source"] = business_timezone_source.strip()
+
+            if isinstance(business_context.get("needs_branch_selection"), bool):
+                data["external_business_context_needs_branch_selection"] = bool(business_context.get("needs_branch_selection", False))
+            elif isinstance(business_context.get("needsBranchSelection"), bool):
+                data["external_business_context_needs_branch_selection"] = bool(business_context.get("needsBranchSelection", False))
+
+            business_branch = business_context.get("branch")
+            if isinstance(business_branch, (dict, str)):
+                data["external_business_context_branch"] = business_branch
+
+            business_selected_branch = business_context.get("selected_branch")
+            if isinstance(business_selected_branch, (dict, str)):
+                data["external_business_context_selected_branch"] = business_selected_branch
+            elif isinstance(business_context.get("selectedBranch"), (dict, str)):
+                data["external_business_context_selected_branch"] = business_context.get("selectedBranch")
+
+            business_branches = business_context.get("branches")
+            if isinstance(business_branches, list):
+                data["external_business_context_branches"] = business_branches
+
         self._apply_agenda_context_data(data, contact_context)
 
     def _apply_agenda_context_data(self, data: dict, contact_context: dict | None) -> None:

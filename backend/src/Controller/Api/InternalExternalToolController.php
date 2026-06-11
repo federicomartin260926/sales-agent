@@ -34,7 +34,7 @@ final class InternalExternalToolController extends AbstractApiController
             return $this->notFound('Tenant not found');
         }
 
-        $externalTool = $this->externalTools->findActiveByTenantAndType($tenant, $type);
+        $externalTool = $this->externalTools->findActiveByTenantTypeAndProvider($tenant, $type, 'n8n_webhook');
         if (!$externalTool instanceof ExternalTool) {
             return $this->json([
                 'ok' => true,
@@ -60,13 +60,10 @@ final class InternalExternalToolController extends AbstractApiController
 
     private function toolPayload(ExternalTool $externalTool): array
     {
-        $bearerToken = null;
-        if ($externalTool->getAuthType() === 'bearer' && $externalTool->getBearerToken() !== null) {
-            try {
-                $bearerToken = $this->cipher->decrypt($externalTool->getBearerToken());
-            } catch (\Throwable $exception) {
-                $bearerToken = null;
-            }
+        $bearerToken = $this->decryptToken($externalTool->getBearerToken());
+        $downstreamAuthorizationToken = $this->decryptToken($externalTool->getDownstreamAuthorizationToken());
+        if ($externalTool->getProvider() !== 'n8n_webhook' && $downstreamAuthorizationToken === null) {
+            $downstreamAuthorizationToken = $bearerToken;
         }
 
         return [
@@ -78,10 +75,26 @@ final class InternalExternalToolController extends AbstractApiController
             'webhook_url' => $externalTool->getWebhookUrl(),
             'auth_type' => $externalTool->getAuthType(),
             'bearer_token' => $bearerToken,
-            'downstream_authorization_token' => $bearerToken,
-            'downstream_authorization_configured' => $bearerToken !== null && $bearerToken !== '',
+            'downstream_authorization_token' => $downstreamAuthorizationToken,
+            'downstream_authorization_configured' => $downstreamAuthorizationToken !== null && $downstreamAuthorizationToken !== '',
             'timeout_seconds' => $externalTool->getTimeoutSeconds(),
+            'is_active' => $externalTool->isActive(),
             'config' => $externalTool->getConfig() !== [] ? $externalTool->getConfig() : (object) [],
         ];
+    }
+
+    private function decryptToken(?string $token): ?string
+    {
+        if ($token === null || trim($token) === '') {
+            return null;
+        }
+
+        try {
+            $decrypted = $this->cipher->decrypt($token);
+        } catch (\Throwable) {
+            return null;
+        }
+
+        return trim($decrypted) !== '' ? trim($decrypted) : null;
     }
 }

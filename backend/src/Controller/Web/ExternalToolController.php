@@ -31,6 +31,7 @@ final class ExternalToolController extends AbstractController
     private const SALES_AGENT_API_RESPOND_PATH = '/agent/respond';
     private const TOOL_TYPES = ['contact_context', 'mcp_remote', 'handoff_webhook'];
     private const PROVIDERS = ['n8n_webhook', 'openai_remote_mcp', 'mcp_remote'];
+    private const MCP_PROVIDERS = ['openai_remote_mcp', 'mcp_remote'];
     private const AUTH_TYPES = ['none', 'bearer'];
     private const TEST_TOOL_TYPE = 'contact_context';
     private const MCP_TOOL_TYPE = 'mcp_remote';
@@ -380,10 +381,10 @@ final class ExternalToolController extends AbstractController
             'tenantName' => $tool->getTenant()->getName(),
             'name' => $tool->getName(),
             'type' => $tool->getType(),
-            'provider' => $tool->getType() === self::MCP_TOOL_TYPE ? self::MCP_TOOL_PROVIDER : $tool->getProvider(),
+            'provider' => $tool->getProvider(),
             'webhookUrl' => $tool->getWebhookUrl() ?? '',
             'authType' => $tool->getAuthType() ?? 'none',
-            'hasBearerToken' => $tool->hasDownstreamAuthorizationToken(),
+            'hasBearerToken' => $tool->hasEffectiveDownstreamAuthorizationToken(),
             'timeoutSeconds' => $tool->getTimeoutSeconds(),
             'isActive' => $tool->isActive(),
             'isRuntimeDefault' => $tool->isRuntimeDefault(),
@@ -404,7 +405,7 @@ final class ExternalToolController extends AbstractController
     {
         $config = $tool?->getConfig() ?? [];
         $tenantRuntimeDefault = $tenant instanceof Tenant ? $this->externalTools->findRuntimeDefaultMcpByTenant($tenant) : null;
-        $authType = $tool?->getAuthType() ?? ($tool?->hasDownstreamAuthorizationToken() ? 'bearer' : 'none');
+        $authType = $tool?->getAuthType() ?? ($tool?->hasEffectiveDownstreamAuthorizationToken() ? 'bearer' : 'none');
         return [
             'name' => $tool?->getName() ?? '',
             'tenantId' => $tenant?->getId()->toRfc4122() ?? $tool?->getTenant()?->getId()->toRfc4122() ?? '',
@@ -530,7 +531,7 @@ final class ExternalToolController extends AbstractController
         $effectiveAuthType = $values['authType'];
         if ($values['type'] === self::HANDOFF_TOOL_TYPE) {
             $effectiveAuthType = 'none';
-        } elseif ($effectiveAuthType === 'none' && ($values['bearerToken'] !== '' || $tool->hasDownstreamAuthorizationToken())) {
+        } elseif ($effectiveAuthType === 'none' && ($values['bearerToken'] !== '' || $tool->hasEffectiveDownstreamAuthorizationToken())) {
             $effectiveAuthType = 'bearer';
         }
 
@@ -776,8 +777,8 @@ final class ExternalToolController extends AbstractController
             'action_url' => $actionUrl,
             'is_edit' => $isEdit,
             'tool_id' => $tool?->getId()->toRfc4122(),
-            'has_token' => $tool?->hasDownstreamAuthorizationToken() ?? false,
-            'downstream_authorization_configured' => $tool?->hasDownstreamAuthorizationToken() ?? false,
+            'has_token' => $tool?->hasEffectiveDownstreamAuthorizationToken() ?? false,
+            'downstream_authorization_configured' => $tool?->hasEffectiveDownstreamAuthorizationToken() ?? false,
             'can_test' => $tool === null ? false : $this->canTestTool($tool),
             'form_token' => $this->externalToolTokenValue($isEdit && $tool instanceof ExternalTool ? 'external_tool_form_'.$tool->getId()->toRfc4122() : 'external_tool_form_create'),
             'active_tenant_name' => $activeTenant instanceof Tenant ? $activeTenant->getName() : null,
@@ -947,7 +948,7 @@ final class ExternalToolController extends AbstractController
 
     private function canTestTool(ExternalTool $tool): bool
     {
-        return $tool->getType() === self::MCP_TOOL_TYPE && $tool->isEnabledForLlm();
+        return $tool->getType() === self::MCP_TOOL_TYPE && in_array($tool->getProvider(), self::MCP_PROVIDERS, true) && $tool->isEnabledForLlm();
     }
 
     /**
@@ -957,7 +958,7 @@ final class ExternalToolController extends AbstractController
     {
         return array_values(array_filter(
             $this->externalTools->findByTenantOrdered($tenant),
-            static fn (ExternalTool $tool): bool => $tool->getType() === self::MCP_TOOL_TYPE
+            static fn (ExternalTool $tool): bool => $tool->getType() === self::MCP_TOOL_TYPE && in_array($tool->getProvider(), self::MCP_PROVIDERS, true)
         ));
     }
 

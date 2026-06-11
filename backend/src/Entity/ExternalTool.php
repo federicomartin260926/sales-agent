@@ -41,6 +41,9 @@ class ExternalTool
     #[ORM\Column(name: 'bearer_token', type: 'text', nullable: true)]
     private ?string $bearerToken = null;
 
+    #[ORM\Column(name: 'downstream_authorization_token', type: 'text', nullable: true)]
+    private ?string $downstreamAuthorizationToken = null;
+
     #[ORM\Column(name: 'timeout_seconds', type: 'integer')]
     private int $timeoutSeconds = 5;
 
@@ -156,17 +159,31 @@ class ExternalTool
 
     public function getDownstreamAuthorizationToken(): ?string
     {
-        return $this->getBearerToken();
+        return $this->downstreamAuthorizationToken;
     }
 
     public function setDownstreamAuthorizationToken(?string $downstreamAuthorizationToken): void
     {
-        $this->setBearerToken($downstreamAuthorizationToken);
+        $trimmed = $downstreamAuthorizationToken !== null ? trim($downstreamAuthorizationToken) : null;
+        $this->downstreamAuthorizationToken = $trimmed !== '' ? $trimmed : null;
+        $this->updatedAt = new \DateTimeImmutable();
     }
 
     public function hasDownstreamAuthorizationToken(): bool
     {
-        return $this->bearerToken !== null && $this->bearerToken !== '';
+        return $this->downstreamAuthorizationToken !== null && $this->downstreamAuthorizationToken !== '';
+    }
+
+    public function getEffectiveDownstreamAuthorizationToken(): ?string
+    {
+        return $this->downstreamAuthorizationToken ?? $this->bearerToken;
+    }
+
+    public function hasEffectiveDownstreamAuthorizationToken(): bool
+    {
+        $token = $this->getEffectiveDownstreamAuthorizationToken();
+
+        return $token !== null && $token !== '';
     }
 
     public function getTimeoutSeconds(): int
