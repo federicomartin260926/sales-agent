@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+import json
 
 import httpx
 import pytest
@@ -6,11 +7,50 @@ import pytest
 from app.schemas.agent import AgentResponse
 from app.schemas.agent import AgentRequest, Contact
 from app.services.backend_client import BackendAiUsagePolicy, BackendAiUsageSnapshot, BackendExternalTool, BackendRoutingEntryPointUtmContext, BackendTenant, CommercialContext
+from app.services.contact_context_resolver import ContactContextResolver
 from app.schemas.llm import LLMUsage, McpRemoteConfig
 from app.services.decision_engine import DecisionEngine
 from app.services.llm_decision_service import LLMDecisionService
+from app.services.llm_prompt_builder import LLMPromptBuilder
 from app.services.routing_resolver import RuntimeRoutingResolver
 from app.services.runtime import AgentRuntime
+
+
+@pytest.fixture(autouse=True)
+def noop_contact_context_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _noop_resolve(self, payload, backend_context, mcp_config, recent_contact_context=None):
+        return recent_contact_context
+
+    monkeypatch.setattr(ContactContextResolver, "resolve", _noop_resolve)
+
+
+def build_contact_context_payload(
+    timezone_name: str = "Atlantic/Canary",
+    timezone_source: str = "crm_tenant",
+) -> dict[str, object]:
+    return {
+        "available": True,
+        "configured": True,
+        "provider": "n8n_webhook",
+        "ok": True,
+        "found": True,
+        "error_code": None,
+        "data": {
+            "source": "contact_context",
+            "timezone": timezone_name,
+            "timezone_source": timezone_source,
+            "needs_branch_selection": False,
+            "business_context": {
+                "timezone": timezone_name,
+                "timezone_source": timezone_source,
+                "needs_branch_selection": False,
+            },
+        },
+    }
+
+
+async def resolve_contact_context_payload(*args, **kwargs) -> dict[str, object]:
+    return build_contact_context_payload()
 
 
 class RecordingBackendClient:
@@ -94,6 +134,18 @@ class RecordingBackendClient:
     async def get_conversation_summary_context(self, conversation_id: str, limit: int = 20):
         self.calls.append(("get_conversation_summary_context", (conversation_id, limit)))
         return self.summary_context
+
+    async def get_contact_context_cache(self, tenant_id: str, contact_key: str, provider: str = "contact_context"):
+        self.calls.append(("get_contact_context_cache", (tenant_id, contact_key, provider)))
+        return None
+
+    async def save_contact_context_cache(self, payload):
+        self.calls.append(("save_contact_context_cache", (payload,)))
+        return None
+
+    async def invalidate_contact_context_cache(self, tenant_id: str, contact_key: str, provider: str = "contact_context"):
+        self.calls.append(("invalidate_contact_context_cache", (tenant_id, contact_key, provider)))
+        return None
 
 
 class RecordingAudioGatewayClient:
@@ -905,6 +957,8 @@ async def test_runtime_passes_recent_openai_cursor_to_llm(monkeypatch: pytest.Mo
 
     monkeypatch.setattr(backend, "fetch_tenant_context", fake_fetch_tenant_context)
     monkeypatch.setattr(DecisionEngine, "resolve_llm_response", fake_resolve_llm_response)
+    monkeypatch.setattr(ContactContextResolver, "resolve", resolve_contact_context_payload)
+    monkeypatch.setattr(ContactContextResolver, "resolve", resolve_contact_context_payload)
 
     runtime = AgentRuntime(
         backend,
@@ -1027,6 +1081,7 @@ async def test_runtime_keeps_cursor_for_slot_selection_followup(monkeypatch: pyt
 
     monkeypatch.setattr(backend, "fetch_tenant_context", fake_fetch_tenant_context)
     monkeypatch.setattr(DecisionEngine, "resolve_llm_response", fake_resolve_llm_response)
+    monkeypatch.setattr(ContactContextResolver, "resolve", resolve_contact_context_payload)
 
     runtime = AgentRuntime(
         backend,
@@ -1044,6 +1099,301 @@ async def test_runtime_keeps_cursor_for_slot_selection_followup(monkeypatch: pyt
     assert response.intent == "agenda"
     assert seen["previous_response_id"] == previous_response_id
     assert seen["context_messages"][0]["metadata"]["mcp_tool_traces"][0]["output"]["slots"][0]["owner_id"] == "owner-uuid"
+
+
+@pytest.mark.asyncio
+async def test_runtime_preloads_contact_context_for_prefiero_slot_selection_followup(monkeypatch: pytest.MonkeyPatch):
+    previous_response_id = "resp_123"
+    last_response_at = (datetime.now(timezone.utc) - timedelta(minutes=30)).isoformat()
+
+    availability_trace = {
+        "type": "mcp_call",
+        "server_label": "mary_main_mcp",
+        "tool_name": "appointment_availability",
+        "arguments": {
+            "service_id": "service-uuid",
+            "timezone": "Europe/Madrid",
+        },
+        "output": {
+            "available": True,
+            "slots": [
+                {
+                    "start": "2026-06-15T16:00:00+01:00",
+                    "end": "2026-06-15T17:30:00+01:00",
+                    "service_id": "service-uuid",
+                    "owner": {
+                        "id": "owner-claudia-uuid",
+                        "name": "Claudia Estética",
+                    },
+                    "timezone": "Europe/Madrid",
+                },
+                {
+                    "start": "2026-06-15T17:35:00+01:00",
+                    "end": "2026-06-15T19:05:00+01:00",
+                    "service_id": "service-uuid",
+                    "owner": {
+                        "id": "owner-claudia-uuid",
+                        "name": "Claudia Estética",
+                    },
+                    "timezone": "Europe/Madrid",
+                },
+                {
+                    "start": "2026-06-15T16:00:00+01:00",
+                    "end": "2026-06-15T17:30:00+01:00",
+                    "service_id": "service-uuid",
+                    "owner": {
+                        "id": "owner-maria-uuid",
+                        "name": "María Gutiérrez",
+                    },
+                    "timezone": "Europe/Madrid",
+                },
+                {
+                    "start": "2026-06-15T17:35:00+01:00",
+                    "end": "2026-06-15T19:05:00+01:00",
+                    "service_id": "service-uuid",
+                    "owner": {
+                        "id": "owner-maria-uuid",
+                        "name": "María Gutiérrez",
+                    },
+                    "timezone": "Europe/Madrid",
+                },
+                {
+                    "start": "2026-06-15T19:10:00+01:00",
+                    "end": "2026-06-15T20:40:00+01:00",
+                    "service_id": "service-uuid",
+                    "owner": {
+                        "id": "owner-maria-uuid",
+                        "name": "María Gutiérrez",
+                    },
+                    "timezone": "Europe/Madrid",
+                }
+            ],
+        },
+        "status": "completed",
+    }
+
+    class SummaryMessageStub:
+        def __init__(self, payload: dict[str, object]) -> None:
+            self.payload = payload
+
+        def model_dump(self):
+            return self.payload
+
+    backend = RecordingBackendClient(
+        phone_context={"tenant_id": "tenant-1", "tenant_slug": "negocio-demo"},
+        tenant_context=build_context(),
+        mcp_config=McpRemoteConfig(
+            enabled=True,
+            server_label="mary_main_mcp",
+            server_url="https://mcp.example.test",
+            allowed_tools=["appointment_availability"],
+            require_approval="never",
+        ),
+        summary_context=type(
+            "SummaryContextStub",
+            (),
+            {
+                "messages": [
+                    SummaryMessageStub(
+                        {
+                            "id": "message-availability-1",
+                            "direction": "outbound",
+                            "role": "assistant",
+                            "message_type": "text",
+                            "body": "Para mañana por la tarde hay disponibilidad a las 16:00, 17:35 y 19:10.",
+                            "intent": "agenda",
+                            "action": "answer_question",
+                            "needs_human": False,
+                            "metadata": {
+                                "mcp_tool_traces": [availability_trace],
+                                "mcp_response_id": "resp_availability_123",
+                            },
+                        }
+                    )
+                ]
+            },
+        )(),
+        conversation_result={
+            "created": False,
+            "conversation": {
+                "id": "conversation-1",
+                "status": "active",
+                "lastOpenAiResponseId": previous_response_id,
+                "lastOpenAiResponseAt": last_response_at,
+            },
+        },
+    )
+
+    resolver_calls: dict[str, object] = {"count": 0}
+
+    async def fake_resolve(self, payload, backend_context, mcp_config, recent_contact_context=None):
+        resolver_calls["count"] = int(resolver_calls["count"]) + 1
+        return {
+            "available": True,
+            "configured": True,
+            "tool_type": "contact_context",
+            "provider": "n8n_webhook",
+            "ok": True,
+            "found": True,
+            "source": "external_tool:n8n",
+            "error_code": None,
+            "data": {
+                "source": "external_tool:n8n",
+                "timezone": "Atlantic/Canary",
+                "timezone_source": "crm_tenant",
+                "needs_branch_selection": False,
+                "business_context": {
+                    "timezone": "Atlantic/Canary",
+                    "timezone_source": "crm_tenant",
+                    "needs_branch_selection": False,
+                },
+            },
+        }
+
+    async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None, previous_response_id=None):
+        assert contact_context is not None
+        assert contact_context["data"]["timezone"] == "Atlantic/Canary"
+        assert contact_context["data"]["business_context"]["timezone"] == "Atlantic/Canary"
+        assert contact_context["data"]["business_context"]["timezone_source"] == "crm_tenant"
+        _system_prompt, user_prompt = LLMPromptBuilder().build(payload, routing, backend_context, contact_context, mcp_config)
+        parsed_prompt = json.loads(user_prompt)
+        assert parsed_prompt["conversation"]["appointment_context"]["selected_slot"]["start"] == "2026-06-15T19:10:00+01:00"
+        assert parsed_prompt["conversation"]["appointment_context"]["selected_slot"]["owner_id"] == "owner-maria-uuid"
+        assert parsed_prompt["conversation"]["appointment_context"]["selected_slot"]["owner_name"] == "María Gutiérrez"
+        return AgentResponse(
+            reply="Perfecto, voy a revisar ese horario.",
+            intent="agenda",
+            score=0.94,
+            action="answer_question",
+            needs_human=False,
+            data_to_save={
+                "topic": "agenda",
+                "mcp_enabled": True,
+                "mcp_server_label": "mary_main_mcp",
+                "mcp_tool_traces": [],
+            },
+            provider="openai",
+            model="gpt-4.1-mini",
+            latency_ms=10,
+        )
+
+    monkeypatch.setattr(ContactContextResolver, "resolve", fake_resolve)
+    monkeypatch.setattr(DecisionEngine, "decide", fake_decide)
+
+    runtime = AgentRuntime(
+        backend,
+        RuntimeRoutingResolver(backend),
+        DecisionEngine(backend),
+    )  # type: ignore[arg-type]
+    payload = AgentRequest(
+        tenant_id="tenant-ignored",
+        entrypoint_ref="abc123",
+        message="Prefiero el de las 19:10 con María Gutiérrez.",
+        contact=Contact(phone="+34999999999"),
+        conversation={
+            "channel": "whatsapp",
+            "last_messages": [
+                "SA: Para el lunes 15 de junio por la tarde hay disponibilidad a las 16:00, 17:35 y 19:10.",
+            ],
+        },
+    )
+
+    response = await runtime.respond(payload)
+
+    assert response.intent == "agenda"
+    assert resolver_calls["count"] == 1
+    assert response.data_to_save["contact_context_resolver_called"] is True
+    assert response.data_to_save["contact_context_available"] is True
+    assert response.data_to_save["contact_context_source"] == "external_tool:n8n"
+    assert response.data_to_save["effective_timezone"] == "Atlantic/Canary"
+    assert response.data_to_save["effective_timezone_source"] == "crm_tenant"
+    assert response.data_to_save["operational_context"]["effective_timezone"] == "Atlantic/Canary"
+    assert response.data_to_save["operational_context"]["appointment_tool_timezone"] == "Atlantic/Canary"
+    assert response.data_to_save["operational_context"]["channel"] == "whatsapp"
+    assert response.data_to_save["timezone_guardrail_blocked"] is False
+    assert response.data_to_save["timezone_mismatch_detected"] is False
+
+
+@pytest.mark.asyncio
+async def test_runtime_keeps_technical_fallback_timezone_separate_from_operational_context(monkeypatch: pytest.MonkeyPatch):
+    backend = RecordingBackendClient(
+        ref_context=BackendRoutingEntryPointUtmContext.model_validate(
+            {
+                "entry_point_utm_id": "utm-1",
+                "ref": "abc123",
+                "entry_point_id": "entrypoint-1",
+                "entry_point_code": "crm-demo",
+                "tenant_id": "tenant-1",
+                "tenant_slug": "negocio-demo",
+                "product_id": "product-1",
+                "product_name": "CRM Automation",
+                "playbook_id": "playbook-1",
+                "crm_branch_ref": "branch-1",
+                "utm_source": "google",
+                "utm_medium": "cpc",
+                "utm_campaign": "crm_pymes",
+                "status": "matched",
+            }
+        ),
+        mcp_config=McpRemoteConfig(
+            enabled=False,
+            server_label=None,
+            server_url=None,
+            allowed_tools=[],
+            timeout_seconds=15,
+        ),
+        conversation_result={
+            "created": False,
+            "conversation": {
+                "id": "conversation-1",
+                "status": "active",
+                "lastOpenAiResponseId": None,
+                "lastOpenAiResponseAt": None,
+            },
+        },
+    )
+
+    async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None, previous_response_id=None):
+        return AgentResponse(
+            reply="Hola, ¿en qué puedo ayudarte?",
+            intent="open_question",
+            score=0.82,
+            action="answer_question",
+            needs_human=False,
+            data_to_save={},
+            provider="openai",
+            model="gpt-4.1-mini",
+            latency_ms=14,
+        )
+
+    monkeypatch.setattr(DecisionEngine, "decide", fake_decide)
+
+    runtime = AgentRuntime(
+        backend,
+        RuntimeRoutingResolver(backend),
+        DecisionEngine(backend),
+    )  # type: ignore[arg-type]
+    payload = AgentRequest(
+        tenant_id="tenant-ignored",
+        entrypoint_ref="abc123",
+        message="Hola, ¿puedes ayudarme?",
+        contact=Contact(phone="+34999999999"),
+        conversation={
+            "channel": "whatsapp",
+            "last_messages": [],
+        },
+    )
+
+    response = await runtime.respond(payload)
+
+    assert response.intent == "open_question"
+    assert response.data_to_save["effective_timezone"] is None
+    assert response.data_to_save["effective_timezone_source"] == "settings.default_business_timezone"
+    assert response.data_to_save["technical_fallback_timezone"] == "Europe/Madrid"
+    assert response.data_to_save["technical_fallback_timezone_source"] == "settings.default_business_timezone"
+    assert response.data_to_save["operational_context"]["effective_timezone"] is None
+    assert response.data_to_save["operational_context"]["appointment_tool_timezone"] is None
+    assert response.data_to_save["operational_context"]["channel"] == "whatsapp"
 
 
 @pytest.mark.asyncio
@@ -1091,6 +1441,7 @@ async def test_runtime_omits_cursor_for_fresh_availability_request(monkeypatch: 
 
     monkeypatch.setattr(backend, "fetch_tenant_context", fake_fetch_tenant_context)
     monkeypatch.setattr(DecisionEngine, "resolve_llm_response", fake_resolve_llm_response)
+    monkeypatch.setattr(ContactContextResolver, "resolve", resolve_contact_context_payload)
 
     runtime = AgentRuntime(
         backend,
@@ -1613,6 +1964,283 @@ async def test_runtime_persists_mcp_metadata_for_openai_response(monkeypatch: py
 
 
 @pytest.mark.asyncio
+async def test_runtime_blocks_agenda_when_effective_timezone_is_missing(monkeypatch: pytest.MonkeyPatch):
+    backend = RecordingBackendClient(
+        ref_context=BackendRoutingEntryPointUtmContext.model_validate(
+            {
+                "entry_point_utm_id": "utm-1",
+                "ref": "abc123",
+                "entry_point_id": "entrypoint-1",
+                "entry_point_code": "crm-demo",
+                "tenant_id": "tenant-1",
+                "tenant_slug": "negocio-demo",
+                "product_id": "product-1",
+                "product_name": "CRM Automation",
+                "playbook_id": "playbook-1",
+                "crm_branch_ref": "branch-1",
+                "utm_source": "google",
+                "utm_medium": "cpc",
+                "utm_campaign": "crm_pymes",
+                "status": "matched",
+            }
+        ),
+        mcp_config=McpRemoteConfig(
+            enabled=True,
+            server_label="tech_investments_mcp",
+            server_url="https://mcp.tech-investments.net/mcp",
+            allowed_tools=["appointment_availability"],
+            timeout_seconds=15,
+        ),
+    )
+
+    async def fail_if_llm_is_called(*args, **kwargs):
+        raise AssertionError("LLM should not be called when effective timezone is missing")
+
+    async def fake_resolve_contact_context(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(DecisionEngine, "decide", fail_if_llm_is_called)
+    monkeypatch.setattr(ContactContextResolver, "resolve", fake_resolve_contact_context)
+
+    runtime = AgentRuntime(backend, RuntimeRoutingResolver(backend), DecisionEngine(backend))  # type: ignore[arg-type]
+    payload = AgentRequest(
+        tenant_id="tenant-ignored",
+        entrypoint_ref="abc123",
+        message="Dime disponibilidad de Claudia para láser cuerpo entero para mañana por la tarde.",
+        contact=Contact(phone="+34999999999"),
+        conversation={"last_messages": []},
+    )
+
+    response = await runtime.respond(payload)
+
+    assert response.intent == "agenda"
+    assert response.action == "ask_question"
+    assert response.needs_human is False
+    assert "configuración de agenda" in response.reply.lower()
+    assert response.data_to_save["timezone_guardrail_blocked"] is True
+    assert response.data_to_save["timezone_guardrail_reason"] == "missing_effective_timezone"
+    assert response.data_to_save["mismatched_tool"] == "appointment_availability"
+    assert response.data_to_save["contact_context_resolver_called"] is True
+    assert response.data_to_save["contact_context_available"] is False
+    assert response.data_to_save["contact_context_source"] == "none"
+    assert response.data_to_save["contact_context_error_code"] == "unknown"
+    assert "effective_timezone" not in response.data_to_save
+    assert response.data_to_save["technical_fallback_timezone"] == "Europe/Madrid"
+    assert response.data_to_save["technical_fallback_timezone_source"] == "settings.default_business_timezone"
+
+
+@pytest.mark.asyncio
+async def test_runtime_preserves_contact_context_error_code_from_resolver(monkeypatch: pytest.MonkeyPatch):
+    backend = RecordingBackendClient(
+        ref_context=BackendRoutingEntryPointUtmContext.model_validate(
+            {
+                "entry_point_utm_id": "utm-1",
+                "ref": "abc123",
+                "entry_point_id": "entrypoint-1",
+                "entry_point_code": "crm-demo",
+                "tenant_id": "tenant-1",
+                "tenant_slug": "negocio-demo",
+                "product_id": "product-1",
+                "product_name": "CRM Automation",
+                "playbook_id": "playbook-1",
+                "crm_branch_ref": "branch-1",
+                "utm_source": "google",
+                "utm_medium": "cpc",
+                "utm_campaign": "crm_pymes",
+                "status": "matched",
+            }
+        ),
+        mcp_config=McpRemoteConfig(
+            enabled=True,
+            server_label="tech_investments_mcp",
+            server_url="https://mcp.tech-investments.net/mcp",
+            allowed_tools=["appointment_availability"],
+            timeout_seconds=15,
+        ),
+    )
+
+    async def fake_resolve_contact_context(*args, **kwargs):
+        return {
+            "available": False,
+            "configured": True,
+            "ok": False,
+            "found": False,
+            "source": "none",
+            "error_code": "tool_not_called",
+            "error_message": "contact_context tool was not called.",
+            "cache_lookup": True,
+            "cache_hit": False,
+            "mcp_available": True,
+            "mcp_called": True,
+            "tool_called": False,
+        }
+
+    async def fail_if_llm_is_called(*args, **kwargs):
+        raise AssertionError("LLM should not be called when effective timezone is missing")
+
+    monkeypatch.setattr(ContactContextResolver, "resolve", fake_resolve_contact_context)
+    monkeypatch.setattr(DecisionEngine, "decide", fail_if_llm_is_called)
+
+    runtime = AgentRuntime(backend, RuntimeRoutingResolver(backend), DecisionEngine(backend))  # type: ignore[arg-type]
+    payload = AgentRequest(
+        tenant_id="tenant-ignored",
+        entrypoint_ref="abc123",
+        message="Dime disponibilidad de Claudia para láser cuerpo entero para mañana por la tarde.",
+        contact=Contact(phone="+34999999999"),
+        conversation={"last_messages": []},
+    )
+
+    response = await runtime.respond(payload)
+
+    assert response.intent == "agenda"
+    assert response.action == "ask_question"
+    assert response.data_to_save["timezone_guardrail_blocked"] is True
+    assert response.data_to_save["contact_context_resolver_called"] is True
+    assert response.data_to_save["contact_context_available"] is False
+    assert response.data_to_save["contact_context_source"] == "none"
+    assert response.data_to_save["contact_context_error_code"] == "tool_not_called"
+    assert response.data_to_save["contact_context_error_message"] == "contact_context tool was not called."
+
+
+@pytest.mark.asyncio
+async def test_runtime_blocks_owner_textual_without_canonical_owner_id(monkeypatch: pytest.MonkeyPatch):
+    backend = RecordingBackendClient(
+        ref_context=BackendRoutingEntryPointUtmContext.model_validate(
+            {
+                "entry_point_utm_id": "utm-1",
+                "ref": "abc123",
+                "entry_point_id": "entrypoint-1",
+                "entry_point_code": "crm-demo",
+                "tenant_id": "tenant-1",
+                "tenant_slug": "negocio-demo",
+                "product_id": "product-1",
+                "product_name": "CRM Automation",
+                "playbook_id": "playbook-1",
+                "crm_branch_ref": "branch-1",
+                "utm_source": "google",
+                "utm_medium": "cpc",
+                "utm_campaign": "crm_pymes",
+                "status": "matched",
+            }
+        ),
+        mcp_config=McpRemoteConfig(
+            enabled=True,
+            server_label="tech_investments_mcp",
+            server_url="https://mcp.tech-investments.net/mcp",
+            allowed_tools=["appointment_availability"],
+            timeout_seconds=15,
+        ),
+    )
+
+    async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None, previous_response_id=None):
+        return AgentResponse(
+            reply="Sí, hay huecos.",
+            intent="agenda",
+            score=0.93,
+            action="answer_question",
+            needs_human=False,
+            data_to_save={
+                "topic": "agenda",
+                "mcp_enabled": True,
+                "mcp_server_label": "tech_investments_mcp",
+                "mcp_tool_traces": [
+                    {
+                        "type": "mcp_call",
+                        "server_label": "tech_investments_mcp",
+                        "tool_name": "appointment_availability",
+                        "arguments": {
+                            "tenant_id": "019e4a9a-c85f-72d4-8748-b756073c324c",
+                            "date_from": "2026-06-12T15:00:00+02:00",
+                            "date_to": "2026-06-12T20:00:00+02:00",
+                            "timezone": "Atlantic/Canary",
+                            "duration_minutes": 90,
+                            "service_id": "019eb05e-5f79-7630-ba89-38e0ec1493a0",
+                            "owner_ref": "claudia",
+                        },
+                        "output": {
+                            "ok": False,
+                            "available": False,
+                            "timezone": "Atlantic/Canary",
+                            "slots": [],
+                            "error_code": "crm_error",
+                        },
+                        "status": "completed",
+                    }
+                ],
+            },
+            provider="openai",
+            model="gpt-4.1-mini",
+            latency_ms=52,
+        )
+
+    async def fake_resolve_contact_context(*args, **kwargs):
+        return {
+            "available": True,
+            "configured": True,
+            "provider": "n8n_webhook",
+            "ok": True,
+            "found": True,
+            "error_code": None,
+            "data": {
+                "source": "contact_context",
+                "timezone": "Atlantic/Canary",
+                "timezone_source": "crm_tenant",
+                "business_context": {
+                    "timezone": "Atlantic/Canary",
+                    "timezone_source": "crm_tenant",
+                    "needs_branch_selection": False,
+                },
+            },
+        }
+
+    monkeypatch.setattr(DecisionEngine, "decide", fake_decide)
+    monkeypatch.setattr(ContactContextResolver, "resolve", fake_resolve_contact_context)
+
+    runtime = AgentRuntime(backend, RuntimeRoutingResolver(backend), DecisionEngine(backend))  # type: ignore[arg-type]
+    payload = AgentRequest(
+        tenant_id="tenant-ignored",
+        entrypoint_ref="abc123",
+        message="Dime disponibilidad de Claudia para láser cuerpo entero para mañana por la tarde.",
+        contact=Contact(phone="+34999999999"),
+        conversation={
+            "last_messages": [
+                "SA: Para mañana por la tarde hay disponibilidad a las 17:35 y a las 19:10.",
+            ],
+            "context_messages": [
+                {
+                    "id": "message-contact-context-1",
+                    "direction": "outbound",
+                    "role": "assistant",
+                    "message_type": "text",
+                    "body": "Contexto resuelto.",
+                    "metadata": {
+                        "data_to_save": {
+                            "external_context_available": True,
+                            "external_context_configured": True,
+                            "external_context_timezone": "Atlantic/Canary",
+                            "external_context_timezone_source": "contact_context",
+                            "external_business_context_timezone": "Atlantic/Canary",
+                            "external_business_context_timezone_source": "crm_tenant",
+                            "external_business_context_needs_branch_selection": False,
+                        }
+                    },
+                }
+            ],
+        },
+    )
+
+    response = await runtime.respond(payload)
+
+    assert response.intent == "agenda"
+    assert response.action == "ask_question"
+    assert response.needs_human is False
+    assert "identificar correctamente a claudia" in response.reply.lower()
+    assert response.data_to_save["owner_guardrail_blocked"] is True
+    assert response.data_to_save["owner_guardrail_reason"] == "unresolved_owner_reference"
+    assert response.data_to_save["mismatched_tool"] == "appointment_availability"
+
+
+@pytest.mark.asyncio
 async def test_runtime_does_not_short_circuit_agenda_lookup_messages(monkeypatch: pytest.MonkeyPatch):
     backend = RecordingBackendClient(
         ref_context=BackendRoutingEntryPointUtmContext.model_validate(
@@ -1727,6 +2355,8 @@ async def test_runtime_does_not_short_circuit_agenda_booking_when_appointment_av
 
     async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None, previous_response_id=None):
         assert mcp_config is not None and mcp_config.enabled is True
+        assert contact_context is not None
+        assert contact_context["data"]["timezone"] == "Atlantic/Canary"
         return AgentResponse(
             reply="Sí, veo huecos disponibles esta semana.",
             intent="agenda",
@@ -1746,7 +2376,7 @@ async def test_runtime_does_not_short_circuit_agenda_booking_when_appointment_av
                         "arguments": {
                             "service_ref": "maria-laser-axilas",
                             "duration_minutes": 15,
-                            "timezone": "Europe/Madrid",
+                            "timezone": "Atlantic/Canary",
                         },
                         "output": {"available": True},
                         "status": "completed",
@@ -1759,6 +2389,7 @@ async def test_runtime_does_not_short_circuit_agenda_booking_when_appointment_av
         )
 
     monkeypatch.setattr(DecisionEngine, "decide", fake_decide)
+    monkeypatch.setattr(ContactContextResolver, "resolve", resolve_contact_context_payload)
 
     runtime = AgentRuntime(backend, RuntimeRoutingResolver(backend), DecisionEngine(backend))  # type: ignore[arg-type]
     payload = AgentRequest(
@@ -1783,7 +2414,7 @@ async def test_runtime_does_not_short_circuit_agenda_booking_when_appointment_av
 
 
 @pytest.mark.asyncio
-async def test_runtime_fetches_contact_context_before_agenda_turns(monkeypatch: pytest.MonkeyPatch):
+async def test_runtime_resolves_contact_context_even_when_allowed_tools_do_not_list_it(monkeypatch: pytest.MonkeyPatch):
     backend = RecordingBackendClient(
         ref_context=BackendRoutingEntryPointUtmContext.model_validate(
             {
@@ -1808,36 +2439,24 @@ async def test_runtime_fetches_contact_context_before_agenda_turns(monkeypatch: 
             enabled=True,
             server_label="tech_investments_mcp",
             server_url="https://mcp.tech-investments.net/mcp",
-            allowed_tools=["contact_context", "appointment_availability"],
+            allowed_tools=["appointment_availability"],
             timeout_seconds=15,
         ),
     )
 
-    class RecordingExternalToolClient:
+    class RecordingContactContextResolver:
         def __init__(self) -> None:
             self.calls: list[dict[str, object]] = []
 
-        async def fetch_contact_context(
-            self,
-            tenant_id,
-            tenant_slug,
-            channel,
-            external_channel_id,
-            contact,
-            conversation_id,
-            last_messages,
-            message_text,
-            external_message_id,
-        ):
+        async def resolve(self, payload, backend_context, mcp_config, recent_contact_context=None):
             self.calls.append(
                 {
-                    "tenant_id": tenant_id,
-                    "tenant_slug": tenant_slug,
-                    "channel": channel,
-                    "external_channel_id": external_channel_id,
-                    "conversation_id": conversation_id,
-                    "message_text": message_text,
-                    "external_message_id": external_message_id,
+                    "tenant_id": backend_context.tenant.id if backend_context is not None else None,
+                    "tenant_slug": backend_context.tenant.slug if backend_context is not None else None,
+                    "contact_phone": getattr(payload.contact, "phone", None),
+                    "message_text": payload.message.text,
+                    "recent_contact_context": recent_contact_context,
+                    "allowed_tools": list(mcp_config.allowed_tools) if mcp_config is not None else [],
                 }
             )
             return {
@@ -1847,27 +2466,40 @@ async def test_runtime_fetches_contact_context_before_agenda_turns(monkeypatch: 
                 "provider": "n8n_webhook",
                 "ok": True,
                 "found": True,
+                "source": "external_tool:n8n",
                 "latency_ms": 12,
                 "error_code": None,
                 "data": {
-                    "source": "contact_context",
+                    "source": "external_tool:n8n",
                     "timezone": "Atlantic/Canary",
-                    "timezone_source": "contact_context",
+                    "timezone_source": "crm_tenant",
                     "needs_branch_selection": False,
                     "contact": {
                         "name": "Ana García",
                         "phone": "+34999999999",
                     },
+                    "business_context": {
+                        "timezone": "Atlantic/Canary",
+                        "timezone_source": "crm_tenant",
+                        "needs_branch_selection": False,
+                    },
                 },
+                "external_tool_available": True,
+                "external_tool_called": True,
             }
 
-    external_tool_client = RecordingExternalToolClient()
+    contact_context_resolver = RecordingContactContextResolver()
     seen: dict[str, object] = {}
 
     async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None, previous_response_id=None):
         assert contact_context is not None
         assert contact_context["data"]["timezone"] == "Atlantic/Canary"
-        assert contact_context["data"]["timezone_source"] == "contact_context"
+        assert contact_context["data"]["timezone_source"] == "crm_tenant"
+        _system_prompt, user_prompt = LLMPromptBuilder().build(payload, routing, backend_context, contact_context, mcp_config)
+        parsed_prompt = json.loads(user_prompt)
+        assert parsed_prompt["temporal_context"]["timezone"] == "Atlantic/Canary"
+        assert parsed_prompt["temporal_context"]["timezone_source"] == "crm_tenant"
+        assert parsed_prompt["operational_context"]["channel"] == "whatsapp"
         return AgentResponse(
             reply="Sí, hay huecos.",
             intent="agenda",
@@ -1891,13 +2523,14 @@ async def test_runtime_fetches_contact_context_before_agenda_turns(monkeypatch: 
         backend,
         RuntimeRoutingResolver(backend),
         DecisionEngine(backend),
-        external_tool_client=external_tool_client,
+        contact_context_resolver=contact_context_resolver,
     )  # type: ignore[arg-type]
     payload = AgentRequest(
         tenant_id="tenant-ignored",
         entrypoint_ref="abc123",
         message="Buenas tardes. Dime disponibilidad de María para láser cuerpo entero para mañana por la tarde. Gracias.",
         contact=Contact(phone="+34999999999"),
+        conversation={"channel": "whatsapp"},
     )
 
     response = await runtime.respond(payload)
@@ -1905,10 +2538,398 @@ async def test_runtime_fetches_contact_context_before_agenda_turns(monkeypatch: 
     assert response.provider == "openai"
     assert response.model == "gpt-4.1-mini"
     assert response.action == "answer_question"
-    assert external_tool_client.calls[0]["tenant_id"] == "tenant-1"
-    assert external_tool_client.calls[0]["tenant_slug"] == "negocio-demo"
-    assert external_tool_client.calls[0]["external_channel_id"] is None
-    assert external_tool_client.calls[0]["message_text"] == "Buenas tardes. Dime disponibilidad de María para láser cuerpo entero para mañana por la tarde. Gracias."
+    assert len(contact_context_resolver.calls) == 1
+    assert contact_context_resolver.calls[0]["tenant_id"] == "tenant-1"
+    assert contact_context_resolver.calls[0]["tenant_slug"] == "negocio-demo"
+    assert contact_context_resolver.calls[0]["contact_phone"] == "+34999999999"
+    assert contact_context_resolver.calls[0]["message_text"] == "Buenas tardes. Dime disponibilidad de María para láser cuerpo entero para mañana por la tarde. Gracias."
+    assert contact_context_resolver.calls[0]["allowed_tools"] == ["appointment_availability"]
+    assert response.data_to_save["contact_context_resolver_called"] is True
+    assert response.data_to_save["contact_context_available"] is True
+    assert response.data_to_save["contact_context_source"] == "external_tool:n8n"
+    assert response.data_to_save["contact_context_external_tool_available"] is True
+    assert response.data_to_save["contact_context_external_tool_called"] is True
+    assert response.data_to_save["effective_timezone"] == "Atlantic/Canary"
+    assert response.data_to_save["effective_timezone_source"] == "crm_tenant"
+    assert response.data_to_save["technical_fallback_timezone"] == "Europe/Madrid"
+    assert response.data_to_save["operational_context"]["effective_timezone"] == "Atlantic/Canary"
+    assert response.data_to_save["operational_context"]["channel"] == "whatsapp"
+    assert response.data_to_save["operational_context"]["contact_context_source"] == "external_tool:n8n"
+    assert response.data_to_save["timezone_guardrail_blocked"] is False
+    assert response.data_to_save["timezone_mismatch_detected"] is False
+
+
+@pytest.mark.asyncio
+async def test_runtime_passes_recent_contact_context_to_resolver(monkeypatch: pytest.MonkeyPatch):
+    backend = RecordingBackendClient(
+        ref_context=BackendRoutingEntryPointUtmContext.model_validate(
+            {
+                "entry_point_utm_id": "utm-1",
+                "ref": "abc123",
+                "entry_point_id": "entrypoint-1",
+                "entry_point_code": "crm-demo",
+                "tenant_id": "tenant-1",
+                "tenant_slug": "negocio-demo",
+                "product_id": "product-1",
+                "product_name": "CRM Automation",
+                "playbook_id": "playbook-1",
+                "crm_branch_ref": "branch-1",
+                "utm_source": "google",
+                "utm_medium": "cpc",
+                "utm_campaign": "crm_pymes",
+                "status": "matched",
+            }
+        ),
+        mcp_config=McpRemoteConfig(
+            enabled=True,
+            server_label="tech_investments_mcp",
+            server_url="https://mcp.tech-investments.net/mcp",
+            allowed_tools=["appointment_availability"],
+            timeout_seconds=15,
+        ),
+    )
+
+    class RecordingContactContextResolver:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        async def resolve(self, payload, backend_context, mcp_config, recent_contact_context=None):
+            self.calls.append(
+                {
+                    "tenant_id": backend_context.tenant.id if backend_context is not None else None,
+                    "recent_contact_context": recent_contact_context,
+                }
+            )
+            assert recent_contact_context is not None
+            assert recent_contact_context["data"]["timezone"] == "Atlantic/Canary"
+            assert recent_contact_context["data"]["business_context"]["timezone"] == "Atlantic/Canary"
+            assert recent_contact_context["data"]["business_context"]["timezone_source"] == "crm_tenant"
+            return recent_contact_context
+
+    async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None, previous_response_id=None):
+        assert contact_context is not None
+        assert contact_context["data"]["timezone"] == "Atlantic/Canary"
+        assert contact_context["data"]["business_context"]["timezone"] == "Atlantic/Canary"
+        assert contact_context["data"]["business_context"]["timezone_source"] == "crm_tenant"
+        return AgentResponse(
+            reply="Sí, hay huecos.",
+            intent="agenda",
+            score=0.93,
+            action="answer_question",
+            needs_human=False,
+            data_to_save={
+                "topic": "agenda",
+                "mcp_enabled": True,
+                "mcp_server_label": "tech_investments_mcp",
+                "mcp_tool_traces": [],
+            },
+            provider="openai",
+            model="gpt-4.1-mini",
+            latency_ms=88,
+        )
+
+    monkeypatch.setattr(DecisionEngine, "decide", fake_decide)
+
+    contact_context_resolver = RecordingContactContextResolver()
+    runtime = AgentRuntime(
+        backend,
+        RuntimeRoutingResolver(backend),
+        DecisionEngine(backend),
+        contact_context_resolver=contact_context_resolver,
+    )  # type: ignore[arg-type]
+    payload = AgentRequest(
+        tenant_id="tenant-ignored",
+        entrypoint_ref="abc123",
+        message="Buenas tardes. Dime disponibilidad de María para láser cuerpo entero para mañana por la tarde. Gracias.",
+        contact=Contact(phone="+34999999999"),
+        conversation={
+            "last_messages": [
+                "SA: Para mañana por la tarde hay disponibilidad a las 17:35 y a las 19:10.",
+            ],
+            "context_messages": [
+                {
+                    "id": "message-contact-context-1",
+                    "direction": "outbound",
+                    "role": "assistant",
+                    "message_type": "text",
+                    "body": "Contexto resuelto.",
+                    "metadata": {
+                        "data_to_save": {
+                            "external_context_available": True,
+                            "external_context_configured": True,
+                            "external_context_timezone": "Atlantic/Canary",
+                            "external_context_timezone_source": "contact_context",
+                            "external_business_context_timezone": "Atlantic/Canary",
+                            "external_business_context_timezone_source": "crm_tenant",
+                            "external_business_context_needs_branch_selection": False,
+                        }
+                    },
+                }
+            ],
+        },
+    )
+
+    response = await runtime.respond(payload)
+
+    assert response.provider == "openai"
+    assert response.action == "answer_question"
+    assert len(contact_context_resolver.calls) == 1
+    assert contact_context_resolver.calls[0]["recent_contact_context"] is not None
+
+
+@pytest.mark.asyncio
+async def test_runtime_rejects_appointment_availability_timezone_mismatch(monkeypatch: pytest.MonkeyPatch):
+    backend = RecordingBackendClient(
+        ref_context=BackendRoutingEntryPointUtmContext.model_validate(
+            {
+                "entry_point_utm_id": "utm-1",
+                "ref": "abc123",
+                "entry_point_id": "entrypoint-1",
+                "entry_point_code": "crm-demo",
+                "tenant_id": "tenant-1",
+                "tenant_slug": "negocio-demo",
+                "product_id": "product-1",
+                "product_name": "CRM Automation",
+                "playbook_id": "playbook-1",
+                "crm_branch_ref": "branch-1",
+                "utm_source": "google",
+                "utm_medium": "cpc",
+                "utm_campaign": "crm_pymes",
+                "status": "matched",
+            }
+        ),
+        mcp_config=McpRemoteConfig(
+            enabled=True,
+            server_label="tech_investments_mcp",
+            server_url="https://mcp.tech-investments.net/mcp",
+            allowed_tools=["appointment_availability", "contact_context_mock"],
+            timeout_seconds=15,
+        ),
+    )
+
+    async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None, previous_response_id=None):
+        assert contact_context is not None
+        assert contact_context["data"]["timezone"] == "Atlantic/Canary"
+        return AgentResponse(
+            reply="Sí, hay huecos para mañana por la tarde.",
+            intent="agenda",
+            score=0.93,
+            action="answer_question",
+            needs_human=False,
+            data_to_save={
+                "topic": "agenda",
+                "mcp_enabled": True,
+                "mcp_server_label": "tech_investments_mcp",
+                "mcp_tool_traces": [
+                    {
+                        "type": "mcp_call",
+                        "server_label": "tech_investments_mcp",
+                        "tool_name": "appointment_availability",
+                        "arguments": {
+                            "service_id": "service-uuid",
+                            "timezone": "Europe/Madrid",
+                        },
+                        "output": {
+                            "available": True,
+                            "slots": [
+                                {
+                                    "start": "2026-06-11T17:35:00+02:00",
+                                    "end": "2026-06-11T19:05:00+02:00",
+                                    "service_id": "service-uuid",
+                                    "owner_id": "owner-uuid",
+                                    "owner_ref": "owner-ref-1",
+                                    "timezone": "Europe/Madrid",
+                                }
+                            ],
+                        },
+                        "status": "completed",
+                    }
+                ],
+            },
+            provider="openai",
+            model="gpt-4.1-mini",
+            latency_ms=52,
+        )
+
+    monkeypatch.setattr(DecisionEngine, "decide", fake_decide)
+
+    runtime = AgentRuntime(backend, RuntimeRoutingResolver(backend), DecisionEngine(backend))  # type: ignore[arg-type]
+    payload = AgentRequest(
+        tenant_id="tenant-ignored",
+        entrypoint_ref="abc123",
+        message="Buenas tardes. Dime disponibilidad de María para láser cuerpo entero para mañana por la tarde. Gracias.",
+        contact=Contact(phone="+34999999999"),
+        conversation={
+            "last_messages": [
+                "SA: Para mañana por la tarde hay disponibilidad a las 17:35 y a las 19:10.",
+            ],
+            "context_messages": [
+                {
+                    "id": "message-contact-context-1",
+                    "direction": "outbound",
+                    "role": "assistant",
+                    "message_type": "text",
+                    "body": "Contexto resuelto.",
+                    "metadata": {
+                        "data_to_save": {
+                            "external_context_available": True,
+                            "external_context_configured": True,
+                            "external_context_timezone": "Atlantic/Canary",
+                            "external_context_timezone_source": "contact_context",
+                            "external_business_context_timezone": "Atlantic/Canary",
+                            "external_business_context_timezone_source": "crm_tenant",
+                            "external_business_context_needs_branch_selection": False,
+                        }
+                    },
+                }
+            ],
+        },
+    )
+
+    response = await runtime.respond(payload)
+
+    assert response.intent == "agenda"
+    assert response.action == "ask_question"
+    assert response.needs_human is False
+    assert "zona horaria correcta" in response.reply.lower()
+    assert response.data_to_save["timezone_guardrail_blocked"] is True
+    assert response.data_to_save["timezone_guardrail_reason"] == "timezone_mismatch"
+    assert response.data_to_save["timezone_expected"] == "Atlantic/Canary"
+    assert response.data_to_save["timezone_expected_source"] in {"contact_context", "crm_tenant"}
+    assert response.data_to_save["mismatched_tool"] == "appointment_availability"
+    assert response.data_to_save["contact_context_resolver_called"] is True
+    assert response.data_to_save["contact_context_available"] is True
+    assert response.data_to_save["effective_timezone"] == "Atlantic/Canary"
+    assert response.data_to_save["effective_timezone_source"] in {"crm_tenant", "contact_context.business_context", "contact_context"}
+    assert response.data_to_save["mcp_tool_traces"] == []
+
+
+@pytest.mark.asyncio
+async def test_runtime_rejects_appointment_confirm_timezone_mismatch_even_when_tool_succeeds(monkeypatch: pytest.MonkeyPatch):
+    backend = RecordingBackendClient(
+        ref_context=BackendRoutingEntryPointUtmContext.model_validate(
+            {
+                "entry_point_utm_id": "utm-1",
+                "ref": "abc123",
+                "entry_point_id": "entrypoint-1",
+                "entry_point_code": "crm-demo",
+                "tenant_id": "tenant-1",
+                "tenant_slug": "negocio-demo",
+                "product_id": "product-1",
+                "product_name": "CRM Automation",
+                "playbook_id": "playbook-1",
+                "crm_branch_ref": "branch-1",
+                "utm_source": "google",
+                "utm_medium": "cpc",
+                "utm_campaign": "crm_pymes",
+                "status": "matched",
+            }
+        ),
+        mcp_config=McpRemoteConfig(
+            enabled=True,
+            server_label="tech_investments_mcp",
+            server_url="https://mcp.tech-investments.net/mcp",
+            allowed_tools=["appointment_confirm", "contact_context_mock"],
+            timeout_seconds=15,
+        ),
+    )
+
+    async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None, previous_response_id=None):
+        assert contact_context is not None
+        assert contact_context["data"]["timezone"] == "Atlantic/Canary"
+        return AgentResponse(
+            reply="Perfecto. Estoy revisando ese horario. Si necesito algún dato adicional para cerrarlo, te lo pediré ahora.",
+            intent="open_question",
+            score=0.95,
+            action="ask_question",
+            needs_human=False,
+            data_to_save={
+                "topic": "agenda",
+                "mcp_enabled": True,
+                "mcp_server_label": "tech_investments_mcp",
+                "mcp_tool_traces": [
+                    {
+                        "type": "mcp_call",
+                        "server_label": "tech_investments_mcp",
+                        "tool_name": "appointment_confirm",
+                        "arguments": {
+                            "service_id": "service-uuid",
+                            "owner_id": "owner-uuid",
+                            "timezone": "Europe/Madrid",
+                        },
+                        "output": json.dumps(
+                            {
+                                "ok": True,
+                                "confirmed": True,
+                                "appointment": {
+                                    "id": "019eb2a0-e153-78b8-9cde-8a94f5c22cb0",
+                                    "ownerName": "María Gutiérrez",
+                                    "service": {
+                                        "name": "Láser cuerpo entero",
+                                    },
+                                    "startAt": "2026-06-12T19:10:00+01:00",
+                                    "endAt": "2026-06-12T20:40:00+01:00",
+                                },
+                                "message": "La cita quedó confirmada correctamente.",
+                            },
+                            ensure_ascii=False,
+                        ),
+                        "status": "completed",
+                    }
+                ],
+            },
+            provider="openai",
+            model="gpt-4.1-mini",
+            latency_ms=52,
+        )
+
+    monkeypatch.setattr(DecisionEngine, "decide", fake_decide)
+    monkeypatch.setattr(ContactContextResolver, "resolve", resolve_contact_context_payload)
+
+    runtime = AgentRuntime(backend, RuntimeRoutingResolver(backend), DecisionEngine(backend))  # type: ignore[arg-type]
+    payload = AgentRequest(
+        tenant_id="tenant-ignored",
+        entrypoint_ref="abc123",
+        message="Sí, reserva el de las 17:35, por favor.",
+        contact=Contact(phone="+34999999999"),
+        conversation={
+            "last_messages": [
+                "SA: Para mañana por la tarde hay disponibilidad a las 17:35 y a las 19:10.",
+            ],
+            "context_messages": [
+                {
+                    "id": "message-contact-context-1",
+                    "direction": "outbound",
+                    "role": "assistant",
+                    "message_type": "text",
+                    "body": "Contexto resuelto.",
+                    "metadata": {
+                        "data_to_save": {
+                            "external_context_available": True,
+                            "external_context_configured": True,
+                            "external_context_timezone": "Atlantic/Canary",
+                            "external_context_timezone_source": "contact_context",
+                            "external_business_context_timezone": "Atlantic/Canary",
+                            "external_business_context_timezone_source": "crm_tenant",
+                            "external_business_context_needs_branch_selection": False,
+                        }
+                    },
+                }
+            ],
+        },
+    )
+
+    response = await runtime.respond(payload)
+
+    assert response.intent == "agenda"
+    assert response.action == "ask_question"
+    assert response.needs_human is False
+    assert "zona horaria correcta" in response.reply.lower()
+    assert response.data_to_save["timezone_guardrail_blocked"] is True
+    assert response.data_to_save["timezone_guardrail_reason"] == "timezone_mismatch"
+    assert response.data_to_save["timezone_expected"] == "Atlantic/Canary"
+    assert response.data_to_save["mismatched_tool"] == "appointment_confirm"
+    assert response.data_to_save["mcp_tool_traces"] == []
 
 
 @pytest.mark.asyncio
@@ -1961,6 +2982,7 @@ async def test_runtime_does_not_affirm_failed_appointment_confirmation(monkeypat
                         "arguments": {
                             "service_id": "service-uuid",
                             "owner_id": "owner-uuid",
+                            "timezone": "Atlantic/Canary",
                         },
                         "output": {
                             "ok": False,
@@ -1978,6 +3000,7 @@ async def test_runtime_does_not_affirm_failed_appointment_confirmation(monkeypat
         )
 
     monkeypatch.setattr(DecisionEngine, "decide", fake_decide)
+    monkeypatch.setattr(ContactContextResolver, "resolve", resolve_contact_context_payload)
 
     runtime = AgentRuntime(backend, RuntimeRoutingResolver(backend), DecisionEngine(backend))  # type: ignore[arg-type]
     payload = AgentRequest(
@@ -1985,13 +3008,350 @@ async def test_runtime_does_not_affirm_failed_appointment_confirmation(monkeypat
         entrypoint_ref="abc123",
         message="17:35 por favor",
         contact=Contact(phone="+34999999999"),
-        conversation={"last_messages": []},
+        conversation={
+            "last_messages": [],
+            "context_messages": [
+                {
+                    "id": "contact-context-1",
+                    "direction": "outbound",
+                    "role": "assistant",
+                    "message_type": "text",
+                    "body": "Contexto externo resuelto.",
+                    "metadata": {
+                        "contact_context": build_contact_context_payload(),
+                    },
+                }
+            ],
+        },
     )
 
     response = await runtime.respond(payload)
 
     assert "reserv" not in response.reply.lower()
     assert "confirm" not in response.reply.lower() or "no he podido" in response.reply.lower()
+
+
+@pytest.mark.asyncio
+async def test_runtime_rewrites_provisional_reply_after_successful_appointment_confirmation(monkeypatch: pytest.MonkeyPatch):
+    backend = RecordingBackendClient(
+        ref_context=BackendRoutingEntryPointUtmContext.model_validate(
+            {
+                "entry_point_utm_id": "utm-1",
+                "ref": "abc123",
+                "entry_point_id": "entrypoint-1",
+                "entry_point_code": "crm-demo",
+                "tenant_id": "tenant-1",
+                "tenant_slug": "negocio-demo",
+                "product_id": "product-1",
+                "product_name": "CRM Automation",
+                "playbook_id": "playbook-1",
+                "crm_branch_ref": "branch-1",
+                "utm_source": "google",
+                "utm_medium": "cpc",
+                "utm_campaign": "crm_pymes",
+                "status": "matched",
+            }
+        ),
+        mcp_config=McpRemoteConfig(
+            enabled=True,
+            server_label="tech_investments_mcp",
+            server_url="https://mcp.tech-investments.net/mcp",
+            allowed_tools=["appointment_confirm", "contact_context_mock"],
+            timeout_seconds=15,
+        ),
+    )
+
+    async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None, previous_response_id=None):
+        return AgentResponse(
+            reply="Perfecto. Estoy revisando ese horario. Si necesito algún dato adicional para cerrarlo, te lo pediré ahora.",
+            intent="open_question",
+            score=0.95,
+            action="ask_question",
+            needs_human=False,
+            data_to_save={
+                "topic": "agenda",
+                "mcp_enabled": True,
+                "mcp_server_label": "tech_investments_mcp",
+                "mcp_response_id": "resp_confirm_123",
+                "mcp_tool_traces": [
+                    {
+                        "type": "mcp_call",
+                        "server_label": "tech_investments_mcp",
+                        "tool_name": "appointment_confirm",
+                        "arguments": {
+                            "service_id": "service-uuid",
+                            "owner_id": "owner-uuid",
+                            "timezone": "Atlantic/Canary",
+                        },
+                        "output": {
+                            "ok": True,
+                            "confirmed": True,
+                            "appointment": {
+                                "id": "019eb2a0-e153-78b8-9cde-8a94f5c22cb0",
+                            },
+                            "start": "2026-06-12T19:10:00+01:00",
+                            "end": "2026-06-12T20:40:00+01:00",
+                            "title": "Cita para Láser cuerpo entero",
+                            "owner_name": "María Gutiérrez",
+                            "message": "La cita quedó confirmada correctamente.",
+                        },
+                        "status": "completed",
+                    }
+                ],
+            },
+            provider="openai",
+            model="gpt-4.1-mini",
+            latency_ms=80,
+        )
+
+    monkeypatch.setattr(DecisionEngine, "decide", fake_decide)
+    monkeypatch.setattr(ContactContextResolver, "resolve", resolve_contact_context_payload)
+
+    runtime = AgentRuntime(backend, RuntimeRoutingResolver(backend), DecisionEngine(backend))  # type: ignore[arg-type]
+    payload = AgentRequest(
+        tenant_id="tenant-ignored",
+        entrypoint_ref="abc123",
+        message="El de las 17:35, por favor.",
+        contact=Contact(phone="+34999999999"),
+        conversation={
+            "last_messages": [],
+            "context_messages": [
+                {
+                    "id": "contact-context-1",
+                    "direction": "outbound",
+                    "role": "assistant",
+                    "message_type": "text",
+                    "body": "Contexto externo resuelto.",
+                    "metadata": {
+                        "contact_context": build_contact_context_payload(),
+                    },
+                }
+            ],
+        },
+    )
+
+    response = await runtime.respond(payload)
+
+    assert response.intent == "agenda"
+    assert response.action == "completed"
+    assert response.needs_human is False
+    assert "confirmada" in response.reply.lower()
+    assert "19:10" in response.reply
+    assert "láser cuerpo entero" in response.reply.lower()
+    assert "maría gutiérrez" in response.reply.lower()
+    assert response.data_to_save["appointment_confirm_post_processed"] is True
+
+
+@pytest.mark.asyncio
+async def test_runtime_rewrites_successful_appointment_confirmation_from_raw_output_string_json(monkeypatch: pytest.MonkeyPatch):
+    backend = RecordingBackendClient(
+        ref_context=BackendRoutingEntryPointUtmContext.model_validate(
+            {
+                "entry_point_utm_id": "utm-1",
+                "ref": "abc123",
+                "entry_point_id": "entrypoint-1",
+                "entry_point_code": "crm-demo",
+                "tenant_id": "tenant-1",
+                "tenant_slug": "negocio-demo",
+                "product_id": "product-1",
+                "product_name": "CRM Automation",
+                "playbook_id": "playbook-1",
+                "crm_branch_ref": "branch-1",
+                "utm_source": "google",
+                "utm_medium": "cpc",
+                "utm_campaign": "crm_pymes",
+                "status": "matched",
+            }
+        ),
+        mcp_config=McpRemoteConfig(
+            enabled=True,
+            server_label="tech_investments_mcp",
+            server_url="https://mcp.tech-investments.net/mcp",
+            allowed_tools=["appointment_confirm", "contact_context_mock"],
+            timeout_seconds=15,
+        ),
+    )
+
+    raw_output = json.dumps(
+        {
+            "ok": True,
+            "confirmed": True,
+            "appointment": {
+                "id": "019eb692-19a7-7077-b7df-9ceb6e4874ab",
+                "status": "confirmed",
+                "ownerName": "María Gutiérrez",
+                "service": {
+                    "id": "019eb05e-5f79-7630-ba89-38e0ec1493a0",
+                    "name": "Láser cuerpo entero",
+                    "durationMinutes": 90,
+                },
+                "startAt": "2026-06-15T19:10:00+01:00",
+                "endAt": "2026-06-15T20:40:00+01:00",
+                "timezone": "Atlantic/Canary",
+            },
+            "message": "La cita quedó confirmada correctamente.",
+            "raw_summary": {
+                "status": "confirmed",
+                "source": "crm",
+            },
+            "error_code": None,
+        },
+        ensure_ascii=False,
+    )
+
+    async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None, previous_response_id=None):
+        return AgentResponse(
+            reply="Perfecto. Estoy revisando ese horario. Si necesito algún dato adicional para cerrarlo, te lo pediré ahora.",
+            intent="open_question",
+            score=0.95,
+            action="ask_question",
+            needs_human=False,
+            data_to_save={
+                "topic": "agenda",
+                "mcp_enabled": True,
+                "mcp_server_label": "tech_investments_mcp",
+                "mcp_response_id": "resp_confirm_123",
+                "mcp_tool_traces": [
+                    {
+                        "type": "mcp_call",
+                        "server_label": "tech_investments_mcp",
+                        "tool_name": "appointment_confirm",
+                        "arguments": {
+                            "service_id": "service-uuid",
+                            "owner_id": "owner-uuid",
+                            "timezone": "Atlantic/Canary",
+                        },
+                        "output": None,
+                        "raw": {
+                            "output": raw_output,
+                        },
+                        "status": "completed",
+                    }
+                ],
+            },
+            provider="openai",
+            model="gpt-4.1-mini",
+            latency_ms=80,
+        )
+
+    monkeypatch.setattr(DecisionEngine, "decide", fake_decide)
+    monkeypatch.setattr(ContactContextResolver, "resolve", resolve_contact_context_payload)
+
+    runtime = AgentRuntime(backend, RuntimeRoutingResolver(backend), DecisionEngine(backend))  # type: ignore[arg-type]
+    payload = AgentRequest(
+        tenant_id="tenant-ignored",
+        entrypoint_ref="abc123",
+        message="El de las 19:10, por favor.",
+        contact=Contact(phone="+34999999999"),
+        conversation={
+            "last_messages": [],
+            "context_messages": [
+                {
+                    "id": "contact-context-1",
+                    "direction": "outbound",
+                    "role": "assistant",
+                    "message_type": "text",
+                    "body": "Contexto externo resuelto.",
+                    "metadata": {
+                        "contact_context": build_contact_context_payload(),
+                    },
+                }
+            ],
+        },
+    )
+
+    response = await runtime.respond(payload)
+
+    assert response.intent == "agenda"
+    assert response.action == "completed"
+    assert response.needs_human is False
+    assert "confirmada" in response.reply.lower()
+    assert "19:10" in response.reply
+    assert "láser cuerpo entero" in response.reply.lower()
+    assert "maría gutiérrez" in response.reply.lower()
+    assert response.data_to_save["appointment_confirm_post_processed"] is True
+
+
+@pytest.mark.asyncio
+async def test_runtime_does_not_prematurely_claim_booking_on_slot_selection_without_success(monkeypatch: pytest.MonkeyPatch):
+    backend = RecordingBackendClient(
+        ref_context=BackendRoutingEntryPointUtmContext.model_validate(
+            {
+                "entry_point_utm_id": "utm-1",
+                "ref": "abc123",
+                "entry_point_id": "entrypoint-1",
+                "entry_point_code": "crm-demo",
+                "tenant_id": "tenant-1",
+                "tenant_slug": "negocio-demo",
+                "product_id": "product-1",
+                "product_name": "CRM Automation",
+                "playbook_id": "playbook-1",
+                "crm_branch_ref": "branch-1",
+                "utm_source": "google",
+                "utm_medium": "cpc",
+                "utm_campaign": "crm_pymes",
+                "status": "matched",
+            }
+        ),
+        mcp_config=McpRemoteConfig(
+            enabled=True,
+            server_label="tech_investments_mcp",
+            server_url="https://mcp.tech-investments.net/mcp",
+            allowed_tools=["appointment_confirm", "contact_context_mock"],
+            timeout_seconds=15,
+        ),
+    )
+
+    async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None, previous_response_id=None):
+        return AgentResponse(
+            reply="Perfecto, te reservo la cita con ese horario.",
+            intent="agenda",
+            score=0.95,
+            action="answer_question",
+            needs_human=False,
+            data_to_save={
+                "topic": "agenda",
+                "mcp_enabled": True,
+                "mcp_server_label": "tech_investments_mcp",
+                "mcp_response_id": "resp_confirm_123",
+                "mcp_tool_traces": [],
+            },
+            provider="openai",
+            model="gpt-4.1-mini",
+            latency_ms=80,
+        )
+
+    monkeypatch.setattr(DecisionEngine, "decide", fake_decide)
+    monkeypatch.setattr(ContactContextResolver, "resolve", resolve_contact_context_payload)
+
+    runtime = AgentRuntime(backend, RuntimeRoutingResolver(backend), DecisionEngine(backend))  # type: ignore[arg-type]
+    payload = AgentRequest(
+        tenant_id="tenant-ignored",
+        entrypoint_ref="abc123",
+        message="17:35 por favor",
+        contact=Contact(phone="+34999999999"),
+        conversation={
+            "last_messages": [],
+            "context_messages": [
+                {
+                    "id": "contact-context-1",
+                    "direction": "outbound",
+                    "role": "assistant",
+                    "message_type": "text",
+                    "body": "Contexto externo resuelto.",
+                    "metadata": {
+                        "contact_context": build_contact_context_payload(),
+                    },
+                }
+            ],
+        },
+    )
+
+    response = await runtime.respond(payload)
+
+    assert "reserv" not in response.reply.lower()
+    assert "te reservo" not in response.reply.lower()
+    assert "revisando ese horario" in response.reply.lower()
 
 
 @pytest.mark.asyncio

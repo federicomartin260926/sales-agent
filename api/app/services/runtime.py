@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import copy
+import json
 from datetime import datetime, timedelta, timezone
 import httpx
 import logging
+import re
 import unicodedata
 import uuid
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import time
 
@@ -22,8 +26,8 @@ from app.services.backend_client import (
     CommercialContext,
 )
 from app.services.conversation_summary_service import ConversationSummaryService
+from app.services.contact_context_resolver import ContactContextResolver
 from app.services.decision_engine import DecisionEngine
-from app.services.external_tool_client import ExternalToolClient
 from app.services.routing_resolver import RoutingContext, RuntimeRoutingResolver
 from app.services.runtime_settings_client import RuntimeSettingsClient
 
@@ -53,7 +57,7 @@ class AgentRuntime:
         audio_gateway_client: AudioGatewayClient | None = None,
         audio_transcription_client: AudioTranscriptionClient | None = None,
         conversation_summary_service: ConversationSummaryService | None = None,
-        external_tool_client: ExternalToolClient | None = None,
+        contact_context_resolver: ContactContextResolver | None = None,
     ) -> None:
         self.backend_client = backend_client
         self.routing_resolver = routing_resolver
@@ -71,9 +75,10 @@ class AgentRuntime:
         self.conversation_summary_service = conversation_summary_service
         if self.conversation_summary_service is None and backend_settings is not None:
             self.conversation_summary_service = ConversationSummaryService(backend_settings, backend_client)
-        self.external_tool_client = external_tool_client
-        if self.external_tool_client is None and backend_settings is not None:
-            self.external_tool_client = ExternalToolClient(self.settings, backend_client)
+        self.contact_context_resolver = contact_context_resolver
+        if self.contact_context_resolver is None:
+            llm_client = getattr(getattr(self.decision_engine, "llm_decision_service", None), "llm_client", None)
+            self.contact_context_resolver = ContactContextResolver(backend_client, llm_client, self.settings)
 
     async def respond(self, payload: AgentRequest) -> AgentResponse:
         routing = await self.routing_resolver.resolve(payload)
@@ -296,17 +301,6 @@ class AgentRuntime:
             response = audio_failure_handoff_response
             latency_ms = 0
         else:
-            agenda_tools_available = self._mcp_agenda_tools_available(mcp_config)
-            if not agenda_tools_available:
-                agenda_response = self.decision_engine.resolve_agenda_response(
-                    payload,
-                    routing=routing,
-                    backend_context=backend_context,
-                    contact_context=None,
-                )
-                if agenda_response is not None:
-                    return agenda_response
-
             explicit_handoff_request = self._is_explicit_handoff_request(payload)
             handoff_config = self._handoff_config_from_tenant(backend_context.tenant if backend_context is not None else None)
             short_circuited_handoff = (
@@ -322,13 +316,62 @@ class AgentRuntime:
             else:
                 mcp_config = await self.backend_client.fetch_mcp_config(routing.tenant_id)
                 self._log_mcp_config(routing.tenant_id, mcp_config)
-                contact_context = await self._resolve_contact_context(
-                    payload,
-                    routing,
+                contact_context = None
+                contact_context_resolver_called = False
+                if self._should_preload_contact_context(payload, normalized_message):
+                    contact_context_resolver_called = True
+                    contact_context = await self._resolve_contact_context(
+                        payload,
+                        routing,
+                        backend_context,
+                        conversation_id,
+                        mcp_config,
+                    )
+                    self._publish_contact_context_to_conversation_context(payload, contact_context)
+
+                agenda_tools_available = self._mcp_agenda_tools_available(mcp_config)
+                agenda_message_kind = self._agenda_message_kind(payload.message.text or "")
+                effective_contact_context = self._effective_contact_context(payload, contact_context)
+                agenda_effective_timezone, agenda_effective_timezone_source = self._resolve_agenda_effective_timezone_details(
                     backend_context,
-                    conversation_id,
-                    mcp_config,
+                    effective_contact_context,
                 )
+                if agenda_message_kind == "booking" and agenda_tools_available and agenda_effective_timezone is None:
+                    if not contact_context_resolver_called:
+                        contact_context_resolver_called = True
+                        contact_context = await self._resolve_contact_context(
+                            payload,
+                            routing,
+                            backend_context,
+                            conversation_id,
+                            mcp_config,
+                        )
+                        self._publish_contact_context_to_conversation_context(payload, contact_context)
+                        effective_contact_context = self._effective_contact_context(payload, contact_context)
+                        agenda_effective_timezone, agenda_effective_timezone_source = self._resolve_agenda_effective_timezone_details(
+                            backend_context,
+                            effective_contact_context,
+                        )
+
+                if agenda_message_kind == "booking" and agenda_tools_available and agenda_effective_timezone is None:
+                    response = self._timezone_guardrail_block_response(
+                        mismatched_tool="appointment_availability",
+                        reason="missing_effective_timezone",
+                        timezone_source=agenda_effective_timezone_source,
+                        contact_context_resolver_called=contact_context_resolver_called,
+                        contact_context=effective_contact_context,
+                    )
+                    return response
+
+                if not agenda_tools_available:
+                    agenda_response = self.decision_engine.resolve_agenda_response(
+                        payload,
+                        routing=routing,
+                        backend_context=backend_context,
+                        contact_context=effective_contact_context,
+                    )
+                    if agenda_response is not None:
+                        return agenda_response
 
                 ai_usage_decision = await self.ai_usage_guard.evaluate(backend_context.tenant.id if backend_context is not None else None)
                 if not ai_usage_decision.allowed:
@@ -356,14 +399,25 @@ class AgentRuntime:
                     payload,
                     routing=routing,
                     backend_context=backend_context,
-                    contact_context=contact_context,
+                    contact_context=effective_contact_context,
                     mcp_config=mcp_config,
                     previous_response_id=previous_response_id,
                 )
                 decision_latency_ms = int(round((time.perf_counter() - started_at) * 1000))
                 latency_ms = response.latency_ms if response.latency_ms is not None else decision_latency_ms
+                response = self._normalize_agenda_timezone_mismatch(response, backend_context, effective_contact_context)
+                response = self._normalize_agenda_owner_mismatch(response)
                 response = self._normalize_failed_appointment_confirmation(response)
+                response = self._normalize_premature_appointment_confirmation(response, normalized_message)
+                response = self._normalize_successful_appointment_confirmation(response, normalized_message)
                 response = self._normalize_handoff_response(response, explicit_handoff_request)
+                response = self._merge_runtime_diagnostics(
+                    response,
+                    payload,
+                    backend_context,
+                    effective_contact_context,
+                    contact_context_resolver_called,
+                )
 
         response = await self._apply_handoff_policy(
             response,
@@ -374,6 +428,7 @@ class AgentRuntime:
             mcp_config,
             explicit_handoff_request,
         )
+        response = self._finalize_successful_appointment_confirmation(response)
 
         if conversation_id is not None:
             outbound_result = await self.backend_client.create_conversation_message(
@@ -620,6 +675,516 @@ class AgentRuntime:
         except Exception:
             return None
 
+    def _resolve_effective_timezone_details(
+        self,
+        backend_context: CommercialContext | None,
+        contact_context: dict[str, Any] | None = None,
+    ) -> tuple[str | None, str | None]:
+        candidates: list[tuple[str, Any]] = []
+
+        if isinstance(contact_context, dict):
+            data = contact_context.get("data")
+            if isinstance(data, dict):
+                business_context = data.get("business_context") or data.get("businessContext")
+                if isinstance(business_context, dict):
+                    candidates.append(("contact_context.data.business_context", business_context))
+                candidates.append(("contact_context.data", data))
+
+            business_context = contact_context.get("business_context") or contact_context.get("businessContext")
+            if isinstance(business_context, dict):
+                candidates.append(("contact_context.business_context", business_context))
+            candidates.append(("contact_context", contact_context))
+
+        if backend_context is not None:
+            candidates.append(("backend_context", backend_context))
+            for attribute in ("tenant", "entry_point", "sales_runtime"):
+                source = getattr(backend_context, attribute, None)
+                if source is not None:
+                    candidates.append((attribute, source))
+
+        for source_label, source in candidates:
+            timezone_value, timezone_source = self._first_timezone_candidate(source)
+            if not isinstance(timezone_value, str):
+                continue
+
+            normalized = timezone_value.strip()
+            if normalized == "":
+                continue
+
+            if not self._is_valid_timezone(normalized):
+                continue
+
+            return normalized, timezone_source or source_label
+
+        if isinstance(getattr(self.settings, "default_business_timezone", None), str):
+            configured = self.settings.default_business_timezone.strip()
+            if configured != "" and self._is_valid_timezone(configured):
+                return configured, "settings.default_business_timezone"
+
+        fallback = self.settings.safe_default_business_timezone()
+        return fallback, "safety_fallback"
+
+    def _resolve_agenda_effective_timezone_details(
+        self,
+        backend_context: CommercialContext | None,
+        contact_context: dict[str, Any] | None = None,
+    ) -> tuple[str | None, str | None]:
+        timezone, timezone_source = self._resolve_effective_timezone_details(backend_context, contact_context)
+        if timezone_source in {"settings.default_business_timezone", "safety_fallback"}:
+            return None, timezone_source
+
+        return timezone, timezone_source
+
+    def _first_timezone_candidate(self, source: Any) -> tuple[str | None, str | None]:
+        field_names = (
+            "branch_timezone",
+            "timezone",
+            "time_zone",
+            "business_timezone",
+            "businessTimezone",
+            "local_timezone",
+            "localTimezone",
+            "tenant_timezone",
+            "tenantTimezone",
+            "crm_timezone",
+            "crmTimezone",
+            "effective_timezone",
+            "effectiveTimezone",
+        )
+        source_name_fields = ("timezone_source", "timezoneSource", "business_timezone_source", "businessTimezoneSource")
+
+        if isinstance(source, dict):
+            for field_name in field_names:
+                value = source.get(field_name)
+                if isinstance(value, str) and value.strip():
+                    return value, self._first_string_value(source, source_name_fields)
+            return None, None
+
+        for field_name in field_names:
+            value = getattr(source, field_name, None)
+            if isinstance(value, str) and value.strip():
+                return value, self._first_string_value(source, source_name_fields)
+
+        return None, None
+
+    def _first_string_value(self, source: Any, field_names: tuple[str, ...]) -> str | None:
+        if isinstance(source, dict):
+            for field_name in field_names:
+                value = source.get(field_name)
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
+            return None
+
+        for field_name in field_names:
+            value = getattr(source, field_name, None)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+        return None
+
+    def _is_valid_timezone(self, timezone_name: str) -> bool:
+        try:
+            ZoneInfo(timezone_name)
+        except Exception:
+            return False
+
+        return True
+
+    def _normalize_agenda_timezone_mismatch(
+        self,
+        response: AgentResponse,
+        backend_context: CommercialContext | None,
+        contact_context: dict[str, Any] | None,
+    ) -> AgentResponse:
+        effective_timezone, effective_timezone_source = self._resolve_agenda_effective_timezone_details(backend_context, contact_context)
+
+        traces = response.data_to_save.get("mcp_tool_traces")
+        if not isinstance(traces, list) or traces == []:
+            return response
+
+        mismatch_tools: list[str] = []
+        agenda_tools = {
+            "appointment_availability",
+            "appointment_confirm",
+            "appointment_reschedule",
+            "appointment_cancel",
+            "appointment_events",
+            "appointment_booking_invitation",
+        }
+        timezone_required_tools = {
+            "appointment_availability",
+            "appointment_confirm",
+            "appointment_reschedule",
+            "appointment_cancel",
+            "appointment_booking_invitation",
+        }
+
+        for trace in traces:
+            if not isinstance(trace, dict):
+                continue
+
+            tool_name = trace.get("tool_name") or trace.get("toolName") or trace.get("name")
+            if not isinstance(tool_name, str) or tool_name.strip() not in agenda_tools:
+                continue
+
+            arguments = trace.get("arguments")
+            if not isinstance(arguments, dict):
+                arguments = trace.get("input") if isinstance(trace.get("input"), dict) else {}
+
+            if not isinstance(arguments, dict):
+                if tool_name.strip() in timezone_required_tools:
+                    mismatch_tools.append(tool_name.strip())
+                continue
+
+            argument_timezone = arguments.get("timezone")
+            if not isinstance(argument_timezone, str) or argument_timezone.strip() == "":
+                if tool_name.strip() in timezone_required_tools:
+                    mismatch_tools.append(tool_name.strip())
+                continue
+
+            if effective_timezone is None and tool_name.strip() in timezone_required_tools:
+                mismatch_tools.append(tool_name.strip())
+                continue
+
+            if argument_timezone.strip() != effective_timezone:
+                mismatch_tools.append(tool_name.strip())
+
+        if mismatch_tools == []:
+            return response
+
+        if effective_timezone is None:
+            return self._timezone_guardrail_block_response(
+                mismatched_tool=mismatch_tools[0],
+                reason="missing_effective_timezone",
+                timezone_source=effective_timezone_source,
+                response=response,
+                contact_context_resolver_called=contact_context is not None,
+                contact_context=contact_context,
+            )
+
+        return self._timezone_guardrail_block_response(
+            mismatched_tool=mismatch_tools[0],
+            reason="timezone_mismatch",
+            timezone_source=effective_timezone_source,
+            response=response,
+            expected_timezone=effective_timezone,
+            contact_context_resolver_called=contact_context is not None,
+            contact_context=contact_context,
+        )
+
+    def _normalize_agenda_owner_mismatch(
+        self,
+        response: AgentResponse,
+    ) -> AgentResponse:
+        traces = response.data_to_save.get("mcp_tool_traces")
+        if not isinstance(traces, list) or traces == []:
+            return response
+
+        agenda_tools = {
+            "appointment_availability",
+            "appointment_confirm",
+            "appointment_reschedule",
+            "appointment_booking_invitation",
+        }
+
+        for trace in traces:
+            if not isinstance(trace, dict):
+                continue
+
+            tool_name = trace.get("tool_name") or trace.get("toolName") or trace.get("name")
+            if not isinstance(tool_name, str) or tool_name.strip() not in agenda_tools:
+                continue
+
+            arguments = trace.get("arguments")
+            if not isinstance(arguments, dict):
+                arguments = trace.get("input") if isinstance(trace.get("input"), dict) else {}
+
+            if not isinstance(arguments, dict):
+                continue
+
+            owner_id = arguments.get("owner_id") or arguments.get("ownerId")
+            owner_ref = arguments.get("owner_ref") or arguments.get("ownerRef")
+
+            if owner_id is not None and isinstance(owner_id, str) and self._looks_like_uuid(owner_id):
+                continue
+
+            if owner_ref is None:
+                continue
+
+            if isinstance(owner_ref, str) and self._looks_like_uuid(owner_ref):
+                continue
+
+            cleaned_data = copy.deepcopy(response.data_to_save)
+            cleaned_data["owner_guardrail_blocked"] = True
+            cleaned_data["owner_guardrail_reason"] = "unresolved_owner_reference"
+            cleaned_data["mismatched_tool"] = tool_name.strip()
+            cleaned_data["mcp_tool_traces"] = []
+
+            return AgentResponse(
+                reply="Necesito identificar correctamente a Claudia en la agenda antes de consultar sus huecos.",
+                intent="agenda",
+                score=response.score,
+                action="ask_question",
+                needs_human=False,
+                data_to_save=cleaned_data,
+                provider=response.provider,
+                model=response.model,
+                latency_ms=response.latency_ms,
+            )
+
+        return response
+
+    def _timezone_guardrail_block_response(
+        self,
+        *,
+        mismatched_tool: str,
+        reason: str,
+        timezone_source: str | None = None,
+        response: AgentResponse | None = None,
+        expected_timezone: str | None = None,
+        contact_context_resolver_called: bool | None = None,
+        contact_context: dict[str, Any] | None = None,
+    ) -> AgentResponse:
+        data_to_save = copy.deepcopy(response.data_to_save) if response is not None else {}
+        data_to_save["timezone_guardrail_blocked"] = True
+        data_to_save["timezone_guardrail_reason"] = reason
+        data_to_save["mismatched_tool"] = mismatched_tool
+        data_to_save["mcp_tool_traces"] = []
+        if timezone_source is not None:
+            data_to_save["timezone_expected_source"] = timezone_source
+        if expected_timezone is not None:
+            data_to_save["timezone_expected"] = expected_timezone
+        if contact_context_resolver_called is not None:
+            data_to_save["contact_context_resolver_called"] = contact_context_resolver_called
+
+        contact_context_available, contact_context_source, contact_context_error_code = self._contact_context_diagnostics(contact_context)
+        if contact_context_error_code is None and contact_context_resolver_called:
+            contact_context_error_code = "unknown"
+        data_to_save["contact_context_available"] = contact_context_available
+        data_to_save["contact_context_source"] = contact_context_source
+        data_to_save["contact_context_error_code"] = contact_context_error_code
+        data_to_save["contact_context_cache_lookup"] = self._contact_context_bool_field(contact_context, "cache_lookup")
+        data_to_save["contact_context_cache_hit"] = self._contact_context_bool_field(contact_context, "cache_hit")
+        data_to_save["contact_context_mcp_available"] = self._contact_context_bool_field(contact_context, "mcp_available")
+        data_to_save["contact_context_mcp_called"] = self._contact_context_bool_field(contact_context, "mcp_called")
+        data_to_save["contact_context_external_tool_available"] = self._contact_context_bool_field(contact_context, "external_tool_available")
+        data_to_save["contact_context_external_tool_called"] = self._contact_context_bool_field(contact_context, "external_tool_called")
+        contact_context_error_message = self._contact_context_text_field(contact_context, "error_message")
+        data_to_save["contact_context_error_message"] = contact_context_error_message
+        effective_timezone, effective_timezone_source = self._resolve_agenda_effective_timezone_details(None, contact_context)
+        if effective_timezone is not None:
+            data_to_save["effective_timezone"] = effective_timezone
+            if effective_timezone_source is not None:
+                data_to_save["effective_timezone_source"] = effective_timezone_source
+        else:
+            technical_timezone, technical_timezone_source = self._technical_fallback_timezone_details()
+            if technical_timezone is not None:
+                data_to_save["technical_fallback_timezone"] = technical_timezone
+            if technical_timezone_source is not None:
+                data_to_save["technical_fallback_timezone_source"] = technical_timezone_source
+
+        if reason == "missing_effective_timezone":
+            reply = "Necesito comprobar la configuración de agenda del negocio antes de consultar huecos. ¿Me confirmas de qué centro o zona se trata?"
+        else:
+            reply = "No he podido procesar la agenda con la zona horaria correcta. Repite la disponibilidad y la recalcularé con la zona del negocio."
+
+        return AgentResponse(
+            reply=reply,
+            intent="agenda",
+            score=response.score if response is not None else 0.0,
+            action="ask_question",
+            needs_human=False,
+            data_to_save=data_to_save,
+            provider=response.provider if response is not None else None,
+            model=response.model if response is not None else None,
+            latency_ms=response.latency_ms if response is not None else None,
+        )
+
+    def _contact_context_diagnostics(self, contact_context: dict[str, Any] | None) -> tuple[bool, str, str | None]:
+        if not isinstance(contact_context, dict):
+            return False, "none", None
+
+        available = bool(contact_context.get("available", False) or contact_context.get("ok", False) or contact_context.get("found", False))
+        source = self._normalize_text_value(contact_context.get("source"))
+        if source is None:
+            source = self._normalize_text_value(contact_context.get("cache_source"))
+        if source is None:
+            source = "contact_context"
+
+        error_code = self._normalize_text_value(contact_context.get("error_code"))
+        return available, source, error_code
+
+    def _contact_context_bool_field(self, contact_context: dict[str, Any] | None, field_name: str) -> bool:
+        if not isinstance(contact_context, dict):
+            return False
+
+        return bool(contact_context.get(field_name, False))
+
+    def _contact_context_text_field(self, contact_context: dict[str, Any] | None, field_name: str) -> str | None:
+        if not isinstance(contact_context, dict):
+            return None
+
+        value = contact_context.get(field_name)
+        if isinstance(value, str) and value.strip() != "":
+            return value.strip()
+
+        return None
+
+    def _merge_runtime_diagnostics(
+        self,
+        response: AgentResponse,
+        payload: AgentRequest,
+        backend_context: CommercialContext | None,
+        contact_context: dict[str, Any] | None,
+        contact_context_resolver_called: bool,
+    ) -> AgentResponse:
+        data_to_save = copy.deepcopy(response.data_to_save)
+
+        def set_if_missing(key: str, value: Any) -> None:
+            if key not in data_to_save or data_to_save[key] in (None, ""):
+                data_to_save[key] = value
+
+        set_if_missing("contact_context_resolver_called", contact_context_resolver_called)
+
+        contact_available, contact_source, contact_error_code = self._contact_context_diagnostics(contact_context)
+        set_if_missing("contact_context_available", contact_available)
+        set_if_missing("contact_context_source", contact_source)
+        set_if_missing("contact_context_error_code", contact_error_code)
+        set_if_missing("contact_context_error_message", self._contact_context_text_field(contact_context, "error_message"))
+        set_if_missing("contact_context_cache_lookup", self._contact_context_bool_field(contact_context, "cache_lookup"))
+        set_if_missing("contact_context_cache_hit", self._contact_context_bool_field(contact_context, "cache_hit"))
+        set_if_missing("contact_context_mcp_available", self._contact_context_bool_field(contact_context, "mcp_available"))
+        set_if_missing("contact_context_mcp_called", self._contact_context_bool_field(contact_context, "mcp_called"))
+        set_if_missing("contact_context_external_tool_available", self._contact_context_bool_field(contact_context, "external_tool_available"))
+        set_if_missing("contact_context_external_tool_called", self._contact_context_bool_field(contact_context, "external_tool_called"))
+
+        effective_timezone, effective_timezone_source = self._resolve_agenda_effective_timezone_details(backend_context, contact_context)
+        technical_timezone, technical_timezone_source = self._technical_fallback_timezone_details()
+        actual_timezone = self._agenda_tool_timezone_from_traces(response.data_to_save.get("mcp_tool_traces"))
+        if actual_timezone is None and effective_timezone is not None:
+            actual_timezone = effective_timezone
+
+        set_if_missing("effective_timezone", effective_timezone)
+        set_if_missing("effective_timezone_source", effective_timezone_source)
+        set_if_missing("technical_fallback_timezone", technical_timezone)
+        set_if_missing("technical_fallback_timezone_source", technical_timezone_source)
+        set_if_missing("actual_timezone", actual_timezone)
+        set_if_missing("expected_timezone", effective_timezone)
+        set_if_missing("timezone_mismatch_detected", bool(
+            effective_timezone is not None
+            and actual_timezone is not None
+            and effective_timezone != actual_timezone
+        ))
+        set_if_missing("timezone_guardrail_blocked", False)
+        set_if_missing("timezone_guardrail_reason", None)
+        set_if_missing("mismatched_tool", None)
+
+        operational_context = self._operational_context_payload(payload, effective_timezone, effective_timezone_source, contact_context)
+        if operational_context is not None:
+            set_if_missing("operational_context", operational_context)
+
+        return AgentResponse(
+            reply=response.reply,
+            intent=response.intent,
+            score=response.score,
+            action=response.action,
+            needs_human=response.needs_human,
+            data_to_save=data_to_save,
+            provider=response.provider,
+            model=response.model,
+            latency_ms=response.latency_ms,
+        )
+
+    def _agenda_tool_timezone_from_traces(self, traces: Any) -> str | None:
+        if not isinstance(traces, list):
+            return None
+
+        agenda_tools = {
+            "appointment_availability",
+            "appointment_confirm",
+            "appointment_reschedule",
+            "appointment_cancel",
+            "appointment_booking_invitation",
+        }
+
+        for trace in reversed(traces):
+            if not isinstance(trace, dict):
+                continue
+
+            tool_name = trace.get("tool_name") or trace.get("toolName") or trace.get("name")
+            if not isinstance(tool_name, str) or tool_name.strip() not in agenda_tools:
+                continue
+
+            arguments = trace.get("arguments")
+            if not isinstance(arguments, dict):
+                arguments = trace.get("input") if isinstance(trace.get("input"), dict) else {}
+
+            if not isinstance(arguments, dict):
+                continue
+
+            timezone = arguments.get("timezone")
+            if isinstance(timezone, str) and timezone.strip() != "":
+                return timezone.strip()
+
+        return None
+
+    def _operational_context_payload(
+        self,
+        payload: AgentRequest,
+        effective_timezone: str | None,
+        effective_timezone_source: str | None,
+        contact_context: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        contact_context_source = None
+        if isinstance(contact_context, dict):
+            contact_context_source = self._normalize_text_value(contact_context.get("source"))
+            if contact_context_source is None:
+                contact_context_source = self._normalize_text_value(contact_context.get("cache_source"))
+
+        contact_context_available, _, _ = self._contact_context_diagnostics(contact_context)
+        channel = self._normalize_text_value(payload.conversation.channel) or self._normalize_text_value(payload.channel_type)
+
+        payload_data: dict[str, Any] = {
+            "tenant_id": self._normalize_text_value(payload.tenant_id),
+            "channel": channel,
+            "contact": {
+                "phone": self._normalize_text_value(payload.contact.phone),
+                "email": self._normalize_text_value(payload.contact.email),
+                "name": self._normalize_text_value(payload.contact.name),
+            },
+            "effective_timezone": effective_timezone,
+            "appointment_tool_timezone": effective_timezone,
+            "contact_context_available": contact_context_available,
+        }
+
+        if effective_timezone_source is not None:
+            payload_data["effective_timezone_source"] = effective_timezone_source
+        if contact_context_source is not None:
+            payload_data["contact_context_source"] = contact_context_source
+
+        return payload_data
+
+    def _technical_fallback_timezone_details(self) -> tuple[str | None, str | None]:
+        configured = getattr(self.settings, "default_business_timezone", None)
+        if isinstance(configured, str):
+            normalized = configured.strip()
+            if normalized != "" and self._is_valid_timezone(normalized):
+                return normalized, "settings.default_business_timezone"
+
+        fallback = self.settings.safe_default_business_timezone()
+        if isinstance(fallback, str) and fallback.strip() != "":
+            return fallback.strip(), "safety_fallback"
+
+        return None, None
+
+    def _looks_like_uuid(self, value: str) -> bool:
+        normalized = value.strip()
+        if normalized == "":
+            return False
+
+        uuid_regex = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$")
+        return bool(uuid_regex.match(normalized))
+
     def _mcp_agenda_tools_available(self, mcp_config: McpRemoteConfig | None) -> bool:
         if mcp_config is None or not mcp_config.enabled:
             return False
@@ -629,11 +1194,159 @@ class AgentRuntime:
             for tool in mcp_config.allowed_tools
         )
 
-    def _mcp_contact_context_available(self, mcp_config: McpRemoteConfig | None) -> bool:
-        if mcp_config is None or not mcp_config.enabled:
-            return False
+    def _recent_contact_context_from_messages(self, context_messages: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+        if not isinstance(context_messages, list):
+            return None
 
-        return any(tool.strip() == "contact_context" for tool in mcp_config.allowed_tools)
+        for message in reversed(context_messages):
+            if not isinstance(message, dict):
+                continue
+
+            metadata = message.get("metadata")
+            if not isinstance(metadata, dict):
+                continue
+
+            stored_contact_context = metadata.get("contact_context")
+            if isinstance(stored_contact_context, dict):
+                timezone, _ = self._resolve_effective_timezone_details(None, stored_contact_context)
+                if timezone is not None:
+                    return stored_contact_context
+
+            data_to_save = metadata.get("data_to_save")
+            if not isinstance(data_to_save, dict):
+                data_to_save = metadata
+
+            if not isinstance(data_to_save, dict):
+                continue
+
+            traces = metadata.get("mcp_tool_traces")
+            if isinstance(traces, list):
+                for trace in reversed(traces):
+                    if not isinstance(trace, dict):
+                        continue
+
+                    tool_name = trace.get("tool_name") or trace.get("toolName") or trace.get("name")
+                    if not isinstance(tool_name, str) or tool_name.strip() != "appointment_availability":
+                        continue
+
+                    output = trace.get("output")
+                    if not isinstance(output, dict):
+                        output = trace.get("raw") if isinstance(trace.get("raw"), dict) else {}
+                    if not isinstance(output, dict):
+                        continue
+
+                    timezone = output.get("timezone")
+                    if not isinstance(timezone, str) or timezone.strip() == "":
+                        slots = output.get("slots")
+                        if isinstance(slots, list) and slots:
+                            first_slot = slots[0]
+                            if isinstance(first_slot, dict):
+                                timezone = first_slot.get("timezone") if isinstance(first_slot.get("timezone"), str) else None
+
+                    if not isinstance(timezone, str) or timezone.strip() == "":
+                        continue
+
+                    timezone_source = output.get("timezone_source")
+                    if not isinstance(timezone_source, str) or timezone_source.strip() == "":
+                        timezone_source = "appointment_availability"
+
+                    contact_context: dict[str, Any] = {
+                        "available": bool(output.get("available", False)),
+                        "configured": bool(output.get("configured", True)),
+                        "provider": self._normalize_text_value(metadata.get("provider")),
+                        "ok": bool(output.get("ok", output.get("available", False))),
+                        "found": bool(output.get("ok", output.get("available", False))),
+                        "error_code": self._normalize_text_value(output.get("error_code")),
+                        "data": {
+                            "source": "appointment_availability",
+                            "summary": self._normalize_text_value(output.get("summary")),
+                            "timezone": timezone.strip(),
+                            "timezone_source": self._normalize_text_value(timezone_source),
+                            "needs_branch_selection": False,
+                            "flags": {},
+                        },
+                    }
+                    contact_context["data"]["business_context"] = {
+                        "timezone": timezone.strip(),
+                        "timezone_source": self._normalize_text_value(timezone_source),
+                        "needs_branch_selection": False,
+                    }
+                    return contact_context
+
+            timezone = data_to_save.get("external_context_timezone") or data_to_save.get("external_business_context_timezone")
+            timezone_source = (
+                data_to_save.get("external_context_timezone_source")
+                or data_to_save.get("external_business_context_timezone_source")
+            )
+            needs_branch_selection = bool(
+                data_to_save.get("external_context_needs_branch_selection", False)
+                or data_to_save.get("external_business_context_needs_branch_selection", False)
+            )
+
+            if not isinstance(timezone, str) or timezone.strip() == "":
+                continue
+
+            contact_context: dict[str, Any] = {
+                "available": bool(data_to_save.get("external_context_available", False)),
+                "configured": bool(data_to_save.get("external_context_configured", False)),
+                "provider": self._normalize_text_value(data_to_save.get("external_context_provider")),
+                "ok": bool(data_to_save.get("external_context_available", False)),
+                "found": bool(data_to_save.get("external_context_available", False)),
+                "error_code": self._normalize_text_value(data_to_save.get("external_context_error_code")),
+                "data": {
+                    "source": self._normalize_text_value(data_to_save.get("external_context_source")),
+                    "summary": self._normalize_text_value(data_to_save.get("external_context_summary")),
+                    "timezone": timezone.strip(),
+                    "timezone_source": self._normalize_text_value(timezone_source),
+                    "needs_branch_selection": False,
+                    "contact": {
+                        "name": self._normalize_text_value(data_to_save.get("external_contact_name")),
+                        "phone": self._normalize_text_value(data_to_save.get("external_contact_phone")),
+                        "email": self._normalize_text_value(data_to_save.get("external_contact_email")),
+                        "status": self._normalize_text_value(data_to_save.get("external_contact_status")),
+                        "stage": self._normalize_text_value(data_to_save.get("external_contact_stage")),
+                        "owner": self._normalize_text_value(data_to_save.get("external_contact_owner")),
+                    },
+                    "flags": {
+                        "needs_human": bool(data_to_save.get("external_flag_needs_human", False)),
+                        "do_not_contact": bool(data_to_save.get("external_flag_do_not_contact", False)),
+                        "existing_customer": bool(data_to_save.get("external_flag_existing_customer", False)),
+                    },
+                },
+            }
+
+            branch = data_to_save.get("external_context_branch") or data_to_save.get("external_business_context_branch")
+            if isinstance(branch, (dict, str)):
+                contact_context["data"]["branch"] = branch
+
+            selected_branch = data_to_save.get("external_context_selected_branch") or data_to_save.get("external_business_context_selected_branch")
+            if isinstance(selected_branch, (dict, str)):
+                contact_context["data"]["selected_branch"] = selected_branch
+
+            branches = data_to_save.get("external_context_branches") or data_to_save.get("external_business_context_branches")
+            if isinstance(branches, list):
+                contact_context["data"]["branches"] = branches
+
+            business_timezone = data_to_save.get("external_business_context_timezone")
+            if isinstance(business_timezone, str) and business_timezone.strip() != "":
+                contact_context["data"]["business_context"] = {
+                    "timezone": business_timezone.strip(),
+                    "timezone_source": self._normalize_text_value(data_to_save.get("external_business_context_timezone_source")),
+                    "needs_branch_selection": bool(data_to_save.get("external_business_context_needs_branch_selection", False)),
+                }
+                business_branch = data_to_save.get("external_business_context_branch")
+                if isinstance(business_branch, (dict, str)):
+                    contact_context["data"]["business_context"]["branch"] = business_branch
+                business_selected_branch = data_to_save.get("external_business_context_selected_branch")
+                if isinstance(business_selected_branch, (dict, str)):
+                    contact_context["data"]["business_context"]["selected_branch"] = business_selected_branch
+                business_branches = data_to_save.get("external_business_context_branches")
+                if isinstance(business_branches, list):
+                    contact_context["data"]["business_context"]["branches"] = business_branches
+
+            return contact_context
+
+        return None
 
     async def _resolve_contact_context(
         self,
@@ -643,29 +1356,115 @@ class AgentRuntime:
         conversation_id: str | None,
         mcp_config: McpRemoteConfig | None,
     ) -> dict[str, Any] | None:
-        if self.external_tool_client is None:
+        if self.contact_context_resolver is None:
             return None
 
-        if not self._mcp_contact_context_available(mcp_config):
-            return None
-
-        if not self._mcp_agenda_tools_available(mcp_config):
-            return None
-
-        tenant_slug = backend_context.tenant.slug if backend_context is not None else None
-        last_messages = payload.conversation.last_messages if isinstance(payload.conversation.last_messages, list) else []
-
-        return await self.external_tool_client.fetch_contact_context(
-            routing.tenant_id,
-            tenant_slug,
-            payload.channel_type,
-            routing.external_channel_id or payload.external_channel_id,
-            payload.contact,
-            conversation_id,
-            last_messages,
-            payload.message.text or "",
-            self._raw_event_field(payload.raw_event, "whatsapp_message_id", "whatsappMessageId", "message_id", "id"),
+        recent_contact_context = self._recent_contact_context_from_messages(payload.conversation.context_messages)
+        return await self.contact_context_resolver.resolve(
+            payload,
+            backend_context,
+            mcp_config,
+            recent_contact_context=recent_contact_context,
         )
+
+    def _effective_contact_context(
+        self,
+        payload: AgentRequest,
+        contact_context: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if isinstance(contact_context, dict):
+            return contact_context
+
+        return self._recent_contact_context_from_messages(payload.conversation.context_messages)
+
+    def _publish_contact_context_to_conversation_context(
+        self,
+        payload: AgentRequest,
+        contact_context: dict[str, Any] | None,
+    ) -> None:
+        if not isinstance(contact_context, dict):
+            return
+
+        context_messages = payload.conversation.context_messages
+        if not isinstance(context_messages, list):
+            payload.conversation.context_messages = []
+            context_messages = payload.conversation.context_messages
+
+        context_messages.append(
+            {
+                "id": f"contact-context-{uuid.uuid4()}",
+                "direction": "outbound",
+                "role": "assistant",
+                "message_type": "text",
+                "body": "Contexto externo resuelto.",
+                "metadata": {
+                    "contact_context": copy.deepcopy(contact_context),
+                },
+            }
+        )
+
+    def _should_preload_contact_context(self, payload: AgentRequest, normalized_message: str) -> bool:
+        if self._agenda_message_kind(normalized_message) is not None:
+            return True
+
+        if self._is_slot_selection_followup(normalized_message):
+            return True
+
+        if self._recent_contact_context_from_messages(payload.conversation.context_messages) is not None:
+            return True
+
+        return False
+
+    def _agenda_message_kind(self, message: str) -> str | None:
+        normalized = message.lower().strip()
+
+        lookup_keywords = (
+            "consulta mi agenda",
+            "consulta la agenda",
+            "consultar mi agenda",
+            "ver mi agenda",
+            "ver agenda",
+            "mis citas",
+            "mis reuniones",
+            "tengo citas",
+            "tengo cita",
+            "citas programadas",
+            "reuniones programadas",
+            "próximas citas",
+            "proximas citas",
+            "qué citas tengo",
+            "que citas tengo",
+            "agenda de",
+        )
+        if any(keyword in normalized for keyword in lookup_keywords):
+            return "lookup"
+
+        booking_keywords = (
+            "agendar",
+            "reservar",
+            "reserva",
+            "booking",
+            "appointment",
+            "disponibilidad",
+            "huecos",
+            "horarios",
+            "demo",
+            "agenda",
+            "cita",
+            "citas",
+            "reunión",
+            "reunion",
+        )
+        if any(keyword in normalized for keyword in booking_keywords):
+            return "booking"
+
+        return None
+
+    def _normalize_text_value(self, value: Any) -> str | None:
+        if isinstance(value, str) and value.strip() != "":
+            return value.strip()
+
+        return None
 
     def _log_mcp_config(self, tenant_id: str, mcp_config: McpRemoteConfig | None) -> None:
         if mcp_config is None:
@@ -940,6 +1739,236 @@ class AgentRuntime:
             latency_ms=response.latency_ms,
         )
 
+    def _normalize_premature_appointment_confirmation(self, response: AgentResponse, normalized_message: str) -> AgentResponse:
+        if not self._is_slot_selection_followup(normalized_message):
+            return response
+
+        if self._appointment_confirmation_succeeded(response):
+            return response
+
+        reply = (response.reply or "").lower()
+        if not any(keyword in reply for keyword in ("reserv", "confirmad", "he reservado", "ya está", "listo", "te reservo")):
+            return response
+
+        return AgentResponse(
+            reply="Perfecto. Estoy revisando ese horario. Si necesito algún dato adicional para cerrarlo, te lo pediré ahora.",
+            intent=response.intent,
+            score=response.score,
+            action=response.action,
+            needs_human=response.needs_human,
+            data_to_save=response.data_to_save,
+            provider=response.provider,
+            model=response.model,
+            latency_ms=response.latency_ms,
+        )
+
+    def _normalize_successful_appointment_confirmation(self, response: AgentResponse, normalized_message: str) -> AgentResponse:
+        if not self._appointment_confirmation_succeeded(response):
+            return response
+
+        reply = self._successful_appointment_confirmation_reply(response)
+        data_to_save = copy.deepcopy(response.data_to_save)
+        data_to_save["appointment_confirmation_status"] = "confirmed"
+        data_to_save["appointment_confirmed"] = True
+
+        return AgentResponse(
+            reply=reply,
+            intent="agenda",
+            score=response.score,
+            action="completed",
+            needs_human=False,
+            data_to_save=data_to_save,
+            provider=response.provider,
+            model=response.model,
+            latency_ms=response.latency_ms,
+        )
+
+    def _finalize_successful_appointment_confirmation(self, response: AgentResponse) -> AgentResponse:
+        if not self._appointment_confirmation_succeeded(response):
+            return response
+
+        reply = self._successful_appointment_confirmation_reply(response)
+        data_to_save = copy.deepcopy(response.data_to_save)
+        data_to_save["appointment_confirmation_status"] = "confirmed"
+        data_to_save["appointment_confirmed"] = True
+        data_to_save["appointment_confirm_post_processed"] = True
+
+        return AgentResponse(
+            reply=reply,
+            intent="agenda",
+            score=response.score,
+            action="completed",
+            needs_human=False,
+            data_to_save=data_to_save,
+            provider=response.provider,
+            model=response.model,
+            latency_ms=response.latency_ms,
+        )
+
+    def _successful_appointment_confirmation_reply(self, response: AgentResponse) -> str:
+        trace = self._appointment_confirmation_trace(response)
+        output = self._appointment_confirmation_output(trace)
+        if output is None:
+            return "Perfecto, tu cita quedó confirmada correctamente."
+
+        start = self._normalize_text_value(
+            output.get("start")
+            or output.get("startAt")
+            or self._appointment_confirmation_value_from_nested(output, ("appointment", "startAt"))
+            or self._appointment_confirmation_value_from_nested(output, ("appointment", "start"))
+        )
+        title = self._normalize_text_value(
+            output.get("title")
+            or self._appointment_confirmation_value_from_nested(output, ("appointment", "service", "name"))
+            or self._appointment_confirmation_value_from_nested(output, ("service", "name"))
+        )
+        message = self._normalize_text_value(output.get("message"))
+        owner_name = self._extract_appointment_owner_name(trace, output)
+
+        detail_segments: list[str] = []
+        if start is not None:
+            formatted_slot = self._format_appointment_datetime(start)
+            if formatted_slot is not None:
+                detail_segments.append(f"para {formatted_slot}")
+            else:
+                detail_segments.append(f"para {start}")
+
+        if title is not None:
+            service_name = title
+            prefix = "Cita para "
+            if service_name.lower().startswith(prefix.lower()):
+                service_name = service_name[len(prefix):].strip()
+            if service_name != "":
+                detail_segments.append(f"de {service_name}")
+
+        if owner_name is not None:
+            detail_segments.append(f"con {owner_name}")
+
+        reply = "Perfecto, tu cita queda confirmada"
+        if detail_segments:
+            reply = f"{reply} {' '.join(detail_segments)}"
+        reply = f"{reply}."
+        if message is not None and message != "":
+            reply = f"{reply} {message}"
+
+        return reply
+
+    def _appointment_confirmation_trace(self, response: AgentResponse) -> dict[str, Any] | None:
+        traces = response.data_to_save.get("mcp_tool_traces")
+        if not isinstance(traces, list):
+            return None
+
+        for trace in reversed(traces):
+            if not isinstance(trace, dict):
+                continue
+
+            tool_name = trace.get("tool_name") or trace.get("toolName") or trace.get("name")
+            if isinstance(tool_name, str) and tool_name.strip() == "appointment_confirm":
+                return trace
+
+        return None
+
+    def _appointment_confirmation_output(self, trace: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not isinstance(trace, dict):
+            return None
+
+        for candidate in (trace.get("output"), self._trace_raw_output(trace)):
+            parsed = self._coerce_json_object(candidate)
+            if isinstance(parsed, dict):
+                return parsed
+
+        return None
+
+    def _trace_raw_output(self, trace: dict[str, Any]) -> Any:
+        raw = trace.get("raw")
+        if isinstance(raw, str):
+            return raw
+        if not isinstance(raw, dict):
+            return None
+
+        return raw.get("output", raw)
+
+    def _coerce_json_object(self, value: Any) -> dict[str, Any] | None:
+        if isinstance(value, dict):
+            return value
+
+        if isinstance(value, str) and value.strip() != "":
+            try:
+                parsed = json.loads(value)
+            except Exception:
+                return None
+
+            if isinstance(parsed, dict):
+                return parsed
+
+        return None
+
+    def _appointment_confirmation_value_from_nested(self, data: dict[str, Any], path: tuple[str, ...]) -> Any:
+        current: Any = data
+        for key in path:
+            if not isinstance(current, dict):
+                return None
+            current = current.get(key)
+        return current
+
+    def _extract_appointment_owner_name(self, trace: dict[str, Any], output: dict[str, Any]) -> str | None:
+        candidates = (
+            output.get("owner_name"),
+            output.get("ownerName"),
+            output.get("professional_name"),
+            output.get("professionalName"),
+            output.get("agent_name"),
+            output.get("agentName"),
+            output.get("staff_name"),
+            output.get("staffName"),
+            self._appointment_confirmation_value_from_nested(output, ("appointment", "ownerName")),
+            self._appointment_confirmation_value_from_nested(output, ("appointment", "owner_name")),
+            self._appointment_confirmation_value_from_nested(output, ("appointment", "owner", "name")),
+        )
+        for candidate in candidates:
+            normalized = self._normalize_text_value(candidate)
+            if normalized is not None:
+                return normalized
+
+        arguments = trace.get("arguments")
+        if isinstance(arguments, dict):
+            for candidate in (
+                arguments.get("owner_name"),
+                arguments.get("ownerName"),
+                arguments.get("professional_name"),
+                arguments.get("professionalName"),
+                arguments.get("agent_name"),
+                arguments.get("agentName"),
+                arguments.get("staff_name"),
+                arguments.get("staffName"),
+            ):
+                normalized = self._normalize_text_value(candidate)
+                if normalized is not None:
+                    return normalized
+
+        return None
+
+    def _format_appointment_datetime(self, value: str) -> str | None:
+        try:
+            parsed = datetime.fromisoformat(value)
+        except Exception:
+            return None
+
+        if parsed.tzinfo is None:
+            return None
+
+        weekday_names = (
+            "lunes",
+            "martes",
+            "miércoles",
+            "jueves",
+            "viernes",
+            "sábado",
+            "domingo",
+        )
+        weekday = weekday_names[parsed.weekday()]
+        return f"{weekday} {parsed.day:02d}/{parsed.month:02d} a las {parsed.hour:02d}:{parsed.minute:02d}"
+
     def _appointment_confirmation_failed(self, response: AgentResponse) -> bool:
         traces = response.data_to_save.get("mcp_tool_traces")
         if not isinstance(traces, list):
@@ -953,10 +1982,7 @@ class AgentRuntime:
             if not isinstance(tool_name, str) or tool_name.strip() != "appointment_confirm":
                 continue
 
-            output = trace.get("output")
-            if not isinstance(output, dict):
-                output = trace.get("raw") if isinstance(trace.get("raw"), dict) else {}
-
+            output = self._appointment_confirmation_output(trace)
             if not isinstance(output, dict):
                 return False
 
@@ -969,6 +1995,30 @@ class AgentRuntime:
 
             status = output.get("status")
             if isinstance(status, str) and status.strip().lower() in {"error", "failed", "failure", "validation_error", "crm_error"}:
+                return True
+
+            return False
+
+        return False
+
+    def _appointment_confirmation_succeeded(self, response: AgentResponse) -> bool:
+        traces = response.data_to_save.get("mcp_tool_traces")
+        if not isinstance(traces, list):
+            return False
+
+        for trace in reversed(traces):
+            if not isinstance(trace, dict):
+                continue
+
+            tool_name = trace.get("tool_name") or trace.get("toolName") or trace.get("name")
+            if not isinstance(tool_name, str) or tool_name.strip() != "appointment_confirm":
+                continue
+
+            output = self._appointment_confirmation_output(trace)
+            if not isinstance(output, dict):
+                return False
+
+            if any(output.get(key) is True for key in ("ok", "confirmed")):
                 return True
 
             return False
@@ -1284,6 +2334,8 @@ class AgentRuntime:
 
         direct_selection_terms = (
             "elijo",
+            "prefiero",
+            "quiero",
             "me quedo con",
             "me quedo con la",
             "me quedo con el",
@@ -1299,11 +2351,18 @@ class AgentRuntime:
             "la de la",
             "la de los",
             "la de el",
+            "reservalo",
+            "resérvalo",
+            "reservala",
+            "resérvala",
         )
         if any(term in normalized_message for term in direct_selection_terms):
             return True
 
         if normalized_message.startswith(("si, confirma", "si confirma", "si, reserva", "si reserva")):
+            return True
+
+        if self._contains_short_time_selection(normalized_message):
             return True
 
         if "confirmo" in normalized_message and any(
@@ -1319,6 +2378,15 @@ class AgentRuntime:
             return True
 
         return False
+
+    def _contains_short_time_selection(self, normalized_message: str) -> bool:
+        if len(normalized_message) > 28:
+            return False
+
+        if re.search(r"\b([01]?\d|2[0-3]):[0-5]\d\b", normalized_message) is None:
+            return False
+
+        return any(token in normalized_message for token in ("por favor", "porfa", "gracias", "ok", "vale", "listo")) or normalized_message.startswith(("a las ", "las ", "el de ", "la de "))
 
     def _normalize_text(self, value: Any) -> str:
         if not isinstance(value, str):

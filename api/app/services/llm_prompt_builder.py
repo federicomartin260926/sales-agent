@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+import re
+import unicodedata
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -61,11 +63,16 @@ class LLMPromptBuilder:
         )
         current_business_time = self._current_business_time(current_timezone)
         current_date = current_business_time.date().isoformat()
-        appointment_context = self._appointment_context_payload(payload.conversation.context_messages)
+        appointment_context = self._appointment_context_payload(
+            payload.conversation.context_messages,
+            timezone=current_timezone,
+            timezone_source=current_timezone_source,
+        )
         system_prompt += (
             f" Contexto temporal explícito: current_datetime={current_business_time.isoformat()}, "
             f"current_date={current_date}, timezone={current_timezone}. "
             "Usa temporal_context.timezone como referencia local del negocio o sucursal. "
+            "El bloque operational_context resume la timezone operativa y tiene prioridad para agenda y confirmación. "
             "Si el backend no proporciona timezone específica, ya se habrá aplicado el fallback configurado por el sistema. "
             "No inventes otra zona horaria. "
             "Las expresiones relativas como hoy, mañana, pasado mañana, esta tarde o mañana por la tarde "
@@ -128,19 +135,35 @@ class LLMPromptBuilder:
                 "For any new availability or scheduling request that starts from scratch, call appointment_availability before answering availability or unavailability; never reuse previous availability results or previous_response_id for a fresh search turn. "
                 "Si el usuario elige uno de los slots que acabas de ofrecer (por ejemplo: elijo las 17:35, me quedo con la primera, confirma esa, sí, reserva), trátalo como una confirmación del slot previo: reutiliza el slot ofrecido inmediatamente antes, conserva service_id/date/timezone/duration y también owner_id/owner_ref/ownerId/ownerRef si estaban presentes en el slot, no vuelvas a llamar services_search ni appointment_availability desde cero, y usa la herramienta de confirmación o booking si existe. "
                 "Si conversation.appointment_context contiene offered_slots, usa exactamente el slot seleccionado desde ese bloque y copia literalmente sus campos start/end/timezone/service_id/owner_id/owner_ref antes de confirmar. "
+                "Si conversation.appointment_context.selected_slot existe, ese slot ya está resuelto: no preguntes alternativas ni especialista, no recalcules disponibilidad y llama appointment_confirm inmediatamente con esos datos exactos. "
+                "Si conversation.appointment_context incluye timezone o timezone_source, esa es la timezone operativa para confirmar el slot seleccionado y prevalece sobre cualquier timezone histórica de los slots. "
                 "Si conversation.context_messages incluye el último turno del asistente con trazas MCP de appointment_availability, toma de ahí el slot exacto ofrecido y sus campos owner/service/time/date antes de confirmar. "
                 "owner_id y owner_ref son obligatorios para appointment_confirm: si no puedes identificar el owner del slot seleccionado, no llames a appointment_confirm y pide aclaración o deriva el caso en lugar de intentar reservar incompleto. "
+                "Si la petición viene por WhatsApp y contact.phone ya existe en el payload, ese teléfono ya está conocido y debes reutilizarlo; no preguntes otra vez por el teléfono. "
+                "Si falta el nombre u otro dato realmente necesario para cerrar la cita, pide solo ese dato faltante y nunca el teléfono cuando contact.phone ya esté disponible. "
                 "Para appointment_confirm, sólo puedes afirmar que la cita quedó reservada o confirmada si la tool devuelve ok=true y/o confirmed=true. "
-                "Si appointment_confirm devuelve ok=false, confirmed=false, validation_error, crm_error o cualquier otro error, no digas que la cita está reservada o confirmada; explica que no se pudo confirmar y ofrece una alternativa o handoff humano si procede. "
+                "Si appointment_confirm devuelve ok=false, confirmed=false, validation_error, crm_error o cualquier otro error, no digas que la cita está reservada o confirmada; tampoco uses frases como te reservo, ya está reservada, confirmada, lista o similar antes de ese éxito explícito; explica que no se pudo confirmar y ofrece una alternativa o handoff humano si procede. "
                 "Si no puedes resolver el servicio con suficiente confianza, pide una aclaración breve o usa services_search antes de intentar appointment_availability. "
                 "No inventes productos, precios ni disponibilidad. Si services_search devuelve resultados, "
                 "responde usando esos resultados de forma breve, clara y comercial. "
                 "Si no devuelve resultados o falla, orienta de forma general y pide una aclaración breve."
             )
-            if "contact_context" in allowed_tools_list:
+            system_prompt += (
+                " CRITICAL NEXT ACTION: if conversation.appointment_context.required_next_action.must_call_tool is true, "
+                "call conversation.appointment_context.required_next_action.tool immediately before any plain-text reply. "
+                "Do not emit a provisional acknowledgement. Do not say \"estoy revisando\", \"te avisaré\", "
+                "\"si necesito algún dato\", \"lo estoy comprobando\" or similar before the tool call. "
+                "Use conversation.appointment_context.selected_slot as the source of truth for the tool arguments. "
+                "Only ask a question instead if a required field is missing from selected_slot. "
+                "If selected_slot is present and contact.phone or contact.email exists, never answer with an intermediate acknowledgement: "
+                "either call appointment_confirm or explain the exact missing field."
+            )
+            if effective_contact_context_payload is not None:
                 system_prompt += (
-                    " Si entre las herramientas autorizadas está contact_context, úsala como primera herramienta obligatoria para cualquier flujo de agenda o disponibilidad cuando no haya un contact_context reciente ya resuelto. "
-                    "contact_context es la fuente obligatoria de timezone, sucursal y contexto externo del contacto. "
+                    " Si el prompt incluye un bloque contact_context, úsalo como fuente prioritaria de timezone, sucursal y contexto externo del contacto, aunque contact_context no esté en allowed_tools. "
+                    "Para agenda, no uses el fallback temporal si contact_context trae timezone. "
+                    "appointment_availability.timezone debe copiar exactamente temporal_context.timezone. "
+                    "Si contact_context incluye business_context.timezone, usa esa timezone como la efectiva aunque el bloque plano no la repita. "
                     "Si contact_context devuelve needs_branch_selection=true, pregunta la sucursal antes de continuar con services_search o appointment_availability. "
                     "Si contact_context devuelve timezone, úsala exactamente para interpretar hoy, mañana, esta tarde, por la tarde y cualquier franja relativa. "
                     "No inventes branch_id, branch, service_id, owner_id ni timezone. "
@@ -191,6 +214,12 @@ class LLMPromptBuilder:
                 "timezone": current_timezone,
                 **({"timezone_source": current_timezone_source} if current_timezone_source is not None else {}),
             },
+            "operational_context": self._operational_context_payload(
+                payload,
+                current_timezone,
+                current_timezone_source,
+                effective_contact_context_payload,
+            ),
             "tenant": self._tenant_payload(backend_context),
             "product": self._product_payload(backend_context),
             "products": self._products_payload(backend_context),
@@ -213,7 +242,21 @@ class LLMPromptBuilder:
                     payload.conversation.last_messages,
                     payload.conversation.context_messages,
                 ),
-                **({"appointment_context": appointment_context} if appointment_context is not None else {}),
+                **(
+                    {
+                        "appointment_context": self._selected_appointment_context_payload(
+                            payload,
+                            routing,
+                            backend_context,
+                            payload.message.text,
+                            appointment_context,
+                            current_timezone,
+                            current_timezone_source,
+                        )
+                    }
+                    if appointment_context is not None
+                    else {}
+                ),
             },
             "current_message": self.context_helper.sanitize_text(payload.message.text or "", max_chars=2000),
         }
@@ -231,8 +274,6 @@ class LLMPromptBuilder:
         backend_context: CommercialContext | None,
         contact_context: dict[str, Any] | None = None,
     ) -> tuple[str, str | None]:
-        # TODO: cuando el backend exponga un timezone estable por tenant o sucursal,
-        # este helper lo leerá primero y seguirá cayendo al fallback configurado como respaldo.
         for source_label, source in self._business_timezone_sources(backend_context, contact_context):
             candidate, candidate_source = self._first_timezone_candidate(source)
             if candidate is None:
@@ -283,6 +324,11 @@ class LLMPromptBuilder:
         sources: list[tuple[str, Any]] = []
 
         if contact_context is not None:
+            business_context = None
+            if isinstance(contact_context, dict):
+                business_context = contact_context.get("business_context") or contact_context.get("businessContext")
+            if isinstance(business_context, dict):
+                sources.append(("contact_context.business_context", business_context))
             sources.append(("contact_context", contact_context))
 
         if backend_context is None:
@@ -523,35 +569,106 @@ class LLMPromptBuilder:
         open_opportunities = data.get("open_opportunities")
         appointments = data.get("appointments")
         sales = data.get("sales")
+        business_context = self._business_context_payload(data.get("business_context") or data.get("businessContext"))
+
+        timezone = self._clean_string(data.get("timezone"))
+        if timezone is None and business_context is not None:
+            timezone = self._clean_string(business_context.get("timezone"))
+
+        timezone_source = self._clean_string(data.get("timezone_source") or data.get("timezoneSource"))
+        if timezone_source is None and business_context is not None:
+            timezone_source = self._clean_string(business_context.get("timezone_source"))
+
+        needs_branch_selection = bool(
+            data.get(
+                "needs_branch_selection",
+                data.get(
+                    "needsBranchSelection",
+                    business_context.get("needs_branch_selection", False) if business_context is not None else False,
+                ),
+            )
+        )
+
+        branch = self._clean_branch(data.get("branch"))
+        if branch is None and business_context is not None:
+            branch = self._clean_branch(business_context.get("branch"))
+
+        selected_branch = self._clean_branch(
+            data.get("selected_branch") if "selected_branch" in data else data.get("selectedBranch")
+        )
+        if selected_branch is None and business_context is not None:
+            selected_branch = self._clean_branch(business_context.get("selected_branch"))
+
+        branches = self.context_helper.sanitize_jsonish(data.get("branches"), max_depth=5, max_items=5)
+        if (not isinstance(branches, list) or branches == []) and business_context is not None:
+            branches = self.context_helper.sanitize_jsonish(business_context.get("branches"), max_depth=5, max_items=5)
 
         payload.update(
             {
                 "source": self._clean_string(data.get("source")),
                 "summary": self._clean_string(data.get("summary")),
-                "timezone": self._clean_string(data.get("timezone")),
-                "timezone_source": self._clean_string(data.get("timezone_source") or data.get("timezoneSource")),
-                "needs_branch_selection": bool(data.get("needs_branch_selection", data.get("needsBranchSelection", False))),
-                "branch": self._clean_branch(data.get("branch")),
-                "selected_branch": self._clean_branch(
-                    data.get("selected_branch") if "selected_branch" in data else data.get("selectedBranch")
-                ),
-                "branches": self.context_helper.sanitize_jsonish(
-                    data.get("branches"), max_depth=5, max_items=5
-                ),
+                "timezone": timezone,
+                "timezone_source": timezone_source,
+                "needs_branch_selection": needs_branch_selection,
+                "branch": branch,
+                "selected_branch": selected_branch,
+                "branches": branches,
                 "contact": self._clean_contact(contact),
                 "recent_activity": self._clean_list_of_dicts(recent_activity, max_items=5),
                 "open_opportunities": self._clean_list_of_dicts(open_opportunities, max_items=5),
                 "appointments": self._clean_appointments(appointments),
                 "sales": self._clean_sales(sales),
                 "flags": self._clean_flags(flags),
+                **({"business_context": business_context} if business_context is not None else {}),
             }
         )
 
         return payload
 
-    def _appointment_context_payload(self, context_messages: list[dict[str, Any]] | None) -> dict[str, Any] | None:
+    def _operational_context_payload(
+        self,
+        payload: AgentRequest,
+        effective_timezone: str,
+        effective_timezone_source: str | None,
+        contact_context: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        contact_context_source = None
+        if isinstance(contact_context, dict):
+            contact_context_source = self._clean_string(contact_context.get("source")) or self._clean_string(contact_context.get("cache_source"))
+
+        channel = self.context_helper.sanitize_text(payload.conversation.channel or payload.channel_type, max_chars=32)
+        return {
+            "tenant_id": self.context_helper.sanitize_text(payload.tenant_id, max_chars=64),
+            "channel": channel,
+            "contact": {
+                "phone": self.context_helper.sanitize_text(payload.contact.phone, max_chars=64),
+                "email": self.context_helper.sanitize_text(payload.contact.email, max_chars=255),
+                "name": self.context_helper.sanitize_text(payload.contact.name, max_chars=255),
+            },
+            "effective_timezone": effective_timezone,
+            **({"effective_timezone_source": effective_timezone_source} if effective_timezone_source is not None else {}),
+            "contact_context_available": isinstance(contact_context, dict),
+            **({"contact_context_source": contact_context_source} if contact_context_source is not None else {}),
+            "appointment_tool_timezone": effective_timezone,
+        }
+
+    def _appointment_context_payload(
+        self,
+        context_messages: list[dict[str, Any]] | None,
+        timezone: str | None = None,
+        timezone_source: str | None = None,
+    ) -> dict[str, Any] | None:
         if not isinstance(context_messages, list):
-            return None
+            if timezone is None and timezone_source is None:
+                return None
+
+            appointment_context: dict[str, Any] = {}
+            if timezone is not None:
+                appointment_context["timezone"] = timezone
+            if timezone_source is not None:
+                appointment_context["timezone_source"] = timezone_source
+
+            return appointment_context or None
 
         for message in reversed(context_messages):
             if not isinstance(message, dict):
@@ -593,14 +710,382 @@ class LLMPromptBuilder:
                     "offered_slots": offered_slots,
                 }
 
+                if timezone is not None:
+                    appointment_context["timezone"] = timezone
+                if timezone_source is not None:
+                    appointment_context["timezone_source"] = timezone_source
+
                 if isinstance(raw_summary, dict):
                     sanitized_raw_summary = self.context_helper.sanitize_jsonish(raw_summary, max_depth=5, max_items=8)
                     if sanitized_raw_summary not in (None, {}):
                         appointment_context["raw_summary"] = sanitized_raw_summary
 
+                service_payload = self._appointment_context_service_payload(output)
+                if service_payload is not None:
+                    appointment_context.update(service_payload)
+
                 return appointment_context
 
         return None
+
+    def _selected_appointment_context_payload(
+        self,
+        payload: AgentRequest,
+        routing: RoutingContext | None,
+        backend_context: CommercialContext | None,
+        current_message: str | None,
+        appointment_context: dict[str, Any] | None,
+        timezone: str | None = None,
+        timezone_source: str | None = None,
+    ) -> dict[str, Any] | None:
+        if not isinstance(appointment_context, dict):
+            return appointment_context
+
+        offered_slots = appointment_context.get("offered_slots")
+        if not isinstance(offered_slots, list) or offered_slots == []:
+            payload_copy = dict(appointment_context)
+            if timezone is not None:
+                payload_copy["timezone"] = timezone
+            if timezone_source is not None:
+                payload_copy["timezone_source"] = timezone_source
+            return payload_copy
+
+        normalized_slots = self._normalize_offered_slots(offered_slots)
+        selected_slot = self._selected_slot_from_message(current_message, normalized_slots)
+        payload_copy = dict(appointment_context)
+        payload_copy["offered_slots"] = normalized_slots
+        if selected_slot is not None:
+            enriched_selected_slot = self._enrich_selected_slot(
+                selected_slot,
+                appointment_context,
+                payload,
+                routing,
+                backend_context,
+                timezone,
+                timezone_source,
+            )
+            payload_copy["selected_slot"] = enriched_selected_slot
+            required_next_action = self._selected_slot_required_next_action(
+                enriched_selected_slot,
+                appointment_context,
+                payload,
+                routing,
+                backend_context,
+                timezone,
+                timezone_source,
+            )
+            if required_next_action is not None:
+                payload_copy["required_next_action"] = required_next_action
+        elif timezone is not None:
+            payload_copy["timezone"] = timezone
+            if timezone_source is not None:
+                payload_copy["timezone_source"] = timezone_source
+
+        return payload_copy
+
+    def _appointment_context_service_payload(self, output: dict[str, Any]) -> dict[str, Any] | None:
+        service = output.get("service")
+        service_dict = service if isinstance(service, dict) else {}
+        service_id = self._clean_string(
+            output.get("service_id")
+            or output.get("serviceId")
+            or service_dict.get("id")
+            or service_dict.get("service_id")
+            or service_dict.get("serviceId")
+        )
+        service_name = self._clean_string(
+            output.get("service_name")
+            or output.get("serviceName")
+            or service_dict.get("name")
+            or service_dict.get("display_name")
+        )
+        service_ref = self._clean_string(
+            output.get("service_ref")
+            or output.get("serviceRef")
+            or service_dict.get("ref")
+            or service_dict.get("integration_key")
+            or service_dict.get("integrationKey")
+            or service_dict.get("slug")
+        )
+        duration_minutes = output.get("duration_minutes")
+        if duration_minutes is None:
+            duration_minutes = output.get("durationMinutes")
+        if duration_minutes is None and isinstance(service_dict.get("duration_minutes"), (int, float)):
+            duration_minutes = service_dict.get("duration_minutes")
+        if duration_minutes is None and isinstance(service_dict.get("durationMinutes"), (int, float)):
+            duration_minutes = service_dict.get("durationMinutes")
+
+        service_payload: dict[str, Any] = {}
+        if service_id is not None:
+            service_payload["service_id"] = service_id
+        if service_name is not None:
+            service_payload["service_name"] = service_name
+        if service_ref is not None:
+            service_payload["service_ref"] = service_ref
+        if isinstance(duration_minutes, (int, float)):
+            service_payload["duration_minutes"] = int(duration_minutes)
+
+        return service_payload or None
+
+    def _enrich_selected_slot(
+        self,
+        selected_slot: dict[str, Any],
+        appointment_context: dict[str, Any],
+        payload: AgentRequest,
+        routing: RoutingContext | None,
+        backend_context: CommercialContext | None,
+        timezone: str | None,
+        timezone_source: str | None,
+    ) -> dict[str, Any]:
+        enriched = dict(selected_slot)
+
+        def set_if_missing(key: str, value: Any) -> None:
+            if value is None:
+                return
+            if key not in enriched or enriched[key] in (None, ""):
+                enriched[key] = value
+
+        for key in ("service_id", "service_ref", "service_name", "duration_minutes"):
+            set_if_missing(key, appointment_context.get(key))
+
+        if timezone is not None:
+            set_if_missing("timezone", timezone)
+        if timezone_source is not None:
+            set_if_missing("timezone_source", timezone_source)
+
+        tenant_id = self._clean_string(payload.tenant_id)
+        if tenant_id is None and backend_context is not None:
+            tenant_id = self._clean_string(getattr(backend_context.tenant, "id", None))
+        set_if_missing("tenant_id", tenant_id)
+
+        conversation_id = self._clean_string(payload.conversation.external_id)
+        set_if_missing("conversation_id", conversation_id)
+
+        entrypoint_ref = self._clean_string(payload.entrypoint_ref)
+        if entrypoint_ref is None and routing is not None:
+            entrypoint_ref = self._clean_string(routing.entrypoint_ref)
+        set_if_missing("entrypoint_ref", entrypoint_ref)
+
+        contact_payload: dict[str, Any] = {}
+        if payload.contact.name is not None:
+            contact_payload["name"] = self._clean_string(payload.contact.name)
+        if payload.contact.phone is not None:
+            contact_payload["phone"] = self._clean_string(payload.contact.phone)
+        if payload.contact.email is not None:
+            contact_payload["email"] = self._clean_string(payload.contact.email)
+        contact_payload = {key: value for key, value in contact_payload.items() if value is not None}
+        if contact_payload:
+            set_if_missing("contact", contact_payload)
+
+        service_name = self._clean_string(
+            enriched.get("service_name")
+            or appointment_context.get("service_name")
+            or appointment_context.get("serviceName")
+        )
+        if service_name is not None:
+            set_if_missing("service_name", service_name)
+
+        return enriched
+
+    def _selected_slot_required_next_action(
+        self,
+        selected_slot: dict[str, Any],
+        appointment_context: dict[str, Any],
+        payload: AgentRequest,
+        routing: RoutingContext | None,
+        backend_context: CommercialContext | None,
+        timezone: str | None,
+        timezone_source: str | None,
+    ) -> dict[str, Any] | None:
+        start = self._clean_string(selected_slot.get("start"))
+        end = self._clean_string(selected_slot.get("end"))
+        owner_id = self._clean_string(selected_slot.get("owner_id") or selected_slot.get("ownerId"))
+        service_id = self._clean_string(
+            selected_slot.get("service_id")
+            or selected_slot.get("serviceId")
+            or appointment_context.get("service_id")
+            or appointment_context.get("serviceId")
+        )
+        service_ref = self._clean_string(
+            selected_slot.get("service_ref")
+            or selected_slot.get("serviceRef")
+            or appointment_context.get("service_ref")
+            or appointment_context.get("serviceRef")
+        )
+        contact = selected_slot.get("contact") if isinstance(selected_slot.get("contact"), dict) else {}
+        contact_phone = self._clean_string(contact.get("phone")) if isinstance(contact, dict) else None
+        contact_email = self._clean_string(contact.get("email")) if isinstance(contact, dict) else None
+        if contact_phone is None:
+            contact_phone = self._clean_string(payload.contact.phone)
+        if contact_email is None:
+            contact_email = self._clean_string(payload.contact.email)
+
+        if start is None or end is None or owner_id is None:
+            return None
+
+        if service_id is None and service_ref is None:
+            return None
+
+        if contact_phone is None and contact_email is None:
+            return None
+
+        selected_timezone = self._clean_string(selected_slot.get("timezone")) or timezone
+        if selected_timezone is None:
+            return None
+
+        selected_slot_payload = dict(selected_slot)
+        selected_slot_payload.setdefault("timezone", selected_timezone)
+        if timezone_source is not None:
+            selected_slot_payload.setdefault("timezone_source", timezone_source)
+        if service_id is not None:
+            selected_slot_payload.setdefault("service_id", service_id)
+        if service_ref is not None:
+            selected_slot_payload.setdefault("service_ref", service_ref)
+
+        if backend_context is not None:
+            selected_slot_payload.setdefault("tenant_id", self._clean_string(backend_context.tenant.id))
+
+        if self._clean_string(payload.conversation.external_id) is not None:
+            selected_slot_payload.setdefault("conversation_id", self._clean_string(payload.conversation.external_id))
+
+        if self._clean_string(payload.entrypoint_ref) is not None:
+            selected_slot_payload.setdefault("entrypoint_ref", self._clean_string(payload.entrypoint_ref))
+        elif routing is not None and self._clean_string(routing.entrypoint_ref) is not None:
+            selected_slot_payload.setdefault("entrypoint_ref", self._clean_string(routing.entrypoint_ref))
+
+        selected_slot_payload["contact"] = {
+            key: value
+            for key, value in {
+                "name": self._clean_string(payload.contact.name),
+                "phone": contact_phone,
+                "email": contact_email,
+            }.items()
+            if value is not None
+        }
+
+        service_name = self._clean_string(
+            selected_slot.get("service_name")
+            or selected_slot.get("serviceName")
+            or appointment_context.get("service_name")
+            or appointment_context.get("serviceName")
+        )
+        if service_name is not None:
+            selected_slot_payload.setdefault("service_name", service_name)
+
+        owner_name = self._clean_string(selected_slot.get("owner_name") or selected_slot.get("ownerName"))
+        if owner_name is not None:
+            selected_slot_payload.setdefault("owner_name", owner_name)
+
+        return {
+            "tool": "appointment_confirm",
+            "must_call_tool": True,
+            "reason": "The user selected an exact offered slot.",
+            "do_not_reply_before_tool_call": True,
+            "selected_slot": selected_slot_payload,
+        }
+
+    def _normalize_offered_slots(self, offered_slots: list[Any]) -> list[dict[str, Any]]:
+        normalized_slots: list[dict[str, Any]] = []
+        for slot in offered_slots:
+            if not isinstance(slot, dict):
+                continue
+
+            normalized_slot = dict(slot)
+            owner = slot.get("owner")
+            owner_dict = owner if isinstance(owner, dict) else {}
+            owner_id = self._clean_string(
+                slot.get("owner_id")
+                or slot.get("ownerId")
+                or owner_dict.get("id")
+                or owner_dict.get("owner_id")
+                or owner_dict.get("ownerId")
+            )
+            owner_name = self._clean_string(
+                slot.get("owner_name")
+                or slot.get("ownerName")
+                or owner_dict.get("name")
+                or owner_dict.get("display_name")
+            )
+            owner_ref = self._clean_string(
+                slot.get("owner_ref")
+                or slot.get("ownerRef")
+                or owner_dict.get("ref")
+                or owner_dict.get("owner_ref")
+                or owner_dict.get("ownerRef")
+            )
+
+            if owner_id is not None:
+                normalized_slot["owner_id"] = owner_id
+                normalized_slot["ownerId"] = owner_id
+            if owner_name is not None:
+                normalized_slot["owner_name"] = owner_name
+                normalized_slot["ownerName"] = owner_name
+            if owner_ref is not None:
+                normalized_slot["owner_ref"] = owner_ref
+                normalized_slot["ownerRef"] = owner_ref
+            if owner_dict:
+                normalized_slot["owner"] = owner_dict
+
+            normalized_slots.append(normalized_slot)
+
+        return normalized_slots
+
+    def _selected_slot_from_message(self, message: str | None, offered_slots: list[dict[str, Any]]) -> dict[str, Any] | None:
+        if not isinstance(message, str):
+            return None
+
+        normalized_message = unicodedata.normalize("NFKD", message).encode("ascii", "ignore").decode("ascii").lower().strip()
+        if normalized_message == "":
+            return None
+
+        time_match = re.search(r"\b([01]?\d|2[0-3]):[0-5]\d\b", normalized_message)
+        owner_match = None
+        for slot in offered_slots:
+            owner_name = self._clean_string(slot.get("owner_name"))
+            if owner_name is None:
+                continue
+
+            normalized_owner_name = unicodedata.normalize("NFKD", owner_name).encode("ascii", "ignore").decode("ascii").lower().strip()
+            if normalized_owner_name != "" and normalized_owner_name in normalized_message:
+                owner_match = normalized_owner_name
+                break
+
+        explicit_owner_reference = " con " in normalized_message or normalized_message.startswith("con ")
+        if explicit_owner_reference and owner_match is None:
+            return None
+
+        candidates: list[dict[str, Any]] = []
+        for slot in offered_slots:
+            start = self._clean_string(slot.get("start"))
+            if start is None:
+                continue
+
+            slot_time = self._slot_time_from_iso(start)
+            if time_match is not None and slot_time != time_match.group(0):
+                continue
+
+            if owner_match is not None:
+                owner_name = self._clean_string(slot.get("owner_name"))
+                if owner_name is None:
+                    continue
+                normalized_owner_name = unicodedata.normalize("NFKD", owner_name).encode("ascii", "ignore").decode("ascii").lower().strip()
+                if normalized_owner_name != owner_match:
+                    continue
+
+            candidates.append(slot)
+
+        if len(candidates) != 1:
+            return None
+
+        return candidates[0]
+
+    def _slot_time_from_iso(self, value: str) -> str | None:
+        try:
+            parsed = datetime.fromisoformat(value)
+        except Exception:
+            return None
+
+        return f"{parsed.hour:02d}:{parsed.minute:02d}"
 
     def _recent_contact_context_payload(self, context_messages: list[dict[str, Any]] | None) -> dict[str, Any] | None:
         if not isinstance(context_messages, list):
@@ -625,8 +1110,17 @@ class LLMPromptBuilder:
             timezone_source = self._clean_string(data_to_save.get("external_context_timezone_source"))
             branch = data_to_save.get("external_context_branch")
             selected_branch = data_to_save.get("external_context_selected_branch")
+            business_context: dict[str, Any] = {
+                "timezone": self._clean_string(data_to_save.get("external_business_context_timezone")),
+                "timezone_source": self._clean_string(data_to_save.get("external_business_context_timezone_source")),
+                "needs_branch_selection": bool(data_to_save.get("external_business_context_needs_branch_selection", False)),
+                "branch": self._clean_branch(data_to_save.get("external_business_context_branch")),
+                "selected_branch": self._clean_branch(data_to_save.get("external_business_context_selected_branch")),
+            }
 
-            if timezone is None and timezone_source is None and branch is None and selected_branch is None:
+            if timezone is None and timezone_source is None and branch is None and selected_branch is None and all(
+                value in (None, False, {}, []) for value in business_context.values()
+            ):
                 continue
 
             payload: dict[str, Any] = {
@@ -663,6 +1157,26 @@ class LLMPromptBuilder:
             if branches is not None:
                 payload["data"]["branches"] = self.context_helper.sanitize_jsonish(branches, max_depth=5, max_items=5)
 
+            business_branches = data_to_save.get("external_business_context_branches")
+            if business_branches is not None:
+                business_context["branches"] = self.context_helper.sanitize_jsonish(business_branches, max_depth=5, max_items=5)
+
+            if any(value not in (None, False, {}, []) for value in business_context.values()):
+                payload["data"]["business_context"] = business_context
+
+            if payload["data"].get("timezone") is None and business_context.get("timezone") is not None:
+                payload["data"]["timezone"] = business_context["timezone"]
+            if payload["data"].get("timezone_source") is None and business_context.get("timezone_source") is not None:
+                payload["data"]["timezone_source"] = business_context["timezone_source"]
+            if not payload["data"].get("needs_branch_selection", False):
+                payload["data"]["needs_branch_selection"] = bool(business_context.get("needs_branch_selection", False))
+            if payload["data"].get("branch") is None and business_context.get("branch") is not None:
+                payload["data"]["branch"] = business_context["branch"]
+            if payload["data"].get("selected_branch") is None and business_context.get("selected_branch") is not None:
+                payload["data"]["selected_branch"] = business_context["selected_branch"]
+            if (not isinstance(payload["data"].get("branches"), list) or payload["data"].get("branches") == []) and business_context.get("branches") is not None:
+                payload["data"]["branches"] = business_context["branches"]
+
             return self._external_context_payload(payload)
 
         return None
@@ -680,6 +1194,48 @@ class LLMPromptBuilder:
                 cleaned[key] = value
 
         return cleaned or None
+
+    def _business_context_payload(self, business_context: Any) -> dict[str, Any] | None:
+        if not isinstance(business_context, dict):
+            return None
+
+        payload: dict[str, Any] = {}
+
+        timezone = self._clean_string(business_context.get("timezone") or business_context.get("business_timezone"))
+        if timezone is not None:
+            payload["timezone"] = timezone
+
+        timezone_source = self._clean_string(
+            business_context.get("timezone_source")
+            or business_context.get("timezoneSource")
+            or business_context.get("business_timezone_source")
+        )
+        if timezone_source is not None:
+            payload["timezone_source"] = timezone_source
+
+        needs_branch_selection = business_context.get("needs_branch_selection")
+        if isinstance(needs_branch_selection, bool):
+            payload["needs_branch_selection"] = needs_branch_selection
+        else:
+            needs_branch_selection_camel = business_context.get("needsBranchSelection")
+            if isinstance(needs_branch_selection_camel, bool):
+                payload["needs_branch_selection"] = needs_branch_selection_camel
+
+        branch = self._clean_branch(business_context.get("branch"))
+        if branch is not None:
+            payload["branch"] = branch
+
+        selected_branch = self._clean_branch(
+            business_context.get("selected_branch") if "selected_branch" in business_context else business_context.get("selectedBranch")
+        )
+        if selected_branch is not None:
+            payload["selected_branch"] = selected_branch
+
+        branches = self.context_helper.sanitize_jsonish(business_context.get("branches"), max_depth=5, max_items=5)
+        if isinstance(branches, list) and branches != []:
+            payload["branches"] = branches
+
+        return payload or None
 
     def _clean_branch(self, branch: Any) -> dict[str, Any] | str | None:
         if isinstance(branch, dict):
