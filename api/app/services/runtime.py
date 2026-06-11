@@ -1833,25 +1833,25 @@ class AgentRuntime:
             else:
                 detail_segments.append(f"para {start}")
 
+        if owner_name is not None:
+            detail_segments.append(f"con {owner_name}")
+
         if title is not None:
             service_name = title
             prefix = "Cita para "
             if service_name.lower().startswith(prefix.lower()):
                 service_name = service_name[len(prefix):].strip()
             if service_name != "":
-                detail_segments.append(f"de {service_name}")
+                detail_segments.append(f"para {service_name}")
 
-        if owner_name is not None:
-            detail_segments.append(f"con {owner_name}")
-
-        reply = "Perfecto, tu cita queda confirmada"
         if detail_segments:
-            reply = f"{reply} {' '.join(detail_segments)}"
-        reply = f"{reply}."
-        if message is not None and message != "":
-            reply = f"{reply} {message}"
+            reply = f"Perfecto, tu cita queda confirmada {' '.join(detail_segments)}."
+            return reply
 
-        return reply
+        if message is not None and message != "":
+            return message
+
+        return "Perfecto, tu cita queda confirmada correctamente."
 
     def _appointment_confirmation_trace(self, response: AgentResponse) -> dict[str, Any] | None:
         traces = response.data_to_save.get("mcp_tool_traces")

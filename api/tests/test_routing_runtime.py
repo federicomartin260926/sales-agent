@@ -3137,8 +3137,10 @@ async def test_runtime_rewrites_provisional_reply_after_successful_appointment_c
     assert response.needs_human is False
     assert "confirmada" in response.reply.lower()
     assert "19:10" in response.reply
-    assert "láser cuerpo entero" in response.reply.lower()
     assert "maría gutiérrez" in response.reply.lower()
+    assert "láser cuerpo entero" in response.reply.lower()
+    assert response.reply.count("confirmad") == 1
+    assert "La cita quedó confirmada correctamente." not in response.reply
     assert response.data_to_save["appointment_confirm_post_processed"] is True
 
 
@@ -3267,8 +3269,10 @@ async def test_runtime_rewrites_successful_appointment_confirmation_from_raw_out
     assert response.needs_human is False
     assert "confirmada" in response.reply.lower()
     assert "19:10" in response.reply
-    assert "láser cuerpo entero" in response.reply.lower()
     assert "maría gutiérrez" in response.reply.lower()
+    assert "láser cuerpo entero" in response.reply.lower()
+    assert response.reply.count("confirmad") == 1
+    assert "La cita quedó confirmada correctamente." not in response.reply
     assert response.data_to_save["appointment_confirm_post_processed"] is True
 
 
