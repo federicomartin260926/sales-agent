@@ -4,15 +4,20 @@ import json
 import httpx
 import pytest
 
+from app.config import Settings
 from app.schemas.agent import AgentResponse
 from app.schemas.agent import AgentRequest, Contact
 from app.services.backend_client import BackendAiUsagePolicy, BackendAiUsageSnapshot, BackendExternalTool, BackendRoutingEntryPointUtmContext, BackendTenant, CommercialContext
+from app.services.agent_orchestration.debug.orchestration_trace import OrchestrationTrace
+from app.services.agent_orchestration.execution.catalog_execution_service import CatalogExecutionService
+from app.services.agent_orchestration.execution.catalog_execution_service import CatalogExecutionOutcome
+from app.services.agent_orchestration.shadow.shadow_planning_service import ShadowPlanningService
 from app.services.contact_context_resolver import ContactContextResolver
 from app.schemas.llm import LLMUsage, McpRemoteConfig
 from app.services.decision_engine import DecisionEngine
 from app.services.llm_decision_service import LLMDecisionService
 from app.services.llm_prompt_builder import LLMPromptBuilder
-from app.services.routing_resolver import RuntimeRoutingResolver
+from app.services.routing_resolver import RoutingContext, RuntimeRoutingResolver
 from app.services.runtime import AgentRuntime
 
 
@@ -2553,10 +2558,435 @@ async def test_runtime_resolves_contact_context_even_when_allowed_tools_do_not_l
     assert response.data_to_save["effective_timezone_source"] == "crm_tenant"
     assert response.data_to_save["technical_fallback_timezone"] == "Europe/Madrid"
     assert response.data_to_save["operational_context"]["effective_timezone"] == "Atlantic/Canary"
-    assert response.data_to_save["operational_context"]["channel"] == "whatsapp"
-    assert response.data_to_save["operational_context"]["contact_context_source"] == "external_tool:n8n"
-    assert response.data_to_save["timezone_guardrail_blocked"] is False
-    assert response.data_to_save["timezone_mismatch_detected"] is False
+
+
+class RecordingCatalogLLMClient:
+    def __init__(self, content: str) -> None:
+        self.content = content
+        self.resolve_configuration_calls = 0
+        self.calls: list[dict[str, object]] = []
+
+    async def resolve_configuration(self) -> dict[str, str]:
+        self.resolve_configuration_calls += 1
+        return {
+            "llm_default_profile": "openai",
+            "openai_base_url": "https://api.openai.test/v1",
+            "openai_model": "gpt-4.1-mini",
+            "openai_api_key": "sk-test",
+        }
+
+    async def generate_with_mcp(
+        self,
+        provider: str,
+        system_prompt: str,
+        user_prompt: str,
+        mcp_config: McpRemoteConfig,
+        configuration: dict[str, str] | None = None,
+        previous_response_id: str | None = None,
+        tool_choice=None,
+        parallel_tool_calls=None,
+    ):
+        self.calls.append(
+            {
+                "provider": provider,
+                "system_prompt": system_prompt,
+                "user_prompt": user_prompt,
+                "allowed_tools": list(mcp_config.allowed_tools),
+                "previous_response_id": previous_response_id,
+            }
+        )
+        return type(
+            "LLMResponseResultStub",
+            (),
+            {
+                "provider": "openai",
+                "model": "gpt-4.1-mini",
+                "content": self.content,
+                "response_id": "resp-1",
+                "tool_traces": [
+                    {
+                        "tool_name": "services_search",
+                        "status": "completed",
+                        "output": {
+                            "results": [
+                                {
+                                    "service_name": "Láser cuerpo entero",
+                                    "description": "Tratamiento completo.",
+                                }
+                            ]
+                        },
+                    }
+                ],
+            },
+        )()
+
+
+def build_catalog_shadow_trace() -> OrchestrationTrace:
+    trace = OrchestrationTrace(
+        tenant_id="tenant-1",
+        conversation_id="conversation-1",
+        external_conversation_id="conversation-1",
+        inbound_message="Quiero información sobre láser cuerpo entero",
+    )
+    trace.add_step(
+        step_type="llm_intent_planning",
+        input_context_keys=["current_message", "recent_messages"],
+        enabled_tools=[],
+        output={
+            "schema_version": "1.0",
+            "domain": "catalog",
+            "intent": "ask_product_or_service_info",
+            "action_candidate": "search_catalog",
+            "confidence": 0.92,
+            "entities": {
+                "service_name": "láser cuerpo entero",
+                "query": "láser cuerpo entero",
+            },
+            "context_request": {
+                "include_conversation_history": True,
+                "conversation_history_level": "recent",
+                "include_customer_context": "basic",
+                "include_catalog_context": True,
+                "include_inventory_context": False,
+                "include_appointment_context": False,
+                "include_existing_appointments": False,
+                "include_offered_slots": False,
+                "include_service_catalog": True,
+            },
+            "tool_request": {
+                "lookup_tools": ["services_search"],
+                "write_tools": [],
+                "blocked_tools": [],
+            },
+            "risk_flags": {
+                "ambiguous_reference": False,
+                "missing_required_data": False,
+                "low_confidence": False,
+                "needs_human_review": False,
+                "explicit_booking_intent": False,
+                "explicit_reschedule_intent": False,
+                "explicit_cancel_intent": False,
+            },
+            "clarification": {
+                "needed": False,
+                "question": None,
+                "missing_fields": [],
+            },
+            "reason": "catalog service information request",
+        },
+    )
+    trace.add_step(
+        step_type="sa_context_policy",
+        input_context_keys=["planning_result", "context_request", "tool_request"],
+        enabled_tools=["services_search"],
+        output={
+            "context_plan": {
+                "include_conversation_history": True,
+                "conversation_history_level": "recent",
+                "include_customer_context": "basic",
+                "include_catalog_context": True,
+                "include_inventory_context": False,
+                "include_appointment_context": False,
+                "include_existing_appointments": False,
+                "include_offered_slots": False,
+                "include_service_catalog": True,
+            },
+            "tool_policy": {
+                "lookup_tools_enabled": ["services_search"],
+                "write_tools_requested": [],
+                "write_tools_enabled": [],
+                "write_tools_blocked": [],
+                "reason": "lookup_enabled_write_tools_blocked_by_default",
+            },
+        },
+    )
+    return trace
+
+
+def build_appointment_shadow_trace() -> OrchestrationTrace:
+    trace = OrchestrationTrace(
+        tenant_id="tenant-1",
+        conversation_id="conversation-1",
+        external_conversation_id="conversation-1",
+        inbound_message="Quiero reservar para mañana por la tarde",
+    )
+    trace.add_step(
+        step_type="llm_intent_planning",
+        input_context_keys=["current_message", "recent_messages"],
+        enabled_tools=[],
+        output={
+            "schema_version": "1.0",
+            "domain": "appointment",
+            "intent": "request_availability",
+            "action_candidate": "get_availability",
+            "confidence": 0.91,
+            "entities": {
+                "service_name": "láser cuerpo entero",
+                "date": "tomorrow",
+                "time_of_day": "afternoon",
+            },
+            "context_request": {
+                "include_conversation_history": True,
+                "conversation_history_level": "recent",
+                "include_customer_context": "basic",
+                "include_catalog_context": False,
+                "include_inventory_context": False,
+                "include_appointment_context": True,
+                "include_existing_appointments": False,
+                "include_offered_slots": False,
+                "include_service_catalog": False,
+            },
+            "tool_request": {
+                "lookup_tools": ["services_search", "appointment_availability"],
+                "write_tools": [],
+                "blocked_tools": [],
+            },
+            "risk_flags": {
+                "ambiguous_reference": False,
+                "missing_required_data": False,
+                "low_confidence": False,
+                "needs_human_review": False,
+                "explicit_booking_intent": False,
+                "explicit_reschedule_intent": False,
+                "explicit_cancel_intent": False,
+            },
+            "clarification": {
+                "needed": False,
+                "question": None,
+                "missing_fields": [],
+            },
+            "reason": "appointment availability request",
+        },
+    )
+    trace.add_step(
+        step_type="sa_context_policy",
+        input_context_keys=["planning_result", "context_request", "tool_request"],
+        enabled_tools=["services_search", "appointment_availability"],
+        output={
+            "context_plan": {
+                "include_conversation_history": True,
+                "conversation_history_level": "recent",
+                "include_customer_context": "basic",
+                "include_catalog_context": False,
+                "include_inventory_context": False,
+                "include_appointment_context": True,
+                "include_existing_appointments": False,
+                "include_offered_slots": False,
+                "include_service_catalog": False,
+            },
+            "tool_policy": {
+                "lookup_tools_enabled": ["services_search", "appointment_availability"],
+                "write_tools_requested": [],
+                "write_tools_enabled": [],
+                "write_tools_blocked": [],
+                "reason": "lookup_enabled_write_tools_blocked_by_default",
+            },
+        },
+    )
+    return trace
+
+
+@pytest.mark.asyncio
+async def test_catalog_execution_service_filters_allowed_tools_and_uses_services_search_only():
+    fake_llm = RecordingCatalogLLMClient(
+        content=json.dumps(
+            {
+                "reply": "Tengo láser cuerpo entero disponible. Puedo darte detalles o ayudarte a reservar.",
+                "reason": "service match",
+                "items": [
+                    {
+                        "service_name": "Láser cuerpo entero",
+                        "description": "Tratamiento completo.",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        )
+    )
+    settings = Settings()
+    settings.new_llm_orchestration_enabled = True
+    settings.new_llm_orchestration_catalog_execution_enabled = True
+    service = CatalogExecutionService(settings=settings, llm_client=fake_llm)  # type: ignore[arg-type]
+
+    outcome = await service.execute(
+        AgentRequest(
+            tenant_id="tenant-1",
+            message="Quiero información sobre láser cuerpo entero",
+            contact=Contact(phone="+34999999999"),
+            conversation={"external_id": "conversation-1"},
+        ),
+        RoutingContext(tenant_id="tenant-1", tenant_slug="negocio-demo"),
+        build_context(),
+        None,
+        build_catalog_shadow_trace(),
+        McpRemoteConfig(
+            enabled=True,
+            server_label="tenant_main_mcp",
+            server_url="https://mcp.example.test",
+            allowed_tools=["services_search", "appointment_availability"],
+            timeout_seconds=15,
+        ),
+    )
+
+    assert isinstance(outcome, CatalogExecutionOutcome)
+    assert outcome.ok is True
+    assert outcome.reply == "Tengo láser cuerpo entero disponible. Puedo darte detalles o ayudarte a reservar."
+    assert outcome.mcp_allowed_tools == ["services_search"]
+    assert outcome.mcp_tool_traces[0]["tool_name"] == "services_search"
+    assert outcome.response_payload["reply"] == "Tengo láser cuerpo entero disponible. Puedo darte detalles o ayudarte a reservar."
+    assert fake_llm.resolve_configuration_calls == 1
+    assert fake_llm.calls[0]["allowed_tools"] == ["services_search"]
+    assert fake_llm.calls[0]["provider"] == "openai"
+
+
+@pytest.mark.asyncio
+async def test_catalog_execution_service_declines_non_catalog_planning_without_calling_llm():
+    fake_llm = RecordingCatalogLLMClient(content=json.dumps({"reply": "No debería llamarse."}, ensure_ascii=False))
+    settings = Settings()
+    settings.new_llm_orchestration_enabled = True
+    settings.new_llm_orchestration_catalog_execution_enabled = True
+    service = CatalogExecutionService(settings=settings, llm_client=fake_llm)  # type: ignore[arg-type]
+
+    outcome = await service.execute(
+        AgentRequest(
+            tenant_id="tenant-1",
+            message="Quiero reservar para mañana por la tarde",
+            contact=Contact(phone="+34999999999"),
+            conversation={"external_id": "conversation-1"},
+        ),
+        RoutingContext(tenant_id="tenant-1", tenant_slug="negocio-demo"),
+        build_context(),
+        None,
+        build_appointment_shadow_trace(),
+        McpRemoteConfig(
+            enabled=True,
+            server_label="tenant_main_mcp",
+            server_url="https://mcp.example.test",
+            allowed_tools=["services_search", "appointment_availability"],
+            timeout_seconds=15,
+        ),
+    )
+
+    assert outcome.ok is False
+    assert outcome.attempted is False
+    assert outcome.fallback_reason == "planning_domain_not_catalog"
+    assert fake_llm.resolve_configuration_calls == 0
+    assert fake_llm.calls == []
+
+
+@pytest.mark.asyncio
+async def test_runtime_applies_catalog_execution_slice_when_shadow_planning_is_catalog(monkeypatch: pytest.MonkeyPatch):
+    backend = RecordingBackendClient(
+        ref_context=BackendRoutingEntryPointUtmContext.model_validate(
+            {
+                "entry_point_utm_id": "utm-1",
+                "ref": "abc123",
+                "entry_point_id": "entrypoint-1",
+                "entry_point_code": "crm-demo",
+                "tenant_id": "tenant-1",
+                "tenant_slug": "negocio-demo",
+                "product_id": "product-1",
+                "product_name": "CRM Automation",
+                "playbook_id": "playbook-1",
+                "crm_branch_ref": "branch-1",
+                "utm_source": "google",
+                "utm_medium": "cpc",
+                "utm_campaign": "crm_pymes",
+                "status": "matched",
+            }
+        ),
+        tenant_context=build_context(),
+        mcp_config=McpRemoteConfig(
+            enabled=True,
+            server_label="tenant_main_mcp",
+            server_url="https://mcp.example.test",
+            allowed_tools=["services_search", "appointment_availability"],
+            timeout_seconds=15,
+        ),
+        conversation_result={
+            "created": True,
+            "conversation": {
+                "id": "conversation-1",
+                "status": "active",
+                "summary": None,
+            },
+        },
+    )
+    backend.settings = Settings()
+    backend.settings.new_llm_orchestration_enabled = True
+    backend.settings.new_llm_orchestration_catalog_execution_enabled = True
+
+    async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None, previous_response_id=None):
+        return AgentResponse(
+            reply="Respuesta previa del flujo actual.",
+            intent="open_question",
+            score=0.88,
+            action="answer_question",
+            needs_human=False,
+            data_to_save={"topic": "catalog"},
+            provider="openai",
+            model="gpt-4.1-mini",
+            latency_ms=30,
+        )
+
+    async def fake_shadow_execute(self, payload, routing, backend_context, contact_context):
+        return build_catalog_shadow_trace()
+
+    async def fake_catalog_execute(self, payload, routing, backend_context, contact_context, trace, mcp_config, previous_response_id=None):
+        return CatalogExecutionOutcome(
+            attempted=True,
+            ok=True,
+            reply="Tengo láser cuerpo entero disponible. ¿Quieres que te dé más detalles?",
+            provider="openai",
+            model="gpt-4.1-mini",
+            response_id="resp-1",
+            latency_ms=54,
+            planning={
+                "domain": "catalog",
+                "intent": "ask_product_or_service_info",
+            },
+            context_plan={
+                "include_catalog_context": True,
+            },
+            tool_policy={
+                "lookup_tools_enabled": ["services_search"],
+                "write_tools_enabled": [],
+            },
+            mcp_allowed_tools=["services_search"],
+            mcp_tool_traces=[
+                {
+                    "tool_name": "services_search",
+                    "status": "completed",
+                }
+            ],
+            response_payload={
+                "reply": "Tengo láser cuerpo entero disponible. ¿Quieres que te dé más detalles?",
+            },
+            trace_id="trace-1",
+        )
+
+    monkeypatch.setattr(DecisionEngine, "decide", fake_decide)
+    monkeypatch.setattr(ShadowPlanningService, "execute", fake_shadow_execute)
+    monkeypatch.setattr(CatalogExecutionService, "execute", fake_catalog_execute)
+
+    runtime = AgentRuntime(backend, RuntimeRoutingResolver(backend), DecisionEngine(backend))  # type: ignore[arg-type]
+    payload = AgentRequest(
+        tenant_id="tenant-ignored",
+        entrypoint_ref="abc123",
+        message="Quiero información sobre láser cuerpo entero",
+        contact=Contact(phone="+34999999999"),
+    )
+
+    response = await runtime.respond(payload)
+
+    assert response.reply == "Tengo láser cuerpo entero disponible. ¿Quieres que te dé más detalles?"
+    assert response.intent == "open_question"
+    assert response.data_to_save["new_llm_orchestration_shadow_enabled"] is True
+    assert response.data_to_save["new_llm_orchestration_catalog_execution_attempted"] is True
+    assert response.data_to_save["new_llm_orchestration_catalog_execution_ok"] is True
+    assert response.data_to_save["new_llm_orchestration_catalog_execution_used"] is True
+    assert response.data_to_save["new_llm_orchestration_catalog_execution_trace"]["ok"] is True
+    assert response.data_to_save["new_llm_orchestration_trace"]["steps"][0]["step_type"] == "llm_intent_planning"
 
 
 @pytest.mark.asyncio

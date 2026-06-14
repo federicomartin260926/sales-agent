@@ -51,6 +51,10 @@ class Settings(BaseSettings):
     sales_agent_bearer_token: str = Field(default="", alias="SALES_AGENT_BEARER_TOKEN")
     mcp_test_authorization: str = Field(default="", alias="MCP_TEST_AUTHORIZATION")
     new_llm_orchestration_enabled: bool = Field(default=False, alias="NEW_LLM_ORCHESTRATION_ENABLED")
+    new_llm_orchestration_catalog_execution_enabled: bool = Field(
+        default=False,
+        alias="NEW_LLM_ORCHESTRATION_CATALOG_EXECUTION_ENABLED",
+    )
 
     def safe_default_business_timezone(self) -> str:
         candidate = self.default_business_timezone.strip()
