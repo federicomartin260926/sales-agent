@@ -580,6 +580,89 @@ async def test_contact_context_resolver_uses_external_tool_directly_when_cache_m
 
 
 @pytest.mark.asyncio
+async def test_contact_context_resolver_uses_payload_tenant_id_when_backend_context_is_missing():
+    backend = RecordingBackendClient(cache=None)
+    external_tool_client = RecordingExternalToolClient(
+        {
+            **build_contact_context_payload("Atlantic/Canary", "crm_tenant"),
+            "source": "external_tool:n8n",
+            "external_tool_available": True,
+            "external_tool_called": True,
+        }
+    )
+    llm_result = LLMResponseResult(
+        provider="openai",
+        model="gpt-4.1-mini",
+        content="{}",
+        tool_traces=[],
+    )
+    llm_client = RecordingLLMClient(llm_result)
+    resolver = ContactContextResolver(backend, llm_client, Settings(), external_tool_client)
+    payload = AgentRequest(
+        tenant_id="tenant-1",
+        message="Hola",
+        contact=Contact(phone="+34999999999", email="ana@example.com"),
+        conversation={"external_id": "external-conversation-1"},
+    )
+    mcp_config = McpRemoteConfig(
+        enabled=True,
+        server_label="tenant_main_mcp",
+        server_url="https://mcp.example.test",
+        allowed_tools=["appointment_availability"],
+        require_approval="never",
+    )
+
+    result = await resolver.resolve(payload, None, mcp_config)
+
+    assert result is not None
+    assert result["available"] is True
+    assert result["source"] == "external_tool:n8n"
+    assert result["data"]["timezone"] == "Atlantic/Canary"
+    assert result["external_tool_available"] is True
+    assert result["external_tool_called"] is True
+    assert len(external_tool_client.calls) == 1
+    assert external_tool_client.calls[0]["tenant_id"] == "tenant-1"
+    assert external_tool_client.calls[0]["tenant_slug"] is None
+
+
+@pytest.mark.asyncio
+async def test_contact_context_resolver_returns_missing_tenant_id_when_payload_and_backend_are_empty():
+    backend = RecordingBackendClient(cache=None)
+    external_tool_client = RecordingExternalToolClient(build_contact_context_payload())
+    llm_result = LLMResponseResult(
+        provider="openai",
+        model="gpt-4.1-mini",
+        content="{}",
+        tool_traces=[],
+    )
+    llm_client = RecordingLLMClient(llm_result)
+    resolver = ContactContextResolver(backend, llm_client, Settings(), external_tool_client)
+    payload = AgentRequest(
+        tenant_id="",
+        message="Hola",
+        contact=Contact(phone="+34999999999", email="ana@example.com"),
+        conversation={"external_id": "external-conversation-1"},
+    )
+    mcp_config = McpRemoteConfig(
+        enabled=True,
+        server_label="tenant_main_mcp",
+        server_url="https://mcp.example.test",
+        allowed_tools=["appointment_availability"],
+        require_approval="never",
+    )
+
+    result = await resolver.resolve(payload, None, mcp_config)
+
+    assert result is not None
+    assert result["available"] is False
+    assert result["error_code"] == "missing_tenant_id"
+    assert result["source"] == "none"
+    assert backend.calls == []
+    assert external_tool_client.calls == []
+    assert llm_client.calls == []
+
+
+@pytest.mark.asyncio
 async def test_contact_context_resolver_keeps_timezone_when_external_tool_reports_not_found():
     backend = RecordingBackendClient(cache=None)
     external_tool_client = RecordingExternalToolClient(
@@ -634,6 +717,72 @@ async def test_contact_context_resolver_keeps_timezone_when_external_tool_report
     assert result["data"]["timezone"] == "Atlantic/Canary"
     assert result["data"]["business_context"]["timezone"] == "Atlantic/Canary"
     assert len(external_tool_client.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_contact_context_resolver_falls_back_to_mcp_when_external_tool_fails():
+    backend = RecordingBackendClient(cache=None)
+    external_tool_client = RecordingExternalToolClient(
+        {
+            "available": False,
+            "configured": True,
+            "tool_type": "contact_context",
+            "provider": "n8n_webhook",
+            "ok": False,
+            "found": False,
+            "error_code": "http_error",
+            "error_message": "Webhook failed.",
+            "data": {},
+        }
+    )
+    tool_output = build_contact_context_payload("Atlantic/Canary", "crm_tenant")
+    tool_trace = LLMToolTrace.model_validate(
+        {
+            "type": "mcp_call",
+            "server_label": "tenant_main_mcp",
+            "tool_name": "contact_context",
+            "output": tool_output,
+            "raw": {
+                "type": "mcp_call",
+                "server_label": "tenant_main_mcp",
+                "tool_name": "contact_context",
+                "output": tool_output,
+            },
+        }
+    )
+    llm_result = LLMResponseResult(
+        provider="openai",
+        model="gpt-4.1-mini",
+        content="{}",
+        tool_traces=[tool_trace],
+        usage=LLMUsage(provider="openai", model="gpt-4.1-mini", input_tokens=10, output_tokens=2, total_tokens=12),
+    )
+    llm_client = RecordingLLMClient(llm_result)
+    resolver = ContactContextResolver(backend, llm_client, Settings(CONTACT_CONTEXT_CACHE_TTL_MINUTES=120), external_tool_client)
+    payload = AgentRequest(
+        tenant_id="tenant-1",
+        message="Buenas tardes. Dime disponibilidad de María para láser cuerpo entero para mañana por la tarde. Gracias.",
+        contact=Contact(phone="+34999999999", email="ana@example.com"),
+        conversation={"external_id": "external-conversation-1"},
+    )
+    mcp_config = McpRemoteConfig(
+        enabled=True,
+        server_label="tenant_main_mcp",
+        server_url="https://mcp.example.test",
+        allowed_tools=["appointment_availability"],
+        require_approval="never",
+    )
+
+    result = await resolver.resolve(payload, None, mcp_config)
+
+    assert result is not None
+    assert result["source"] == "mcp_refresh"
+    assert result["available"] is True
+    assert result["external_tool_available"] is True
+    assert result["external_tool_called"] is True
+    assert result["data"]["timezone"] == "Atlantic/Canary"
+    assert len(external_tool_client.calls) == 1
+    assert len(llm_client.calls) == 1
 
 
 @pytest.mark.asyncio

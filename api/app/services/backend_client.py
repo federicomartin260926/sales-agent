@@ -643,12 +643,23 @@ class BackendClient:
         if not isinstance(payload, dict):
             return None
 
-        tool = payload.get("tool")
-        if not isinstance(tool, dict):
-            return None
+        tool_payload: dict[str, Any] | None = None
+
+        ok_value = payload.get("ok")
+        if "ok" in payload or "tool" in payload:
+            if ok_value is not True:
+                return None
+
+            tool = payload.get("tool")
+            if not isinstance(tool, dict):
+                return None
+
+            tool_payload = tool
+        else:
+            tool_payload = payload
 
         try:
-            return BackendExternalTool.model_validate(tool)
+            return BackendExternalTool.model_validate(tool_payload)
         except ValidationError:
             logger.warning("Backend external tool payload validation failed for tenant=%s type=%s", tenant_id, tool_type)
             return None

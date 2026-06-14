@@ -556,6 +556,103 @@ async def test_backend_client_loads_external_tool_configuration_for_contact_cont
 
 
 @pytest.mark.asyncio
+async def test_backend_client_get_external_tool_supports_wrapped_payload():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/api/internal/external-tools/tenant-1/contact_context"
+        return httpx.Response(
+            200,
+            json={
+                "ok": True,
+                "tool": {
+                    "id": "tool-1",
+                    "tenant_id": "tenant-1",
+                    "name": "CRM contact context",
+                    "type": "contact_context",
+                    "provider": "n8n_webhook",
+                    "webhook_url": "https://n8n.example.test/webhook/contact-context",
+                    "auth_type": "bearer",
+                    "bearer_token": "webhook-token",
+                    "downstream_authorization_token": "downstream-token",
+                    "downstream_authorization_configured": True,
+                    "timeout_seconds": 5,
+                    "is_active": True,
+                    "config": {},
+                },
+            },
+        )
+
+    client = BackendClient(
+        Settings(BACKEND_BASE_URL="http://sales-agent-nginx", SALES_AGENT_BEARER_TOKEN="test-internal-token"),
+        transport=httpx.MockTransport(handler),
+    )
+
+    tool = await client.get_external_tool("tenant-1", "contact_context")
+
+    assert tool is not None
+    assert tool.id == "tool-1"
+    assert tool.provider == "n8n_webhook"
+    assert tool.bearer_token == "webhook-token"
+    assert tool.downstream_authorization_token == "downstream-token"
+    assert tool.downstream_authorization_configured is True
+    assert tool.is_active is True
+
+
+@pytest.mark.asyncio
+async def test_backend_client_get_external_tool_returns_none_when_wrapped_payload_is_disabled():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/api/internal/external-tools/tenant-1/contact_context"
+        return httpx.Response(200, json={"ok": False, "tool": None})
+
+    client = BackendClient(
+        Settings(BACKEND_BASE_URL="http://sales-agent-nginx", SALES_AGENT_BEARER_TOKEN="test-internal-token"),
+        transport=httpx.MockTransport(handler),
+    )
+
+    tool = await client.get_external_tool("tenant-1", "contact_context")
+
+    assert tool is None
+
+
+@pytest.mark.asyncio
+async def test_backend_client_get_external_tool_supports_legacy_flat_payload():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/api/internal/external-tools/tenant-1/contact_context"
+        return httpx.Response(
+            200,
+            json={
+                "id": "tool-legacy",
+                "tenant_id": "tenant-1",
+                "name": "CRM contact context",
+                "type": "contact_context",
+                "provider": "n8n_webhook",
+                "webhook_url": "https://n8n.example.test/webhook/contact-context",
+                "auth_type": "bearer",
+                "bearer_token": "webhook-token",
+                "downstream_authorization_token": "downstream-token",
+                "downstream_authorization_configured": True,
+                "timeout_seconds": 5,
+                "is_active": True,
+                "config": {},
+            },
+        )
+
+    client = BackendClient(
+        Settings(BACKEND_BASE_URL="http://sales-agent-nginx", SALES_AGENT_BEARER_TOKEN="test-internal-token"),
+        transport=httpx.MockTransport(handler),
+    )
+
+    tool = await client.get_external_tool("tenant-1", "contact_context")
+
+    assert tool is not None
+    assert tool.id == "tool-legacy"
+    assert tool.provider == "n8n_webhook"
+    assert tool.bearer_token == "webhook-token"
+
+
+@pytest.mark.asyncio
 async def test_backend_client_manages_contact_context_cache():
     client = BackendClient(
         Settings(BACKEND_BASE_URL="http://sales-agent-nginx", SALES_AGENT_BEARER_TOKEN="test-internal-token"),

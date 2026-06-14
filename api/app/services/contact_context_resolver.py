@@ -47,6 +47,7 @@ class ContactContextResolver:
                 tool_called=False,
             )
 
+        tenant_slug = self._tenant_slug(backend_context)
         contact_key = self._contact_key(payload)
         if contact_key is None:
             return self._build_diagnostic_context(
@@ -96,9 +97,12 @@ class ContactContextResolver:
                 tool_called=self._tool_called_in_context(cached_context),
             )
 
-        external_tool_context, external_tool_error_code, external_tool_error_message, external_tool_called = await self._resolve_external_tool_context(
-            payload,
-            backend_context,
+        external_tool_context, external_tool_available, external_tool_error_code, external_tool_error_message, external_tool_called = (
+            await self._resolve_external_tool_context(
+                payload,
+                tenant_id,
+                tenant_slug,
+            )
         )
         if external_tool_context is not None:
             return self._build_diagnostic_context(
@@ -112,7 +116,7 @@ class ContactContextResolver:
                 mcp_available=self._mcp_available(mcp_config),
                 mcp_called=False,
                 tool_called=self._tool_called_in_context(external_tool_context),
-                external_tool_available=True,
+                external_tool_available=external_tool_available,
                 external_tool_called=external_tool_called,
             )
 
@@ -131,6 +135,8 @@ class ContactContextResolver:
                 mcp_available=mcp_available,
                 mcp_called=True,
                 tool_called=tool_called,
+                external_tool_available=external_tool_available,
+                external_tool_called=external_tool_called,
             )
 
         if external_tool_error_code is not None or external_tool_error_message is not None:
@@ -145,7 +151,7 @@ class ContactContextResolver:
                 mcp_available=mcp_available,
                 mcp_called=mcp_available,
                 tool_called=False,
-                external_tool_available=False,
+                external_tool_available=external_tool_available,
                 external_tool_called=external_tool_called,
             )
 
@@ -165,21 +171,19 @@ class ContactContextResolver:
     async def _resolve_external_tool_context(
         self,
         payload: AgentRequest,
-        backend_context: CommercialContext | None,
-    ) -> tuple[dict[str, Any] | None, str | None, str | None, bool]:
+        tenant_id: str,
+        tenant_slug: str | None,
+    ) -> tuple[dict[str, Any] | None, bool, str | None, str | None, bool]:
         if self.external_tool_client is None:
-            return None, None, None, False
+            return None, False, None, None, False
 
         if not hasattr(self.external_tool_client, "fetch_contact_context"):
-            return None, None, None, False
-
-        if backend_context is None or backend_context.tenant.id.strip() == "":
-            return None, None, None, False
+            return None, False, None, None, False
 
         try:
             result = await self.external_tool_client.fetch_contact_context(
-                backend_context.tenant.id,
-                backend_context.tenant.slug,
+                tenant_id,
+                tenant_slug,
                 payload.conversation.channel or payload.channel_type,
                 payload.external_channel_id,
                 {
@@ -194,17 +198,17 @@ class ContactContextResolver:
             )
         except Exception as exc:
             error_message = f"External contact_context failed: {exc.__class__.__name__}"
-            return None, "n8n_error", error_message, True
+            return None, True, "n8n_error", error_message, True
 
         if not isinstance(result, dict):
-            return None, "invalid_response", "External contact_context returned an invalid payload.", True
+            return None, True, "invalid_response", "External contact_context returned an invalid payload.", True
 
         if not bool(result.get("configured", False)):
-            return None, "external_tool_not_configured", "External contact_context tool is not configured.", False
+            return None, False, "external_tool_not_configured", "External contact_context tool is not configured.", True
 
         data = result.get("data")
         if not isinstance(data, dict):
-            return None, self._context_error_code(result) or "invalid_response", self._context_error_message(result) or "External contact_context returned no usable data.", True
+            return None, True, self._context_error_code(result) or "invalid_response", self._context_error_message(result) or "External contact_context returned no usable data.", True
 
         data = self._normalize_external_tool_context_data(data)
         context = dict(result)
@@ -215,9 +219,9 @@ class ContactContextResolver:
 
         if self._has_timezone_payload(context):
             context["available"] = self._external_tool_context_usable(context)
-            return context, None, None, True
+            return context, True, None, None, True
 
-        return None, self._context_error_code(result) or "no_timezone", self._context_error_message(result) or "External contact_context did not return a timezone.", True
+        return None, True, self._context_error_code(result) or "no_timezone", self._context_error_message(result) or "External contact_context did not return a timezone.", True
 
     def _external_tool_context_usable(self, context: dict[str, Any] | None) -> bool:
         if not isinstance(context, dict):
@@ -257,6 +261,13 @@ class ContactContextResolver:
             return payload.tenant_id.strip()
 
         return None
+
+    def _tenant_slug(self, backend_context: CommercialContext | None) -> str | None:
+        if backend_context is None:
+            return None
+
+        tenant_slug = backend_context.tenant.slug.strip()
+        return tenant_slug if tenant_slug != "" else None
 
     def _contact_key(self, payload: AgentRequest) -> str | None:
         phone = self._normalize_string(payload.contact.phone)
