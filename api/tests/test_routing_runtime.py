@@ -2593,6 +2593,8 @@ class RecordingCatalogLLMClient:
                 "user_prompt": user_prompt,
                 "allowed_tools": list(mcp_config.allowed_tools),
                 "previous_response_id": previous_response_id,
+                "tool_choice": tool_choice,
+                "parallel_tool_calls": parallel_tool_calls,
             }
         )
         return type(
@@ -2837,6 +2839,8 @@ async def test_catalog_execution_service_filters_allowed_tools_and_uses_services
     assert fake_llm.resolve_configuration_calls == 1
     assert fake_llm.calls[0]["allowed_tools"] == ["services_search"]
     assert fake_llm.calls[0]["provider"] == "openai"
+    assert fake_llm.calls[0]["tool_choice"] == "required"
+    assert fake_llm.calls[0]["parallel_tool_calls"] is False
 
 
 @pytest.mark.asyncio

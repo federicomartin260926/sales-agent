@@ -388,27 +388,56 @@ class LLMClient:
             return []
 
         traces: list[LLMToolTrace] = []
+        visited: set[int] = set()
         for item in output:
-            if not isinstance(item, dict):
-                continue
-
-            item_type = str(item.get("type") or "").strip().lower()
-            if not item_type.startswith("mcp_") and item_type not in {"tool_call", "function_call"}:
-                continue
-
-            traces.append(
-                LLMToolTrace(
-                    type=item_type or None,
-                    server_label=self._string_or_none(item.get("server_label") or item.get("serverLabel")),
-                    tool_name=self._string_or_none(item.get("tool_name") or item.get("toolName") or item.get("name")),
-                    arguments=self._normalize_arguments(item.get("arguments") or item.get("input")),
-                    output=item.get("output") if item.get("output") is not None else item.get("result"),
-                    status=self._string_or_none(item.get("status")),
-                    raw=item,
-                )
-            )
+            for candidate in self._iter_tool_trace_candidates(item, visited):
+                traces.append(self._build_tool_trace(candidate))
 
         return traces
+
+    def _iter_tool_trace_candidates(self, value: Any, visited: set[int]) -> list[dict[str, Any]]:
+        if isinstance(value, dict):
+            object_id = id(value)
+            if object_id in visited:
+                return []
+            visited.add(object_id)
+
+            candidates: list[dict[str, Any]] = []
+            if self._is_tool_trace_candidate(value):
+                candidates.append(value)
+
+            for nested_value in value.values():
+                candidates.extend(self._iter_tool_trace_candidates(nested_value, visited))
+
+            return candidates
+
+        if isinstance(value, list):
+            candidates: list[dict[str, Any]] = []
+            for nested_value in value:
+                candidates.extend(self._iter_tool_trace_candidates(nested_value, visited))
+            return candidates
+
+        return []
+
+    def _is_tool_trace_candidate(self, item: dict[str, Any]) -> bool:
+        for key in ("tool_name", "toolName", "name"):
+            value = item.get(key)
+            if isinstance(value, str) and value.strip() != "":
+                return True
+
+        return False
+
+    def _build_tool_trace(self, item: dict[str, Any]) -> LLMToolTrace:
+        item_type = str(item.get("type") or "").strip().lower()
+        return LLMToolTrace(
+            type=item_type or None,
+            server_label=self._string_or_none(item.get("server_label") or item.get("serverLabel")),
+            tool_name=self._string_or_none(item.get("tool_name") or item.get("toolName") or item.get("name")),
+            arguments=self._normalize_arguments(item.get("arguments") or item.get("input")),
+            output=item.get("output") if item.get("output") is not None else item.get("result"),
+            status=self._string_or_none(item.get("status")),
+            raw=item,
+        )
 
     def _extract_response_id(self, payload: Any) -> str | None:
         if not isinstance(payload, dict):

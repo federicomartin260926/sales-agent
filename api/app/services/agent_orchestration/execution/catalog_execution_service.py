@@ -104,6 +104,8 @@ class CatalogExecutionService:
                 filtered_mcp_config,
                 configuration=configuration,
                 previous_response_id=previous_response_id,
+                tool_choice="required",
+                parallel_tool_calls=False,
             )
         except Exception as exc:
             return CatalogExecutionOutcome(

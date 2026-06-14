@@ -211,6 +211,104 @@ async def test_llm_client_uses_openai_responses_with_mcp_tools(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_llm_client_extracts_nested_mcp_tool_traces_from_responses_payload(monkeypatch):
+    monkeypatch.setenv("MCP_TEST_AUTHORIZATION", "")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content.decode("utf-8"))
+        assert payload["tool_choice"] == "required"
+        assert payload["parallel_tool_calls"] is False
+        return httpx.Response(
+            200,
+            json={
+                "id": "resp_nested",
+                "usage": {
+                    "input_tokens": 120,
+                    "output_tokens": 32,
+                    "cached_tokens": 40,
+                    "total_tokens": 152,
+                },
+                "output_text": json.dumps(
+                    {
+                        "reply": "Tengo láser cuerpo entero disponible.",
+                        "intent": "catalog_search",
+                        "score": 0.93,
+                        "action": "answer_question",
+                        "needs_human": False,
+                        "data_to_save": {"topic": "catalog"},
+                    }
+                ),
+                "output": [
+                    {
+                        "type": "message",
+                        "content": [
+                            {"type": "output_text", "text": "Tengo láser cuerpo entero disponible."},
+                            {
+                                "type": "mcp_call",
+                                "mcp_call": {
+                                    "type": "mcp_call",
+                                    "server_label": "tenant_main_mcp",
+                                    "tool_name": "services_search",
+                                    "arguments": {"query": "láser cuerpo entero"},
+                                    "output": {
+                                        "results": [
+                                            {
+                                                "service_name": "Láser cuerpo entero",
+                                                "description": "Tratamiento completo.",
+                                            }
+                                        ]
+                                    },
+                                    "status": "completed",
+                                },
+                            },
+                        ],
+                    }
+                ],
+            },
+        )
+
+    client = LLMClient(
+        Settings(OPENAI_API_KEY="sk-test", OPENAI_TIMEOUT_SECONDS=15),
+        transport=httpx.MockTransport(handler),
+    )
+
+    result = await client.generate_with_mcp(
+        "openai",
+        "Eres un asistente de ventas.",
+        "Hola, ¿qué servicios tenéis?",
+        McpRemoteConfig(
+            enabled=True,
+            server_label="tenant_main_mcp",
+            server_url="https://mcp.example.test",
+            auth_type="bearer",
+            downstream_authorization_token="downstream-token",
+            allowed_tools=["services_search"],
+            require_approval="auto",
+        ),
+        configuration={
+            "openai_base_url": "https://api.openai.com/v1",
+            "openai_model": "gpt-4.1-mini",
+            "openai_api_key": "sk-test",
+            "openai_timeout_seconds": "15",
+        },
+        tool_choice="required",
+        parallel_tool_calls=False,
+    )
+
+    assert len(result.tool_traces) == 1
+    assert result.tool_traces[0].tool_name == "services_search"
+    assert result.tool_traces[0].status == "completed"
+    assert result.tool_traces[0].output == {
+        "results": [
+            {
+                "service_name": "Láser cuerpo entero",
+                "description": "Tratamiento completo.",
+            }
+        ]
+    }
+
+
+@pytest.mark.asyncio
 async def test_llm_client_sends_previous_response_id_only_to_openai_responses(monkeypatch):
     seen: dict[str, object] = {}
 
