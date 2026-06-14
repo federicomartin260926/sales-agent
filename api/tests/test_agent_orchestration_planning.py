@@ -1,6 +1,7 @@
 import json
 
 from app.services.agent_orchestration.planning.intent_planner import IntentPlannerService
+from app.services.agent_orchestration.planning.prompts import build_planning_system_prompt
 
 
 def test_planning_result_parses_select_offered_slot_json():
@@ -141,3 +142,15 @@ def test_planning_result_empty_dict_falls_back_to_unknown():
     assert result.intent == "unknown"
     assert result.action_candidate == "no_action"
     assert result.clarification.needed is True
+
+
+def test_planning_system_prompt_is_explicit_about_contract_and_service_intents():
+    prompt = build_planning_system_prompt()
+
+    assert "domain" in prompt
+    assert "catalog" in prompt
+    assert "ask_product_or_service_info" in prompt
+    assert "action_candidate" in prompt
+    assert "search_catalog" in prompt
+    assert "entities.service_name" in prompt
+    assert "No uses valores traducidos" in prompt
