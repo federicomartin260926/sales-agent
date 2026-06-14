@@ -58,6 +58,49 @@ def test_planning_result_parses_select_offered_slot_json():
     assert result.clarification.needed is False
 
 
+def test_planning_result_parses_time_of_day_entity():
+    planner = IntentPlannerService()
+    result = planner.parse_planning_result(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "domain": "appointment",
+                "intent": "request_availability",
+                "action_candidate": "get_availability",
+                "confidence": 0.88,
+                "entities": {
+                    "service_name": "láser cuerpo entero",
+                    "date": "tomorrow",
+                    "time_of_day": "afternoon",
+                },
+                "context_request": {
+                    "include_appointment_context": True,
+                },
+                "tool_request": {
+                    "lookup_tools": ["appointment_availability"],
+                    "write_tools": [],
+                    "blocked_tools": [],
+                },
+                "risk_flags": {
+                    "ambiguous_reference": False,
+                    "missing_required_data": False,
+                    "low_confidence": False,
+                },
+                "clarification": {
+                    "needed": False,
+                    "missing_fields": [],
+                },
+                "reason": "availability with time of day",
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    assert result.intent == "request_availability"
+    assert result.action_candidate == "get_availability"
+    assert result.entities.time_of_day == "afternoon"
+
+
 def test_planning_result_parses_json_inside_markdown_fence():
     planner = IntentPlannerService()
     raw = """```json
@@ -134,6 +177,32 @@ def test_planning_result_validation_failure_exposes_safe_diagnostics():
     assert result.risk_flags.low_confidence is True
 
 
+def test_planning_result_invalid_time_of_day_falls_back_with_diagnostics():
+    planner = IntentPlannerService()
+
+    result, diagnostics = planner.parse_planning_result_with_diagnostics(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "domain": "appointment",
+                "intent": "request_availability",
+                "action_candidate": "get_availability",
+                "confidence": 0.7,
+                "entities": {
+                    "service_name": "láser cuerpo entero",
+                    "time_of_day": "lunchtime",
+                },
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    assert result.intent == "unknown"
+    assert diagnostics is not None
+    assert diagnostics.error_type == "pydantic_validation_error"
+    assert any("time_of_day" in error for error in diagnostics.validation_errors)
+
+
 def test_planning_result_empty_dict_falls_back_to_unknown():
     planner = IntentPlannerService()
 
@@ -150,7 +219,11 @@ def test_planning_system_prompt_is_explicit_about_contract_and_service_intents()
     assert "domain" in prompt
     assert "catalog" in prompt
     assert "ask_product_or_service_info" in prompt
+    assert "request_availability" in prompt
     assert "action_candidate" in prompt
     assert "search_catalog" in prompt
+    assert "services_search" in prompt
+    assert "appointment_availability" in prompt
     assert "entities.service_name" in prompt
+    assert "entities.time_of_day" in prompt
     assert "No uses valores traducidos" in prompt

@@ -71,6 +71,8 @@ def build_planning_system_prompt(extra_rules: Iterable[str] | None = None) -> st
         "No uses valores traducidos como salud, informacion_tratamiento o proporcionar_informacion.",
         'Para servicios o tratamientos usa domain="catalog" e intent="ask_product_or_service_info" o intent="catalog_search".',
         'Para "láser cuerpo entero" usa entities.service_name.',
+        'Para expresiones como "por la mañana", "por la tarde", "por la noche", usa entities.time_of_day con valores controlados: morning, afternoon, evening, night o any.',
+        'Para "mañana por la tarde", usa entities.date="tomorrow" y entities.time_of_day="afternoon".',
         'Si el usuario pide información sobre un servicio, prefiere domain="catalog", intent="ask_product_or_service_info" y action_candidate="search_catalog" o action_candidate="answer_directly" según contexto.',
         'Si hace falta buscar el servicio, solicita "services_search" en tool_request.lookup_tools.',
         "Clasifica intención, dominio, acción candidata, entidades, contexto necesario, tools solicitadas y riesgos.",
@@ -78,7 +80,7 @@ def build_planning_system_prompt(extra_rules: Iterable[str] | None = None) -> st
         "Si clarification.needed=true, incluye question y missing_fields cuando aplique.",
         "Usa schema_version=1.0.",
         (
-            "Ejemplo válido completo: "
+            "Ejemplo válido de catálogo: "
             '{"schema_version":"1.0","domain":"catalog","intent":"ask_product_or_service_info","action_candidate":"search_catalog",'
             '"confidence":0.92,"entities":{"service_name":"láser cuerpo entero","query":"láser cuerpo entero","notes":"información general"},'
             '"context_request":{"include_conversation_history":true,"conversation_history_level":"recent","include_customer_context":"basic",'
@@ -89,6 +91,19 @@ def build_planning_system_prompt(extra_rules: Iterable[str] | None = None) -> st
             '"explicit_booking_intent":false,"explicit_reschedule_intent":false,"explicit_cancel_intent":false},'
             '"clarification":{"needed":false,"question":null,"missing_fields":[]},'
             '"reason":"The user asks for information about a service and needs a catalog lookup."}'
+        ),
+        (
+            "Ejemplo válido de agenda: "
+            '{"schema_version":"1.0","domain":"appointment","intent":"request_availability","action_candidate":"get_availability",'
+            '"confidence":0.92,"entities":{"service_name":"láser cuerpo entero","date":"tomorrow","time_of_day":"afternoon","query":"láser cuerpo entero"},'
+            '"context_request":{"include_conversation_history":true,"conversation_history_level":"recent","include_customer_context":"basic",'
+            '"include_catalog_context":false,"include_inventory_context":false,"include_appointment_context":true,'
+            '"include_existing_appointments":false,"include_offered_slots":false,"include_service_catalog":false},'
+            '"tool_request":{"lookup_tools":["services_search","appointment_availability"],"write_tools":[],"blocked_tools":[],"reason":"Need service resolution and availability lookup for a service in a time window."},'
+            '"risk_flags":{"ambiguous_reference":false,"missing_required_data":false,"low_confidence":false,"needs_human_review":false,'
+            '"explicit_booking_intent":false,"explicit_reschedule_intent":false,"explicit_cancel_intent":false},'
+            '"clarification":{"needed":false,"question":null,"missing_fields":[]},'
+            '"reason":"The user asks for appointment availability for a service and a time of day."}'
         ),
     ]
 

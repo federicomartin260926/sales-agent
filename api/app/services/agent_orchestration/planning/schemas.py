@@ -75,6 +75,7 @@ class PlanningEntities(BaseModel):
     contact_email: str | None = None
     date: str | None = None
     time: str | None = None
+    time_of_day: Literal["morning", "afternoon", "evening", "night", "any"] | None = None
     date_from: str | None = None
     date_to: str | None = None
     query: str | None = None
