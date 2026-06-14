@@ -122,6 +122,44 @@ async def test_shadow_planning_service_records_planning_and_policy_when_enabled(
 
 
 @pytest.mark.asyncio
+async def test_shadow_planning_service_adds_parse_diagnostics_when_planning_validation_fails():
+    planning_result = json.dumps(
+        {
+            "schema_version": "1.0",
+            "domain": "appointment",
+            "intent": "select_offered_slot",
+            "action_candidate": "prepare_booking_confirmation",
+            "confidence": 0.93,
+            "entities": {
+                "service_name": "Láser cuerpo entero",
+                "owner_name": "María Gutiérrez",
+            },
+            "unexpected_field": "oops",
+        },
+        ensure_ascii=False,
+    )
+    fake_llm = FakeLLMClient(planning_content=planning_result)
+    settings = Settings()
+    settings.new_llm_orchestration_enabled = True
+    service = ShadowPlanningService(settings=settings, llm_client=fake_llm)  # type: ignore[arg-type]
+
+    trace = await service.execute(build_payload(), build_routing(), backend_context=None, contact_context=None)
+
+    assert [step.step_type for step in trace.steps] == [
+        "llm_intent_planning_input",
+        "llm_intent_planning",
+        "llm_intent_planning_parse_diagnostics",
+        "sa_context_policy",
+    ]
+    diagnostics = trace.steps[2].output
+    assert diagnostics["error_type"] == "pydantic_validation_error"
+    assert diagnostics["raw_content_preview"] is not None
+    assert diagnostics["raw_content_preview"].startswith("{")
+    assert any("unexpected_field" in error for error in diagnostics["validation_errors"])
+    assert diagnostics["validation_errors"]
+
+
+@pytest.mark.asyncio
 async def test_runtime_appends_shadow_trace_without_changing_response(monkeypatch: pytest.MonkeyPatch):
     backend = type("BackendStub", (), {})()
     backend.settings = Settings()

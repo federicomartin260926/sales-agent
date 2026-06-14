@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 import time
 from typing import Any
 
@@ -7,7 +8,7 @@ from app.config import Settings, get_settings
 from app.schemas.agent import AgentRequest
 from app.services.agent_orchestration.context.context_expansion_router import ContextExpansionRouter
 from app.services.agent_orchestration.debug.orchestration_trace import OrchestrationTrace
-from app.services.agent_orchestration.planning.intent_planner import IntentPlannerService
+from app.services.agent_orchestration.planning.intent_planner import IntentPlannerService, PlanningParseDiagnostics
 from app.services.agent_orchestration.planning.schemas import LLMPlanningResult
 from app.services.agent_orchestration.tool_policy.tool_policy_service import ToolPolicyService
 from app.services.backend_client import CommercialContext
@@ -67,7 +68,7 @@ class ShadowPlanningService:
             )
 
             started_at = time.perf_counter()
-            planning_result = await self._run_planning_llm(planning_messages)
+            planning_result, planning_parse_diagnostics = await self._run_planning_llm(planning_messages)
             planning_latency_ms = int(round((time.perf_counter() - started_at) * 1000))
             trace.add_step(
                 step_type="llm_intent_planning",
@@ -76,6 +77,14 @@ class ShadowPlanningService:
                 output=planning_result.model_dump(exclude_none=True),
                 latency_ms=planning_latency_ms,
             )
+
+            if planning_parse_diagnostics is not None:
+                trace.add_step(
+                    step_type="llm_intent_planning_parse_diagnostics",
+                    input_context_keys=self._planning_input_keys(payload),
+                    enabled_tools=[],
+                    output=asdict(planning_parse_diagnostics),
+                )
 
             context_plan = self.context_router.build(planning_result)
             tool_policy = self.tool_policy.evaluate(planning_result)
@@ -99,25 +108,25 @@ class ShadowPlanningService:
             )
             return trace
 
-    async def _run_planning_llm(self, planning_messages: list[dict[str, str]]) -> LLMPlanningResult:
+    async def _run_planning_llm(self, planning_messages: list[dict[str, str]]) -> tuple[LLMPlanningResult, PlanningParseDiagnostics | None]:
         configuration = await self.llm_client.resolve_configuration()
         provider = str(configuration.get("llm_default_profile", self.settings.llm_provider)).strip().lower()
         if provider == "" or provider == "heuristic":
-            return self.intent_planner.fallback_unknown("planning_provider_unavailable")
+            return self.intent_planner.fallback_unknown("planning_provider_unavailable"), None
 
         if provider not in {"openai", "ollama"}:
-            return self.intent_planner.fallback_unknown("planning_provider_unsupported")
+            return self.intent_planner.fallback_unknown("planning_provider_unsupported"), None
 
         if provider == "openai" and any(configuration.get(key, "").strip() == "" for key in ("openai_base_url", "openai_model", "openai_api_key")):
-            return self.intent_planner.fallback_unknown("planning_openai_configuration_incomplete")
+            return self.intent_planner.fallback_unknown("planning_openai_configuration_incomplete"), None
 
         if provider == "ollama" and any(configuration.get(key, "").strip() == "" for key in ("ollama_base_url", "ollama_model")):
-            return self.intent_planner.fallback_unknown("planning_ollama_configuration_incomplete")
+            return self.intent_planner.fallback_unknown("planning_ollama_configuration_incomplete"), None
 
         system_prompt = planning_messages[0]["content"]
         user_prompt = planning_messages[1]["content"]
         result = await self.llm_client.generate(provider, system_prompt, user_prompt, configuration)
-        return self.intent_planner.parse_planning_result(result.content)
+        return self.intent_planner.parse_planning_result_with_diagnostics(result.content)
 
     def _enabled(self) -> bool:
         return bool(getattr(self.settings, "new_llm_orchestration_enabled", False))

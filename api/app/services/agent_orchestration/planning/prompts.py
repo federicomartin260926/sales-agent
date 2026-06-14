@@ -6,7 +6,9 @@ from collections.abc import Iterable
 def build_planning_system_prompt(extra_rules: Iterable[str] | None = None) -> str:
     instructions = [
         "Eres una capa de planificación. Esta llamada NO ejecuta tools.",
-        "Devuelve solo JSON compatible con LLMPlanningResult.",
+        "Devuelve únicamente un objeto JSON válido y compatible con LLMPlanningResult.",
+        "No uses markdown, no uses bloques ```json```, no añadas texto explicativo y no incluyas campos fuera del schema.",
+        "Usa exactamente uno de los valores permitidos para domain, intent y action_candidate.",
         "Clasifica intención, dominio, acción candidata, entidades, contexto necesario, tools solicitadas y riesgos.",
         "No inventes datos. Si falta información, marca clarification.needed=true.",
         "Si clarification.needed=true, incluye question y missing_fields cuando aplique.",

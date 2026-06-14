@@ -57,6 +57,36 @@ def test_planning_result_parses_select_offered_slot_json():
     assert result.clarification.needed is False
 
 
+def test_planning_result_parses_json_inside_markdown_fence():
+    planner = IntentPlannerService()
+    raw = """```json
+{
+  "schema_version": "1.0",
+  "domain": "appointment",
+  "intent": "select_offered_slot",
+  "action_candidate": "prepare_booking_confirmation",
+  "confidence": 0.89
+}
+```"""
+
+    result = planner.parse_planning_result(raw)
+
+    assert result.intent == "select_offered_slot"
+    assert result.action_candidate == "prepare_booking_confirmation"
+    assert result.confidence == 0.89
+
+
+def test_planning_result_parses_json_embedded_in_text():
+    planner = IntentPlannerService()
+    raw = "Respuesta: {\"schema_version\":\"1.0\",\"domain\":\"appointment\",\"intent\":\"request_availability\",\"action_candidate\":\"get_availability\",\"confidence\":0.77} Gracias."
+
+    result = planner.parse_planning_result(raw)
+
+    assert result.intent == "request_availability"
+    assert result.action_candidate == "get_availability"
+    assert result.confidence == 0.77
+
+
 def test_planning_result_invalid_json_falls_back_to_unknown():
     planner = IntentPlannerService()
 
@@ -65,6 +95,41 @@ def test_planning_result_invalid_json_falls_back_to_unknown():
     assert result.intent == "unknown"
     assert result.action_candidate == "no_action"
     assert result.clarification.needed is True
+
+
+def test_planning_result_validation_failure_exposes_safe_diagnostics():
+    planner = IntentPlannerService()
+
+    result, diagnostics = planner.parse_planning_result_with_diagnostics(
+        json.dumps(
+            {
+                "schema_version": "1.0",
+                "domain": "appointment",
+                "intent": "select_offered_slot",
+                "action_candidate": "prepare_booking_confirmation",
+                "confidence": 0.5,
+                "entities": {
+                    "owner_name": "María Gutiérrez",
+                },
+                "risk_flags": {
+                    "ambiguous_reference": False,
+                    "missing_required_data": False,
+                    "low_confidence": False,
+                    "explicit_booking_intent": True,
+                },
+                "unexpected_field": "oops",
+            },
+            ensure_ascii=False,
+        )
+    )
+
+    assert result.intent == "unknown"
+    assert diagnostics is not None
+    assert diagnostics.error_type == "pydantic_validation_error"
+    assert diagnostics.error_message
+    assert diagnostics.raw_content_preview is not None
+    assert "María Gutiérrez" in diagnostics.raw_content_preview
+    assert diagnostics.validation_errors
     assert result.risk_flags.low_confidence is True
 
 
