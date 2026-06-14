@@ -27,6 +27,7 @@ from app.services.backend_client import (
 )
 from app.services.conversation_summary_service import ConversationSummaryService
 from app.services.contact_context_resolver import ContactContextResolver
+from app.services.agent_orchestration.shadow.shadow_planning_service import ShadowPlanningService
 from app.services.decision_engine import DecisionEngine
 from app.services.routing_resolver import RoutingContext, RuntimeRoutingResolver
 from app.services.runtime_settings_client import RuntimeSettingsClient
@@ -79,6 +80,10 @@ class AgentRuntime:
         if self.contact_context_resolver is None:
             llm_client = getattr(getattr(self.decision_engine, "llm_decision_service", None), "llm_client", None)
             self.contact_context_resolver = ContactContextResolver(backend_client, llm_client, self.settings)
+        self.shadow_planning_service = ShadowPlanningService(
+            self.settings,
+            llm_client=getattr(getattr(self.decision_engine, "llm_decision_service", None), "llm_client", None),
+        )
 
     async def respond(self, payload: AgentRequest) -> AgentResponse:
         routing = await self.routing_resolver.resolve(payload)
@@ -418,6 +423,13 @@ class AgentRuntime:
                     effective_contact_context,
                     contact_context_resolver_called,
                 )
+                response = await self._apply_shadow_orchestration(
+                    response,
+                    payload,
+                    routing,
+                    backend_context,
+                    effective_contact_context,
+                )
 
         response = await self._apply_handoff_policy(
             response,
@@ -455,6 +467,54 @@ class AgentRuntime:
             await self._report_ai_usage_event(response, routing, conversation_result, None)
 
         return response
+
+    async def _apply_shadow_orchestration(
+        self,
+        response: AgentResponse,
+        payload: AgentRequest,
+        routing: RoutingContext,
+        backend_context: CommercialContext | None,
+        contact_context: dict[str, Any] | None,
+    ) -> AgentResponse:
+        if not bool(getattr(self.settings, "new_llm_orchestration_enabled", False)):
+            return response
+
+        data_to_save = copy.deepcopy(response.data_to_save)
+        data_to_save["new_llm_orchestration_shadow_enabled"] = True
+
+        try:
+            trace = await self.shadow_planning_service.execute(
+                payload,
+                routing,
+                backend_context,
+                contact_context,
+            )
+        except Exception as exc:
+            data_to_save["new_llm_orchestration_error"] = f"{exc.__class__.__name__}: {exc}"
+            return AgentResponse(
+                reply=response.reply,
+                intent=response.intent,
+                score=response.score,
+                action=response.action,
+                needs_human=response.needs_human,
+                data_to_save=data_to_save,
+                provider=response.provider,
+                model=response.model,
+                latency_ms=response.latency_ms,
+            )
+
+        data_to_save["new_llm_orchestration_trace"] = trace.to_safe_dict()
+        return AgentResponse(
+            reply=response.reply,
+            intent=response.intent,
+            score=response.score,
+            action=response.action,
+            needs_human=response.needs_human,
+            data_to_save=data_to_save,
+            provider=response.provider,
+            model=response.model,
+            latency_ms=response.latency_ms,
+        )
 
     def _missing_routing_data(self, payload: AgentRequest) -> dict[str, str]:
         data = {
