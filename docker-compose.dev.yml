@@ -11,13 +11,17 @@ services:
   sales-agent-api:
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    build:
+      args:
+        INSTALL_DEBUGPY: "true"
     networks:
       - sales-agent-net
       - ai-egress
     volumes:
       - ./api:/app
-    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    command: python -Xfrozen_modules=off -m debugpy --listen 0.0.0.0:5678 -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
     ports:
+      - "${DEBUGPY_HOST_PORT:-5678}:5678"
       - "${API_HOST_PORT:-8000}:8000"
 
   sales-agent-nginx:

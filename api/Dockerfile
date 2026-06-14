@@ -4,10 +4,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app
 
+ARG INSTALL_DEBUGPY=false
+
 WORKDIR /app
 
 COPY requirements.txt ./requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
+RUN if [ "$INSTALL_DEBUGPY" = "true" ]; then pip install --no-cache-dir debugpy; fi
 
 COPY app ./app
 
