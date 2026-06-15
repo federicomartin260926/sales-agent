@@ -9,6 +9,10 @@ from app.schemas.agent import AgentResponse
 from app.schemas.agent import AgentRequest, Contact
 from app.services.backend_client import BackendAiUsagePolicy, BackendAiUsageSnapshot, BackendExternalTool, BackendRoutingEntryPointUtmContext, BackendTenant, CommercialContext
 from app.services.agent_orchestration.debug.orchestration_trace import OrchestrationTrace
+from app.services.agent_orchestration.execution.appointment_availability_execution_service import (
+    AppointmentAvailabilityExecutionOutcome,
+    AppointmentAvailabilityExecutionService,
+)
 from app.services.agent_orchestration.execution.catalog_execution_service import CatalogExecutionService
 from app.services.agent_orchestration.execution.catalog_execution_service import CatalogExecutionOutcome
 from app.services.agent_orchestration.shadow.shadow_planning_service import ShadowPlanningService
@@ -2623,6 +2627,65 @@ class RecordingCatalogLLMClient:
         )()
 
 
+class RecordingAppointmentAvailabilityLLMClient:
+    def __init__(self, responses: list[dict[str, object]] | None = None) -> None:
+        self.responses = responses or [
+            {
+                "content": json.dumps({"reply": "ok", "reason": "ok", "slots": []}, ensure_ascii=False),
+                "tool_traces": [],
+                "provider": "openai",
+                "response_id": "resp-1",
+            }
+        ]
+        self.resolve_configuration_calls = 0
+        self.calls: list[dict[str, object]] = []
+
+    async def resolve_configuration(self) -> dict[str, str]:
+        self.resolve_configuration_calls += 1
+        return {
+            "llm_default_profile": "openai",
+            "openai_base_url": "https://api.openai.test/v1",
+            "openai_model": "gpt-4.1-mini",
+            "openai_api_key": "sk-test",
+        }
+
+    async def generate_with_mcp(
+        self,
+        provider: str,
+        system_prompt: str,
+        user_prompt: str,
+        mcp_config: McpRemoteConfig,
+        configuration: dict[str, str] | None = None,
+        previous_response_id: str | None = None,
+        tool_choice=None,
+        parallel_tool_calls=None,
+    ):
+        response_index = len(self.calls)
+        response = self.responses[response_index] if response_index < len(self.responses) else self.responses[-1]
+        self.calls.append(
+            {
+                "provider": provider,
+                "system_prompt": system_prompt,
+                "user_prompt": user_prompt,
+                "allowed_tools": list(mcp_config.allowed_tools),
+                "previous_response_id": previous_response_id,
+                "tool_choice": tool_choice,
+                "parallel_tool_calls": parallel_tool_calls,
+            }
+        )
+        return type(
+            "LLMResponseResultStub",
+            (),
+            {
+                "provider": response.get("provider", "openai"),
+                "model": "gpt-4.1-mini",
+                "content": response.get("content", ""),
+                "response_id": response.get("response_id", f"resp-{response_index + 1}"),
+                "tool_traces": response.get("tool_traces", []),
+            },
+        )()
+
+
 def build_catalog_shadow_trace() -> OrchestrationTrace:
     trace = OrchestrationTrace(
         tenant_id="tenant-1",
@@ -2879,6 +2942,286 @@ async def test_catalog_execution_service_declines_non_catalog_planning_without_c
 
 
 @pytest.mark.asyncio
+async def test_appointment_availability_execution_service_filters_tools_and_uses_verified_traces():
+    fake_llm = RecordingAppointmentAvailabilityLLMClient(
+        responses=[
+            {
+                "content": json.dumps({"reply": "Servicio resuelto.", "reason": "service search ok", "slots": []}, ensure_ascii=False),
+                "tool_traces": [
+                    {
+                        "tool_name": "services_search",
+                        "status": "completed",
+                        "output": {"results": [{"service_id": "service-uuid", "service_name": "Láser cuerpo entero"}]},
+                    }
+                ],
+                "response_id": "resp-search",
+            },
+            {
+                "content": json.dumps(
+                    {
+                        "reply": "Para láser cuerpo entero mañana por la tarde tengo 16:00, 16:30 y 17:00. ¿Cuál prefieres?",
+                        "reason": "availability found",
+                        "slots": [
+                            {"start": "2026-06-16T16:00:00+01:00", "end": "2026-06-16T17:30:00+01:00"},
+                            {"start": "2026-06-16T16:30:00+01:00", "end": "2026-06-16T18:00:00+01:00"},
+                            {"start": "2026-06-16T17:00:00+01:00", "end": "2026-06-16T18:30:00+01:00"},
+                        ],
+                    },
+                    ensure_ascii=False,
+                ),
+                "tool_traces": [
+                    {
+                        "tool_name": "appointment_availability",
+                        "status": "completed",
+                        "output": {
+                            "available": True,
+                            "slots": [
+                                {"start": "2026-06-16T16:00:00+01:00", "end": "2026-06-16T17:30:00+01:00", "timezone": "Atlantic/Canary"},
+                                {"start": "2026-06-16T16:30:00+01:00", "end": "2026-06-16T18:00:00+01:00", "timezone": "Atlantic/Canary"},
+                                {"start": "2026-06-16T17:00:00+01:00", "end": "2026-06-16T18:30:00+01:00", "timezone": "Atlantic/Canary"},
+                            ],
+                        },
+                    }
+                ],
+                "response_id": "resp-availability",
+            },
+        ]
+    )
+    settings = Settings()
+    service = AppointmentAvailabilityExecutionService(settings=settings, llm_client=fake_llm)  # type: ignore[arg-type]
+
+    outcome = await service.execute(
+        AgentRequest(
+            tenant_id="tenant-1",
+            message="Quiero reservar láser cuerpo entero mañana por la tarde",
+            contact=Contact(phone="+34999999999"),
+            conversation={"external_id": "conversation-1"},
+        ),
+        RoutingContext(tenant_id="tenant-1", tenant_slug="negocio-demo"),
+        build_context(),
+        None,
+        build_appointment_shadow_trace(),
+        McpRemoteConfig(
+            enabled=True,
+            server_label="tenant_main_mcp",
+            server_url="https://mcp.example.test",
+            allowed_tools=["services_search", "appointment_availability", "appointment_confirm"],
+            timeout_seconds=15,
+        ),
+    )
+
+    assert isinstance(outcome, AppointmentAvailabilityExecutionOutcome)
+    assert outcome.ok is True
+    assert outcome.reply == "Para láser cuerpo entero mañana por la tarde tengo 16:00, 16:30 y 17:00. ¿Cuál prefieres?"
+    assert outcome.mcp_allowed_tools == ["services_search", "appointment_availability"]
+    assert [trace["tool_name"] for trace in outcome.mcp_tool_traces] == ["services_search", "appointment_availability"]
+    assert outcome.response_payload["reason"] == "availability found"
+    assert fake_llm.resolve_configuration_calls == 1
+    assert len(fake_llm.calls) == 2
+    assert fake_llm.calls[0]["allowed_tools"] == ["services_search"]
+    assert fake_llm.calls[1]["allowed_tools"] == ["appointment_availability"]
+    assert fake_llm.calls[0]["tool_choice"] == "required"
+    assert fake_llm.calls[1]["tool_choice"] == "required"
+    assert fake_llm.calls[0]["parallel_tool_calls"] is False
+    assert fake_llm.calls[1]["parallel_tool_calls"] is False
+
+
+@pytest.mark.asyncio
+async def test_appointment_availability_execution_service_recovers_when_services_search_trace_missing_but_availability_is_verified():
+    fake_llm = RecordingAppointmentAvailabilityLLMClient(
+        responses=[
+            {
+                "content": json.dumps({"reply": "Servicio resuelto.", "reason": "service search ok", "slots": []}, ensure_ascii=False),
+                "tool_traces": [
+                    {
+                        "tool_name": "appointment_availability",
+                        "status": "completed",
+                        "output": {"available": True, "slots": []},
+                    }
+                ],
+                "response_id": "resp-search",
+            },
+            {
+                "content": json.dumps(
+                    {
+                        "reply": "Para láser cuerpo entero mañana por la tarde tengo 16:00, 16:30 y 17:00. ¿Cuál prefieres?",
+                        "reason": "availability found",
+                        "slots": [],
+                    },
+                    ensure_ascii=False,
+                ),
+                "tool_traces": [
+                    {
+                        "tool_name": "appointment_availability",
+                        "status": "completed",
+                        "output": {"available": True, "slots": []},
+                    }
+                ],
+                "response_id": "resp-availability",
+            }
+        ]
+    )
+    service = AppointmentAvailabilityExecutionService(settings=Settings(), llm_client=fake_llm)  # type: ignore[arg-type]
+
+    outcome = await service.execute(
+        AgentRequest(
+            tenant_id="tenant-1",
+            message="Quiero reservar láser cuerpo entero mañana por la tarde",
+            contact=Contact(phone="+34999999999"),
+            conversation={"external_id": "conversation-1"},
+        ),
+        RoutingContext(tenant_id="tenant-1", tenant_slug="negocio-demo"),
+        build_context(),
+        None,
+        build_appointment_shadow_trace(),
+        McpRemoteConfig(
+            enabled=True,
+            server_label="tenant_main_mcp",
+            server_url="https://mcp.example.test",
+            allowed_tools=["services_search", "appointment_availability"],
+            timeout_seconds=15,
+        ),
+    )
+
+    assert outcome.ok is True
+    assert outcome.attempted is True
+    assert outcome.reply == "Para láser cuerpo entero mañana por la tarde tengo 16:00, 16:30 y 17:00. ¿Cuál prefieres?"
+    assert len(fake_llm.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_appointment_availability_execution_service_declines_when_appointment_availability_trace_missing():
+    fake_llm = RecordingAppointmentAvailabilityLLMClient(
+        responses=[
+            {
+                "content": json.dumps({"reply": "Servicio resuelto.", "reason": "service search ok", "slots": []}, ensure_ascii=False),
+                "tool_traces": [
+                    {
+                        "tool_name": "services_search",
+                        "status": "completed",
+                        "output": {"results": [{"service_id": "service-uuid", "service_name": "Láser cuerpo entero"}]},
+                    }
+                ],
+                "response_id": "resp-search",
+            },
+            {
+                "content": json.dumps({"reply": "Sin trazas de disponibilidad.", "reason": "missing trace", "slots": []}, ensure_ascii=False),
+                "tool_traces": [],
+                "response_id": "resp-availability",
+            },
+        ]
+    )
+    service = AppointmentAvailabilityExecutionService(settings=Settings(), llm_client=fake_llm)  # type: ignore[arg-type]
+
+    outcome = await service.execute(
+        AgentRequest(
+            tenant_id="tenant-1",
+            message="Quiero reservar láser cuerpo entero mañana por la tarde",
+            contact=Contact(phone="+34999999999"),
+            conversation={"external_id": "conversation-1"},
+        ),
+        RoutingContext(tenant_id="tenant-1", tenant_slug="negocio-demo"),
+        build_context(),
+        None,
+        build_appointment_shadow_trace(),
+        McpRemoteConfig(
+            enabled=True,
+            server_label="tenant_main_mcp",
+            server_url="https://mcp.example.test",
+            allowed_tools=["services_search", "appointment_availability"],
+            timeout_seconds=15,
+        ),
+    )
+
+    assert outcome.ok is False
+    assert outcome.attempted is True
+    assert outcome.fallback_reason == "appointment_availability_trace_missing"
+    assert len(fake_llm.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_appointment_availability_execution_service_declines_when_write_tools_requested():
+    fake_llm = RecordingAppointmentAvailabilityLLMClient(
+        responses=[
+            {
+                "content": json.dumps({"reply": "No debería llamarse."}, ensure_ascii=False),
+                "tool_traces": [],
+                "response_id": "resp-search",
+            }
+        ]
+    )
+    trace = build_appointment_shadow_trace()
+    trace.steps[0].output["tool_request"]["write_tools"] = ["appointment_confirm"]
+    service = AppointmentAvailabilityExecutionService(settings=Settings(), llm_client=fake_llm)  # type: ignore[arg-type]
+
+    outcome = await service.execute(
+        AgentRequest(
+            tenant_id="tenant-1",
+            message="Quiero reservar láser cuerpo entero mañana por la tarde",
+            contact=Contact(phone="+34999999999"),
+            conversation={"external_id": "conversation-1"},
+        ),
+        RoutingContext(tenant_id="tenant-1", tenant_slug="negocio-demo"),
+        build_context(),
+        None,
+        trace,
+        McpRemoteConfig(
+            enabled=True,
+            server_label="tenant_main_mcp",
+            server_url="https://mcp.example.test",
+            allowed_tools=["services_search", "appointment_availability"],
+            timeout_seconds=15,
+        ),
+    )
+
+    assert outcome.ok is False
+    assert outcome.attempted is False
+    assert outcome.fallback_reason == "write_tools_requested"
+    assert fake_llm.calls == []
+
+
+@pytest.mark.asyncio
+async def test_appointment_availability_execution_service_declines_when_clarification_is_needed():
+    fake_llm = RecordingAppointmentAvailabilityLLMClient(
+        responses=[
+            {
+                "content": json.dumps({"reply": "No debería llamarse."}, ensure_ascii=False),
+                "tool_traces": [],
+                "response_id": "resp-search",
+            }
+        ]
+    )
+    trace = build_appointment_shadow_trace()
+    trace.steps[0].output["clarification"]["needed"] = True
+    service = AppointmentAvailabilityExecutionService(settings=Settings(), llm_client=fake_llm)  # type: ignore[arg-type]
+
+    outcome = await service.execute(
+        AgentRequest(
+            tenant_id="tenant-1",
+            message="Quiero reservar láser cuerpo entero mañana por la tarde",
+            contact=Contact(phone="+34999999999"),
+            conversation={"external_id": "conversation-1"},
+        ),
+        RoutingContext(tenant_id="tenant-1", tenant_slug="negocio-demo"),
+        build_context(),
+        None,
+        trace,
+        McpRemoteConfig(
+            enabled=True,
+            server_label="tenant_main_mcp",
+            server_url="https://mcp.example.test",
+            allowed_tools=["services_search", "appointment_availability"],
+            timeout_seconds=15,
+        ),
+    )
+
+    assert outcome.ok is False
+    assert outcome.attempted is False
+    assert outcome.fallback_reason == "clarification_requested"
+    assert fake_llm.calls == []
+
+
+@pytest.mark.asyncio
 async def test_runtime_applies_catalog_execution_slice_when_shadow_planning_is_catalog(monkeypatch: pytest.MonkeyPatch):
     backend = RecordingBackendClient(
         ref_context=BackendRoutingEntryPointUtmContext.model_validate(
@@ -2916,6 +3259,8 @@ async def test_runtime_applies_catalog_execution_slice_when_shadow_planning_is_c
             },
         },
     )
+    backend.tenant_context.tenant.timezone = "Atlantic/Canary"
+    backend.tenant_context.tenant.timezone_source = "crm_tenant"
     backend.settings = Settings()
     backend.settings.new_llm_orchestration_enabled = True
     backend.settings.new_llm_orchestration_catalog_execution_enabled = True
@@ -2991,6 +3336,337 @@ async def test_runtime_applies_catalog_execution_slice_when_shadow_planning_is_c
     assert response.data_to_save["new_llm_orchestration_catalog_execution_used"] is True
     assert response.data_to_save["new_llm_orchestration_catalog_execution_trace"]["ok"] is True
     assert response.data_to_save["new_llm_orchestration_trace"]["steps"][0]["step_type"] == "llm_intent_planning"
+
+
+@pytest.mark.asyncio
+async def test_runtime_does_not_apply_appointment_availability_slice_when_flag_is_disabled(monkeypatch: pytest.MonkeyPatch):
+    backend = RecordingBackendClient(
+        ref_context=BackendRoutingEntryPointUtmContext.model_validate(
+            {
+                "entry_point_utm_id": "utm-1",
+                "ref": "abc123",
+                "entry_point_id": "entrypoint-1",
+                "entry_point_code": "crm-demo",
+                "tenant_id": "tenant-1",
+                "tenant_slug": "negocio-demo",
+                "product_id": "product-1",
+                "product_name": "CRM Automation",
+                "playbook_id": "playbook-1",
+                "crm_branch_ref": "branch-1",
+                "utm_source": "google",
+                "utm_medium": "cpc",
+                "utm_campaign": "crm_pymes",
+                "status": "matched",
+            }
+        ),
+        tenant_context=build_context(),
+        mcp_config=McpRemoteConfig(
+            enabled=True,
+            server_label="tenant_main_mcp",
+            server_url="https://mcp.example.test",
+            allowed_tools=["services_search", "appointment_availability"],
+            timeout_seconds=15,
+        ),
+        conversation_result={
+            "created": True,
+            "conversation": {
+                "id": "conversation-1",
+                "status": "active",
+                "summary": None,
+            },
+        },
+    )
+    backend.tenant_context.tenant.timezone = "Atlantic/Canary"
+    backend.tenant_context.tenant.timezone_source = "crm_tenant"
+    backend.settings = Settings()
+    backend.settings.new_llm_orchestration_enabled = True
+    backend.settings.new_llm_orchestration_catalog_execution_enabled = False
+    backend.settings.new_llm_orchestration_appointment_availability_enabled = False
+
+    async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None, previous_response_id=None):
+        return AgentResponse(
+            reply="Respuesta previa del flujo actual.",
+            intent="open_question",
+            score=0.88,
+            action="answer_question",
+            needs_human=False,
+            data_to_save={"topic": "agenda"},
+            provider="openai",
+            model="gpt-4.1-mini",
+            latency_ms=30,
+        )
+
+    async def fake_shadow_execute(self, payload, routing, backend_context, contact_context):
+        return build_appointment_shadow_trace()
+
+    async def fail_if_called(*args, **kwargs):
+        raise AssertionError("appointment availability slice should not run when feature flag is disabled")
+
+    monkeypatch.setattr(DecisionEngine, "decide", fake_decide)
+    monkeypatch.setattr(ShadowPlanningService, "execute", fake_shadow_execute)
+    monkeypatch.setattr(AppointmentAvailabilityExecutionService, "execute", fail_if_called)
+    monkeypatch.setattr(
+        AgentRuntime,
+        "_resolve_agenda_effective_timezone_details",
+        lambda self, backend_context, contact_context=None: ("Atlantic/Canary", "crm_tenant"),
+    )
+
+    runtime = AgentRuntime(backend, RuntimeRoutingResolver(backend), DecisionEngine(backend))  # type: ignore[arg-type]
+    payload = AgentRequest(
+        tenant_id="tenant-ignored",
+        entrypoint_ref="abc123",
+        message="Quiero reservar láser cuerpo entero mañana por la tarde",
+        contact=Contact(phone="+34999999999"),
+    )
+
+    response = await runtime.respond(payload)
+
+    assert response.reply == "Respuesta previa del flujo actual."
+    assert response.data_to_save["new_llm_orchestration_shadow_enabled"] is True
+    assert "new_llm_orchestration_appointment_availability_attempted" not in response.data_to_save
+    assert "new_llm_orchestration_appointment_availability_trace" not in response.data_to_save
+
+
+@pytest.mark.asyncio
+async def test_runtime_applies_appointment_availability_slice_when_shadow_planning_is_appointment(monkeypatch: pytest.MonkeyPatch):
+    backend = RecordingBackendClient(
+        ref_context=BackendRoutingEntryPointUtmContext.model_validate(
+            {
+                "entry_point_utm_id": "utm-1",
+                "ref": "abc123",
+                "entry_point_id": "entrypoint-1",
+                "entry_point_code": "crm-demo",
+                "tenant_id": "tenant-1",
+                "tenant_slug": "negocio-demo",
+                "product_id": "product-1",
+                "product_name": "CRM Automation",
+                "playbook_id": "playbook-1",
+                "crm_branch_ref": "branch-1",
+                "utm_source": "google",
+                "utm_medium": "cpc",
+                "utm_campaign": "crm_pymes",
+                "status": "matched",
+            }
+        ),
+        tenant_context=build_context(),
+        mcp_config=McpRemoteConfig(
+            enabled=True,
+            server_label="tenant_main_mcp",
+            server_url="https://mcp.example.test",
+            allowed_tools=["services_search", "appointment_availability"],
+            timeout_seconds=15,
+        ),
+        conversation_result={
+            "created": True,
+            "conversation": {
+                "id": "conversation-1",
+                "status": "active",
+                "summary": None,
+            },
+        },
+    )
+    backend.settings = Settings()
+    backend.settings.new_llm_orchestration_enabled = True
+    backend.settings.new_llm_orchestration_catalog_execution_enabled = False
+    backend.settings.new_llm_orchestration_appointment_availability_enabled = True
+
+    async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None, previous_response_id=None):
+        return AgentResponse(
+            reply="Respuesta previa del flujo actual.",
+            intent="open_question",
+            score=0.88,
+            action="answer_question",
+            needs_human=False,
+            data_to_save={"topic": "agenda"},
+            provider="openai",
+            model="gpt-4.1-mini",
+            latency_ms=30,
+        )
+
+    async def fake_shadow_execute(self, payload, routing, backend_context, contact_context):
+        return build_appointment_shadow_trace()
+
+    async def fake_appointment_execute(self, payload, routing, backend_context, contact_context, trace, mcp_config, previous_response_id=None):
+        return AppointmentAvailabilityExecutionOutcome(
+            attempted=True,
+            ok=True,
+            reply="Para láser cuerpo entero mañana por la tarde tengo 16:00, 16:30 y 17:00. ¿Cuál prefieres?",
+            provider="openai",
+            model="gpt-4.1-mini",
+            response_id="resp-2",
+            latency_ms=61,
+            planning={
+                "domain": "appointment",
+                "intent": "request_availability",
+            },
+            context_plan={
+                "include_appointment_context": True,
+            },
+            tool_policy={
+                "lookup_tools_enabled": ["services_search", "appointment_availability"],
+                "write_tools_enabled": [],
+            },
+            mcp_allowed_tools=["services_search", "appointment_availability"],
+            mcp_tool_traces=[
+                {"tool_name": "services_search", "status": "completed"},
+                {"tool_name": "appointment_availability", "status": "completed"},
+            ],
+            response_payload={
+                "reply": "Para láser cuerpo entero mañana por la tarde tengo 16:00, 16:30 y 17:00. ¿Cuál prefieres?",
+                "reason": "availability found",
+            },
+            trace_id="trace-appointment",
+        )
+
+    monkeypatch.setattr(DecisionEngine, "decide", fake_decide)
+    monkeypatch.setattr(ShadowPlanningService, "execute", fake_shadow_execute)
+    monkeypatch.setattr(AppointmentAvailabilityExecutionService, "execute", fake_appointment_execute)
+    monkeypatch.setattr(
+        AgentRuntime,
+        "_resolve_agenda_effective_timezone_details",
+        lambda self, backend_context, contact_context=None: ("Atlantic/Canary", "crm_tenant"),
+    )
+
+    runtime = AgentRuntime(backend, RuntimeRoutingResolver(backend), DecisionEngine(backend))  # type: ignore[arg-type]
+    payload = AgentRequest(
+        tenant_id="tenant-ignored",
+        entrypoint_ref="abc123",
+        message="Quiero reservar láser cuerpo entero mañana por la tarde",
+        contact=Contact(phone="+34999999999"),
+    )
+
+    response = await runtime.respond(payload)
+
+    assert response.reply == "Para láser cuerpo entero mañana por la tarde tengo 16:00, 16:30 y 17:00. ¿Cuál prefieres?"
+    assert response.data_to_save["new_llm_orchestration_appointment_availability_attempted"] is True
+    assert response.data_to_save["new_llm_orchestration_appointment_availability_ok"] is True
+    assert response.data_to_save["new_llm_orchestration_appointment_availability_used"] is True
+    assert response.data_to_save["new_llm_orchestration_appointment_availability_trace"]["ok"] is True
+    assert response.data_to_save["new_llm_orchestration_appointment_availability_trace"]["mcp_allowed_tools"] == [
+        "services_search",
+        "appointment_availability",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_runtime_does_not_postprocess_appointment_confirmation_after_availability_slice(monkeypatch: pytest.MonkeyPatch):
+    backend = RecordingBackendClient(
+        ref_context=BackendRoutingEntryPointUtmContext.model_validate(
+            {
+                "entry_point_utm_id": "utm-1",
+                "ref": "abc123",
+                "entry_point_id": "entrypoint-1",
+                "entry_point_code": "crm-demo",
+                "tenant_id": "tenant-1",
+                "tenant_slug": "negocio-demo",
+                "product_id": "product-1",
+                "product_name": "CRM Automation",
+                "playbook_id": "playbook-1",
+                "crm_branch_ref": "branch-1",
+                "utm_source": "google",
+                "utm_medium": "cpc",
+                "utm_campaign": "crm_pymes",
+                "status": "matched",
+            }
+        ),
+        tenant_context=build_context(),
+        mcp_config=McpRemoteConfig(
+            enabled=True,
+            server_label="tenant_main_mcp",
+            server_url="https://mcp.example.test",
+            allowed_tools=["services_search", "appointment_availability", "appointment_confirm"],
+            timeout_seconds=15,
+        ),
+        conversation_result={
+            "created": True,
+            "conversation": {
+                "id": "conversation-1",
+                "status": "active",
+                "summary": None,
+            },
+        },
+    )
+    backend.settings = Settings()
+    backend.settings.new_llm_orchestration_enabled = True
+    backend.settings.new_llm_orchestration_catalog_execution_enabled = False
+    backend.settings.new_llm_orchestration_appointment_availability_enabled = True
+
+    async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None, previous_response_id=None):
+        return AgentResponse(
+            reply="Perfecto. Estoy revisando ese horario. Si necesito algún dato adicional para cerrarlo, te lo pediré ahora.",
+            intent="open_question",
+            score=0.88,
+            action="answer_question",
+            needs_human=False,
+            data_to_save={"topic": "agenda"},
+            provider="openai",
+            model="gpt-4.1-mini",
+            latency_ms=30,
+        )
+
+    async def fake_shadow_execute(self, payload, routing, backend_context, contact_context):
+        return build_appointment_shadow_trace()
+
+    async def fake_appointment_execute(self, payload, routing, backend_context, contact_context, trace, mcp_config, previous_response_id=None):
+        return AppointmentAvailabilityExecutionOutcome(
+            attempted=True,
+            ok=True,
+            reply="Para láser cuerpo entero mañana por la tarde tengo 16:00, 16:30 y 17:00. ¿Cuál prefieres?",
+            provider="openai",
+            model="gpt-4.1-mini",
+            response_id="resp-2",
+            latency_ms=61,
+            planning={
+                "domain": "appointment",
+                "intent": "request_availability",
+            },
+            context_plan={
+                "include_appointment_context": True,
+            },
+            tool_policy={
+                "lookup_tools_enabled": ["services_search", "appointment_availability"],
+                "write_tools_enabled": [],
+            },
+            mcp_allowed_tools=["services_search", "appointment_availability"],
+            mcp_tool_traces=[
+                {"tool_name": "services_search", "status": "completed"},
+                {"tool_name": "appointment_availability", "status": "completed"},
+            ],
+            response_payload={
+                "reply": "Para láser cuerpo entero mañana por la tarde tengo 16:00, 16:30 y 17:00. ¿Cuál prefieres?",
+                "reason": "availability found",
+            },
+            trace_id="trace-appointment",
+        )
+
+    monkeypatch.setattr(DecisionEngine, "decide", fake_decide)
+    monkeypatch.setattr(ShadowPlanningService, "execute", fake_shadow_execute)
+    monkeypatch.setattr(AppointmentAvailabilityExecutionService, "execute", fake_appointment_execute)
+    monkeypatch.setattr(
+        AgentRuntime,
+        "_resolve_agenda_effective_timezone_details",
+        lambda self, backend_context, contact_context=None: ("Atlantic/Canary", "crm_tenant"),
+    )
+
+    runtime = AgentRuntime(backend, RuntimeRoutingResolver(backend), DecisionEngine(backend))  # type: ignore[arg-type]
+    payload = AgentRequest(
+        tenant_id="tenant-ignored",
+        entrypoint_ref="abc123",
+        message="Quiero reservar láser cuerpo entero mañana por la tarde",
+        contact=Contact(phone="+34999999999"),
+    )
+
+    response = await runtime.respond(payload)
+
+    assert response.reply == "Para láser cuerpo entero mañana por la tarde tengo 16:00, 16:30 y 17:00. ¿Cuál prefieres?"
+    assert response.intent == "open_question"
+    assert response.action == "answer_question"
+    assert response.data_to_save["new_llm_orchestration_appointment_availability_attempted"] is True
+    assert response.data_to_save["new_llm_orchestration_appointment_availability_ok"] is True
+    assert response.data_to_save["new_llm_orchestration_appointment_availability_used"] is True
+    assert response.data_to_save["new_llm_orchestration_appointment_availability_trace"]["ok"] is True
+    assert "appointment_confirm_post_processed" not in response.data_to_save
+    assert "confirmada" not in response.reply.lower()
 
 
 @pytest.mark.asyncio

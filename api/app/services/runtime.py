@@ -27,6 +27,9 @@ from app.services.backend_client import (
 )
 from app.services.conversation_summary_service import ConversationSummaryService
 from app.services.contact_context_resolver import ContactContextResolver
+from app.services.agent_orchestration.execution.appointment_availability_execution_service import (
+    AppointmentAvailabilityExecutionService,
+)
 from app.services.agent_orchestration.shadow.shadow_planning_service import ShadowPlanningService
 from app.services.agent_orchestration.execution.catalog_execution_service import CatalogExecutionService
 from app.services.decision_engine import DecisionEngine
@@ -82,6 +85,10 @@ class AgentRuntime:
             llm_client = getattr(getattr(self.decision_engine, "llm_decision_service", None), "llm_client", None)
             self.contact_context_resolver = ContactContextResolver(backend_client, llm_client, self.settings)
         self.shadow_planning_service = ShadowPlanningService(
+            self.settings,
+            llm_client=getattr(getattr(self.decision_engine, "llm_decision_service", None), "llm_client", None),
+        )
+        self.appointment_availability_execution_service = AppointmentAvailabilityExecutionService(
             self.settings,
             llm_client=getattr(getattr(self.decision_engine, "llm_decision_service", None), "llm_client", None),
         )
@@ -419,7 +426,6 @@ class AgentRuntime:
                 response = self._normalize_agenda_owner_mismatch(response)
                 response = self._normalize_failed_appointment_confirmation(response)
                 response = self._normalize_premature_appointment_confirmation(response, normalized_message)
-                response = self._normalize_successful_appointment_confirmation(response, normalized_message)
                 response = self._normalize_handoff_response(response, explicit_handoff_request)
                 response = self._merge_runtime_diagnostics(
                     response,
@@ -437,6 +443,7 @@ class AgentRuntime:
                     mcp_config,
                     previous_response_id,
                 )
+                response = self._normalize_successful_appointment_confirmation(response, normalized_message)
 
         response = await self._apply_handoff_policy(
             response,
@@ -547,6 +554,51 @@ class AgentRuntime:
                         model=response.model,
                         latency_ms=response.latency_ms,
                     )
+
+        appointment_availability_enabled = bool(
+            getattr(self.settings, "new_llm_orchestration_appointment_availability_enabled", False)
+        )
+        if appointment_availability_enabled:
+            try:
+                appointment_availability_outcome = await self.appointment_availability_execution_service.execute(
+                    payload,
+                    routing,
+                    backend_context,
+                    contact_context,
+                    trace,
+                    mcp_config,
+                    previous_response_id=previous_response_id,
+                )
+            except Exception as exc:
+                data_to_save["new_llm_orchestration_appointment_availability_error"] = f"{exc.__class__.__name__}: {exc}"
+            else:
+                data_to_save["new_llm_orchestration_appointment_availability_trace"] = appointment_availability_outcome.to_safe_dict()
+                data_to_save["new_llm_orchestration_appointment_availability_attempted"] = appointment_availability_outcome.attempted
+                data_to_save["new_llm_orchestration_appointment_availability_ok"] = appointment_availability_outcome.ok
+                if appointment_availability_outcome.fallback_reason is not None:
+                    data_to_save["new_llm_orchestration_appointment_availability_fallback_reason"] = appointment_availability_outcome.fallback_reason
+                if appointment_availability_outcome.ok and appointment_availability_outcome.reply is not None:
+                    data_to_save["new_llm_orchestration_appointment_availability_used"] = True
+                    return AgentResponse(
+                        reply=appointment_availability_outcome.reply,
+                        intent=response.intent,
+                        score=response.score,
+                        action=response.action,
+                        needs_human=response.needs_human,
+                        data_to_save=data_to_save,
+                        provider=response.provider,
+                        model=response.model,
+                        latency_ms=response.latency_ms,
+                    )
+
+        if appointment_availability_enabled and "new_llm_orchestration_appointment_availability_attempted" not in data_to_save:
+            data_to_save["new_llm_orchestration_appointment_availability_attempted"] = False
+        if (
+            appointment_availability_enabled
+            and "new_llm_orchestration_appointment_availability_used" not in data_to_save
+            and data_to_save.get("new_llm_orchestration_appointment_availability_attempted") is not True
+        ):
+            data_to_save["new_llm_orchestration_appointment_availability_used"] = False
 
         if catalog_execution_enabled and "new_llm_orchestration_catalog_execution_attempted" not in data_to_save:
             data_to_save["new_llm_orchestration_catalog_execution_attempted"] = False
@@ -1832,6 +1884,9 @@ class AgentRuntime:
         )
 
     def _normalize_failed_appointment_confirmation(self, response: AgentResponse) -> AgentResponse:
+        if self._should_skip_appointment_confirmation_postprocessing(response):
+            return response
+
         if not self._appointment_confirmation_failed(response):
             return response
 
@@ -1852,6 +1907,9 @@ class AgentRuntime:
         )
 
     def _normalize_premature_appointment_confirmation(self, response: AgentResponse, normalized_message: str) -> AgentResponse:
+        if self._should_skip_appointment_confirmation_postprocessing(response):
+            return response
+
         if not self._is_slot_selection_followup(normalized_message):
             return response
 
@@ -1875,6 +1933,9 @@ class AgentRuntime:
         )
 
     def _normalize_successful_appointment_confirmation(self, response: AgentResponse, normalized_message: str) -> AgentResponse:
+        if self._should_skip_appointment_confirmation_postprocessing(response):
+            return response
+
         if not self._appointment_confirmation_succeeded(response):
             return response
 
@@ -1896,6 +1957,9 @@ class AgentRuntime:
         )
 
     def _finalize_successful_appointment_confirmation(self, response: AgentResponse) -> AgentResponse:
+        if self._should_skip_appointment_confirmation_postprocessing(response):
+            return response
+
         if not self._appointment_confirmation_succeeded(response):
             return response
 
@@ -2136,6 +2200,9 @@ class AgentRuntime:
             return False
 
         return False
+
+    def _should_skip_appointment_confirmation_postprocessing(self, response: AgentResponse) -> bool:
+        return response.data_to_save.get("new_llm_orchestration_appointment_availability_used") is True
 
     async def _send_handoff_webhook(
         self,

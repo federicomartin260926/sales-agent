@@ -75,3 +75,11 @@ async def test_runtime_settings_client_falls_back_when_backend_is_unavailable():
     assert values["audio_max_bytes"] == str(25 * 1024 * 1024)
     assert values["audio_llm_followup_reserve_cost_eur"] == "0.01"
     assert values["audio_timeout_seconds"] == "15"
+
+
+def test_settings_reads_appointment_availability_feature_flag_from_env(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("NEW_LLM_ORCHESTRATION_APPOINTMENT_AVAILABILITY_ENABLED", "true")
+
+    settings = Settings()
+
+    assert settings.new_llm_orchestration_appointment_availability_enabled is True

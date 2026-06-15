@@ -55,6 +55,10 @@ class Settings(BaseSettings):
         default=False,
         alias="NEW_LLM_ORCHESTRATION_CATALOG_EXECUTION_ENABLED",
     )
+    new_llm_orchestration_appointment_availability_enabled: bool = Field(
+        default=False,
+        alias="NEW_LLM_ORCHESTRATION_APPOINTMENT_AVAILABILITY_ENABLED",
+    )
 
     def safe_default_business_timezone(self) -> str:
         candidate = self.default_business_timezone.strip()
