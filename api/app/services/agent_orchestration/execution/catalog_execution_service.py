@@ -37,6 +37,7 @@ class CatalogExecutionOutcome(BaseModel):
     planning: dict[str, Any] = Field(default_factory=dict)
     context_plan: dict[str, Any] = Field(default_factory=dict)
     tool_policy: dict[str, Any] = Field(default_factory=dict)
+    bounded_single_tool_call: bool = False
     mcp_allowed_tools: list[str] = Field(default_factory=list)
     mcp_tool_traces: list[dict[str, Any]] = Field(default_factory=list)
     response_payload: dict[str, Any] = Field(default_factory=dict)
@@ -85,6 +86,7 @@ class CatalogExecutionService:
         if provider != "openai":
             return self._declined("catalog_execution_provider_unsupported", shadow_trace, planning_result, context_plan, tool_policy, filtered_mcp_config)
 
+        bounded_single_tool_call = True
         system_prompt, user_prompt = self._build_prompts(
             payload=payload,
             routing=routing,
@@ -103,9 +105,10 @@ class CatalogExecutionService:
                 user_prompt,
                 filtered_mcp_config,
                 configuration=configuration,
-                previous_response_id=previous_response_id,
+                previous_response_id=None,
                 tool_choice="required",
                 parallel_tool_calls=False,
+                single_tool_call=True,
             )
         except Exception as exc:
             return CatalogExecutionOutcome(
@@ -117,6 +120,7 @@ class CatalogExecutionService:
                 planning=planning_result.model_dump(exclude_none=True),
                 context_plan=context_plan.model_dump(exclude_none=True),
                 tool_policy=tool_policy.model_dump(exclude_none=True),
+                bounded_single_tool_call=bounded_single_tool_call,
                 mcp_allowed_tools=allowed_tools,
                 trace_id=shadow_trace.trace_id,
             )
@@ -138,6 +142,7 @@ class CatalogExecutionService:
                 planning=planning_result.model_dump(exclude_none=True),
                 context_plan=context_plan.model_dump(exclude_none=True),
                 tool_policy=tool_policy.model_dump(exclude_none=True),
+                bounded_single_tool_call=bounded_single_tool_call,
                 mcp_allowed_tools=allowed_tools,
                 mcp_tool_traces=self._safe_tool_traces(llm_result.tool_traces),
                 trace_id=shadow_trace.trace_id,
@@ -159,6 +164,7 @@ class CatalogExecutionService:
                 planning=planning_result.model_dump(exclude_none=True),
                 context_plan=context_plan.model_dump(exclude_none=True),
                 tool_policy=tool_policy.model_dump(exclude_none=True),
+                bounded_single_tool_call=bounded_single_tool_call,
                 mcp_allowed_tools=allowed_tools,
                 mcp_tool_traces=self._safe_tool_traces(llm_result.tool_traces),
                 response_payload=sanitize_value(parsed_payload),
@@ -180,6 +186,7 @@ class CatalogExecutionService:
                 planning=planning_result.model_dump(exclude_none=True),
                 context_plan=context_plan.model_dump(exclude_none=True),
                 tool_policy=tool_policy.model_dump(exclude_none=True),
+                bounded_single_tool_call=bounded_single_tool_call,
                 mcp_allowed_tools=allowed_tools,
                 mcp_tool_traces=self._safe_tool_traces(llm_result.tool_traces),
                 response_payload=sanitize_value(parsed_payload),
@@ -197,6 +204,7 @@ class CatalogExecutionService:
             planning=planning_result.model_dump(exclude_none=True),
             context_plan=context_plan.model_dump(exclude_none=True),
             tool_policy=tool_policy.model_dump(exclude_none=True),
+            bounded_single_tool_call=bounded_single_tool_call,
             mcp_allowed_tools=allowed_tools,
             mcp_tool_traces=self._safe_tool_traces(llm_result.tool_traces),
             response_payload=sanitize_value(parsed_payload),

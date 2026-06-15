@@ -2,6 +2,10 @@ from app.services.agent_orchestration.execution.appointment_availability_executi
     AppointmentAvailabilityExecutionOutcome,
     AppointmentAvailabilityExecutionService,
 )
+from app.services.agent_orchestration.execution.slot_selection_execution_service import (
+    SlotSelectionExecutionOutcome,
+    SlotSelectionExecutionService,
+)
 from app.services.agent_orchestration.execution.catalog_execution_service import CatalogExecutionOutcome, CatalogExecutionService
 
 __all__ = [
@@ -9,4 +13,6 @@ __all__ = [
     "AppointmentAvailabilityExecutionService",
     "CatalogExecutionOutcome",
     "CatalogExecutionService",
+    "SlotSelectionExecutionOutcome",
+    "SlotSelectionExecutionService",
 ]

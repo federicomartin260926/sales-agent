@@ -126,7 +126,9 @@ class ShadowPlanningService:
         system_prompt = planning_messages[0]["content"]
         user_prompt = planning_messages[1]["content"]
         result = await self.llm_client.generate(provider, system_prompt, user_prompt, configuration)
-        return self.intent_planner.parse_planning_result_with_diagnostics(result.content)
+        raw_llm_output = result.content
+        parsed_planning_result, planning_parse_diagnostics = self.intent_planner.parse_planning_result_with_diagnostics(raw_llm_output)
+        return parsed_planning_result, planning_parse_diagnostics
 
     def _enabled(self) -> bool:
         return bool(getattr(self.settings, "new_llm_orchestration_enabled", False))

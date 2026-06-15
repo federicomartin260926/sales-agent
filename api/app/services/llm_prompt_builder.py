@@ -678,6 +678,17 @@ class LLMPromptBuilder:
             if not isinstance(metadata, dict):
                 continue
 
+            data_to_save = metadata.get("data_to_save")
+            if isinstance(data_to_save, dict):
+                saved_context = self._appointment_context_from_data_to_save(
+                    message,
+                    data_to_save,
+                    timezone,
+                    timezone_source,
+                )
+                if saved_context is not None:
+                    return saved_context
+
             traces = metadata.get("mcp_tool_traces")
             if not isinstance(traces, list):
                 continue
@@ -699,7 +710,7 @@ class LLMPromptBuilder:
                 if not isinstance(slots, list) or not slots:
                     continue
 
-                offered_slots = self.context_helper.sanitize_jsonish(slots, max_depth=9, max_items=6)
+                offered_slots = self._normalize_offered_slots(slots[:6])
                 if not isinstance(offered_slots, list) or offered_slots == []:
                     continue
 
@@ -727,6 +738,75 @@ class LLMPromptBuilder:
                 return appointment_context
 
         return None
+
+    def _appointment_context_from_data_to_save(
+        self,
+        message: dict[str, Any],
+        data_to_save: dict[str, Any],
+        timezone: str | None = None,
+        timezone_source: str | None = None,
+    ) -> dict[str, Any] | None:
+        offered_slots = data_to_save.get("new_llm_orchestration_offered_slots")
+        if not isinstance(offered_slots, list) or offered_slots == []:
+            availability_trace = data_to_save.get("new_llm_orchestration_appointment_availability_trace")
+            if isinstance(availability_trace, dict):
+                response_payload = availability_trace.get("response_payload")
+                if isinstance(response_payload, dict):
+                    offered_slots = response_payload.get("slots") if isinstance(response_payload.get("slots"), list) else []
+                    if not isinstance(offered_slots, list) or offered_slots == []:
+                        offered_slots = []
+        if not isinstance(offered_slots, list) or offered_slots == []:
+            return None
+
+        normalized_offered_slots = self._normalize_offered_slots(offered_slots[:6])
+        if not isinstance(normalized_offered_slots, list) or normalized_offered_slots == []:
+            return None
+
+        appointment_context: dict[str, Any] = {
+            "source_message_id": self._clean_string(message.get("id")),
+            "tool_name": "appointment_availability",
+            "offered_slots": normalized_offered_slots,
+        }
+
+        if timezone is not None:
+            appointment_context["timezone"] = timezone
+        if timezone_source is not None:
+            appointment_context["timezone_source"] = timezone_source
+
+        trace_payload: dict[str, Any] | None = None
+        availability_trace = data_to_save.get("new_llm_orchestration_appointment_availability_trace")
+        if isinstance(availability_trace, dict):
+            trace_payload = availability_trace.get("response_payload") if isinstance(availability_trace.get("response_payload"), dict) else None
+            raw_summary = availability_trace.get("response_payload")
+            if isinstance(raw_summary, dict):
+                sanitized_raw_summary = self.context_helper.sanitize_jsonish(raw_summary, max_depth=5, max_items=8)
+                if sanitized_raw_summary not in (None, {}):
+                    appointment_context["raw_summary"] = sanitized_raw_summary
+
+        if trace_payload is None:
+            trace_payload = data_to_save
+
+        service_payload = self._appointment_context_service_payload(trace_payload)
+        if service_payload is None and normalized_offered_slots != []:
+            first_slot = normalized_offered_slots[0]
+            if isinstance(first_slot, dict):
+                service_payload = self._appointment_context_service_payload(first_slot)
+                if service_payload is None:
+                    service_payload = {}
+                    for key in ("service_id", "service_name", "service_ref", "duration_minutes"):
+                        value = first_slot.get(key)
+                        if value is not None:
+                            service_payload[key] = value
+                    if service_payload == {}:
+                        service_payload = None
+        if service_payload is not None:
+            appointment_context.update(service_payload)
+
+        selected_slot = data_to_save.get("new_llm_orchestration_selected_slot")
+        if isinstance(selected_slot, dict):
+            appointment_context["selected_slot"] = self.context_helper.sanitize_jsonish(selected_slot, max_depth=9, max_items=6)
+
+        return appointment_context
 
     def _selected_appointment_context_payload(
         self,
@@ -885,6 +965,46 @@ class LLMPromptBuilder:
         if service_name is not None:
             set_if_missing("service_name", service_name)
 
+        owner_payload = selected_slot.get("owner") if isinstance(selected_slot.get("owner"), dict) else {}
+        owner_id = self._clean_string(
+            selected_slot.get("owner_id")
+            or selected_slot.get("ownerId")
+            or owner_payload.get("id")
+            or owner_payload.get("owner_id")
+            or owner_payload.get("ownerId")
+        )
+        if owner_id is not None:
+            set_if_missing("owner_id", owner_id)
+
+        owner_name = self._clean_string(
+            selected_slot.get("owner_name")
+            or selected_slot.get("ownerName")
+            or owner_payload.get("name")
+            or owner_payload.get("display_name")
+        )
+        if owner_name is not None:
+            set_if_missing("owner_name", owner_name)
+
+        owner_email = self._clean_string(
+            selected_slot.get("owner_email")
+            or selected_slot.get("ownerEmail")
+            or owner_payload.get("email")
+            or owner_payload.get("owner_email")
+            or owner_payload.get("ownerEmail")
+        )
+        if owner_email is not None:
+            set_if_missing("owner_email", owner_email)
+
+        owner_ref = self._clean_string(
+            selected_slot.get("owner_ref")
+            or selected_slot.get("ownerRef")
+            or owner_payload.get("ref")
+            or owner_payload.get("owner_ref")
+            or owner_payload.get("ownerRef")
+        )
+        if owner_ref is not None:
+            set_if_missing("owner_ref", owner_ref)
+
         return enriched
 
     def _selected_slot_required_next_action(
@@ -1006,6 +1126,13 @@ class LLMPromptBuilder:
                 or owner_dict.get("name")
                 or owner_dict.get("display_name")
             )
+            owner_email = self._clean_string(
+                slot.get("owner_email")
+                or slot.get("ownerEmail")
+                or owner_dict.get("email")
+                or owner_dict.get("owner_email")
+                or owner_dict.get("ownerEmail")
+            )
             owner_ref = self._clean_string(
                 slot.get("owner_ref")
                 or slot.get("ownerRef")
@@ -1020,6 +1147,9 @@ class LLMPromptBuilder:
             if owner_name is not None:
                 normalized_slot["owner_name"] = owner_name
                 normalized_slot["ownerName"] = owner_name
+            if owner_email is not None:
+                normalized_slot["owner_email"] = owner_email
+                normalized_slot["ownerEmail"] = owner_email
             if owner_ref is not None:
                 normalized_slot["owner_ref"] = owner_ref
                 normalized_slot["ownerRef"] = owner_ref
@@ -1037,6 +1167,18 @@ class LLMPromptBuilder:
         normalized_message = unicodedata.normalize("NFKD", message).encode("ascii", "ignore").decode("ascii").lower().strip()
         if normalized_message == "":
             return None
+
+        first_reference = bool(re.search(r"\b(primero|primera|first)\b", normalized_message))
+        last_reference = bool(re.search(r"\b(ultimo|ultima|last)\b", normalized_message))
+        if first_reference or last_reference:
+            candidates = list(offered_slots)
+            if not candidates:
+                return None
+
+            if first_reference:
+                return candidates[0]
+
+            return candidates[-1]
 
         time_match = re.search(r"\b([01]?\d|2[0-3]):[0-5]\d\b", normalized_message)
         owner_match = None

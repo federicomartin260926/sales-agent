@@ -13,6 +13,10 @@ from app.services.agent_orchestration.execution.appointment_availability_executi
     AppointmentAvailabilityExecutionOutcome,
     AppointmentAvailabilityExecutionService,
 )
+from app.services.agent_orchestration.execution.slot_selection_execution_service import (
+    SlotSelectionExecutionOutcome,
+    SlotSelectionExecutionService,
+)
 from app.services.agent_orchestration.execution.catalog_execution_service import CatalogExecutionService
 from app.services.agent_orchestration.execution.catalog_execution_service import CatalogExecutionOutcome
 from app.services.agent_orchestration.shadow.shadow_planning_service import ShadowPlanningService
@@ -23,6 +27,14 @@ from app.services.llm_decision_service import LLMDecisionService
 from app.services.llm_prompt_builder import LLMPromptBuilder
 from app.services.routing_resolver import RoutingContext, RuntimeRoutingResolver
 from app.services.runtime import AgentRuntime
+
+
+async def assert_slice_not_called(*args, **kwargs):
+    raise AssertionError("non-applicable slices should not run")
+
+
+async def fail_if_decide_called(*args, **kwargs):
+    raise AssertionError("legacy decision engine should not be called when a new slice succeeds")
 
 
 @pytest.fixture(autouse=True)
@@ -1066,30 +1078,18 @@ async def test_runtime_keeps_cursor_for_slot_selection_followup(monkeypatch: pyt
             },
         },
     )
+    backend.settings = Settings()
+    backend.settings.new_llm_orchestration_enabled = True
+    backend.settings.new_llm_orchestration_catalog_execution_enabled = False
+    backend.settings.new_llm_orchestration_appointment_availability_enabled = False
+    backend.settings.new_llm_orchestration_slot_selection_enabled = True
 
     async def fake_fetch_tenant_context(*args, **kwargs):
         backend.calls.append(("fetch_tenant_context", args))
         return build_context()
 
-    seen: dict[str, object] = {}
-
-    async def fake_resolve_llm_response(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None, force_llm=False, previous_response_id=None):
-        seen["previous_response_id"] = previous_response_id
-        seen["context_messages"] = payload.conversation.context_messages
-        return AgentResponse(
-            reply="Perfecto, confirmo la cita.",
-            intent="agenda",
-            score=0.94,
-            action="answer_question",
-            needs_human=False,
-            data_to_save={},
-            provider="openai",
-            model="gpt-4.1-mini",
-            latency_ms=10,
-        )
-
     monkeypatch.setattr(backend, "fetch_tenant_context", fake_fetch_tenant_context)
-    monkeypatch.setattr(DecisionEngine, "resolve_llm_response", fake_resolve_llm_response)
+    monkeypatch.setattr(DecisionEngine, "decide", fail_if_decide_called)
     monkeypatch.setattr(ContactContextResolver, "resolve", resolve_contact_context_payload)
 
     runtime = AgentRuntime(
@@ -1105,9 +1105,10 @@ async def test_runtime_keeps_cursor_for_slot_selection_followup(monkeypatch: pyt
 
     response = await runtime.respond(payload)
 
-    assert response.intent == "agenda"
-    assert seen["previous_response_id"] == previous_response_id
-    assert seen["context_messages"][0]["metadata"]["mcp_tool_traces"][0]["output"]["slots"][0]["owner_id"] == "owner-uuid"
+    assert response.intent == "select_offered_slot"
+    assert response.reply == "Perfecto. Estoy revisando ese horario. Si necesito algún dato adicional para cerrarlo, te lo pediré ahora."
+    assert response.data_to_save["new_llm_orchestration_selected_slot"]["owner_id"] == "owner-uuid"
+    assert response.data_to_save["new_llm_orchestration_offered_slots"][0]["owner_id"] == "owner-uuid"
 
 
 @pytest.mark.asyncio
@@ -1232,6 +1233,11 @@ async def test_runtime_preloads_contact_context_for_prefiero_slot_selection_foll
             },
         },
     )
+    backend.settings = Settings()
+    backend.settings.new_llm_orchestration_enabled = False
+    backend.settings.new_llm_orchestration_catalog_execution_enabled = False
+    backend.settings.new_llm_orchestration_appointment_availability_enabled = False
+    backend.settings.new_llm_orchestration_slot_selection_enabled = False
 
     resolver_calls: dict[str, object] = {"count": 0}
 
@@ -2589,6 +2595,8 @@ class RecordingCatalogLLMClient:
         previous_response_id: str | None = None,
         tool_choice=None,
         parallel_tool_calls=None,
+        single_tool_call: bool = False,
+        max_tool_rounds: int | None = None,
     ):
         self.calls.append(
             {
@@ -2599,6 +2607,8 @@ class RecordingCatalogLLMClient:
                 "previous_response_id": previous_response_id,
                 "tool_choice": tool_choice,
                 "parallel_tool_calls": parallel_tool_calls,
+                "single_tool_call": single_tool_call,
+                "max_tool_rounds": max_tool_rounds,
             }
         )
         return type(
@@ -2659,6 +2669,8 @@ class RecordingAppointmentAvailabilityLLMClient:
         previous_response_id: str | None = None,
         tool_choice=None,
         parallel_tool_calls=None,
+        single_tool_call: bool = False,
+        max_tool_rounds: int | None = None,
     ):
         response_index = len(self.calls)
         response = self.responses[response_index] if response_index < len(self.responses) else self.responses[-1]
@@ -2671,6 +2683,8 @@ class RecordingAppointmentAvailabilityLLMClient:
                 "previous_response_id": previous_response_id,
                 "tool_choice": tool_choice,
                 "parallel_tool_calls": parallel_tool_calls,
+                "single_tool_call": single_tool_call,
+                "max_tool_rounds": max_tool_rounds,
             }
         )
         return type(
@@ -2851,6 +2865,141 @@ def build_appointment_shadow_trace() -> OrchestrationTrace:
     return trace
 
 
+def build_slot_selection_shadow_trace() -> OrchestrationTrace:
+    trace = OrchestrationTrace(
+        tenant_id="tenant-1",
+        conversation_id="conversation-1",
+        external_conversation_id="conversation-1",
+        inbound_message="Prefiero el de las 16:30",
+    )
+    trace.add_step(
+        step_type="llm_intent_planning",
+        input_context_keys=["current_message", "recent_messages"],
+        enabled_tools=[],
+        output={
+            "schema_version": "1.0",
+            "domain": "appointment",
+            "intent": "select_offered_slot",
+            "action_candidate": "prepare_booking_confirmation",
+            "confidence": 0.97,
+            "entities": {
+                "service_name": "láser cuerpo entero",
+                "date": "tomorrow",
+                "time": "16:30",
+            },
+            "context_request": {
+                "include_conversation_history": True,
+                "conversation_history_level": "recent",
+                "include_customer_context": "basic",
+                "include_catalog_context": False,
+                "include_inventory_context": False,
+                "include_appointment_context": True,
+                "include_existing_appointments": False,
+                "include_offered_slots": True,
+                "include_service_catalog": False,
+            },
+            "tool_request": {
+                "lookup_tools": [],
+                "write_tools": [],
+                "blocked_tools": [],
+            },
+            "risk_flags": {
+                "ambiguous_reference": False,
+                "missing_required_data": False,
+                "low_confidence": False,
+                "needs_human_review": False,
+                "explicit_booking_intent": True,
+                "explicit_reschedule_intent": False,
+                "explicit_cancel_intent": False,
+            },
+            "clarification": {
+                "needed": False,
+                "question": None,
+                "missing_fields": [],
+            },
+            "reason": "slot selection follow-up",
+        },
+    )
+    trace.add_step(
+        step_type="sa_context_policy",
+        input_context_keys=["planning_result", "context_request", "tool_request"],
+        enabled_tools=["appointment_availability"],
+        output={
+            "context_plan": {
+                "include_conversation_history": True,
+                "conversation_history_level": "recent",
+                "include_customer_context": "basic",
+                "include_catalog_context": False,
+                "include_inventory_context": False,
+                "include_appointment_context": True,
+                "include_existing_appointments": False,
+                "include_offered_slots": True,
+                "include_service_catalog": False,
+            },
+            "tool_policy": {
+                "lookup_tools_enabled": [],
+                "write_tools_requested": [],
+                "write_tools_enabled": [],
+                "write_tools_blocked": [],
+                "reason": "lookup_enabled_write_tools_blocked_by_default",
+            },
+        },
+    )
+    return trace
+
+
+def build_offered_slots_context_message() -> dict[str, object]:
+    offered_slots = [
+        {
+            "start": "2026-06-16T16:00:00+01:00",
+            "end": "2026-06-16T17:30:00+01:00",
+            "timezone": "Atlantic/Canary",
+            "service_id": "service-uuid",
+            "service_name": "Láser cuerpo entero",
+            "owner_id": "owner-claudia-uuid",
+            "owner_name": "Claudia Estética",
+            "slot_label": "16:00",
+            "display_time": "16:00",
+        },
+        {
+            "start": "2026-06-16T16:30:00+01:00",
+            "end": "2026-06-16T18:00:00+01:00",
+            "timezone": "Atlantic/Canary",
+            "service_id": "service-uuid",
+            "service_name": "Láser cuerpo entero",
+            "owner_id": "owner-maria-uuid",
+            "owner_name": "María Gutiérrez",
+            "slot_label": "16:30",
+            "display_time": "16:30",
+        },
+        {
+            "start": "2026-06-16T17:00:00+01:00",
+            "end": "2026-06-16T18:30:00+01:00",
+            "timezone": "Atlantic/Canary",
+            "service_id": "service-uuid",
+            "service_name": "Láser cuerpo entero",
+            "owner_id": "owner-claudia-uuid",
+            "owner_name": "Claudia Estética",
+            "slot_label": "17:00",
+            "display_time": "17:00",
+        },
+    ]
+
+    return {
+        "id": "message-availability-1",
+        "direction": "outbound",
+        "role": "assistant",
+        "message_type": "text",
+        "body": "Para el lunes 16 de junio por la tarde hay disponibilidad a las 16:00, 16:30 y 17:00.",
+        "metadata": {
+            "data_to_save": {
+                "new_llm_orchestration_offered_slots": offered_slots,
+                "new_llm_orchestration_offered_slots_count": len(offered_slots),
+            }
+        },
+    }
+
+
 @pytest.mark.asyncio
 async def test_catalog_execution_service_filters_allowed_tools_and_uses_services_search_only():
     fake_llm = RecordingCatalogLLMClient(
@@ -2904,6 +3053,10 @@ async def test_catalog_execution_service_filters_allowed_tools_and_uses_services
     assert fake_llm.calls[0]["provider"] == "openai"
     assert fake_llm.calls[0]["tool_choice"] == "required"
     assert fake_llm.calls[0]["parallel_tool_calls"] is False
+    assert fake_llm.calls[0]["single_tool_call"] is True
+    assert fake_llm.calls[0]["previous_response_id"] is None
+    assert fake_llm.calls[0]["max_tool_rounds"] is None
+    assert outcome.bounded_single_tool_call is True
 
 
 @pytest.mark.asyncio
@@ -2976,9 +3129,31 @@ async def test_appointment_availability_execution_service_filters_tools_and_uses
                         "output": {
                             "available": True,
                             "slots": [
-                                {"start": "2026-06-16T16:00:00+01:00", "end": "2026-06-16T17:30:00+01:00", "timezone": "Atlantic/Canary"},
-                                {"start": "2026-06-16T16:30:00+01:00", "end": "2026-06-16T18:00:00+01:00", "timezone": "Atlantic/Canary"},
-                                {"start": "2026-06-16T17:00:00+01:00", "end": "2026-06-16T18:30:00+01:00", "timezone": "Atlantic/Canary"},
+                                {
+                                    "start": "2026-06-16T16:00:00+01:00",
+                                    "end": "2026-06-16T17:30:00+01:00",
+                                    "timezone": "Atlantic/Canary",
+                                    "owner": {
+                                        "id": "owner-claudia-uuid",
+                                        "name": "Claudia Estética",
+                                        "email": "claudia@example.com",
+                                        "ref": "claudia-ref",
+                                    },
+                                },
+                                {
+                                    "start": "2026-06-16T16:30:00+01:00",
+                                    "end": "2026-06-16T18:00:00+01:00",
+                                    "timezone": "Atlantic/Canary",
+                                    "owner_id": "owner-maria-uuid",
+                                    "owner_name": "María Gutiérrez",
+                                },
+                                {
+                                    "start": "2026-06-16T17:00:00+01:00",
+                                    "end": "2026-06-16T18:30:00+01:00",
+                                    "timezone": "Atlantic/Canary",
+                                    "owner_id": "owner-claudia-uuid",
+                                    "owner_name": "Claudia Estética",
+                                },
                             ],
                         },
                     }
@@ -3016,14 +3191,25 @@ async def test_appointment_availability_execution_service_filters_tools_and_uses
     assert outcome.mcp_allowed_tools == ["services_search", "appointment_availability"]
     assert [trace["tool_name"] for trace in outcome.mcp_tool_traces] == ["services_search", "appointment_availability"]
     assert outcome.response_payload["reason"] == "availability found"
+    assert len(outcome.offered_slots) == 3
+    assert outcome.offered_slots[0]["owner_name"] == "Claudia Estética"
+    assert outcome.offered_slots[0]["owner_email"] == "claudia@example.com"
+    assert outcome.offered_slots[0]["owner_ref"] == "claudia-ref"
     assert fake_llm.resolve_configuration_calls == 1
     assert len(fake_llm.calls) == 2
     assert fake_llm.calls[0]["allowed_tools"] == ["services_search"]
     assert fake_llm.calls[1]["allowed_tools"] == ["appointment_availability"]
+    assert fake_llm.calls[0]["previous_response_id"] is None
+    assert fake_llm.calls[1]["previous_response_id"] is None
     assert fake_llm.calls[0]["tool_choice"] == "required"
     assert fake_llm.calls[1]["tool_choice"] == "required"
     assert fake_llm.calls[0]["parallel_tool_calls"] is False
     assert fake_llm.calls[1]["parallel_tool_calls"] is False
+    assert fake_llm.calls[0]["single_tool_call"] is True
+    assert fake_llm.calls[1]["single_tool_call"] is True
+    assert fake_llm.calls[0]["max_tool_rounds"] is None
+    assert fake_llm.calls[1]["max_tool_rounds"] is None
+    assert outcome.bounded_single_tool_call is True
 
 
 @pytest.mark.asyncio
@@ -3222,6 +3408,177 @@ async def test_appointment_availability_execution_service_declines_when_clarific
 
 
 @pytest.mark.asyncio
+async def test_slot_selection_execution_service_selects_exact_time_from_structured_entities():
+    service = SlotSelectionExecutionService(settings=Settings())  # type: ignore[arg-type]
+    trace = build_slot_selection_shadow_trace()
+    payload = AgentRequest(
+        tenant_id="tenant-1",
+        message="Prefiero el de las 16:30",
+        contact=Contact(phone="+34999999999", name="Federico Martín"),
+        conversation={
+            "external_id": "conversation-1",
+            "context_messages": [build_offered_slots_context_message()],
+        },
+    )
+
+    trace.steps[0].output["entities"]["time"] = "16:30"
+    trace.steps[0].output["entities"]["slot_reference"] = "exact_time"
+    trace.steps[0].output["entities"]["selected_slot_index"] = None
+
+    outcome = await service.execute(
+        payload,
+        RoutingContext(tenant_id="tenant-1", tenant_slug="negocio-demo"),
+        build_context(),
+        None,
+        trace,
+        McpRemoteConfig(enabled=True, server_label="tenant_main_mcp", server_url="https://mcp.example.test", allowed_tools=["appointment_availability"], timeout_seconds=15),
+    )
+
+    assert isinstance(outcome, SlotSelectionExecutionOutcome)
+    assert outcome.ok is True
+    assert outcome.selected_slot is not None
+    assert outcome.selected_slot["start"] == "2026-06-16T16:30:00+01:00"
+    assert outcome.selected_slot["owner_name"] == "María Gutiérrez"
+    assert outcome.selected_slot_match_count == 1
+    assert outcome.selected_slot_ambiguous is False
+    assert outcome.reply == "Perfecto, tengo seleccionado el horario de 16:30 con María Gutiérrez para Láser cuerpo entero. ¿Confirmo la reserva?"
+
+
+@pytest.mark.asyncio
+async def test_slot_selection_execution_service_selects_first_slot_by_index():
+    service = SlotSelectionExecutionService(settings=Settings())  # type: ignore[arg-type]
+    trace = build_slot_selection_shadow_trace()
+    payload = AgentRequest(
+        tenant_id="tenant-1",
+        message="el primero",
+        contact=Contact(phone="+34999999999", name="Federico Martín"),
+        conversation={
+            "external_id": "conversation-1",
+            "context_messages": [build_offered_slots_context_message()],
+        },
+    )
+
+    trace.steps[0].output["entities"]["time"] = None
+    trace.steps[0].output["entities"]["slot_reference"] = None
+    trace.steps[0].output["entities"]["selected_slot_index"] = 0
+
+    outcome = await service.execute(
+        payload,
+        RoutingContext(tenant_id="tenant-1", tenant_slug="negocio-demo"),
+        build_context(),
+        None,
+        trace,
+        McpRemoteConfig(enabled=True, server_label="tenant_main_mcp", server_url="https://mcp.example.test", allowed_tools=["appointment_availability"], timeout_seconds=15),
+    )
+
+    assert outcome.ok is True
+    assert outcome.selected_slot is not None
+    assert outcome.selected_slot["start"] == "2026-06-16T16:00:00+01:00"
+    assert outcome.selected_slot["owner_name"] == "Claudia Estética"
+    assert outcome.selection_mode == "selected_slot_index"
+
+
+@pytest.mark.asyncio
+async def test_slot_selection_execution_service_selects_last_slot_by_reference():
+    service = SlotSelectionExecutionService(settings=Settings())  # type: ignore[arg-type]
+    trace = build_slot_selection_shadow_trace()
+    payload = AgentRequest(
+        tenant_id="tenant-1",
+        message="el último",
+        contact=Contact(phone="+34999999999", name="Federico Martín"),
+        conversation={
+            "external_id": "conversation-1",
+            "context_messages": [build_offered_slots_context_message()],
+        },
+    )
+
+    trace.steps[0].output["entities"]["time"] = None
+    trace.steps[0].output["entities"]["selected_slot_index"] = None
+    trace.steps[0].output["entities"]["slot_reference"] = "last"
+
+    outcome = await service.execute(
+        payload,
+        RoutingContext(tenant_id="tenant-1", tenant_slug="negocio-demo"),
+        build_context(),
+        None,
+        trace,
+        McpRemoteConfig(enabled=True, server_label="tenant_main_mcp", server_url="https://mcp.example.test", allowed_tools=["appointment_availability"], timeout_seconds=15),
+    )
+
+    assert outcome.ok is True
+    assert outcome.selected_slot is not None
+    assert outcome.selected_slot["start"] == "2026-06-16T17:00:00+01:00"
+    assert outcome.selected_slot["owner_name"] == "Claudia Estética"
+    assert outcome.selection_mode == "slot_reference_last"
+
+
+@pytest.mark.asyncio
+async def test_slot_selection_execution_service_does_not_parse_free_text_without_structured_entities():
+    service = SlotSelectionExecutionService(settings=Settings())  # type: ignore[arg-type]
+    trace = build_slot_selection_shadow_trace()
+    payload = AgentRequest(
+        tenant_id="tenant-1",
+        message="Prefiero el de las 16:30",
+        contact=Contact(phone="+34999999999", name="Federico Martín"),
+        conversation={
+            "external_id": "conversation-1",
+            "context_messages": [build_offered_slots_context_message()],
+        },
+    )
+
+    trace.steps[0].output["entities"]["time"] = None
+    trace.steps[0].output["entities"]["selected_slot_index"] = None
+    trace.steps[0].output["entities"]["slot_reference"] = None
+
+    outcome = await service.execute(
+        payload,
+        RoutingContext(tenant_id="tenant-1", tenant_slug="negocio-demo"),
+        build_context(),
+        None,
+        trace,
+        McpRemoteConfig(enabled=True, server_label="tenant_main_mcp", server_url="https://mcp.example.test", allowed_tools=["appointment_availability"], timeout_seconds=15),
+    )
+
+    assert outcome.ok is True
+    assert outcome.selected_slot is None
+    assert outcome.fallback_reason == "selection_not_structured"
+    assert "16:30" not in outcome.reply
+    assert "confirmo" not in outcome.reply.lower()
+
+
+@pytest.mark.asyncio
+async def test_slot_selection_execution_service_falls_back_when_no_offered_slots_exist():
+    service = SlotSelectionExecutionService(settings=Settings())  # type: ignore[arg-type]
+    trace = build_slot_selection_shadow_trace()
+    payload = AgentRequest(
+        tenant_id="tenant-1",
+        message="Prefiero el de las 16:30",
+        contact=Contact(phone="+34999999999", name="Federico Martín"),
+        conversation={
+            "external_id": "conversation-1",
+            "context_messages": [],
+        },
+    )
+
+    trace.steps[0].output["entities"]["time"] = "16:30"
+    trace.steps[0].output["entities"]["slot_reference"] = "exact_time"
+    trace.steps[0].output["entities"]["selected_slot_index"] = None
+
+    outcome = await service.execute(
+        payload,
+        RoutingContext(tenant_id="tenant-1", tenant_slug="negocio-demo"),
+        build_context(),
+        None,
+        trace,
+        McpRemoteConfig(enabled=True, server_label="tenant_main_mcp", server_url="https://mcp.example.test", allowed_tools=["appointment_availability"], timeout_seconds=15),
+    )
+
+    assert outcome.ok is True
+    assert outcome.fallback_reason == "offered_slots_missing"
+    assert "buscar disponibilidad" in outcome.reply.lower()
+
+
+@pytest.mark.asyncio
 async def test_runtime_applies_catalog_execution_slice_when_shadow_planning_is_catalog(monkeypatch: pytest.MonkeyPatch):
     backend = RecordingBackendClient(
         ref_context=BackendRoutingEntryPointUtmContext.model_validate(
@@ -3264,19 +3621,8 @@ async def test_runtime_applies_catalog_execution_slice_when_shadow_planning_is_c
     backend.settings = Settings()
     backend.settings.new_llm_orchestration_enabled = True
     backend.settings.new_llm_orchestration_catalog_execution_enabled = True
-
-    async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None, previous_response_id=None):
-        return AgentResponse(
-            reply="Respuesta previa del flujo actual.",
-            intent="open_question",
-            score=0.88,
-            action="answer_question",
-            needs_human=False,
-            data_to_save={"topic": "catalog"},
-            provider="openai",
-            model="gpt-4.1-mini",
-            latency_ms=30,
-        )
+    backend.settings.new_llm_orchestration_appointment_availability_enabled = False
+    backend.settings.new_llm_orchestration_slot_selection_enabled = False
 
     async def fake_shadow_execute(self, payload, routing, backend_context, contact_context):
         return build_catalog_shadow_trace()
@@ -3301,6 +3647,7 @@ async def test_runtime_applies_catalog_execution_slice_when_shadow_planning_is_c
                 "lookup_tools_enabled": ["services_search"],
                 "write_tools_enabled": [],
             },
+            bounded_single_tool_call=True,
             mcp_allowed_tools=["services_search"],
             mcp_tool_traces=[
                 {
@@ -3314,9 +3661,14 @@ async def test_runtime_applies_catalog_execution_slice_when_shadow_planning_is_c
             trace_id="trace-1",
         )
 
-    monkeypatch.setattr(DecisionEngine, "decide", fake_decide)
+    async def fail_if_called(*args, **kwargs):
+        raise AssertionError("non-applicable slices should not run for catalog planning")
+
+    monkeypatch.setattr(DecisionEngine, "decide", fail_if_decide_called)
     monkeypatch.setattr(ShadowPlanningService, "execute", fake_shadow_execute)
     monkeypatch.setattr(CatalogExecutionService, "execute", fake_catalog_execute)
+    monkeypatch.setattr(AppointmentAvailabilityExecutionService, "execute", assert_slice_not_called)
+    monkeypatch.setattr(SlotSelectionExecutionService, "execute", assert_slice_not_called)
 
     runtime = AgentRuntime(backend, RuntimeRoutingResolver(backend), DecisionEngine(backend))  # type: ignore[arg-type]
     payload = AgentRequest(
@@ -3329,13 +3681,100 @@ async def test_runtime_applies_catalog_execution_slice_when_shadow_planning_is_c
     response = await runtime.respond(payload)
 
     assert response.reply == "Tengo láser cuerpo entero disponible. ¿Quieres que te dé más detalles?"
-    assert response.intent == "open_question"
+    assert response.intent == "ask_product_or_service_info"
     assert response.data_to_save["new_llm_orchestration_shadow_enabled"] is True
     assert response.data_to_save["new_llm_orchestration_catalog_execution_attempted"] is True
     assert response.data_to_save["new_llm_orchestration_catalog_execution_ok"] is True
     assert response.data_to_save["new_llm_orchestration_catalog_execution_used"] is True
     assert response.data_to_save["new_llm_orchestration_catalog_execution_trace"]["ok"] is True
+    assert response.data_to_save["new_llm_orchestration_catalog_execution_trace"]["bounded_single_tool_call"] is True
     assert response.data_to_save["new_llm_orchestration_trace"]["steps"][0]["step_type"] == "llm_intent_planning"
+
+
+@pytest.mark.asyncio
+async def test_runtime_falls_back_to_legacy_when_catalog_slice_fails_technically(monkeypatch: pytest.MonkeyPatch):
+    backend = RecordingBackendClient(
+        ref_context=BackendRoutingEntryPointUtmContext.model_validate(
+            {
+                "entry_point_utm_id": "utm-1",
+                "ref": "abc123",
+                "entry_point_id": "entrypoint-1",
+                "entry_point_code": "crm-demo",
+                "tenant_id": "tenant-1",
+                "tenant_slug": "negocio-demo",
+                "product_id": "product-1",
+                "product_name": "CRM Automation",
+                "playbook_id": "playbook-1",
+                "crm_branch_ref": "branch-1",
+                "utm_source": "google",
+                "utm_medium": "cpc",
+                "utm_campaign": "crm_pymes",
+                "status": "matched",
+            }
+        ),
+        tenant_context=build_context(),
+        mcp_config=McpRemoteConfig(
+            enabled=True,
+            server_label="tenant_main_mcp",
+            server_url="https://mcp.example.test",
+            allowed_tools=["services_search", "appointment_availability"],
+            timeout_seconds=15,
+        ),
+        conversation_result={
+            "created": True,
+            "conversation": {
+                "id": "conversation-1",
+                "status": "active",
+                "summary": None,
+            },
+        },
+    )
+    backend.settings = Settings()
+    backend.settings.new_llm_orchestration_enabled = True
+    backend.settings.new_llm_orchestration_catalog_execution_enabled = True
+
+    async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None, previous_response_id=None):
+        return AgentResponse(
+            reply="Respuesta legacy tras fallo técnico del slice.",
+            intent="open_question",
+            score=0.88,
+            action="answer_question",
+            needs_human=False,
+            data_to_save={"topic": "catalog"},
+            provider="openai",
+            model="gpt-4.1-mini",
+            latency_ms=30,
+        )
+
+    async def fake_shadow_execute(self, payload, routing, backend_context, contact_context):
+        return build_catalog_shadow_trace()
+
+    async def fail_catalog_execute(*args, **kwargs):
+        raise RuntimeError("catalog execution failed")
+
+    monkeypatch.setattr(DecisionEngine, "decide", fake_decide)
+    monkeypatch.setattr(ShadowPlanningService, "execute", fake_shadow_execute)
+    monkeypatch.setattr(CatalogExecutionService, "execute", fail_catalog_execute)
+    monkeypatch.setattr(AppointmentAvailabilityExecutionService, "execute", assert_slice_not_called)
+    monkeypatch.setattr(SlotSelectionExecutionService, "execute", assert_slice_not_called)
+
+    runtime = AgentRuntime(backend, RuntimeRoutingResolver(backend), DecisionEngine(backend))  # type: ignore[arg-type]
+    payload = AgentRequest(
+        tenant_id="tenant-ignored",
+        entrypoint_ref="abc123",
+        message="Quiero información sobre láser cuerpo entero",
+        contact=Contact(phone="+34999999999"),
+    )
+
+    response = await runtime.respond(payload)
+
+    assert response.reply == "Respuesta legacy tras fallo técnico del slice."
+    assert response.intent == "open_question"
+    assert response.data_to_save["new_llm_orchestration_shadow_enabled"] is True
+    assert response.data_to_save["new_llm_orchestration_catalog_applies"] is True
+    assert response.data_to_save["new_llm_orchestration_catalog_execution_attempted"] is True
+    assert response.data_to_save["new_llm_orchestration_catalog_execution_error"] == "RuntimeError: catalog execution failed"
+    assert response.data_to_save["new_llm_orchestration_catalog_execution_fallback_reason"] == "catalog_execution_technical_error"
 
 
 @pytest.mark.asyncio
@@ -3404,7 +3843,9 @@ async def test_runtime_does_not_apply_appointment_availability_slice_when_flag_i
 
     monkeypatch.setattr(DecisionEngine, "decide", fake_decide)
     monkeypatch.setattr(ShadowPlanningService, "execute", fake_shadow_execute)
-    monkeypatch.setattr(AppointmentAvailabilityExecutionService, "execute", fail_if_called)
+    monkeypatch.setattr(AppointmentAvailabilityExecutionService, "execute", assert_slice_not_called)
+    monkeypatch.setattr(CatalogExecutionService, "execute", assert_slice_not_called)
+    monkeypatch.setattr(SlotSelectionExecutionService, "execute", assert_slice_not_called)
     monkeypatch.setattr(
         AgentRuntime,
         "_resolve_agenda_effective_timezone_details",
@@ -3469,6 +3910,7 @@ async def test_runtime_applies_appointment_availability_slice_when_shadow_planni
     backend.settings.new_llm_orchestration_enabled = True
     backend.settings.new_llm_orchestration_catalog_execution_enabled = False
     backend.settings.new_llm_orchestration_appointment_availability_enabled = True
+    backend.settings.new_llm_orchestration_slot_selection_enabled = False
 
     async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None, previous_response_id=None):
         return AgentResponse(
@@ -3506,7 +3948,30 @@ async def test_runtime_applies_appointment_availability_slice_when_shadow_planni
                 "lookup_tools_enabled": ["services_search", "appointment_availability"],
                 "write_tools_enabled": [],
             },
+            bounded_single_tool_call=True,
             mcp_allowed_tools=["services_search", "appointment_availability"],
+            offered_slots=[
+                {
+                    "start": "2026-06-16T16:00:00+01:00",
+                    "end": "2026-06-16T17:30:00+01:00",
+                    "timezone": "Atlantic/Canary",
+                    "service_id": "service-uuid",
+                    "service_name": "Láser cuerpo entero",
+                    "owner_id": "owner-claudia-uuid",
+                    "owner_name": "Claudia Estética",
+                    "owner_email": "claudia@example.com",
+                    "owner_ref": "claudia-ref",
+                },
+                {
+                    "start": "2026-06-16T16:30:00+01:00",
+                    "end": "2026-06-16T18:00:00+01:00",
+                    "timezone": "Atlantic/Canary",
+                    "service_id": "service-uuid",
+                    "service_name": "Láser cuerpo entero",
+                    "owner_id": "owner-maria-uuid",
+                    "owner_name": "María Gutiérrez",
+                },
+            ],
             mcp_tool_traces=[
                 {"tool_name": "services_search", "status": "completed"},
                 {"tool_name": "appointment_availability", "status": "completed"},
@@ -3521,6 +3986,8 @@ async def test_runtime_applies_appointment_availability_slice_when_shadow_planni
     monkeypatch.setattr(DecisionEngine, "decide", fake_decide)
     monkeypatch.setattr(ShadowPlanningService, "execute", fake_shadow_execute)
     monkeypatch.setattr(AppointmentAvailabilityExecutionService, "execute", fake_appointment_execute)
+    monkeypatch.setattr(CatalogExecutionService, "execute", assert_slice_not_called)
+    monkeypatch.setattr(SlotSelectionExecutionService, "execute", assert_slice_not_called)
     monkeypatch.setattr(
         AgentRuntime,
         "_resolve_agenda_effective_timezone_details",
@@ -3546,6 +4013,12 @@ async def test_runtime_applies_appointment_availability_slice_when_shadow_planni
         "services_search",
         "appointment_availability",
     ]
+    assert response.data_to_save["new_llm_orchestration_appointment_availability_trace"]["bounded_single_tool_call"] is True
+    assert response.data_to_save["new_llm_orchestration_offered_slots_count"] == 2
+    assert response.data_to_save["new_llm_orchestration_offered_slots"][0]["start"] == "2026-06-16T16:00:00+01:00"
+    assert response.data_to_save["new_llm_orchestration_offered_slots"][0]["owner_name"] == "Claudia Estética"
+    assert response.data_to_save["new_llm_orchestration_offered_slots"][0]["owner_email"] == "claudia@example.com"
+    assert response.data_to_save["new_llm_orchestration_offered_slots"][0]["owner_ref"] == "claudia-ref"
 
 
 @pytest.mark.asyncio
@@ -3590,19 +4063,7 @@ async def test_runtime_does_not_postprocess_appointment_confirmation_after_avail
     backend.settings.new_llm_orchestration_enabled = True
     backend.settings.new_llm_orchestration_catalog_execution_enabled = False
     backend.settings.new_llm_orchestration_appointment_availability_enabled = True
-
-    async def fake_decide(self, payload, routing=None, backend_context=None, contact_context=None, mcp_config=None, previous_response_id=None):
-        return AgentResponse(
-            reply="Perfecto. Estoy revisando ese horario. Si necesito algún dato adicional para cerrarlo, te lo pediré ahora.",
-            intent="open_question",
-            score=0.88,
-            action="answer_question",
-            needs_human=False,
-            data_to_save={"topic": "agenda"},
-            provider="openai",
-            model="gpt-4.1-mini",
-            latency_ms=30,
-        )
+    backend.settings.new_llm_orchestration_slot_selection_enabled = False
 
     async def fake_shadow_execute(self, payload, routing, backend_context, contact_context):
         return build_appointment_shadow_trace()
@@ -3627,6 +4088,7 @@ async def test_runtime_does_not_postprocess_appointment_confirmation_after_avail
                 "lookup_tools_enabled": ["services_search", "appointment_availability"],
                 "write_tools_enabled": [],
             },
+            bounded_single_tool_call=True,
             mcp_allowed_tools=["services_search", "appointment_availability"],
             mcp_tool_traces=[
                 {"tool_name": "services_search", "status": "completed"},
@@ -3639,7 +4101,7 @@ async def test_runtime_does_not_postprocess_appointment_confirmation_after_avail
             trace_id="trace-appointment",
         )
 
-    monkeypatch.setattr(DecisionEngine, "decide", fake_decide)
+    monkeypatch.setattr(DecisionEngine, "decide", fail_if_decide_called)
     monkeypatch.setattr(ShadowPlanningService, "execute", fake_shadow_execute)
     monkeypatch.setattr(AppointmentAvailabilityExecutionService, "execute", fake_appointment_execute)
     monkeypatch.setattr(
@@ -3659,14 +4121,103 @@ async def test_runtime_does_not_postprocess_appointment_confirmation_after_avail
     response = await runtime.respond(payload)
 
     assert response.reply == "Para láser cuerpo entero mañana por la tarde tengo 16:00, 16:30 y 17:00. ¿Cuál prefieres?"
-    assert response.intent == "open_question"
+    assert response.intent == "request_availability"
     assert response.action == "answer_question"
     assert response.data_to_save["new_llm_orchestration_appointment_availability_attempted"] is True
     assert response.data_to_save["new_llm_orchestration_appointment_availability_ok"] is True
     assert response.data_to_save["new_llm_orchestration_appointment_availability_used"] is True
     assert response.data_to_save["new_llm_orchestration_appointment_availability_trace"]["ok"] is True
+    assert response.data_to_save["new_llm_orchestration_appointment_availability_trace"]["bounded_single_tool_call"] is True
     assert "appointment_confirm_post_processed" not in response.data_to_save
     assert "confirmada" not in response.reply.lower()
+
+
+@pytest.mark.asyncio
+async def test_runtime_applies_slot_selection_slice_from_structured_offered_slots(monkeypatch: pytest.MonkeyPatch):
+    backend = RecordingBackendClient(
+        ref_context=BackendRoutingEntryPointUtmContext.model_validate(
+            {
+                "entry_point_utm_id": "utm-1",
+                "ref": "abc123",
+                "entry_point_id": "entrypoint-1",
+                "entry_point_code": "crm-demo",
+                "tenant_id": "tenant-1",
+                "tenant_slug": "negocio-demo",
+                "product_id": "product-1",
+                "product_name": "CRM Automation",
+                "playbook_id": "playbook-1",
+                "crm_branch_ref": "branch-1",
+                "utm_source": "google",
+                "utm_medium": "cpc",
+                "utm_campaign": "crm_pymes",
+                "status": "matched",
+            }
+        ),
+        tenant_context=build_context(),
+        mcp_config=McpRemoteConfig(
+            enabled=True,
+            server_label="tenant_main_mcp",
+            server_url="https://mcp.example.test",
+            allowed_tools=["services_search", "appointment_availability", "appointment_confirm"],
+            timeout_seconds=15,
+        ),
+        conversation_result={
+            "created": True,
+            "conversation": {
+                "id": "conversation-1",
+                "status": "active",
+                "summary": None,
+            },
+        },
+    )
+    backend.settings = Settings()
+    backend.settings.new_llm_orchestration_enabled = False
+    backend.settings.new_llm_orchestration_catalog_execution_enabled = False
+    backend.settings.new_llm_orchestration_appointment_availability_enabled = False
+    backend.settings.new_llm_orchestration_slot_selection_enabled = False
+    backend.settings = Settings()
+    backend.settings.new_llm_orchestration_enabled = True
+    backend.settings.new_llm_orchestration_catalog_execution_enabled = False
+    backend.settings.new_llm_orchestration_appointment_availability_enabled = False
+    backend.settings.new_llm_orchestration_slot_selection_enabled = True
+
+    async def fake_shadow_execute(self, payload, routing, backend_context, contact_context):
+        return build_slot_selection_shadow_trace()
+
+    monkeypatch.setattr(DecisionEngine, "decide", fail_if_decide_called)
+    monkeypatch.setattr(ShadowPlanningService, "execute", fake_shadow_execute)
+    monkeypatch.setattr(CatalogExecutionService, "execute", assert_slice_not_called)
+    monkeypatch.setattr(AppointmentAvailabilityExecutionService, "execute", assert_slice_not_called)
+    monkeypatch.setattr(
+        AgentRuntime,
+        "_resolve_agenda_effective_timezone_details",
+        lambda self, backend_context, contact_context=None: ("Atlantic/Canary", "crm_tenant"),
+    )
+
+    runtime = AgentRuntime(backend, RuntimeRoutingResolver(backend), DecisionEngine(backend))  # type: ignore[arg-type]
+    payload = AgentRequest(
+        tenant_id="tenant-ignored",
+        entrypoint_ref="abc123",
+        message="Prefiero el de las 16:30",
+        contact=Contact(phone="+34999999999", name="Federico Martín"),
+        conversation={
+            "external_id": "conversation-1",
+            "context_messages": [build_offered_slots_context_message()],
+        },
+    )
+
+    response = await runtime.respond(payload)
+
+    assert response.reply == "Perfecto. Estoy revisando ese horario. Si necesito algún dato adicional para cerrarlo, te lo pediré ahora."
+    assert response.intent == "select_offered_slot"
+    assert response.action == "answer_question"
+    assert response.data_to_save["new_llm_orchestration_slot_selection_attempted"] is True
+    assert response.data_to_save["new_llm_orchestration_slot_selection_ok"] is True
+    assert response.data_to_save["new_llm_orchestration_slot_selection_used"] is True
+    assert response.data_to_save["new_llm_orchestration_slot_selection_trace"]["ok"] is True
+    assert response.data_to_save["new_llm_orchestration_selected_slot"]["start"] == "2026-06-16T16:30:00+01:00"
+    assert response.data_to_save["new_llm_orchestration_offered_slots_count"] == 3
+    assert "appointment_confirm" not in json.dumps(response.data_to_save.get("new_llm_orchestration_slot_selection_trace", {}))
 
 
 @pytest.mark.asyncio

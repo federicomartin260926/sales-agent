@@ -83,3 +83,11 @@ def test_settings_reads_appointment_availability_feature_flag_from_env(monkeypat
     settings = Settings()
 
     assert settings.new_llm_orchestration_appointment_availability_enabled is True
+
+
+def test_settings_reads_slot_selection_feature_flag_from_env(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("NEW_LLM_ORCHESTRATION_SLOT_SELECTION_ENABLED", "true")
+
+    settings = Settings()
+
+    assert settings.new_llm_orchestration_slot_selection_enabled is True

@@ -76,6 +76,8 @@ class PlanningEntities(BaseModel):
     date: str | None = None
     time: str | None = None
     time_of_day: Literal["morning", "afternoon", "evening", "night", "any"] | None = None
+    selected_slot_index: int | None = None
+    slot_reference: Literal["first", "last", "exact_time"] | None = None
     date_from: str | None = None
     date_to: str | None = None
     query: str | None = None

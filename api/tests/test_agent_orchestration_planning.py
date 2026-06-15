@@ -19,6 +19,7 @@ def test_planning_result_parses_select_offered_slot_json():
                     "owner_name": "María Gutiérrez",
                     "date": "2026-06-16",
                     "time": "16:45",
+                    "slot_reference": "exact_time",
                 },
                 "context_request": {
                     "include_conversation_history": True,
@@ -53,6 +54,7 @@ def test_planning_result_parses_select_offered_slot_json():
     assert result.action_candidate == "prepare_booking_confirmation"
     assert result.confidence == 0.91
     assert result.entities.owner_name == "María Gutiérrez"
+    assert result.entities.slot_reference == "exact_time"
     assert result.tool_request.lookup_tools == ["appointment_availability"]
     assert result.tool_request.write_tools == ["appointment_confirm"]
     assert result.clarification.needed is False
@@ -72,6 +74,7 @@ def test_planning_result_parses_time_of_day_entity():
                     "service_name": "láser cuerpo entero",
                     "date": "tomorrow",
                     "time_of_day": "afternoon",
+                    "selected_slot_index": 0,
                 },
                 "context_request": {
                     "include_appointment_context": True,
@@ -99,6 +102,7 @@ def test_planning_result_parses_time_of_day_entity():
     assert result.intent == "request_availability"
     assert result.action_candidate == "get_availability"
     assert result.entities.time_of_day == "afternoon"
+    assert result.entities.selected_slot_index == 0
 
 
 def test_planning_result_parses_json_inside_markdown_fence():
@@ -226,4 +230,6 @@ def test_planning_system_prompt_is_explicit_about_contract_and_service_intents()
     assert "appointment_availability" in prompt
     assert "entities.service_name" in prompt
     assert "entities.time_of_day" in prompt
+    assert "selected_slot_index" in prompt
+    assert "slot_reference" in prompt
     assert "No uses valores traducidos" in prompt

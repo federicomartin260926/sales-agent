@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import httpx
 import logging
@@ -30,6 +31,9 @@ from app.services.contact_context_resolver import ContactContextResolver
 from app.services.agent_orchestration.execution.appointment_availability_execution_service import (
     AppointmentAvailabilityExecutionService,
 )
+from app.services.agent_orchestration.execution.slot_selection_execution_service import (
+    SlotSelectionExecutionService,
+)
 from app.services.agent_orchestration.shadow.shadow_planning_service import ShadowPlanningService
 from app.services.agent_orchestration.execution.catalog_execution_service import CatalogExecutionService
 from app.services.decision_engine import DecisionEngine
@@ -38,6 +42,12 @@ from app.services.runtime_settings_client import RuntimeSettingsClient
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ShadowOrchestrationResult:
+    data_to_save: dict[str, Any]
+    response: AgentResponse | None = None
 
 
 class AgentRuntime:
@@ -89,6 +99,10 @@ class AgentRuntime:
             llm_client=getattr(getattr(self.decision_engine, "llm_decision_service", None), "llm_client", None),
         )
         self.appointment_availability_execution_service = AppointmentAvailabilityExecutionService(
+            self.settings,
+            llm_client=getattr(getattr(self.decision_engine, "llm_decision_service", None), "llm_client", None),
+        )
+        self.slot_selection_execution_service = SlotSelectionExecutionService(
             self.settings,
             llm_client=getattr(getattr(self.decision_engine, "llm_decision_service", None), "llm_client", None),
         )
@@ -412,16 +426,36 @@ class AgentRuntime:
                     return response
 
                 started_at = time.perf_counter()
-                response = await self.decision_engine.decide(
-                    payload,
-                    routing=routing,
-                    backend_context=backend_context,
-                    contact_context=effective_contact_context,
-                    mcp_config=mcp_config,
-                    previous_response_id=previous_response_id,
-                )
-                decision_latency_ms = int(round((time.perf_counter() - started_at) * 1000))
-                latency_ms = response.latency_ms if response.latency_ms is not None else decision_latency_ms
+                shadow_orchestration_result = ShadowOrchestrationResult(data_to_save={})
+                if bool(getattr(self.settings, "new_llm_orchestration_enabled", False)):
+                    shadow_orchestration_result = await self._apply_shadow_orchestration(
+                        payload,
+                        routing,
+                        backend_context,
+                        effective_contact_context,
+                        mcp_config,
+                        previous_response_id,
+                    )
+
+                if shadow_orchestration_result.response is not None:
+                    response = self._merge_shadow_data_into_response(
+                        shadow_orchestration_result.response,
+                        shadow_orchestration_result.data_to_save,
+                    )
+                    latency_ms = response.latency_ms if response.latency_ms is not None else 0
+                else:
+                    started_at = time.perf_counter()
+                    response = await self.decision_engine.decide(
+                        payload,
+                        routing=routing,
+                        backend_context=backend_context,
+                        contact_context=effective_contact_context,
+                        mcp_config=mcp_config,
+                        previous_response_id=previous_response_id,
+                    )
+                    decision_latency_ms = int(round((time.perf_counter() - started_at) * 1000))
+                    latency_ms = response.latency_ms if response.latency_ms is not None else decision_latency_ms
+                    response = self._merge_shadow_data_into_response(response, shadow_orchestration_result.data_to_save)
                 response = self._normalize_agenda_timezone_mismatch(response, backend_context, effective_contact_context)
                 response = self._normalize_agenda_owner_mismatch(response)
                 response = self._normalize_failed_appointment_confirmation(response)
@@ -433,15 +467,6 @@ class AgentRuntime:
                     backend_context,
                     effective_contact_context,
                     contact_context_resolver_called,
-                )
-                response = await self._apply_shadow_orchestration(
-                    response,
-                    payload,
-                    routing,
-                    backend_context,
-                    effective_contact_context,
-                    mcp_config,
-                    previous_response_id,
                 )
                 response = self._normalize_successful_appointment_confirmation(response, normalized_message)
 
@@ -484,18 +509,17 @@ class AgentRuntime:
 
     async def _apply_shadow_orchestration(
         self,
-        response: AgentResponse,
         payload: AgentRequest,
         routing: RoutingContext,
         backend_context: CommercialContext | None,
         contact_context: dict[str, Any] | None,
         mcp_config: McpRemoteConfig | None,
         previous_response_id: str | None,
-    ) -> AgentResponse:
+    ) -> ShadowOrchestrationResult:
+        data_to_save: dict[str, Any] = {}
         if not bool(getattr(self.settings, "new_llm_orchestration_enabled", False)):
-            return response
+            return ShadowOrchestrationResult(data_to_save=data_to_save)
 
-        data_to_save = copy.deepcopy(response.data_to_save)
         data_to_save["new_llm_orchestration_shadow_enabled"] = True
 
         try:
@@ -507,89 +531,189 @@ class AgentRuntime:
             )
         except Exception as exc:
             data_to_save["new_llm_orchestration_error"] = f"{exc.__class__.__name__}: {exc}"
-            return AgentResponse(
-                reply=response.reply,
-                intent=response.intent,
-                score=response.score,
-                action=response.action,
-                needs_human=response.needs_human,
-                data_to_save=data_to_save,
-                provider=response.provider,
-                model=response.model,
-                latency_ms=response.latency_ms,
-            )
+            return ShadowOrchestrationResult(data_to_save=data_to_save)
 
         data_to_save["new_llm_orchestration_trace"] = trace.to_safe_dict()
+        planning_output = self._shadow_planning_output(trace)
+        planning_domain = self._normalize_text(planning_output.get("domain")) if isinstance(planning_output, dict) else None
+        planning_intent = self._normalize_text(planning_output.get("intent")) if isinstance(planning_output, dict) else None
+        planning_action_candidate = self._normalize_text(planning_output.get("action_candidate")) if isinstance(planning_output, dict) else None
+        if planning_domain == "":
+            planning_domain = None
+        if planning_intent == "":
+            planning_intent = None
+        if planning_action_candidate == "":
+            planning_action_candidate = None
+        planning_entities = planning_output.get("entities") if isinstance(planning_output, dict) else None
+
+        data_to_save["new_llm_orchestration_planning_domain"] = planning_domain
+        data_to_save["new_llm_orchestration_planning_intent"] = planning_intent
+        data_to_save["new_llm_orchestration_planning_action_candidate"] = planning_action_candidate
+        if isinstance(planning_entities, dict):
+            data_to_save["new_llm_orchestration_planning_entities"] = copy.deepcopy(planning_entities)
 
         catalog_execution_enabled = bool(getattr(self.settings, "new_llm_orchestration_catalog_execution_enabled", False))
-        if catalog_execution_enabled:
-            try:
-                catalog_execution_outcome = await self.catalog_execution_service.execute(
-                    payload,
-                    routing,
-                    backend_context,
-                    contact_context,
-                    trace,
-                    mcp_config,
-                    previous_response_id=previous_response_id,
-                )
-            except Exception as exc:
-                data_to_save["new_llm_orchestration_catalog_execution_error"] = f"{exc.__class__.__name__}: {exc}"
-            else:
-                data_to_save["new_llm_orchestration_catalog_execution_trace"] = catalog_execution_outcome.to_safe_dict()
-                data_to_save["new_llm_orchestration_catalog_execution_attempted"] = catalog_execution_outcome.attempted
-                data_to_save["new_llm_orchestration_catalog_execution_ok"] = catalog_execution_outcome.ok
-                if catalog_execution_outcome.fallback_reason is not None:
-                    data_to_save["new_llm_orchestration_catalog_execution_fallback_reason"] = catalog_execution_outcome.fallback_reason
-                if catalog_execution_outcome.ok and catalog_execution_outcome.reply is not None:
-                    data_to_save["new_llm_orchestration_catalog_execution_used"] = True
-                    return AgentResponse(
-                        reply=catalog_execution_outcome.reply,
-                        intent=response.intent,
-                        score=response.score,
-                        action=response.action,
-                        needs_human=response.needs_human,
-                        data_to_save=data_to_save,
-                        provider=response.provider,
-                        model=response.model,
-                        latency_ms=response.latency_ms,
-                    )
+        appointment_availability_enabled = bool(getattr(self.settings, "new_llm_orchestration_appointment_availability_enabled", False))
+        slot_selection_enabled = bool(getattr(self.settings, "new_llm_orchestration_slot_selection_enabled", False))
 
-        appointment_availability_enabled = bool(
-            getattr(self.settings, "new_llm_orchestration_appointment_availability_enabled", False)
+        catalog_applies = catalog_execution_enabled and planning_domain == "catalog"
+        availability_applies = (
+            appointment_availability_enabled
+            and planning_domain == "appointment"
+            and planning_action_candidate == "get_availability"
         )
-        if appointment_availability_enabled:
-            try:
-                appointment_availability_outcome = await self.appointment_availability_execution_service.execute(
-                    payload,
-                    routing,
-                    backend_context,
-                    contact_context,
-                    trace,
-                    mcp_config,
-                    previous_response_id=previous_response_id,
-                )
-            except Exception as exc:
-                data_to_save["new_llm_orchestration_appointment_availability_error"] = f"{exc.__class__.__name__}: {exc}"
+        slot_selection_applies = (
+            slot_selection_enabled
+            and planning_domain == "appointment"
+            and planning_intent == "select_offered_slot"
+        )
+
+        data_to_save["new_llm_orchestration_catalog_applies"] = catalog_applies
+        data_to_save["new_llm_orchestration_availability_applies"] = availability_applies
+        data_to_save["new_llm_orchestration_slot_selection_applies"] = slot_selection_applies
+
+        if catalog_execution_enabled:
+            data_to_save.setdefault("new_llm_orchestration_catalog_execution_attempted", False)
+            if not catalog_applies:
+                data_to_save.setdefault("new_llm_orchestration_catalog_execution_fallback_reason", "planning_domain_not_catalog")
             else:
-                data_to_save["new_llm_orchestration_appointment_availability_trace"] = appointment_availability_outcome.to_safe_dict()
-                data_to_save["new_llm_orchestration_appointment_availability_attempted"] = appointment_availability_outcome.attempted
-                data_to_save["new_llm_orchestration_appointment_availability_ok"] = appointment_availability_outcome.ok
-                if appointment_availability_outcome.fallback_reason is not None:
-                    data_to_save["new_llm_orchestration_appointment_availability_fallback_reason"] = appointment_availability_outcome.fallback_reason
-                if appointment_availability_outcome.ok and appointment_availability_outcome.reply is not None:
-                    data_to_save["new_llm_orchestration_appointment_availability_used"] = True
-                    return AgentResponse(
-                        reply=appointment_availability_outcome.reply,
-                        intent=response.intent,
-                        score=response.score,
-                        action=response.action,
-                        needs_human=response.needs_human,
-                        data_to_save=data_to_save,
-                        provider=response.provider,
-                        model=response.model,
-                        latency_ms=response.latency_ms,
+                data_to_save["new_llm_orchestration_catalog_execution_attempted"] = True
+                try:
+                    catalog_execution_outcome = await self.catalog_execution_service.execute(
+                        payload,
+                        routing,
+                        backend_context,
+                        contact_context,
+                        trace,
+                        mcp_config,
+                        previous_response_id=previous_response_id,
                     )
+                except Exception as exc:
+                    data_to_save["new_llm_orchestration_catalog_execution_error"] = f"{exc.__class__.__name__}: {exc}"
+                    data_to_save.setdefault("new_llm_orchestration_catalog_execution_fallback_reason", "catalog_execution_technical_error")
+                    return ShadowOrchestrationResult(data_to_save=data_to_save)
+                else:
+                    data_to_save["new_llm_orchestration_catalog_execution_trace"] = catalog_execution_outcome.to_safe_dict()
+                    data_to_save["new_llm_orchestration_catalog_execution_ok"] = catalog_execution_outcome.ok
+                    if catalog_execution_outcome.fallback_reason is not None:
+                        data_to_save["new_llm_orchestration_catalog_execution_fallback_reason"] = catalog_execution_outcome.fallback_reason
+                    if catalog_execution_outcome.ok and catalog_execution_outcome.reply is not None:
+                        data_to_save["new_llm_orchestration_catalog_execution_used"] = True
+                        return ShadowOrchestrationResult(
+                            data_to_save=data_to_save,
+                            response=self._build_shadow_response(
+                                reply=catalog_execution_outcome.reply,
+                                planning_intent=planning_intent,
+                                planning_confidence=self._planning_confidence(planning_output),
+                                data_to_save=data_to_save,
+                                provider=catalog_execution_outcome.provider,
+                                model=catalog_execution_outcome.model,
+                                latency_ms=catalog_execution_outcome.latency_ms,
+                            ),
+                        )
+
+        if appointment_availability_enabled:
+            data_to_save.setdefault("new_llm_orchestration_appointment_availability_attempted", False)
+            if not availability_applies:
+                if planning_domain != "appointment":
+                    data_to_save.setdefault("new_llm_orchestration_appointment_availability_fallback_reason", "planning_domain_not_appointment")
+                elif planning_action_candidate != "get_availability":
+                    data_to_save.setdefault("new_llm_orchestration_appointment_availability_fallback_reason", "planning_action_not_get_availability")
+                else:
+                    data_to_save.setdefault("new_llm_orchestration_appointment_availability_fallback_reason", "appointment_availability_not_applicable")
+            else:
+                data_to_save["new_llm_orchestration_appointment_availability_attempted"] = True
+                try:
+                    appointment_availability_outcome = await self.appointment_availability_execution_service.execute(
+                        payload,
+                        routing,
+                        backend_context,
+                        contact_context,
+                        trace,
+                        mcp_config,
+                        previous_response_id=previous_response_id,
+                    )
+                except Exception as exc:
+                    data_to_save["new_llm_orchestration_appointment_availability_error"] = f"{exc.__class__.__name__}: {exc}"
+                    data_to_save.setdefault("new_llm_orchestration_appointment_availability_fallback_reason", "appointment_availability_technical_error")
+                    return ShadowOrchestrationResult(data_to_save=data_to_save)
+                else:
+                    data_to_save["new_llm_orchestration_appointment_availability_trace"] = appointment_availability_outcome.to_safe_dict()
+                    data_to_save["new_llm_orchestration_appointment_availability_ok"] = appointment_availability_outcome.ok
+                    if appointment_availability_outcome.fallback_reason is not None:
+                        data_to_save["new_llm_orchestration_appointment_availability_fallback_reason"] = appointment_availability_outcome.fallback_reason
+                    if appointment_availability_outcome.ok and appointment_availability_outcome.reply is not None:
+                        data_to_save["new_llm_orchestration_appointment_availability_used"] = True
+                        persisted_offered_slots = appointment_availability_outcome.offered_slots
+                        if not persisted_offered_slots:
+                            response_slots = appointment_availability_outcome.response_payload.get("slots")
+                            if isinstance(response_slots, list):
+                                persisted_offered_slots = response_slots
+                        if persisted_offered_slots:
+                            data_to_save["new_llm_orchestration_offered_slots"] = copy.deepcopy(persisted_offered_slots)
+                            data_to_save["new_llm_orchestration_offered_slots_count"] = len(persisted_offered_slots)
+                        return ShadowOrchestrationResult(
+                            data_to_save=data_to_save,
+                            response=self._build_shadow_response(
+                                reply=appointment_availability_outcome.reply,
+                                planning_intent=planning_intent,
+                                planning_confidence=self._planning_confidence(planning_output),
+                                data_to_save=data_to_save,
+                                provider=appointment_availability_outcome.provider,
+                                model=appointment_availability_outcome.model,
+                                latency_ms=appointment_availability_outcome.latency_ms,
+                            ),
+                        )
+
+        if slot_selection_enabled:
+            data_to_save.setdefault("new_llm_orchestration_slot_selection_attempted", False)
+            if not slot_selection_applies:
+                if planning_domain != "appointment":
+                    data_to_save.setdefault("new_llm_orchestration_slot_selection_fallback_reason", "planning_domain_not_appointment")
+                elif planning_intent != "select_offered_slot":
+                    data_to_save.setdefault("new_llm_orchestration_slot_selection_fallback_reason", "planning_intent_not_select_offered_slot")
+                else:
+                    data_to_save.setdefault("new_llm_orchestration_slot_selection_fallback_reason", "slot_selection_not_applicable")
+            else:
+                data_to_save["new_llm_orchestration_slot_selection_attempted"] = True
+                try:
+                    slot_selection_outcome = await self.slot_selection_execution_service.execute(
+                        payload,
+                        routing,
+                        backend_context,
+                        contact_context,
+                        trace,
+                        mcp_config,
+                        previous_response_id=previous_response_id,
+                    )
+                except Exception as exc:
+                    data_to_save["new_llm_orchestration_slot_selection_error"] = f"{exc.__class__.__name__}: {exc}"
+                    data_to_save.setdefault("new_llm_orchestration_slot_selection_fallback_reason", "slot_selection_technical_error")
+                    return ShadowOrchestrationResult(data_to_save=data_to_save)
+                else:
+                    data_to_save["new_llm_orchestration_slot_selection_trace"] = slot_selection_outcome.to_safe_dict()
+                    data_to_save["new_llm_orchestration_slot_selection_ok"] = slot_selection_outcome.ok
+                    if slot_selection_outcome.fallback_reason is not None:
+                        data_to_save["new_llm_orchestration_slot_selection_fallback_reason"] = slot_selection_outcome.fallback_reason
+                    if slot_selection_outcome.ok and slot_selection_outcome.reply is not None:
+                        data_to_save["new_llm_orchestration_slot_selection_used"] = True
+                        if slot_selection_outcome.offered_slots:
+                            data_to_save["new_llm_orchestration_offered_slots"] = copy.deepcopy(slot_selection_outcome.offered_slots)
+                            data_to_save["new_llm_orchestration_offered_slots_count"] = len(slot_selection_outcome.offered_slots)
+                        if slot_selection_outcome.selected_slot is not None:
+                            data_to_save["new_llm_orchestration_selected_slot"] = copy.deepcopy(slot_selection_outcome.selected_slot)
+                        return ShadowOrchestrationResult(
+                            data_to_save=data_to_save,
+                            response=self._build_shadow_response(
+                                reply=slot_selection_outcome.reply,
+                                planning_intent=planning_intent,
+                                planning_confidence=self._planning_confidence(planning_output),
+                                data_to_save=data_to_save,
+                                provider=None,
+                                model=None,
+                                latency_ms=None,
+                            ),
+                        )
 
         if appointment_availability_enabled and "new_llm_orchestration_appointment_availability_attempted" not in data_to_save:
             data_to_save["new_llm_orchestration_appointment_availability_attempted"] = False
@@ -608,17 +732,83 @@ class AgentRuntime:
             and data_to_save.get("new_llm_orchestration_catalog_execution_attempted") is not True
         ):
             data_to_save["new_llm_orchestration_catalog_execution_used"] = False
+
+        if slot_selection_enabled and "new_llm_orchestration_slot_selection_attempted" not in data_to_save:
+            data_to_save["new_llm_orchestration_slot_selection_attempted"] = False
+        if (
+            slot_selection_enabled
+            and "new_llm_orchestration_slot_selection_used" not in data_to_save
+            and data_to_save.get("new_llm_orchestration_slot_selection_attempted") is not True
+        ):
+            data_to_save["new_llm_orchestration_slot_selection_used"] = False
+
+        return ShadowOrchestrationResult(data_to_save=data_to_save)
+
+    def _merge_shadow_data_into_response(self, response: AgentResponse, extra_data: dict[str, Any]) -> AgentResponse:
+        if not extra_data:
+            return response
+
+        merged_data = copy.deepcopy(response.data_to_save)
+        merged_data.update(extra_data)
         return AgentResponse(
             reply=response.reply,
             intent=response.intent,
             score=response.score,
             action=response.action,
             needs_human=response.needs_human,
-            data_to_save=data_to_save,
+            data_to_save=merged_data,
             provider=response.provider,
             model=response.model,
             latency_ms=response.latency_ms,
         )
+
+    def _build_shadow_response(
+        self,
+        reply: str,
+        planning_intent: str | None,
+        planning_confidence: float,
+        data_to_save: dict[str, Any],
+        provider: str | None,
+        model: str | None,
+        latency_ms: int | None,
+    ) -> AgentResponse:
+        intent = planning_intent or "unknown"
+        action = "answer_question"
+        score = planning_confidence if planning_confidence > 0 else 0.85
+        return AgentResponse(
+            reply=reply,
+            intent=intent,
+            score=score,
+            action=action,
+            needs_human=False,
+            data_to_save=copy.deepcopy(data_to_save),
+            provider=provider,
+            model=model,
+            latency_ms=latency_ms,
+        )
+
+    def _planning_confidence(self, planning_output: dict[str, Any]) -> float:
+        value = planning_output.get("confidence") if isinstance(planning_output, dict) else None
+        if isinstance(value, (int, float)):
+            if value < 0:
+                return 0.0
+            if value > 1:
+                return 1.0
+            return float(value)
+        return 0.0
+
+    def _shadow_planning_output(self, trace: Any) -> dict[str, Any]:
+        if not hasattr(trace, "steps"):
+            return {}
+
+        for step in trace.steps:
+            if getattr(step, "step_type", None) != "llm_intent_planning":
+                continue
+            output = getattr(step, "output", None)
+            if isinstance(output, dict):
+                return output
+
+        return {}
 
     def _missing_routing_data(self, payload: AgentRequest) -> dict[str, str]:
         data = {

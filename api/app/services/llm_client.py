@@ -55,6 +55,8 @@ class LLMClient:
         previous_response_id: str | None = None,
         tool_choice: Any | None = None,
         parallel_tool_calls: bool | None = None,
+        single_tool_call: bool = False,
+        max_tool_rounds: int | None = None,
     ) -> LLMResponseResult:
         self.last_mcp_error = None
         self.last_previous_response_id_invalid = False
@@ -72,8 +74,13 @@ class LLMClient:
                 previous_response_id=previous_response_id,
                 tool_choice=tool_choice,
                 parallel_tool_calls=parallel_tool_calls,
+                single_tool_call=single_tool_call,
+                max_tool_rounds=max_tool_rounds,
             )
         except Exception as exc:
+            if single_tool_call:
+                self.last_mcp_error = f"responses_mcp_path_failed:{exc.__class__.__name__}"
+                raise
             if previous_response_id is not None and self._is_previous_response_id_error(exc):
                 try:
                     result = await self._generate_openai_responses(
@@ -84,6 +91,8 @@ class LLMClient:
                         previous_response_id=None,
                         tool_choice=tool_choice,
                         parallel_tool_calls=parallel_tool_calls,
+                        single_tool_call=single_tool_call,
+                        max_tool_rounds=max_tool_rounds,
                     )
                 except Exception as retry_exc:
                     self.last_previous_response_id_invalid = True
@@ -160,6 +169,8 @@ class LLMClient:
         previous_response_id: str | None = None,
         tool_choice: Any | None = None,
         parallel_tool_calls: bool | None = None,
+        single_tool_call: bool = False,
+        max_tool_rounds: int | None = None,
     ) -> LLMResponseResult:
         base_url = configuration.get("openai_base_url", "").strip().rstrip("/")
         model = configuration.get("openai_model", "").strip()
@@ -180,6 +191,8 @@ class LLMClient:
             "text": {"format": {"type": "json_object"}},
         }
         normalized_previous_response_id = self._normalize_previous_response_id(previous_response_id)
+        if single_tool_call or max_tool_rounds == 1:
+            normalized_previous_response_id = None
         if normalized_previous_response_id is not None:
             payload["previous_response_id"] = normalized_previous_response_id
 
@@ -237,6 +250,8 @@ class LLMClient:
             raise ValueError("OpenAI responses payload did not include message content")
 
         tool_traces = self._extract_tool_traces(payload_json)
+        if single_tool_call and len(tool_traces) > 1:
+            raise RuntimeError("Bounded single tool call violated: multiple tool traces returned")
         response_id = self._extract_response_id(payload_json)
         usage = self._extract_usage("openai", model, payload_json)
         estimated_cost = self.cost_estimator.estimate("openai", model, usage)

@@ -37,6 +37,9 @@ class AppointmentAvailabilityExecutionOutcome(BaseModel):
     planning: dict[str, Any] = Field(default_factory=dict)
     context_plan: dict[str, Any] = Field(default_factory=dict)
     tool_policy: dict[str, Any] = Field(default_factory=dict)
+    verified_service_context: dict[str, Any] = Field(default_factory=dict)
+    offered_slots: list[dict[str, Any]] = Field(default_factory=list)
+    bounded_single_tool_call: bool = False
     mcp_allowed_tools: list[str] = Field(default_factory=list)
     mcp_tool_traces: list[dict[str, Any]] = Field(default_factory=list)
     response_payload: dict[str, Any] = Field(default_factory=dict)
@@ -90,6 +93,7 @@ class AppointmentAvailabilityExecutionService:
                 mcp_config,
             )
 
+        bounded_single_tool_call = True
         search_allowed_tools = ["services_search"]
         search_mcp_config = mcp_config.model_copy(update={"allowed_tools": search_allowed_tools})
         search_system_prompt, search_user_prompt = self._build_prompts(
@@ -112,9 +116,10 @@ class AppointmentAvailabilityExecutionService:
                 search_user_prompt,
                 search_mcp_config,
                 configuration=configuration,
-                previous_response_id=previous_response_id,
+                previous_response_id=None,
                 tool_choice="required",
                 parallel_tool_calls=False,
+                single_tool_call=True,
             )
         except Exception as exc:
             return AppointmentAvailabilityExecutionOutcome(
@@ -126,6 +131,7 @@ class AppointmentAvailabilityExecutionService:
                 planning=planning_result.model_dump(exclude_none=True),
                 context_plan=context_plan.model_dump(exclude_none=True),
                 tool_policy=tool_policy.model_dump(exclude_none=True),
+                bounded_single_tool_call=bounded_single_tool_call,
                 mcp_allowed_tools=search_allowed_tools,
                 trace_id=shadow_trace.trace_id,
             )
@@ -162,9 +168,10 @@ class AppointmentAvailabilityExecutionService:
                 availability_user_prompt,
                 availability_mcp_config,
                 configuration=configuration,
-                previous_response_id=search_result.response_id or previous_response_id,
+                previous_response_id=None,
                 tool_choice="required",
                 parallel_tool_calls=False,
+                single_tool_call=True,
             )
         except Exception as exc:
             return AppointmentAvailabilityExecutionOutcome(
@@ -200,12 +207,14 @@ class AppointmentAvailabilityExecutionService:
                 planning=planning_result.model_dump(exclude_none=True),
                 context_plan=context_plan.model_dump(exclude_none=True),
                 tool_policy=tool_policy.model_dump(exclude_none=True),
+                bounded_single_tool_call=bounded_single_tool_call,
                 mcp_allowed_tools=["services_search", "appointment_availability"],
                 mcp_tool_traces=self._merge_safe_tool_traces(
                     self._safe_tool_traces(search_result.tool_traces),
                     self._safe_tool_traces(availability_result.tool_traces),
                 ),
                 response_payload=sanitize_value({}),
+                verified_service_context=sanitize_value(verified_service_context),
                 trace_id=shadow_trace.trace_id,
             )
 
@@ -225,11 +234,13 @@ class AppointmentAvailabilityExecutionService:
                 planning=planning_result.model_dump(exclude_none=True),
                 context_plan=context_plan.model_dump(exclude_none=True),
                 tool_policy=tool_policy.model_dump(exclude_none=True),
+                bounded_single_tool_call=bounded_single_tool_call,
                 mcp_allowed_tools=["services_search", "appointment_availability"],
                 mcp_tool_traces=self._merge_safe_tool_traces(
                     self._safe_tool_traces(search_result.tool_traces),
                     self._safe_tool_traces(availability_result.tool_traces),
                 ),
+                verified_service_context=sanitize_value(verified_service_context),
                 trace_id=shadow_trace.trace_id,
             )
 
@@ -249,15 +260,33 @@ class AppointmentAvailabilityExecutionService:
                 planning=planning_result.model_dump(exclude_none=True),
                 context_plan=context_plan.model_dump(exclude_none=True),
                 tool_policy=tool_policy.model_dump(exclude_none=True),
+                bounded_single_tool_call=bounded_single_tool_call,
                 mcp_allowed_tools=["services_search", "appointment_availability"],
                 mcp_tool_traces=self._merge_safe_tool_traces(
                     self._safe_tool_traces(search_result.tool_traces),
                     self._safe_tool_traces(availability_result.tool_traces),
                 ),
                 response_payload=sanitize_value(parsed_payload),
+                verified_service_context=sanitize_value(verified_service_context),
                 trace_id=shadow_trace.trace_id,
             )
 
+        payload_offered_slots = self._offered_slots_from_payload(
+            parsed_payload,
+            verified_service_context,
+            backend_context.tenant.timezone,
+        )
+        trace_offered_slots = self._offered_slots_from_trace(
+            availability_result.tool_traces,
+            verified_service_context,
+            backend_context.tenant.timezone,
+        )
+        if payload_offered_slots != [] and trace_offered_slots != []:
+            offered_slots = self._merge_offered_slots(payload_offered_slots, trace_offered_slots)
+        elif payload_offered_slots != []:
+            offered_slots = payload_offered_slots
+        else:
+            offered_slots = trace_offered_slots
         return AppointmentAvailabilityExecutionOutcome(
             attempted=True,
             ok=True,
@@ -269,6 +298,9 @@ class AppointmentAvailabilityExecutionService:
             planning=planning_result.model_dump(exclude_none=True),
             context_plan=context_plan.model_dump(exclude_none=True),
             tool_policy=tool_policy.model_dump(exclude_none=True),
+            bounded_single_tool_call=bounded_single_tool_call,
+            verified_service_context=sanitize_value(verified_service_context),
+            offered_slots=offered_slots,
             mcp_allowed_tools=["services_search", "appointment_availability"],
             mcp_tool_traces=self._merge_safe_tool_traces(
                 self._safe_tool_traces(search_result.tool_traces),
@@ -465,6 +497,160 @@ class AppointmentAvailabilityExecutionService:
                 return step.output
         return None
 
+    def _offered_slots_from_payload(
+        self,
+        payload: dict[str, Any],
+        verified_service_context: dict[str, Any],
+        timezone_name: str | None,
+    ) -> list[dict[str, Any]]:
+        if not isinstance(payload, dict):
+            return []
+
+        candidate_slots = payload.get("slots")
+        if not isinstance(candidate_slots, list):
+            candidate_slots = payload.get("available_slots")
+        if not isinstance(candidate_slots, list):
+            candidate_slots = []
+
+        return self._normalize_offered_slots(candidate_slots, verified_service_context, timezone_name)
+
+    def _offered_slots_from_trace(
+        self,
+        tool_traces: list[dict[str, Any]],
+        verified_service_context: dict[str, Any],
+        timezone_name: str | None,
+    ) -> list[dict[str, Any]]:
+        output = self._trace_tool_output(tool_traces, "appointment_availability")
+        slots = []
+        if isinstance(output, dict):
+            candidate_slots = output.get("slots")
+            if not isinstance(candidate_slots, list):
+                candidate_slots = output.get("available_slots")
+            if isinstance(candidate_slots, list):
+                slots = candidate_slots
+
+        return self._normalize_offered_slots(slots, verified_service_context, timezone_name)
+
+    def _normalize_offered_slots(
+        self,
+        slots: list[Any],
+        verified_service_context: dict[str, Any],
+        timezone_name: str | None,
+    ) -> list[dict[str, Any]]:
+        normalized_slots: list[dict[str, Any]] = []
+        service_id = self._clean_string(
+            verified_service_context.get("service_id")
+            or verified_service_context.get("serviceId")
+            or verified_service_context.get("id")
+        )
+        service_name = self._clean_string(
+            verified_service_context.get("service_name")
+            or verified_service_context.get("serviceName")
+            or verified_service_context.get("name")
+        )
+        service_ref = self._clean_string(
+            verified_service_context.get("service_ref")
+            or verified_service_context.get("serviceRef")
+            or verified_service_context.get("ref")
+            or verified_service_context.get("slug")
+            or verified_service_context.get("integration_key")
+        )
+
+        for slot in slots:
+            if not isinstance(slot, dict):
+                continue
+
+            owner = slot.get("owner") if isinstance(slot.get("owner"), dict) else {}
+            owner_id = self._clean_string(
+                slot.get("owner_id")
+                or slot.get("ownerId")
+                or owner.get("id")
+                or owner.get("owner_id")
+                or owner.get("ownerId")
+            )
+            owner_name = self._clean_string(
+                slot.get("owner_name")
+                or slot.get("ownerName")
+                or owner.get("name")
+                or owner.get("display_name")
+            )
+            owner_email = self._clean_string(
+                slot.get("owner_email")
+                or slot.get("ownerEmail")
+                or owner.get("email")
+                or owner.get("owner_email")
+                or owner.get("ownerEmail")
+            )
+            owner_ref = self._clean_string(
+                slot.get("owner_ref")
+                or slot.get("ownerRef")
+                or owner.get("ref")
+                or owner.get("owner_ref")
+                or owner.get("ownerRef")
+            )
+            start = self._clean_string(slot.get("start"))
+            end = self._clean_string(slot.get("end"))
+            slot_timezone = self._clean_string(slot.get("timezone"))
+            if slot_timezone is None:
+                slot_timezone = self._clean_string(timezone_name)
+
+            normalized_slot: dict[str, Any] = {}
+            if start is not None:
+                normalized_slot["start"] = start
+                normalized_slot["display_time"] = self._slot_time_from_iso(start) or start
+            if end is not None:
+                normalized_slot["end"] = end
+            if slot_timezone is not None:
+                normalized_slot["timezone"] = slot_timezone
+            if service_id is not None:
+                normalized_slot["service_id"] = service_id
+            if service_name is not None:
+                normalized_slot["service_name"] = service_name
+            if service_ref is not None:
+                normalized_slot["service_ref"] = service_ref
+            if owner_id is not None:
+                normalized_slot["owner_id"] = owner_id
+            if owner_name is not None:
+                normalized_slot["owner_name"] = owner_name
+            if owner_email is not None:
+                normalized_slot["owner_email"] = owner_email
+            if owner_ref is not None:
+                normalized_slot["owner_ref"] = owner_ref
+
+            label = self._clean_string(slot.get("label"))
+            if label is not None:
+                normalized_slot["slot_label"] = label
+
+            if normalized_slot:
+                normalized_slots.append(normalized_slot)
+
+        return normalized_slots
+
+    def _merge_offered_slots(
+        self,
+        primary_slots: list[dict[str, Any]],
+        secondary_slots: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        merged_slots: list[dict[str, Any]] = []
+        max_len = max(len(primary_slots), len(secondary_slots))
+        for index in range(max_len):
+            primary_slot = primary_slots[index] if index < len(primary_slots) else {}
+            secondary_slot = secondary_slots[index] if index < len(secondary_slots) else {}
+            if not isinstance(primary_slot, dict):
+                primary_slot = {}
+            if not isinstance(secondary_slot, dict):
+                secondary_slot = {}
+
+            merged_slot = dict(primary_slot)
+            for key, value in secondary_slot.items():
+                if key not in merged_slot or merged_slot[key] in (None, ""):
+                    merged_slot[key] = value
+
+            if merged_slot != {}:
+                merged_slots.append(merged_slot)
+
+        return merged_slots
+
     def _trace_step_nested_output(self, trace: OrchestrationTrace, step_type: str, key: str) -> dict[str, Any] | None:
         step_output = self._trace_step_output(trace, step_type)
         if not isinstance(step_output, dict):
@@ -475,6 +661,39 @@ class AppointmentAvailabilityExecutionService:
             return nested
 
         return None
+
+    def _trace_tool_output(self, tool_traces: list[dict[str, Any]], tool_name: str) -> dict[str, Any] | None:
+        for trace in reversed(tool_traces):
+            if not isinstance(trace, dict):
+                continue
+
+            current_tool_name = trace.get("tool_name") or trace.get("toolName") or trace.get("name")
+            if not isinstance(current_tool_name, str) or current_tool_name.strip() != tool_name:
+                continue
+
+            output = trace.get("output")
+            if isinstance(output, dict):
+                return output
+
+            raw = trace.get("raw")
+            if isinstance(raw, dict):
+                raw_output = raw.get("output")
+                if isinstance(raw_output, dict):
+                    return raw_output
+                if isinstance(raw_output, str):
+                    parsed, _ = self._extract_json_payload(raw_output)
+                    if isinstance(parsed, dict):
+                        return parsed
+
+        return None
+
+    def _slot_time_from_iso(self, value: str) -> str | None:
+        try:
+            parsed = datetime.fromisoformat(value)
+        except Exception:
+            return None
+
+        return f"{parsed.hour:02d}:{parsed.minute:02d}"
 
     def _extract_json_payload(self, raw: str) -> tuple[dict[str, Any] | None, str | None]:
         candidate = self._strip_markdown_fence(raw)
@@ -556,6 +775,13 @@ class AppointmentAvailabilityExecutionService:
         if len(compact) > 240:
             compact = compact[:240].rstrip() + "…"
         return compact
+
+    def _clean_string(self, value: Any) -> str | None:
+        if not isinstance(value, str):
+            return None
+
+        cleaned = value.strip()
+        return cleaned or None
 
     def _sanitize_error_message(self, value: str) -> str:
         compact = " ".join(value.strip().split())

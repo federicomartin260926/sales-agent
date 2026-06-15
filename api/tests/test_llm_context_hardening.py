@@ -1169,6 +1169,56 @@ def test_prompt_builder_does_not_force_confirmation_without_service_identifier()
     assert "required_next_action" not in appointment_context
 
 
+def test_prompt_builder_reads_offered_slots_from_persisted_data_to_save():
+    payload = AgentRequest(
+        tenant_id="tenant-1",
+        message="Prefiero el horario de las 16:00.",
+        contact=Contact(phone="+34600000000"),
+        conversation={
+            "external_id": "conv-1",
+            "last_messages": [
+                "SA: Para el lunes 15 de junio por la tarde hay disponibilidad a las 16:00, 16:30 y 17:00.",
+            ],
+            "context_messages": [
+                {
+                    "id": "message-availability-1",
+                    "direction": "outbound",
+                    "role": "assistant",
+                    "message_type": "text",
+                    "body": "Para el lunes 15 de junio por la tarde hay disponibilidad a las 16:00, 16:30 y 17:00.",
+                    "metadata": {
+                        "data_to_save": {
+                            "new_llm_orchestration_offered_slots": [
+                                {
+                                    "start": "2026-06-15T16:00:00+01:00",
+                                    "end": "2026-06-15T17:30:00+01:00",
+                                    "timezone": "Atlantic/Canary",
+                                    "service_id": "service-uuid",
+                                    "service_name": "Láser cuerpo entero",
+                                    "owner_id": "owner-claudia-uuid",
+                                    "owner_name": "Claudia Estética",
+                                    "owner_email": "claudia@example.com",
+                                    "owner_ref": "claudia-ref",
+                                }
+                            ],
+                        }
+                    },
+                }
+            ],
+        },
+    )
+
+    system_prompt, user_prompt = LLMPromptBuilder(settings=Settings()).build(payload, None, build_backend_context(), None, McpRemoteConfig(enabled=True, server_label="tenant_main_mcp", server_url="https://mcp.example.test", allowed_tools=["services_search", "appointment_availability"], require_approval="never"))
+    parsed = json.loads(user_prompt)
+
+    appointment_context = parsed["conversation"]["appointment_context"]
+    assert appointment_context["offered_slots"][0]["start"] == "2026-06-15T16:00:00+01:00"
+    assert appointment_context["offered_slots"][0]["owner_name"] == "Claudia Estética"
+    assert appointment_context["offered_slots"][0]["owner_email"] == "claudia@example.com"
+    assert appointment_context["offered_slots"][0]["owner_ref"] == "claudia-ref"
+    assert appointment_context["service_name"] == "Láser cuerpo entero"
+
+
 def test_prompt_builder_prioritizes_contact_context_timezone_for_appointment_context(monkeypatch):
     payload = AgentRequest(
         tenant_id="tenant-1",
