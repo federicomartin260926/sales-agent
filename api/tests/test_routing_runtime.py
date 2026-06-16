@@ -3051,11 +3051,13 @@ async def test_catalog_execution_service_filters_allowed_tools_and_uses_services
     assert fake_llm.resolve_configuration_calls == 1
     assert fake_llm.calls[0]["allowed_tools"] == ["services_search"]
     assert fake_llm.calls[0]["provider"] == "openai"
-    assert fake_llm.calls[0]["tool_choice"] == "required"
+    assert fake_llm.calls[0]["tool_choice"] is None
     assert fake_llm.calls[0]["parallel_tool_calls"] is False
     assert fake_llm.calls[0]["single_tool_call"] is True
     assert fake_llm.calls[0]["previous_response_id"] is None
     assert fake_llm.calls[0]["max_tool_rounds"] is None
+    assert "Call the available MCP tool exactly once." in fake_llm.calls[0]["system_prompt"]
+    assert "do not call it again" in fake_llm.calls[0]["system_prompt"].lower()
     assert outcome.bounded_single_tool_call is True
 
 
@@ -3099,17 +3101,6 @@ async def test_appointment_availability_execution_service_filters_tools_and_uses
     fake_llm = RecordingAppointmentAvailabilityLLMClient(
         responses=[
             {
-                "content": json.dumps({"reply": "Servicio resuelto.", "reason": "service search ok", "slots": []}, ensure_ascii=False),
-                "tool_traces": [
-                    {
-                        "tool_name": "services_search",
-                        "status": "completed",
-                        "output": {"results": [{"service_id": "service-uuid", "service_name": "Láser cuerpo entero"}]},
-                    }
-                ],
-                "response_id": "resp-search",
-            },
-            {
                 "content": json.dumps(
                     {
                         "reply": "Para láser cuerpo entero mañana por la tarde tengo 16:00, 16:30 y 17:00. ¿Cuál prefieres?",
@@ -3123,6 +3114,11 @@ async def test_appointment_availability_execution_service_filters_tools_and_uses
                     ensure_ascii=False,
                 ),
                 "tool_traces": [
+                    {
+                        "tool_name": "services_search",
+                        "status": "completed",
+                        "output": {"results": [{"service_id": "service-uuid", "service_name": "Láser cuerpo entero"}]},
+                    },
                     {
                         "tool_name": "appointment_availability",
                         "status": "completed",
@@ -3158,7 +3154,7 @@ async def test_appointment_availability_execution_service_filters_tools_and_uses
                         },
                     }
                 ],
-                "response_id": "resp-availability",
+                "response_id": "resp-sequence",
             },
         ]
     )
@@ -3196,37 +3192,22 @@ async def test_appointment_availability_execution_service_filters_tools_and_uses
     assert outcome.offered_slots[0]["owner_email"] == "claudia@example.com"
     assert outcome.offered_slots[0]["owner_ref"] == "claudia-ref"
     assert fake_llm.resolve_configuration_calls == 1
-    assert len(fake_llm.calls) == 2
-    assert fake_llm.calls[0]["allowed_tools"] == ["services_search"]
-    assert fake_llm.calls[1]["allowed_tools"] == ["appointment_availability"]
+    assert len(fake_llm.calls) == 1
+    assert fake_llm.calls[0]["allowed_tools"] == ["services_search", "appointment_availability"]
     assert fake_llm.calls[0]["previous_response_id"] is None
-    assert fake_llm.calls[1]["previous_response_id"] is None
-    assert fake_llm.calls[0]["tool_choice"] == "required"
-    assert fake_llm.calls[1]["tool_choice"] == "required"
+    assert fake_llm.calls[0]["tool_choice"] is None
     assert fake_llm.calls[0]["parallel_tool_calls"] is False
-    assert fake_llm.calls[1]["parallel_tool_calls"] is False
-    assert fake_llm.calls[0]["single_tool_call"] is True
-    assert fake_llm.calls[1]["single_tool_call"] is True
+    assert fake_llm.calls[0]["single_tool_call"] is False
     assert fake_llm.calls[0]["max_tool_rounds"] is None
-    assert fake_llm.calls[1]["max_tool_rounds"] is None
-    assert outcome.bounded_single_tool_call is True
+    assert "services_search una sola vez" in fake_llm.calls[0]["system_prompt"]
+    assert "appointment_availability una sola vez" in fake_llm.calls[0]["system_prompt"]
+    assert outcome.bounded_single_tool_call is False
 
 
 @pytest.mark.asyncio
-async def test_appointment_availability_execution_service_recovers_when_services_search_trace_missing_but_availability_is_verified():
+async def test_appointment_availability_execution_service_declines_when_services_search_trace_missing():
     fake_llm = RecordingAppointmentAvailabilityLLMClient(
         responses=[
-            {
-                "content": json.dumps({"reply": "Servicio resuelto.", "reason": "service search ok", "slots": []}, ensure_ascii=False),
-                "tool_traces": [
-                    {
-                        "tool_name": "appointment_availability",
-                        "status": "completed",
-                        "output": {"available": True, "slots": []},
-                    }
-                ],
-                "response_id": "resp-search",
-            },
             {
                 "content": json.dumps(
                     {
@@ -3243,7 +3224,7 @@ async def test_appointment_availability_execution_service_recovers_when_services
                         "output": {"available": True, "slots": []},
                     }
                 ],
-                "response_id": "resp-availability",
+                "response_id": "resp-sequence",
             }
         ]
     )
@@ -3269,10 +3250,10 @@ async def test_appointment_availability_execution_service_recovers_when_services
         ),
     )
 
-    assert outcome.ok is True
+    assert outcome.ok is False
     assert outcome.attempted is True
-    assert outcome.reply == "Para láser cuerpo entero mañana por la tarde tengo 16:00, 16:30 y 17:00. ¿Cuál prefieres?"
-    assert len(fake_llm.calls) == 2
+    assert outcome.fallback_reason == "services_search_trace_missing"
+    assert len(fake_llm.calls) == 1
 
 
 @pytest.mark.asyncio
@@ -3288,12 +3269,7 @@ async def test_appointment_availability_execution_service_declines_when_appointm
                         "output": {"results": [{"service_id": "service-uuid", "service_name": "Láser cuerpo entero"}]},
                     }
                 ],
-                "response_id": "resp-search",
-            },
-            {
-                "content": json.dumps({"reply": "Sin trazas de disponibilidad.", "reason": "missing trace", "slots": []}, ensure_ascii=False),
-                "tool_traces": [],
-                "response_id": "resp-availability",
+                "response_id": "resp-sequence",
             },
         ]
     )
@@ -3322,7 +3298,7 @@ async def test_appointment_availability_execution_service_declines_when_appointm
     assert outcome.ok is False
     assert outcome.attempted is True
     assert outcome.fallback_reason == "appointment_availability_trace_missing"
-    assert len(fake_llm.calls) == 2
+    assert len(fake_llm.calls) == 1
 
 
 @pytest.mark.asyncio
@@ -4019,6 +3995,116 @@ async def test_runtime_applies_appointment_availability_slice_when_shadow_planni
     assert response.data_to_save["new_llm_orchestration_offered_slots"][0]["owner_name"] == "Claudia Estética"
     assert response.data_to_save["new_llm_orchestration_offered_slots"][0]["owner_email"] == "claudia@example.com"
     assert response.data_to_save["new_llm_orchestration_offered_slots"][0]["owner_ref"] == "claudia-ref"
+
+
+@pytest.mark.asyncio
+async def test_runtime_returns_planning_clarification_question_when_availability_declines_for_missing_service(monkeypatch: pytest.MonkeyPatch):
+    backend = RecordingBackendClient(
+        ref_context=BackendRoutingEntryPointUtmContext.model_validate(
+            {
+                "entry_point_utm_id": "utm-1",
+                "ref": "abc123",
+                "entry_point_id": "entrypoint-1",
+                "entry_point_code": "crm-demo",
+                "tenant_id": "tenant-1",
+                "tenant_slug": "negocio-demo",
+                "product_id": "product-1",
+                "product_name": "CRM Automation",
+                "playbook_id": "playbook-1",
+                "crm_branch_ref": "branch-1",
+                "utm_source": "google",
+                "utm_medium": "cpc",
+                "utm_campaign": "campaign",
+                "utm_term": None,
+                "utm_content": None,
+                "gclid": None,
+                "fbclid": None,
+            }
+        ),
+        mcp_config=McpRemoteConfig(
+            enabled=True,
+            server_label="tenant_main_mcp",
+            server_url="https://mcp.example.test",
+            allowed_tools=["services_search", "appointment_availability", "appointment_confirm"],
+            timeout_seconds=15,
+        ),
+        tenant_context=build_context(),
+    )
+    backend.settings = Settings()
+    backend.settings.new_llm_orchestration_enabled = True
+    backend.settings.new_llm_orchestration_appointment_availability_enabled = True
+    backend.settings.new_llm_orchestration_catalog_execution_enabled = False
+    backend.settings.new_llm_orchestration_slot_selection_enabled = False
+
+    async def fake_shadow_execute(self, payload, routing, backend_context, contact_context):
+        trace = build_appointment_shadow_trace()
+        trace.steps[0].output["clarification"] = {
+            "needed": True,
+            "question": "¿Qué servicio desea reservar para mañana por la tarde?",
+            "missing_fields": ["service_name"],
+        }
+        return trace
+
+    async def fake_appointment_execute(self, payload, routing, backend_context, contact_context, trace, mcp_config, previous_response_id=None):
+        return AppointmentAvailabilityExecutionOutcome(
+            attempted=False,
+            ok=False,
+            fallback_reason="clarification_requested",
+            planning={
+                "domain": "appointment",
+                "intent": "request_availability",
+                "action_candidate": "ask_clarification",
+                "clarification": {
+                    "needed": True,
+                    "question": "¿Qué servicio desea reservar para mañana por la tarde?",
+                    "missing_fields": ["service_name"],
+                },
+            },
+            context_plan={
+                "include_appointment_context": True,
+            },
+            tool_policy={
+                "lookup_tools_enabled": ["services_search", "appointment_availability"],
+                "write_tools_enabled": [],
+            },
+            bounded_single_tool_call=False,
+            mcp_allowed_tools=["services_search", "appointment_availability"],
+            mcp_tool_traces=[],
+            trace_id="trace-appointment",
+        )
+
+    monkeypatch.setattr(DecisionEngine, "decide", fail_if_decide_called)
+    monkeypatch.setattr(ShadowPlanningService, "execute", fake_shadow_execute)
+    monkeypatch.setattr(AppointmentAvailabilityExecutionService, "execute", fake_appointment_execute)
+    monkeypatch.setattr(CatalogExecutionService, "execute", assert_slice_not_called)
+    monkeypatch.setattr(SlotSelectionExecutionService, "execute", assert_slice_not_called)
+    monkeypatch.setattr(
+        AgentRuntime,
+        "_resolve_agenda_effective_timezone_details",
+        lambda self, backend_context, contact_context=None: ("Atlantic/Canary", "crm_tenant"),
+    )
+    runtime = AgentRuntime(backend, RuntimeRoutingResolver(backend), DecisionEngine(backend))  # type: ignore[arg-type]
+    payload = AgentRequest(
+        tenant_id="tenant-ignored",
+        entrypoint_ref="abc123",
+        message="Quiero reservar mañana por la tarde",
+        contact=Contact(phone="+34999999999"),
+    )
+
+    response = await runtime.respond(payload)
+
+    assert "servicio" in response.reply.lower()
+    assert "mañana" in response.reply.lower()
+    assert "perfecto. estoy revisando" not in response.reply.lower()
+    assert "16:00" not in response.reply
+    assert "17:00" not in response.reply
+    assert response.action == "ask_clarification"
+    assert response.needs_human is False
+    assert response.data_to_save["new_llm_orchestration_appointment_availability_attempted"] is False
+    assert response.data_to_save["new_llm_orchestration_appointment_availability_fallback_reason"] == "clarification_requested"
+    assert response.data_to_save["new_llm_orchestration_appointment_availability_trace"]["fallback_reason"] == "clarification_requested"
+    assert response.data_to_save["new_llm_orchestration_appointment_availability_trace"]["mcp_tool_traces"] == []
+    assert "new_llm_orchestration_offered_slots" not in response.data_to_save
 
 
 @pytest.mark.asyncio

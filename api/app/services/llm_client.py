@@ -203,7 +203,9 @@ class LLMClient:
             payload["tool_choice"] = tool_choice
         if parallel_tool_calls is not None:
             payload["parallel_tool_calls"] = parallel_tool_calls
-        self._log_openai_responses_mcp_request(model, tools, mcp_config)
+        sanitized_payload = self._sanitize_openai_responses_payload(payload)
+        sanitized_payload["single_tool_call"] = single_tool_call
+        self._log_openai_responses_mcp_request(model, tools, mcp_config, sanitized_payload)
 
         timeout = httpx.Timeout(timeout_seconds, connect=2.0)
         headers = {
@@ -247,9 +249,15 @@ class LLMClient:
 
         content = self._extract_responses_content(payload_json)
         if content is None:
+            response_summary = self._sanitize_openai_responses_response_summary(payload_json)
+            logger.info(
+                "OpenAI Responses payload missing message content response_summary=%s",
+                json.dumps(response_summary, ensure_ascii=False, default=str),
+            )
             raise ValueError("OpenAI responses payload did not include message content")
 
         tool_traces = self._extract_tool_traces(payload_json)
+        self._log_openai_responses_tool_traces(model, tool_traces)
         if single_tool_call and len(tool_traces) > 1:
             raise RuntimeError("Bounded single tool call violated: multiple tool traces returned")
         response_id = self._extract_response_id(payload_json)
@@ -588,9 +596,16 @@ class LLMClient:
     def _sanitize_openai_responses_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         sanitized: dict[str, Any] = {
             "model": payload.get("model"),
-            "instructions": payload.get("instructions"),
-            "input": payload.get("input"),
+            "instructions": self._preview_sensitive_text(payload.get("instructions")),
+            "input": self._preview_sensitive_text(payload.get("input")),
         }
+
+        input_value = payload.get("input")
+        if isinstance(input_value, str):
+            sanitized["input_length"] = len(input_value)
+        instructions_value = payload.get("instructions")
+        if isinstance(instructions_value, str):
+            sanitized["instructions_length"] = len(instructions_value)
 
         tools = payload.get("tools")
         if isinstance(tools, list):
@@ -609,9 +624,122 @@ class LLMClient:
 
             sanitized["tools"] = sanitized_tools
         if "previous_response_id" in payload:
-            sanitized["previous_response_id"] = payload.get("previous_response_id")
+            sanitized["previous_response_id_present"] = payload.get("previous_response_id") is not None
+        if "tool_choice" in payload:
+            sanitized["tool_choice"] = payload.get("tool_choice")
+        if "parallel_tool_calls" in payload:
+            sanitized["parallel_tool_calls"] = payload.get("parallel_tool_calls")
+        if "text" in payload:
+            sanitized["text"] = payload.get("text")
 
         return sanitized
+
+    def _sanitize_openai_responses_response_summary(self, payload: Any) -> dict[str, Any]:
+        summary: dict[str, Any] = {}
+        if not isinstance(payload, dict):
+            summary["response_type"] = type(payload).__name__
+            return summary
+
+        response_id = payload.get("id")
+        if isinstance(response_id, str) and response_id.strip() != "":
+            summary["response_id"] = self._preview_identifier(response_id)
+
+        output = payload.get("output")
+        output_item_types: list[str] = []
+        output_item_summaries: list[dict[str, Any]] = []
+        mcp_call_count = 0
+        message_count = 0
+        reasoning_count = 0
+        has_error = payload.get("error") is not None
+
+        if isinstance(output, list):
+            for item in output:
+                if not isinstance(item, dict):
+                    continue
+
+                item_keys = sorted(str(key) for key in item.keys())
+                item_type_raw = item.get("type")
+                item_type = self._preview_sensitive_text(item_type_raw) if isinstance(item_type_raw, str) else None
+                item_type_normalized = str(item_type_raw or "").strip().lower()
+                if item_type is not None:
+                    output_item_types.append(item_type)
+
+                if item_type_normalized == "mcp_call":
+                    mcp_call_count += 1
+                elif item_type_normalized == "message":
+                    message_count += 1
+                elif item_type_normalized == "reasoning":
+                    reasoning_count += 1
+
+                content_value = item.get("content")
+                content_item_types: list[str] = []
+                has_content = content_value is not None
+                if isinstance(content_value, list):
+                    for content_item in content_value:
+                        if not isinstance(content_item, dict):
+                            continue
+                        content_type = content_item.get("type")
+                        if isinstance(content_type, str) and content_type.strip() != "":
+                            content_item_types.append(content_type.strip())
+                    has_content = True
+                elif isinstance(content_value, str):
+                    has_content = content_value.strip() != ""
+
+                item_summary: dict[str, Any] = {
+                    "type": item_type,
+                    "keys": item_keys,
+                    "status": self._preview_sensitive_text(item.get("status")) if isinstance(item.get("status"), str) else item.get("status"),
+                    "name": self._preview_sensitive_text(item.get("name")) if isinstance(item.get("name"), str) else None,
+                    "tool_name": self._preview_sensitive_text(item.get("tool_name")) if isinstance(item.get("tool_name"), str) else None,
+                    "call_id": self._preview_identifier(item.get("call_id")) if isinstance(item.get("call_id"), str) else None,
+                    "server_label": self._preview_sensitive_text(item.get("server_label")) if isinstance(item.get("server_label"), str) else None,
+                    "has_content": has_content,
+                }
+                if content_item_types != []:
+                    item_summary["content_item_types"] = content_item_types
+
+                if "output" in item:
+                    output_value = item.get("output")
+                    item_summary["has_output"] = True
+                    item_summary["output_type"] = type(output_value).__name__
+                    if isinstance(output_value, str):
+                        item_summary["output_length"] = len(output_value)
+                        item_summary["output_preview"] = self._preview_sensitive_text(output_value)
+                    elif isinstance(output_value, dict):
+                        output_keys = sorted(str(key) for key in output_value.keys())
+                        item_summary["output_keys"] = output_keys
+                        if "ok" in output_value:
+                            item_summary["output_ok"] = output_value.get("ok")
+                        if "found" in output_value:
+                            item_summary["output_found"] = output_value.get("found")
+                        if "available" in output_value:
+                            item_summary["output_available"] = output_value.get("available")
+                        if "count" in output_value:
+                            item_summary["output_count"] = output_value.get("count")
+                        item_summary["output_has_items"] = isinstance(output_value.get("items"), list) and output_value.get("items") != []
+                        item_summary["output_has_slots"] = isinstance(output_value.get("slots"), list) and output_value.get("slots") != []
+
+                if "error" in item:
+                    error_value = item.get("error")
+                    item_summary["has_error_field"] = True
+                    if isinstance(error_value, dict):
+                        for key in ("type", "status", "code"):
+                            if key in error_value:
+                                value = error_value.get(key)
+                                item_summary[f"error_{key}"] = self._preview_identifier(value) if isinstance(value, str) else value
+                    elif isinstance(error_value, str):
+                        item_summary["error_type"] = self._preview_identifier(error_value)
+                output_item_summaries.append(item_summary)
+
+        summary["output_item_types"] = output_item_types
+        summary["output_item_count"] = len(output_item_summaries)
+        summary["output_item_summaries"] = output_item_summaries
+        summary["mcp_call_count"] = mcp_call_count
+        summary["message_count"] = message_count
+        summary["reasoning_count"] = reasoning_count
+        summary["has_error"] = has_error
+
+        return summary
 
     def _normalize_previous_response_id(self, value: str | None) -> str | None:
         if not isinstance(value, str):
@@ -665,20 +793,25 @@ class LLMClient:
             )
         )
 
-    def _log_openai_responses_mcp_request(self, model: str, tools: list[dict[str, Any]], mcp_config: McpRemoteConfig) -> None:
+    def _log_openai_responses_mcp_request(self, model: str, tools: list[dict[str, Any]], mcp_config: McpRemoteConfig, sanitized_payload: dict[str, Any]) -> None:
         if tools == []:
             logger.info(
-                "OpenAI Responses MCP request starting model=%s mcp_enabled=%s tools=0",
+                "OpenAI Responses MCP request starting model=%s mcp_enabled=%s tools=0 tool_choice=%s parallel_tool_calls=%s previous_response_id_present=%s single_tool_call=%s",
                 model,
                 mcp_config.enabled,
+                sanitized_payload.get("tool_choice") or "-",
+                sanitized_payload.get("parallel_tool_calls"),
+                sanitized_payload.get("previous_response_id_present", False),
+                sanitized_payload.get("single_tool_call", False),
             )
+            logger.debug("OpenAI Responses MCP sanitized payload=%s", json.dumps(sanitized_payload, ensure_ascii=False, default=str))
             return
 
         tool = tools[0]
         allowed_tools = tool.get("allowed_tools") if isinstance(tool.get("allowed_tools"), list) else []
         authorization_present = isinstance(tool.get("authorization"), str) and tool.get("authorization") != ""
         logger.info(
-            "OpenAI Responses MCP request starting model=%s mcp_enabled=%s server_label=%s server_url=%s allowed_tools=%d authorization_present=%s require_approval=%s",
+            "OpenAI Responses MCP request starting model=%s mcp_enabled=%s server_label=%s server_url=%s allowed_tools=%d authorization_present=%s require_approval=%s tool_choice=%s parallel_tool_calls=%s previous_response_id_present=%s single_tool_call=%s",
             model,
             mcp_config.enabled,
             tool.get("server_label") or "-",
@@ -686,6 +819,44 @@ class LLMClient:
             len(allowed_tools),
             authorization_present,
             tool.get("require_approval") or "-",
+            sanitized_payload.get("tool_choice") or "-",
+            sanitized_payload.get("parallel_tool_calls"),
+            sanitized_payload.get("previous_response_id_present", False),
+            sanitized_payload.get("single_tool_call", False),
+        )
+        logger.debug("OpenAI Responses MCP sanitized payload=%s", json.dumps(sanitized_payload, ensure_ascii=False, default=str))
+
+    def _log_openai_responses_tool_traces(self, model: str, tool_traces: list[LLMToolTrace]) -> None:
+        if tool_traces == []:
+            logger.info("LLM openai responses tool traces model=%s count=0 repeated_tool_call_detected=false", model)
+            return
+
+        trace_summaries: list[dict[str, Any]] = []
+        fingerprints: list[tuple[str | None, str]] = []
+        for trace in tool_traces:
+            arguments = trace.arguments if isinstance(trace.arguments, dict) else {}
+            sanitized_arguments = self._sanitize_trace_arguments_for_log(arguments)
+            try:
+                fingerprint_arguments = json.dumps(sanitized_arguments, sort_keys=True, ensure_ascii=False, default=str)
+            except Exception:
+                fingerprint_arguments = repr(sanitized_arguments)
+
+            fingerprints.append((trace.tool_name, fingerprint_arguments))
+            trace_summaries.append(
+                {
+                    "tool_name": trace.tool_name,
+                    "status": trace.status,
+                    "arguments": sanitized_arguments,
+                }
+            )
+
+        repeated_tool_call_detected = len(fingerprints) != len(set(fingerprints))
+        logger.info(
+            "LLM openai responses tool traces model=%s count=%d repeated_tool_call_detected=%s trace_summaries=%s",
+            model,
+            len(tool_traces),
+            repeated_tool_call_detected,
+            json.dumps(trace_summaries, ensure_ascii=False, default=str),
         )
 
     def _build_responses_input(self, user_prompt: str) -> str:
@@ -715,6 +886,45 @@ class LLMClient:
                 return self._redact_secret_like_values(body)
 
         return None
+
+    def _preview_sensitive_text(self, value: Any) -> str | None:
+        if not isinstance(value, str):
+            return None
+
+        compact = " ".join(value.strip().split())
+        compact = re.sub(r"\bBearer\s+[A-Za-z0-9._-]+\b", "Bearer ***REDACTED***", compact, flags=re.IGNORECASE)
+        compact = re.sub(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}", "[REDACTED_EMAIL]", compact)
+        compact = re.sub(r"\+?\d[\d\s().-]{7,}\d", "[REDACTED_PHONE]", compact)
+        if len(compact) > 240:
+            compact = compact[:240].rstrip() + "…"
+        return compact
+
+    def _preview_identifier(self, value: Any, max_chars: int = 64) -> str | None:
+        if not isinstance(value, str):
+            return None
+
+        compact = " ".join(value.strip().split())
+        if len(compact) > max_chars:
+            compact = compact[:max_chars].rstrip() + "…"
+        return compact
+
+    def _sanitize_trace_arguments_for_log(self, value: Any) -> Any:
+        if isinstance(value, dict):
+            return {key: self._sanitize_trace_arguments_for_log(item) for key, item in value.items()}
+
+        if isinstance(value, list):
+            return [self._sanitize_trace_arguments_for_log(item) for item in value]
+
+        if isinstance(value, tuple):
+            return [self._sanitize_trace_arguments_for_log(item) for item in value]
+
+        if isinstance(value, set):
+            return [self._sanitize_trace_arguments_for_log(item) for item in sorted(value, key=lambda item: repr(item))]
+
+        if isinstance(value, str):
+            return self._preview_sensitive_text(value)
+
+        return value
 
     def _redact_secret_like_values(self, value: str) -> str:
         redacted = re.sub(r'("Authorization"\\s*:\\s*"Bearer\\s+)[^"]+(")', r'\\1[REDACTED]\\2', value, flags=re.IGNORECASE)

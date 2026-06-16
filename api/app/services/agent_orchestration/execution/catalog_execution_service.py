@@ -106,7 +106,6 @@ class CatalogExecutionService:
                 filtered_mcp_config,
                 configuration=configuration,
                 previous_response_id=None,
-                tool_choice="required",
                 parallel_tool_calls=False,
                 single_tool_call=True,
             )
@@ -296,6 +295,11 @@ class CatalogExecutionService:
         system_prompt = (
             "Eres una capa experimental de ejecución de catálogo. "
             "Esta llamada solo puede usar services_search. "
+            "Call the available MCP tool exactly once. "
+            "After the tool returns, do not call it again. "
+            "Do not call the same tool twice with the same arguments. "
+            "If the result is empty or invalid, return the controlled fallback JSON instead of retrying repeatedly. "
+            "If the tool returns ok=true, found=true, available=true, items or slots, produce the final JSON response from that single result. "
             "No uses appointment_confirm, appointment_reschedule, appointment_cancel ni crm_contact_submit. "
             "Devuelve únicamente un objeto JSON válido con estas claves: reply, reason y items. "
             "No uses markdown, no añadas texto explicativo y no incluyas campos fuera de ese contrato. "

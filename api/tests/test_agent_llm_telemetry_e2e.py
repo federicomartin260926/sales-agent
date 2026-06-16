@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import httpx
 from fastapi.testclient import TestClient
@@ -154,6 +156,7 @@ def configure_environment() -> None:
 
 def test_agent_respond_persists_prompt_limit_and_llm_telemetry(monkeypatch):
     configure_environment()
+    expected_current_date = datetime.now(ZoneInfo(get_settings().default_business_timezone)).date().isoformat()
 
     context = build_context()
     fake_backend = FakeBackendClient(context)
@@ -256,7 +259,7 @@ def test_agent_respond_persists_prompt_limit_and_llm_telemetry(monkeypatch):
 
     prompt = prompts[0]
     assert list(prompt.keys())[-1] == "current_message"
-    assert prompt["temporal_context"]["current_date"] == "2026-06-15"
+    assert prompt["temporal_context"]["current_date"] == expected_current_date
     assert "tenant" in prompt
     assert "product_selection" in prompt
     assert prompt["conversation"]["summary"] == "Lead ya cualificado en llamada anterior."
@@ -306,7 +309,7 @@ def test_agent_respond_persists_prompt_limit_and_llm_telemetry(monkeypatch):
 
     prompt = prompts[1]
     assert prompt["conversation"]["summary"] is None
-    assert prompt["temporal_context"]["current_date"] == "2026-06-15"
+    assert prompt["temporal_context"]["current_date"] == expected_current_date
     assert "operational_context" in prompt
     assert "tenant" in prompt
     assert prompt["conversation"]["last_messages"] == ["Hola", "¿Qué tal?"]

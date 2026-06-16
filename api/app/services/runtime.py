@@ -622,6 +622,38 @@ class AgentRuntime:
                 else:
                     data_to_save.setdefault("new_llm_orchestration_appointment_availability_fallback_reason", "appointment_availability_not_applicable")
             else:
+                clarification = planning_output.get("clarification") if isinstance(planning_output, dict) else None
+                if isinstance(clarification, dict) and clarification.get("needed") is True:
+                    clarification_question = clarification.get("question")
+                    if not isinstance(clarification_question, str) or clarification_question.strip() == "":
+                        clarification_question = "¿Qué servicio quieres reservar?"
+
+                    data_to_save["new_llm_orchestration_appointment_availability_trace"] = {
+                        "attempted": False,
+                        "ok": False,
+                        "fallback_reason": "clarification_requested",
+                        "planning": planning_output,
+                        "context_plan": {},
+                        "tool_policy": {},
+                        "mcp_allowed_tools": list(mcp_config.allowed_tools) if mcp_config is not None else [],
+                        "mcp_tool_traces": [],
+                    }
+                    data_to_save["new_llm_orchestration_appointment_availability_ok"] = False
+                    data_to_save["new_llm_orchestration_appointment_availability_fallback_reason"] = "clarification_requested"
+                    return ShadowOrchestrationResult(
+                        data_to_save=data_to_save,
+                        response=self._build_shadow_response(
+                            reply=clarification_question.strip(),
+                            planning_intent=planning_intent,
+                            planning_confidence=self._planning_confidence(planning_output),
+                            data_to_save=data_to_save,
+                            provider=None,
+                            model=None,
+                            latency_ms=None,
+                            action="ask_clarification",
+                            needs_human=False,
+                        ),
+                    )
                 data_to_save["new_llm_orchestration_appointment_availability_attempted"] = True
                 try:
                     appointment_availability_outcome = await self.appointment_availability_execution_service.execute(
@@ -771,16 +803,17 @@ class AgentRuntime:
         provider: str | None,
         model: str | None,
         latency_ms: int | None,
+        action: str = "answer_question",
+        needs_human: bool = False,
     ) -> AgentResponse:
         intent = planning_intent or "unknown"
-        action = "answer_question"
         score = planning_confidence if planning_confidence > 0 else 0.85
         return AgentResponse(
             reply=reply,
             intent=intent,
             score=score,
             action=action,
-            needs_human=False,
+            needs_human=needs_human,
             data_to_save=copy.deepcopy(data_to_save),
             provider=provider,
             model=model,
@@ -2392,6 +2425,12 @@ class AgentRuntime:
         return False
 
     def _should_skip_appointment_confirmation_postprocessing(self, response: AgentResponse) -> bool:
+        if response.action == "ask_clarification":
+            return True
+
+        if response.data_to_save.get("new_llm_orchestration_appointment_availability_fallback_reason") == "clarification_requested":
+            return True
+
         return response.data_to_save.get("new_llm_orchestration_appointment_availability_used") is True
 
     async def _send_handoff_webhook(

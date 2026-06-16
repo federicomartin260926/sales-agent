@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import time
+import logging
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -18,6 +19,9 @@ from app.services.agent_orchestration.tool_policy.tool_policy_service import Too
 from app.services.backend_client import CommercialContext
 from app.services.llm_client import LLMClient
 from app.services.routing_resolver import RoutingContext
+
+
+logger = logging.getLogger(__name__)
 
 
 class AppointmentAvailabilityExecutionOutcome(BaseModel):
@@ -93,9 +97,9 @@ class AppointmentAvailabilityExecutionService:
                 mcp_config,
             )
 
-        bounded_single_tool_call = True
-        search_allowed_tools = ["services_search"]
-        search_mcp_config = mcp_config.model_copy(update={"allowed_tools": search_allowed_tools})
+        bounded_single_tool_call = False
+        sequence_allowed_tools = ["services_search", "appointment_availability"]
+        sequence_mcp_config = mcp_config.model_copy(update={"allowed_tools": sequence_allowed_tools})
         search_system_prompt, search_user_prompt = self._build_prompts(
             payload=payload,
             routing=routing,
@@ -104,40 +108,67 @@ class AppointmentAvailabilityExecutionService:
             planning_result=planning_result,
             context_plan=context_plan,
             tool_policy=tool_policy,
-            phase="services_search",
+            phase="availability_sequence",
             verified_service_context=None,
         )
 
-        search_started_at = time.perf_counter()
+        sequence_started_at = time.perf_counter()
         try:
-            search_result = await self.llm_client.generate_with_mcp(
+            sequence_result = await self.llm_client.generate_with_mcp(
                 provider,
                 search_system_prompt,
                 search_user_prompt,
-                search_mcp_config,
+                sequence_mcp_config,
                 configuration=configuration,
                 previous_response_id=None,
-                tool_choice="required",
                 parallel_tool_calls=False,
-                single_tool_call=True,
+                single_tool_call=False,
             )
         except Exception as exc:
             return AppointmentAvailabilityExecutionOutcome(
                 attempted=True,
                 ok=False,
-                fallback_reason="services_search_llm_failed",
+                fallback_reason="availability_sequence_llm_failed",
                 error_type=exc.__class__.__name__,
                 error_message=self._sanitize_error_message(str(exc)),
                 planning=planning_result.model_dump(exclude_none=True),
                 context_plan=context_plan.model_dump(exclude_none=True),
                 tool_policy=tool_policy.model_dump(exclude_none=True),
                 bounded_single_tool_call=bounded_single_tool_call,
-                mcp_allowed_tools=search_allowed_tools,
+                mcp_allowed_tools=sequence_allowed_tools,
                 trace_id=shadow_trace.trace_id,
             )
 
-        search_latency_ms = int(round((time.perf_counter() - search_started_at) * 1000))
-        verified_service_context = self._verified_services_search_context(search_result.tool_traces)
+        sequence_latency_ms = int(round((time.perf_counter() - sequence_started_at) * 1000))
+        sequence_tool_traces = self._safe_tool_traces(sequence_result.tool_traces)
+        repeated_tool_call_summary = self._repeated_tool_call_summary(sequence_tool_traces)
+        if repeated_tool_call_summary is not None:
+            logger.warning(
+                "Appointment availability bounded sequence repeated tool call detected summary=%s",
+                json.dumps(repeated_tool_call_summary, ensure_ascii=False, default=str),
+            )
+            return AppointmentAvailabilityExecutionOutcome(
+                attempted=True,
+                ok=False,
+                provider=sequence_result.provider,
+                model=sequence_result.model,
+                response_id=sequence_result.response_id,
+                latency_ms=sequence_latency_ms,
+                fallback_reason="repeated_tool_call_detected",
+                error_type="repeated_tool_call",
+                error_message="Appointment availability bounded sequence repeated the same tool call with the same arguments.",
+                raw_content_preview=self._preview_raw_content(sequence_result.content),
+                planning=planning_result.model_dump(exclude_none=True),
+                context_plan=context_plan.model_dump(exclude_none=True),
+                tool_policy=tool_policy.model_dump(exclude_none=True),
+                bounded_single_tool_call=bounded_single_tool_call,
+                mcp_allowed_tools=sequence_allowed_tools,
+                mcp_tool_traces=sequence_tool_traces,
+                verified_service_context={},
+                trace_id=shadow_trace.trace_id,
+            )
+
+        verified_service_context = self._verified_services_search_context(sequence_result.tool_traces)
         if verified_service_context is None:
             verified_service_context = {
                 "tool_name": "services_search",
@@ -146,100 +177,71 @@ class AppointmentAvailabilityExecutionService:
                 "source": "planning_result",
                 "verified": False,
             }
-        availability_allowed_tools = ["appointment_availability"]
-        availability_mcp_config = mcp_config.model_copy(update={"allowed_tools": availability_allowed_tools})
-        availability_system_prompt, availability_user_prompt = self._build_prompts(
-            payload=payload,
-            routing=routing,
-            backend_context=backend_context,
-            contact_context=contact_context,
-            planning_result=planning_result,
-            context_plan=context_plan,
-            tool_policy=tool_policy,
-            phase="appointment_availability",
-            verified_service_context=verified_service_context,
-        )
-
-        availability_started_at = time.perf_counter()
-        try:
-            availability_result = await self.llm_client.generate_with_mcp(
-                provider,
-                availability_system_prompt,
-                availability_user_prompt,
-                availability_mcp_config,
-                configuration=configuration,
-                previous_response_id=None,
-                tool_choice="required",
-                parallel_tool_calls=False,
-                single_tool_call=True,
-            )
-        except Exception as exc:
+        if not self._has_tool_trace(sequence_result.tool_traces, "services_search"):
             return AppointmentAvailabilityExecutionOutcome(
                 attempted=True,
                 ok=False,
-                fallback_reason="appointment_availability_llm_failed",
-                error_type=exc.__class__.__name__,
-                error_message=self._sanitize_error_message(str(exc)),
-                planning=planning_result.model_dump(exclude_none=True),
-                context_plan=context_plan.model_dump(exclude_none=True),
-                tool_policy=tool_policy.model_dump(exclude_none=True),
-                mcp_allowed_tools=["services_search", "appointment_availability"],
-                mcp_tool_traces=self._merge_safe_tool_traces(
-                    self._safe_tool_traces(search_result.tool_traces),
-                    [],
-                ),
-                trace_id=shadow_trace.trace_id,
-            )
-
-        availability_latency_ms = int(round((time.perf_counter() - availability_started_at) * 1000))
-        if not self._has_tool_trace(availability_result.tool_traces, "appointment_availability"):
-            return AppointmentAvailabilityExecutionOutcome(
-                attempted=True,
-                ok=False,
-                provider=availability_result.provider,
-                model=availability_result.model,
-                response_id=availability_result.response_id,
-                latency_ms=availability_latency_ms,
-                fallback_reason="appointment_availability_trace_missing",
-                error_type="missing_appointment_availability_trace",
-                error_message="Appointment availability execution completed without an appointment_availability trace.",
-                raw_content_preview=self._preview_raw_content(availability_result.content),
+                provider=sequence_result.provider,
+                model=sequence_result.model,
+                response_id=sequence_result.response_id,
+                latency_ms=sequence_latency_ms,
+                fallback_reason="services_search_trace_missing",
+                error_type="missing_services_search_trace",
+                error_message="Appointment availability execution completed without a services_search trace.",
+                raw_content_preview=self._preview_raw_content(sequence_result.content),
                 planning=planning_result.model_dump(exclude_none=True),
                 context_plan=context_plan.model_dump(exclude_none=True),
                 tool_policy=tool_policy.model_dump(exclude_none=True),
                 bounded_single_tool_call=bounded_single_tool_call,
-                mcp_allowed_tools=["services_search", "appointment_availability"],
-                mcp_tool_traces=self._merge_safe_tool_traces(
-                    self._safe_tool_traces(search_result.tool_traces),
-                    self._safe_tool_traces(availability_result.tool_traces),
-                ),
+                mcp_allowed_tools=sequence_allowed_tools,
+                mcp_tool_traces=sequence_tool_traces,
+                response_payload=sanitize_value({}),
+                verified_service_context={},
+                trace_id=shadow_trace.trace_id,
+            )
+
+        if not self._has_tool_trace(sequence_result.tool_traces, "appointment_availability"):
+            return AppointmentAvailabilityExecutionOutcome(
+                attempted=True,
+                ok=False,
+                provider=sequence_result.provider,
+                model=sequence_result.model,
+                response_id=sequence_result.response_id,
+                latency_ms=sequence_latency_ms,
+                fallback_reason="appointment_availability_trace_missing",
+                error_type="missing_appointment_availability_trace",
+                error_message="Appointment availability execution completed without an appointment_availability trace.",
+                raw_content_preview=self._preview_raw_content(sequence_result.content),
+                planning=planning_result.model_dump(exclude_none=True),
+                context_plan=context_plan.model_dump(exclude_none=True),
+                tool_policy=tool_policy.model_dump(exclude_none=True),
+                bounded_single_tool_call=bounded_single_tool_call,
+                mcp_allowed_tools=sequence_allowed_tools,
+                mcp_tool_traces=sequence_tool_traces,
                 response_payload=sanitize_value({}),
                 verified_service_context=sanitize_value(verified_service_context),
                 trace_id=shadow_trace.trace_id,
             )
 
-        parsed_payload, parse_error = self._extract_json_payload(availability_result.content)
+        parsed_payload, parse_error = self._extract_json_payload(sequence_result.content)
         if parsed_payload is None:
             return AppointmentAvailabilityExecutionOutcome(
                 attempted=True,
                 ok=False,
-                provider=availability_result.provider,
-                model=availability_result.model,
-                response_id=availability_result.response_id,
-                latency_ms=availability_latency_ms,
+                provider=sequence_result.provider,
+                model=sequence_result.model,
+                response_id=sequence_result.response_id,
+                latency_ms=sequence_latency_ms,
                 fallback_reason="appointment_availability_response_parse_failed",
                 error_type=parse_error or "json_decode_error",
                 error_message="Appointment availability response did not contain a usable JSON object.",
-                raw_content_preview=self._preview_raw_content(availability_result.content),
+                raw_content_preview=self._preview_raw_content(sequence_result.content),
                 planning=planning_result.model_dump(exclude_none=True),
                 context_plan=context_plan.model_dump(exclude_none=True),
                 tool_policy=tool_policy.model_dump(exclude_none=True),
                 bounded_single_tool_call=bounded_single_tool_call,
-                mcp_allowed_tools=["services_search", "appointment_availability"],
-                mcp_tool_traces=self._merge_safe_tool_traces(
-                    self._safe_tool_traces(search_result.tool_traces),
-                    self._safe_tool_traces(availability_result.tool_traces),
-                ),
+                mcp_allowed_tools=sequence_allowed_tools,
+                mcp_tool_traces=sequence_tool_traces,
                 verified_service_context=sanitize_value(verified_service_context),
                 trace_id=shadow_trace.trace_id,
             )
@@ -249,23 +251,20 @@ class AppointmentAvailabilityExecutionService:
             return AppointmentAvailabilityExecutionOutcome(
                 attempted=True,
                 ok=False,
-                provider=availability_result.provider,
-                model=availability_result.model,
-                response_id=availability_result.response_id,
-                latency_ms=availability_latency_ms,
+                provider=sequence_result.provider,
+                model=sequence_result.model,
+                response_id=sequence_result.response_id,
+                latency_ms=sequence_latency_ms,
                 fallback_reason="appointment_availability_reply_missing",
                 error_type="missing_reply",
                 error_message="Appointment availability response did not include a usable reply.",
-                raw_content_preview=self._preview_raw_content(availability_result.content),
+                raw_content_preview=self._preview_raw_content(sequence_result.content),
                 planning=planning_result.model_dump(exclude_none=True),
                 context_plan=context_plan.model_dump(exclude_none=True),
                 tool_policy=tool_policy.model_dump(exclude_none=True),
                 bounded_single_tool_call=bounded_single_tool_call,
-                mcp_allowed_tools=["services_search", "appointment_availability"],
-                mcp_tool_traces=self._merge_safe_tool_traces(
-                    self._safe_tool_traces(search_result.tool_traces),
-                    self._safe_tool_traces(availability_result.tool_traces),
-                ),
+                mcp_allowed_tools=sequence_allowed_tools,
+                mcp_tool_traces=sequence_tool_traces,
                 response_payload=sanitize_value(parsed_payload),
                 verified_service_context=sanitize_value(verified_service_context),
                 trace_id=shadow_trace.trace_id,
@@ -277,7 +276,7 @@ class AppointmentAvailabilityExecutionService:
             backend_context.tenant.timezone,
         )
         trace_offered_slots = self._offered_slots_from_trace(
-            availability_result.tool_traces,
+            sequence_result.tool_traces,
             verified_service_context,
             backend_context.tenant.timezone,
         )
@@ -291,21 +290,18 @@ class AppointmentAvailabilityExecutionService:
             attempted=True,
             ok=True,
             reply=reply.strip(),
-            provider=availability_result.provider,
-            model=availability_result.model,
-            response_id=availability_result.response_id,
-            latency_ms=availability_latency_ms,
+            provider=sequence_result.provider,
+            model=sequence_result.model,
+            response_id=sequence_result.response_id,
+            latency_ms=sequence_latency_ms,
             planning=planning_result.model_dump(exclude_none=True),
             context_plan=context_plan.model_dump(exclude_none=True),
             tool_policy=tool_policy.model_dump(exclude_none=True),
             bounded_single_tool_call=bounded_single_tool_call,
             verified_service_context=sanitize_value(verified_service_context),
             offered_slots=offered_slots,
-            mcp_allowed_tools=["services_search", "appointment_availability"],
-            mcp_tool_traces=self._merge_safe_tool_traces(
-                self._safe_tool_traces(search_result.tool_traces),
-                self._safe_tool_traces(availability_result.tool_traces),
-            ),
+            mcp_allowed_tools=sequence_allowed_tools,
+            mcp_tool_traces=sequence_tool_traces,
             response_payload=sanitize_value(parsed_payload),
             trace_id=shadow_trace.trace_id,
         )
@@ -398,13 +394,17 @@ class AppointmentAvailabilityExecutionService:
     ) -> tuple[str, str]:
         system_prompt = (
             "Eres una capa experimental de disponibilidad de citas. "
-            "Debes ejecutar SIEMPRE services_search primero para resolver y verificar el servicio, y DESPUÉS appointment_availability para buscar huecos reales. "
-            "No empieces nunca por appointment_availability aunque el servicio parezca obvio. "
+            "Sigue exactamente esta secuencia: si todavía no tienes un servicio verificado, llama services_search una sola vez; "
+            "con el service_id encontrado, llama appointment_availability una sola vez; después devuelve el JSON final. "
+            "No repitas una herramienta con los mismos argumentos. "
+            "No hagas llamadas de verificación adicionales. "
+            "Si la herramienta devuelve ok=true, found=true, available=true, items o slots, usa ese resultado y termina. "
+            "Si el resultado es vacío o inválido, devuelve el JSON controlado de fallback en lugar de reintentar. "
             "No uses appointment_confirm, appointment_reschedule, appointment_cancel ni crm_contact_submit. "
             "Devuelve únicamente un objeto JSON válido con estas claves: reply, reason y slots. "
             "No uses markdown, no añadas texto explicativo y no incluyas campos fuera de ese contrato. "
             "reply debe ser breve, natural y en español. "
-            "La respuesta final debe basarse en trazas verificadas de services_search y appointment_availability. "
+            "La respuesta final debe basarse en la secuencia verificada services_search -> appointment_availability. "
             "Si hay slots disponibles, resume solo esos slots reales; no inventes horarios. "
             "Si no hay slots, explica la falta de disponibilidad de forma breve y ofrece buscar otro día o franja. "
             "Si el usuario indicó una franja como afternoon, trata la búsqueda como una aproximación de 14:00-20:00 en el timezone del negocio cuando necesites acotar la ventana."
@@ -684,6 +684,39 @@ class AppointmentAvailabilityExecutionService:
                     parsed, _ = self._extract_json_payload(raw_output)
                     if isinstance(parsed, dict):
                         return parsed
+
+        return None
+
+    def _repeated_tool_call_summary(self, tool_traces: list[dict[str, Any]]) -> dict[str, Any] | None:
+        seen: dict[tuple[str, str], int] = {}
+        for index, trace in enumerate(tool_traces):
+            if not isinstance(trace, dict):
+                continue
+
+            tool_name = self._tool_trace_name(trace)
+            if tool_name is None:
+                continue
+
+            arguments = trace.get("arguments")
+            if arguments is None and isinstance(trace.get("raw"), dict):
+                arguments = trace["raw"].get("arguments")
+
+            sanitized_arguments = sanitize_value(arguments) if isinstance(arguments, (dict, list)) else arguments
+            try:
+                arguments_fingerprint = json.dumps(sanitized_arguments, sort_keys=True, ensure_ascii=False, default=str)
+            except Exception:
+                arguments_fingerprint = repr(sanitized_arguments)
+
+            key = (tool_name, arguments_fingerprint)
+            if key in seen:
+                return {
+                    "tool_name": tool_name,
+                    "arguments": sanitized_arguments,
+                    "first_index": seen[key],
+                    "repeat_index": index,
+                }
+
+            seen[key] = index
 
         return None
 

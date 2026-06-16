@@ -11,5 +11,6 @@ backend/config/jwt/*.pem
 api/.venv/
 api/**/__pycache__/
 api/.pytest_cache/
+api/tmp/
 
 docker-compose.override.yml

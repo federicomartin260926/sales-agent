@@ -210,6 +210,85 @@ async def test_llm_client_uses_openai_responses_with_mcp_tools(monkeypatch):
     assert result.tool_traces[0].raw["output"] == {"found": True}
 
 
+def test_llm_client_sanitizes_openai_responses_response_summary_for_mcp_calls():
+    client = LLMClient(Settings(OPENAI_API_KEY="sk-test"))
+    summary = client._sanitize_openai_responses_response_summary(
+        {
+            "id": "resp_summary",
+            "output": [
+                {
+                    "type": "mcp_call",
+                    "status": "completed",
+                    "tool_name": "services_search",
+                    "server_label": "tenant_main_mcp",
+                    "call_id": "call_1234567890abcdef",
+                    "output": {
+                        "ok": True,
+                        "found": True,
+                        "available": True,
+                        "count": 3,
+                        "items": [{"id": "item-1"}],
+                        "slots": [],
+                    },
+                },
+                {
+                    "type": "mcp_call",
+                    "status": "completed",
+                    "tool_name": "services_search",
+                    "server_label": "tenant_main_mcp",
+                    "call_id": "call_abcdef1234567890",
+                    "output": "resultado textual con +34 600 123 456 y foo@example.com",
+                },
+                {
+                    "type": "mcp_call",
+                    "status": "failed",
+                    "tool_name": "services_search",
+                    "error": {"type": "server_error", "status": 500, "code": "E500"},
+                },
+                {
+                    "type": "message",
+                    "content": [{"type": "output_text", "text": "resultado"}],
+                },
+                {
+                    "type": "reasoning",
+                    "content": [{"type": "text", "text": "thinking"}],
+                },
+            ],
+        }
+    )
+
+    assert summary["response_id"] == "resp_summary"
+    assert summary["mcp_call_count"] == 3
+    assert summary["message_count"] == 1
+    assert summary["reasoning_count"] == 1
+    assert summary["has_error"] is False
+    assert summary["output_item_types"] == ["mcp_call", "mcp_call", "mcp_call", "message", "reasoning"]
+    first_item = summary["output_item_summaries"][0]
+    assert first_item["keys"] == ["call_id", "output", "server_label", "status", "tool_name", "type"]
+    assert first_item["has_output"] is True
+    assert first_item["output_type"] == "dict"
+    assert first_item["output_keys"] == ["available", "count", "found", "items", "ok", "slots"]
+    assert first_item["output_ok"] is True
+    assert first_item["output_found"] is True
+    assert first_item["output_available"] is True
+    assert first_item["output_count"] == 3
+    assert first_item["output_has_items"] is True
+    assert first_item["output_has_slots"] is False
+    assert first_item["call_id"] == "call_1234567890abcdef"
+
+    second_item = summary["output_item_summaries"][1]
+    assert second_item["output_type"] == "str"
+    assert second_item["output_length"] == len("resultado textual con +34 600 123 456 y foo@example.com")
+    assert "foo@example.com" not in second_item["output_preview"]
+    assert "600 123 456" not in second_item["output_preview"]
+
+    third_item = summary["output_item_summaries"][2]
+    assert third_item["has_error_field"] is True
+    assert third_item["error_type"] == "server_error"
+    assert third_item["error_status"] == 500
+    assert third_item["error_code"] == "E500"
+
+
 @pytest.mark.asyncio
 async def test_llm_client_extracts_nested_mcp_tool_traces_from_responses_payload(monkeypatch):
     monkeypatch.setenv("MCP_TEST_AUTHORIZATION", "")
@@ -531,6 +610,7 @@ async def test_llm_client_omits_previous_response_id_when_not_provided(monkeypat
     payload = seen["payload"]
     assert isinstance(payload, dict)
     assert "previous_response_id" not in payload
+    assert "tool_choice" not in payload
 
 
 @pytest.mark.asyncio
