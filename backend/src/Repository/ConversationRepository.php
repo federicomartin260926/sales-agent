@@ -55,4 +55,34 @@ class ConversationRepository extends ServiceEntityRepository
 
         return $qb->setMaxResults(1)->getQuery()->getOneOrNullResult();
     }
+
+    /**
+     * @return list<Conversation>
+     */
+    public function findByTenantAndExternalConversationId(Tenant $tenant, string $externalConversationId, ?string $customerPhone = null, int $limit = 2): array
+    {
+        $externalConversationId = trim($externalConversationId);
+        if ($externalConversationId === '') {
+            return [];
+        }
+
+        $qb = $this->createQueryBuilder('c')
+            ->join('c.tenant', 't')
+            ->addSelect('t')
+            ->andWhere('c.tenant = :tenant')
+            ->andWhere('c.externalConversationId = :externalConversationId')
+            ->setParameter('tenant', $tenant)
+            ->setParameter('externalConversationId', $externalConversationId)
+            ->orderBy('c.createdAt', 'DESC')
+            ->setMaxResults(max(1, min(2, $limit)));
+
+        if (is_string($customerPhone) && trim($customerPhone) !== '') {
+            $qb->andWhere('c.customerPhone = :customerPhone')
+                ->setParameter('customerPhone', trim($customerPhone));
+        }
+
+        $results = $qb->getQuery()->getResult();
+
+        return array_values(array_filter($results, static fn ($conversation): bool => $conversation instanceof Conversation));
+    }
 }

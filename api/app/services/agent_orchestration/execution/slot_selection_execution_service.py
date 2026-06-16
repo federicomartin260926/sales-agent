@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import datetime
 from typing import Any
+import unicodedata
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -17,6 +19,9 @@ from app.services.agent_orchestration.tool_policy.tool_policy_service import Too
 from app.services.backend_client import CommercialContext
 from app.services.llm_prompt_builder import LLMPromptBuilder
 from app.services.routing_resolver import RoutingContext
+
+
+logger = logging.getLogger(__name__)
 
 
 class SlotSelectionExecutionOutcome(BaseModel):
@@ -77,6 +82,19 @@ class SlotSelectionExecutionService:
             payload.conversation.context_messages,
             timezone=timezone,
             timezone_source=timezone_source,
+        )
+        offered_slots = appointment_context.get("offered_slots") if isinstance(appointment_context, dict) else []
+        owner_present = False
+        if isinstance(offered_slots, list):
+            for slot in offered_slots:
+                if isinstance(slot, dict) and (slot.get("owner") is not None or slot.get("owner_name") is not None or slot.get("owner_id") is not None):
+                    owner_present = True
+                    break
+        logger.info(
+            "Slot selection appointment context conversation_id=%s offered_slots_count=%d owner_present=%s",
+            payload.conversation.external_id,
+            len(offered_slots) if isinstance(offered_slots, list) else 0,
+            owner_present,
         )
         if not isinstance(appointment_context, dict):
             return self._controlled_missing_slots_reply(shadow_trace, planning_result, context_plan, tool_policy)
@@ -296,8 +314,26 @@ class SlotSelectionExecutionService:
         if time_value is not None:
             candidates = [slot for slot in offered_slots if self._slot_time(slot) == time_value]
             if len(candidates) == 1:
-                return candidates[0], 1, [], "exact_time"
+                owner_id = self._clean_string(planning_result.entities.owner_id)
+                owner_name = self._clean_string(planning_result.entities.owner_name)
+                if owner_id is None and owner_name is None:
+                    return candidates[0], 1, [], "exact_time"
+
+                if self._slot_matches_owner(candidates[0], owner_id, owner_name):
+                    return candidates[0], 1, [], "exact_time_with_owner"
+
+                return None, 1, self._ambiguity_options(candidates), "exact_time_owner_not_found"
             if len(candidates) > 1:
+                owner_id = self._clean_string(planning_result.entities.owner_id)
+                owner_name = self._clean_string(planning_result.entities.owner_name)
+                if owner_id is not None or owner_name is not None:
+                    matched_candidates = [slot for slot in candidates if self._slot_matches_owner(slot, owner_id, owner_name)]
+                    if len(matched_candidates) == 1:
+                        return matched_candidates[0], 1, [], "exact_time_with_owner"
+                    if len(matched_candidates) > 1:
+                        return None, len(matched_candidates), self._ambiguity_options(matched_candidates), "exact_time_owner_ambiguous"
+                    return None, len(candidates), self._ambiguity_options(candidates), "exact_time_owner_not_found"
+
                 return None, len(candidates), self._ambiguity_options(candidates), "exact_time_ambiguous"
             return None, 0, [], "exact_time_not_found"
 
@@ -310,23 +346,27 @@ class SlotSelectionExecutionService:
         selected_slot: dict[str, Any],
         appointment_context: dict[str, Any],
     ) -> str:
-        slot_label = self._slot_display_label(selected_slot)
+        slot_date = self._slot_date_label(selected_slot)
+        slot_time = self._slot_time(selected_slot) or self._slot_display_label(selected_slot)
         service_name = (
             self._clean_string(selected_slot.get("service_name"))
             or self._clean_string(appointment_context.get("service_name"))
             or self._clean_string(appointment_context.get("serviceName"))
             or "este servicio"
         )
-        contact_name = self._contact_name(payload, contact_context)
+        contact_name = self._clean_string(payload.contact.name)
+        owner_name = self._clean_string(selected_slot.get("owner_name"))
+        owner_segment = f" con {owner_name}" if owner_name is not None else ""
+        date_segment = f" el {slot_date}" if slot_date is not None else ""
+        base_reply = f"Perfecto, tengo{date_segment} a las {slot_time}{owner_segment} para {service_name}."
 
         if contact_name is None:
-            return f"Perfecto, puedo reservar el horario de {slot_label} para {service_name}. Para confirmarlo necesito tu nombre."
+            return f"{base_reply} Para poder confirmarla, ¿me dices tu nombre?"
 
-        owner_name = self._clean_string(selected_slot.get("owner_name"))
         if owner_name is not None:
-            return f"Perfecto, tengo seleccionado el horario de {slot_label} con {owner_name} para {service_name}. ¿Confirmo la reserva?"
+            return f"{base_reply} ¿Confirmo la cita?"
 
-        return f"Perfecto, tengo seleccionado el horario de {slot_label} para {service_name}. ¿Confirmo la reserva?"
+        return f"{base_reply} ¿Confirmo la cita?"
 
     def _missing_slot_reply(self, planning_result: LLMPlanningResult, offered_slots: list[dict[str, Any]]) -> str:
         service_name = self._clean_string(planning_result.entities.service_name) or "este servicio"
@@ -341,6 +381,42 @@ class SlotSelectionExecutionService:
 
         formatted_options = " o ".join(ambiguity_options[:2]) if len(ambiguity_options) <= 2 else ", ".join(ambiguity_options[:-1]) + f" o {ambiguity_options[-1]}"
         return f"Veo varios horarios posibles: {formatted_options}. ¿Cuál prefieres?"
+
+    def _slot_matches_owner(
+        self,
+        slot: dict[str, Any],
+        owner_id: str | None,
+        owner_name: str | None,
+    ) -> bool:
+        slot_owner_id = self._clean_string(
+            slot.get("owner_id")
+            or slot.get("ownerId")
+            or (slot.get("owner").get("id") if isinstance(slot.get("owner"), dict) else None)
+        )
+        if owner_id is not None and slot_owner_id != owner_id:
+            return False
+
+        if owner_name is None:
+            return True
+
+        slot_owner_name = self._clean_string(
+            slot.get("owner_name")
+            or slot.get("ownerName")
+            or (slot.get("owner").get("name") if isinstance(slot.get("owner"), dict) else None)
+            or (slot.get("owner").get("display_name") if isinstance(slot.get("owner"), dict) else None)
+        )
+        if slot_owner_name is None:
+            return False
+
+        normalized_slot_owner_name = self._normalize_text(slot_owner_name)
+        normalized_owner_name = self._normalize_text(owner_name)
+        if normalized_slot_owner_name == normalized_owner_name:
+            return True
+
+        return normalized_owner_name in normalized_slot_owner_name or normalized_slot_owner_name in normalized_owner_name
+
+    def _normalize_text(self, value: str) -> str:
+        return unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii").lower().strip()
 
     def _slot_time(self, slot: dict[str, Any]) -> str | None:
         start = self._clean_string(slot.get("start"))
@@ -369,6 +445,32 @@ class SlotSelectionExecutionService:
 
         start = self._clean_string(slot.get("start"))
         return start or "horario seleccionado"
+
+    def _slot_date_label(self, slot: dict[str, Any]) -> str | None:
+        start = self._clean_string(slot.get("start"))
+        if start is None:
+            return None
+
+        try:
+            parsed = datetime.fromisoformat(start)
+        except Exception:
+            return None
+
+        weekdays = {
+            0: "lunes",
+            1: "martes",
+            2: "miércoles",
+            3: "jueves",
+            4: "viernes",
+            5: "sábado",
+            6: "domingo",
+        }
+        weekday = weekdays.get(parsed.weekday())
+        date_label = f"{parsed.day:02d}/{parsed.month:02d}"
+        if weekday is None:
+            return date_label
+
+        return f"{weekday} {date_label}"
 
     def _ambiguity_options(self, candidates: list[dict[str, Any]]) -> list[str]:
         options: list[str] = []

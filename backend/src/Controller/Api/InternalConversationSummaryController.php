@@ -4,12 +4,15 @@ namespace App\Controller\Api;
 
 use App\Entity\Conversation;
 use App\Entity\ConversationMessage;
+use App\Entity\Tenant;
 use App\Repository\ConversationMessageRepository;
 use App\Repository\ConversationRepository;
+use App\Repository\TenantRepository;
 use App\Security\InternalBearerTokenValidator;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\Routing\Attribute\Route;
+use Psr\Log\LoggerInterface;
 
 #[Route('/api/internal/conversations')]
 final class InternalConversationSummaryController extends AbstractApiController
@@ -17,7 +20,9 @@ final class InternalConversationSummaryController extends AbstractApiController
     public function __construct(
         private readonly ConversationRepository $conversations,
         private readonly ConversationMessageRepository $conversationMessages,
+        private readonly TenantRepository $tenants,
         private readonly InternalBearerTokenValidator $validator,
+        private readonly LoggerInterface $logger,
     ) {
     }
 
@@ -28,7 +33,7 @@ final class InternalConversationSummaryController extends AbstractApiController
             return $this->json(['message' => 'Unauthorized'], JsonResponse::HTTP_UNAUTHORIZED);
         }
 
-        $conversation = $this->resolveConversation($conversationId);
+        $conversation = $this->resolveConversation($conversationId, $request);
         if (!$conversation instanceof Conversation) {
             return $this->notFound('Conversation not found');
         }
@@ -39,7 +44,7 @@ final class InternalConversationSummaryController extends AbstractApiController
         return $this->json([
             'conversation' => $conversation->toArray(),
             'messages' => array_map(
-                static fn (ConversationMessage $message): array => [
+                fn (ConversationMessage $message): array => [
                     'id' => $message->getId()->toRfc4122(),
                     'conversation_id' => $message->getConversation()->getId()->toRfc4122(),
                     'direction' => $message->getDirection(),
@@ -53,6 +58,7 @@ final class InternalConversationSummaryController extends AbstractApiController
                     'score' => $message->getScore(),
                     'action' => $message->getAction(),
                     'needs_human' => $message->isNeedsHuman(),
+                    'raw_payload' => $this->normalizeRawPayload($message->getRawPayload()),
                     'metadata' => $this->normalizeMetadata($message->getMetadata()),
                     'created_at' => $message->getCreatedAt()->format(\DateTimeInterface::ATOM),
                 ],
@@ -69,7 +75,7 @@ final class InternalConversationSummaryController extends AbstractApiController
             return $this->json(['message' => 'Unauthorized'], JsonResponse::HTTP_UNAUTHORIZED);
         }
 
-        $conversation = $this->resolveConversation($conversationId);
+        $conversation = $this->resolveConversation($conversationId, $request);
         if (!$conversation instanceof Conversation) {
             return $this->notFound('Conversation not found');
         }
@@ -85,19 +91,51 @@ final class InternalConversationSummaryController extends AbstractApiController
         ]);
     }
 
-    private function resolveConversation(string $conversationId): ?Conversation
+    private function resolveConversation(string $conversationId, Request $request): ?Conversation
     {
         $conversationId = trim($conversationId);
         if ($conversationId === '') {
-            return null;
+            return $this->resolveConversationByExternalId($request);
         }
 
         $conversation = $this->conversations->find($conversationId);
         if (!$conversation instanceof Conversation) {
-            return null;
+            return $this->resolveConversationByExternalId($request);
         }
 
         return $conversation;
+    }
+
+    private function resolveConversationByExternalId(Request $request): ?Conversation
+    {
+        $tenantId = $this->normalizeNullableString($request->query->get('tenant_id'));
+        $externalConversationId = $this->normalizeNullableString($request->query->get('external_conversation_id'));
+        if ($tenantId === null || $externalConversationId === null) {
+            return null;
+        }
+
+        $tenant = $this->tenants->find($tenantId);
+        if (!$tenant instanceof Tenant) {
+            return null;
+        }
+
+        $customerPhone = $this->normalizeNullableString($request->query->get('customer_phone'));
+        $candidates = $this->conversations->findByTenantAndExternalConversationId($tenant, $externalConversationId, $customerPhone, 2);
+
+        if (count($candidates) !== 1) {
+            if (count($candidates) > 1) {
+                $this->logger->warning('Conversation summary context resolution ambiguous for tenant/external conversation id', [
+                    'tenant_id' => $tenantId,
+                    'external_conversation_id' => $externalConversationId,
+                    'customer_phone_present' => $customerPhone !== null,
+                    'candidate_count' => count($candidates),
+                ]);
+            }
+
+            return null;
+        }
+
+        return $candidates[0];
     }
 
     private function normalizeLimit(mixed $value): int
@@ -142,5 +180,45 @@ final class InternalConversationSummaryController extends AbstractApiController
         }
 
         return $safeMetadata === [] ? null : $safeMetadata;
+    }
+
+    /**
+     * @param array<string, mixed>|null $rawPayload
+     *
+     * @return array<string, mixed>|null
+     */
+    private function normalizeRawPayload(?array $rawPayload): ?array
+    {
+        if (!is_array($rawPayload) || $rawPayload === []) {
+            return null;
+        }
+
+        return $this->sanitizeArray($rawPayload);
+    }
+
+    /**
+     * @param array<string, mixed> $value
+     *
+     * @return array<string, mixed>
+     */
+    private function sanitizeArray(array $value): array
+    {
+        $sensitiveKeys = ['authorization', 'downstream_authorization', 'bearer', 'bearer_token', 'token', 'secret'];
+        $sanitized = [];
+
+        foreach ($value as $key => $item) {
+            if (is_string($key) && in_array(strtolower($key), $sensitiveKeys, true)) {
+                continue;
+            }
+
+            if (is_array($item)) {
+                $sanitized[$key] = $this->sanitizeArray($item);
+                continue;
+            }
+
+            $sanitized[$key] = $item;
+        }
+
+        return $sanitized;
     }
 }

@@ -270,22 +270,31 @@ class AppointmentAvailabilityExecutionService:
                 trace_id=shadow_trace.trace_id,
             )
 
-        payload_offered_slots = self._offered_slots_from_payload(
-            parsed_payload,
+        raw_output_items: list[Any] = []
+        if isinstance(sequence_result.raw_payload, dict):
+            output_items = sequence_result.raw_payload.get("output")
+            if isinstance(output_items, list):
+                raw_output_items = output_items
+
+        trace_offered_slots = self.extract_offered_slots_from_appointment_availability_tool_trace(
+            raw_output_items,
             verified_service_context,
             backend_context.tenant.timezone,
         )
-        trace_offered_slots = self._offered_slots_from_trace(
-            sequence_result.tool_traces,
-            verified_service_context,
-            backend_context.tenant.timezone,
-        )
-        if payload_offered_slots != [] and trace_offered_slots != []:
-            offered_slots = self._merge_offered_slots(payload_offered_slots, trace_offered_slots)
-        elif payload_offered_slots != []:
-            offered_slots = payload_offered_slots
-        else:
+        if trace_offered_slots == []:
+            trace_offered_slots = self.extract_offered_slots_from_appointment_availability_tool_trace(
+                sequence_result.tool_traces,
+                verified_service_context,
+                backend_context.tenant.timezone,
+            )
+        if trace_offered_slots != []:
             offered_slots = trace_offered_slots
+        else:
+            offered_slots = self._offered_slots_from_payload(
+                parsed_payload,
+                verified_service_context,
+                backend_context.tenant.timezone,
+            )
         return AppointmentAvailabilityExecutionOutcome(
             attempted=True,
             ok=True,
@@ -514,6 +523,15 @@ class AppointmentAvailabilityExecutionService:
 
         return self._normalize_offered_slots(candidate_slots, verified_service_context, timezone_name)
 
+    def extract_offered_slots_from_appointment_availability_tool_trace(
+        self,
+        mcp_tool_traces: list[Any],
+        service_context: dict[str, Any],
+        timezone_name: str | None,
+    ) -> list[dict[str, Any]]:
+        """La fuente de verdad de los slots ofrecidos es la salida cruda de la tool MCP."""
+        return self._offered_slots_from_tool_traces(mcp_tool_traces, service_context, timezone_name)
+
     def _offered_slots_from_trace(
         self,
         tool_traces: list[dict[str, Any]],
@@ -522,6 +540,23 @@ class AppointmentAvailabilityExecutionService:
     ) -> list[dict[str, Any]]:
         output = self._trace_tool_output(tool_traces, "appointment_availability")
         slots = []
+        if isinstance(output, dict):
+            candidate_slots = output.get("slots")
+            if not isinstance(candidate_slots, list):
+                candidate_slots = output.get("available_slots")
+            if isinstance(candidate_slots, list):
+                slots = candidate_slots
+
+        return self._normalize_offered_slots(slots, verified_service_context, timezone_name)
+
+    def _offered_slots_from_tool_traces(
+        self,
+        tool_traces: list[Any],
+        verified_service_context: dict[str, Any],
+        timezone_name: str | None,
+    ) -> list[dict[str, Any]]:
+        output = self._trace_tool_output(tool_traces, "appointment_availability")
+        slots: list[Any] = []
         if isinstance(output, dict):
             candidate_slots = output.get("slots")
             if not isinstance(candidate_slots, list):
@@ -555,6 +590,11 @@ class AppointmentAvailabilityExecutionService:
             or verified_service_context.get("slug")
             or verified_service_context.get("integration_key")
         )
+        duration_minutes = verified_service_context.get("duration_minutes")
+        if duration_minutes is None:
+            duration_minutes = verified_service_context.get("durationMinutes")
+        if duration_minutes is None:
+            duration_minutes = verified_service_context.get("duration")
 
         for slot in slots:
             if not isinstance(slot, dict):
@@ -588,6 +628,11 @@ class AppointmentAvailabilityExecutionService:
                 or owner.get("owner_ref")
                 or owner.get("ownerRef")
             )
+            owner_preferred = owner.get("preferred")
+            if owner_preferred is None:
+                owner_preferred = slot.get("owner_preferred")
+            if owner_preferred is None:
+                owner_preferred = slot.get("ownerPreferred")
             start = self._clean_string(slot.get("start"))
             end = self._clean_string(slot.get("end"))
             slot_timezone = self._clean_string(slot.get("timezone"))
@@ -616,6 +661,34 @@ class AppointmentAvailabilityExecutionService:
                 normalized_slot["owner_email"] = owner_email
             if owner_ref is not None:
                 normalized_slot["owner_ref"] = owner_ref
+            if owner_preferred is not None:
+                normalized_slot["owner_preferred"] = owner_preferred
+
+            owner_payload: dict[str, Any] = {}
+            if owner_id is not None:
+                owner_payload["id"] = owner_id
+            if owner_name is not None:
+                owner_payload["name"] = owner_name
+            if owner_email is not None:
+                owner_payload["email"] = owner_email
+            if owner_ref is not None:
+                owner_payload["ref"] = owner_ref
+            if owner_preferred is not None:
+                owner_payload["preferred"] = owner_preferred
+            if owner_payload:
+                normalized_slot["owner"] = owner_payload
+
+            service_payload: dict[str, Any] = {}
+            if service_id is not None:
+                service_payload["id"] = service_id
+            if service_name is not None:
+                service_payload["name"] = service_name
+            if service_ref is not None:
+                service_payload["ref"] = service_ref
+            if duration_minutes is not None:
+                service_payload["duration_minutes"] = int(duration_minutes)
+            if service_payload:
+                normalized_slot["service"] = service_payload
 
             label = self._clean_string(slot.get("label"))
             if label is not None:
@@ -674,6 +747,10 @@ class AppointmentAvailabilityExecutionService:
             output = trace.get("output")
             if isinstance(output, dict):
                 return output
+            if isinstance(output, str):
+                parsed, _ = self._extract_json_payload(output)
+                if isinstance(parsed, dict):
+                    return parsed
 
             raw = trace.get("raw")
             if isinstance(raw, dict):

@@ -313,6 +313,7 @@ class BackendConversationSummaryMessage(BaseModel):
     score: int | None = None
     action: str | None = None
     needs_human: bool = Field(default=False, validation_alias=AliasChoices("needs_human", "needsHuman"))
+    raw_payload: Any | None = Field(default=None, validation_alias=AliasChoices("raw_payload", "rawPayload"))
     created_at: str | None = Field(default=None, validation_alias=AliasChoices("created_at", "createdAt"))
     metadata: dict[str, Any] | None = None
 
@@ -976,7 +977,15 @@ class BackendClient:
 
         return BackendConversationMessageResult.model_validate(payload_data)
 
-    async def get_conversation_summary_context(self, conversation_id: str, limit: int = 20) -> BackendConversationSummaryContext | None:
+    async def get_conversation_summary_context(
+        self,
+        conversation_id: str,
+        limit: int = 20,
+        tenant_id: str | None = None,
+        external_conversation_id: str | None = None,
+        customer_phone: str | None = None,
+        channel_type: str | None = None,
+    ) -> BackendConversationSummaryContext | None:
         base_url = self.settings.backend_base_url.strip().rstrip("/")
         if base_url == "" or conversation_id.strip() == "":
             return None
@@ -985,6 +994,14 @@ class BackendClient:
         params = {
             "limit": str(max(1, min(20, limit))),
         }
+        if tenant_id is not None and tenant_id.strip() != "":
+            params["tenant_id"] = tenant_id.strip()
+        if external_conversation_id is not None and external_conversation_id.strip() != "":
+            params["external_conversation_id"] = external_conversation_id.strip()
+        if customer_phone is not None and customer_phone.strip() != "":
+            params["customer_phone"] = customer_phone.strip()
+        if channel_type is not None and channel_type.strip() != "":
+            params["channel_type"] = channel_type.strip()
         try:
             async with httpx.AsyncClient(base_url=base_url, timeout=timeout, transport=self.transport) as client:
                 response = await client.get(

@@ -249,6 +249,17 @@ def transport_handler(request: httpx.Request) -> httpx.Response:
                         "intent": "agenda",
                         "action": "offer_booking",
                         "needs_human": False,
+                        "raw_payload": {
+                            "data_to_save": {
+                                "new_llm_orchestration_offered_slots": [
+                                    {
+                                        "start": "2026-06-11T17:35:00+02:00",
+                                        "owner_id": "owner-uuid",
+                                        "owner_ref": "owner-ref-1",
+                                    }
+                                ]
+                            }
+                        },
                         "metadata": {
                             "mcp_tool_traces": [
                                 {
@@ -915,6 +926,7 @@ async def test_backend_client_loads_and_updates_conversation_summary():
     assert context is not None
     assert context.conversation["summary"] == "Resumen previo"
     assert context.messages[0].body == "Quiero depilación láser"
+    assert context.messages[0].raw_payload["data_to_save"]["new_llm_orchestration_offered_slots"][0]["owner_id"] == "owner-uuid"
     assert context.messages[0].metadata["mcp_tool_traces"][0]["output"]["slots"][0]["owner_id"] == "owner-uuid"
 
     result = await client.update_conversation_summary("conversation-1", "Cliente interesado en depilación láser.")

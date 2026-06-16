@@ -674,6 +674,19 @@ class LLMPromptBuilder:
             if not isinstance(message, dict):
                 continue
 
+            raw_payload = message.get("raw_payload")
+            if isinstance(raw_payload, dict):
+                raw_payload_data = raw_payload.get("data_to_save")
+                if isinstance(raw_payload_data, dict):
+                    saved_context = self._appointment_context_from_data_to_save(
+                        message,
+                        raw_payload_data,
+                        timezone,
+                        timezone_source,
+                    )
+                    if saved_context is not None:
+                        return saved_context
+
             metadata = message.get("metadata")
             if not isinstance(metadata, dict):
                 continue
@@ -1005,6 +1018,29 @@ class LLMPromptBuilder:
         if owner_ref is not None:
             set_if_missing("owner_ref", owner_ref)
 
+        owner_preferred = selected_slot.get("owner_preferred")
+        if owner_preferred is None:
+            owner_preferred = selected_slot.get("ownerPreferred")
+        if owner_preferred is None and isinstance(owner_payload, dict):
+            owner_preferred = owner_payload.get("preferred")
+        if owner_preferred is not None:
+            set_if_missing("owner_preferred", owner_preferred)
+            set_if_missing("ownerPreferred", owner_preferred)
+
+        normalized_owner: dict[str, Any] = dict(owner_payload) if owner_payload else {}
+        if owner_id is not None:
+            normalized_owner["id"] = owner_id
+        if owner_name is not None:
+            normalized_owner["name"] = owner_name
+        if owner_email is not None:
+            normalized_owner["email"] = owner_email
+        if owner_ref is not None:
+            normalized_owner["ref"] = owner_ref
+        if owner_preferred is not None:
+            normalized_owner["preferred"] = owner_preferred
+        if normalized_owner != {}:
+            set_if_missing("owner", normalized_owner)
+
         return enriched
 
     def _selected_slot_required_next_action(
@@ -1140,6 +1176,11 @@ class LLMPromptBuilder:
                 or owner_dict.get("owner_ref")
                 or owner_dict.get("ownerRef")
             )
+            owner_preferred = owner_dict.get("preferred")
+            if owner_preferred is None:
+                owner_preferred = slot.get("owner_preferred")
+            if owner_preferred is None:
+                owner_preferred = slot.get("ownerPreferred")
 
             if owner_id is not None:
                 normalized_slot["owner_id"] = owner_id
@@ -1153,8 +1194,23 @@ class LLMPromptBuilder:
             if owner_ref is not None:
                 normalized_slot["owner_ref"] = owner_ref
                 normalized_slot["ownerRef"] = owner_ref
-            if owner_dict:
-                normalized_slot["owner"] = owner_dict
+            if owner_preferred is not None:
+                normalized_slot["owner_preferred"] = owner_preferred
+                normalized_slot["ownerPreferred"] = owner_preferred
+
+            normalized_owner: dict[str, Any] = dict(owner_dict) if owner_dict else {}
+            if owner_id is not None:
+                normalized_owner["id"] = owner_id
+            if owner_name is not None:
+                normalized_owner["name"] = owner_name
+            if owner_email is not None:
+                normalized_owner["email"] = owner_email
+            if owner_ref is not None:
+                normalized_owner["ref"] = owner_ref
+            if owner_preferred is not None:
+                normalized_owner["preferred"] = owner_preferred
+            if normalized_owner != {}:
+                normalized_slot["owner"] = normalized_owner
 
             normalized_slots.append(normalized_slot)
 

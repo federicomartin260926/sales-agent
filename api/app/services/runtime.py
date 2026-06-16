@@ -314,14 +314,9 @@ class AgentRuntime:
                 routing.conversation_id = conversation["id"]
 
         normalized_message = unicodedata.normalize("NFKD", self._normalize_text(payload.message.text)).encode("ascii", "ignore").decode("ascii").lower().strip()
-        if routing.conversation_id is not None and self._is_slot_selection_followup(normalized_message):
-            try:
-                conversation_summary_context = await self.backend_client.get_conversation_summary_context(routing.conversation_id, limit=8)
-            except Exception:
-                conversation_summary_context = None
-
-            if conversation_summary_context is not None and conversation_summary_context.messages:
-                payload.conversation.context_messages = [message.model_dump() for message in conversation_summary_context.messages]
+        summary_conversation_id = routing.conversation_id or payload.conversation.external_id
+        if self._is_slot_selection_followup(normalized_message) and summary_conversation_id is not None:
+            await self._load_slot_selection_summary_context(payload, routing)
 
         previous_response_id = self._previous_response_id_from_conversation_result(conversation_result)
         if previous_response_id is not None and self._requires_fresh_availability_turn(payload):
@@ -676,6 +671,8 @@ class AgentRuntime:
                         data_to_save["new_llm_orchestration_appointment_availability_fallback_reason"] = appointment_availability_outcome.fallback_reason
                     if appointment_availability_outcome.ok and appointment_availability_outcome.reply is not None:
                         data_to_save["new_llm_orchestration_appointment_availability_used"] = True
+                        # Fuente canónica: solo persistimos slots construidos desde appointment_availability.output.slots.
+                        # La respuesta redactada del LLM puede resumir horarios, pero no es fuente de verdad para owner/service/timezone.
                         persisted_offered_slots = appointment_availability_outcome.offered_slots
                         if not persisted_offered_slots:
                             response_slots = appointment_availability_outcome.response_payload.get("slots")
@@ -708,6 +705,8 @@ class AgentRuntime:
                     data_to_save.setdefault("new_llm_orchestration_slot_selection_fallback_reason", "slot_selection_not_applicable")
             else:
                 data_to_save["new_llm_orchestration_slot_selection_attempted"] = True
+                if not self._conversation_context_has_offered_slots(payload.conversation.context_messages):
+                    await self._load_slot_selection_summary_context(payload, routing)
                 try:
                     slot_selection_outcome = await self.slot_selection_execution_service.execute(
                         payload,
@@ -729,11 +728,17 @@ class AgentRuntime:
                         data_to_save["new_llm_orchestration_slot_selection_fallback_reason"] = slot_selection_outcome.fallback_reason
                     if slot_selection_outcome.ok and slot_selection_outcome.reply is not None:
                         data_to_save["new_llm_orchestration_slot_selection_used"] = True
-                        if slot_selection_outcome.offered_slots:
+                        if slot_selection_outcome.offered_slots and "new_llm_orchestration_offered_slots" not in data_to_save:
                             data_to_save["new_llm_orchestration_offered_slots"] = copy.deepcopy(slot_selection_outcome.offered_slots)
                             data_to_save["new_llm_orchestration_offered_slots_count"] = len(slot_selection_outcome.offered_slots)
                         if slot_selection_outcome.selected_slot is not None:
-                            data_to_save["new_llm_orchestration_selected_slot"] = copy.deepcopy(slot_selection_outcome.selected_slot)
+                            canonical_selected_slot = copy.deepcopy(slot_selection_outcome.selected_slot)
+                            data_to_save["selected_slot"] = copy.deepcopy(canonical_selected_slot)
+                            if self._normalize_text_value(payload.contact.name) is not None:
+                                data_to_save["required_next_action"] = "appointment_confirm"
+                            else:
+                                data_to_save["required_next_action"] = "collect_customer_name"
+                            data_to_save["new_llm_orchestration_selected_slot"] = canonical_selected_slot
                         return ShadowOrchestrationResult(
                             data_to_save=data_to_save,
                             response=self._build_shadow_response(
@@ -775,6 +780,93 @@ class AgentRuntime:
             data_to_save["new_llm_orchestration_slot_selection_used"] = False
 
         return ShadowOrchestrationResult(data_to_save=data_to_save)
+
+    async def _load_slot_selection_summary_context(self, payload: AgentRequest, routing: RoutingContext) -> None:
+        tenant_id = routing.tenant_id.strip() if isinstance(routing.tenant_id, str) else None
+        external_conversation_id = payload.conversation.external_id.strip() if isinstance(payload.conversation.external_id, str) and payload.conversation.external_id.strip() != "" else None
+        backend_conversation_id = routing.conversation_id.strip() if isinstance(routing.conversation_id, str) and routing.conversation_id.strip() != "" else None
+        channel_type = payload.channel_type.strip() if isinstance(payload.channel_type, str) and payload.channel_type.strip() != "" else None
+        customer_phone = payload.contact.phone.strip() if isinstance(payload.contact.phone, str) and payload.contact.phone.strip() != "" else None
+        summary_conversation_id = backend_conversation_id or external_conversation_id
+
+        logger.info(
+            "Slot selection summary context request tenant_id=%s external_conversation_id=%s backend_conversation_id=%s channel_type=%s",
+            tenant_id,
+            external_conversation_id,
+            backend_conversation_id,
+            channel_type,
+        )
+
+        if tenant_id is None or summary_conversation_id is None:
+            logger.info(
+                "Slot selection summary context skipped tenant_id=%s external_conversation_id=%s backend_conversation_id=%s reason=no_conversation_identifier",
+                tenant_id,
+                external_conversation_id,
+                backend_conversation_id,
+            )
+            return
+
+        try:
+            conversation_summary_context = await self.backend_client.get_conversation_summary_context(
+                summary_conversation_id,
+                limit=8,
+                tenant_id=tenant_id,
+                external_conversation_id=external_conversation_id,
+                customer_phone=customer_phone,
+                channel_type=channel_type,
+            )
+        except Exception:
+            conversation_summary_context = None
+
+        summary_messages = conversation_summary_context.messages if conversation_summary_context is not None else []
+        raw_payload_messages = 0
+        offered_slots_messages = 0
+        if summary_messages:
+            for summary_message in summary_messages:
+                message_payload = summary_message.model_dump() if hasattr(summary_message, "model_dump") else {}
+                raw_payload = message_payload.get("raw_payload") if isinstance(message_payload, dict) else None
+                if isinstance(raw_payload, dict):
+                    raw_payload_messages += 1
+                    data_to_save = raw_payload.get("data_to_save")
+                    if isinstance(data_to_save, dict):
+                        offered_slots = data_to_save.get("new_llm_orchestration_offered_slots")
+                        if isinstance(offered_slots, list) and offered_slots != []:
+                            offered_slots_messages += 1
+            logger.info(
+                "Slot selection summary context loaded conversation_id=%s messages=%d raw_payload_messages=%d offered_slots_messages=%d",
+                summary_conversation_id,
+                len(summary_messages),
+                raw_payload_messages,
+                offered_slots_messages,
+            )
+            payload.conversation.context_messages = [message.model_dump() for message in summary_messages]
+        else:
+            logger.info(
+                "Slot selection summary context loaded conversation_id=%s messages=0 raw_payload_messages=0 offered_slots_messages=0",
+                summary_conversation_id,
+            )
+
+    def _conversation_context_has_offered_slots(self, context_messages: list[dict[str, Any]] | None) -> bool:
+        if not isinstance(context_messages, list):
+            return False
+
+        for message in reversed(context_messages):
+            if not isinstance(message, dict):
+                continue
+
+            raw_payload = message.get("raw_payload")
+            if not isinstance(raw_payload, dict):
+                continue
+
+            data_to_save = raw_payload.get("data_to_save")
+            if not isinstance(data_to_save, dict):
+                continue
+
+            offered_slots = data_to_save.get("new_llm_orchestration_offered_slots")
+            if isinstance(offered_slots, list) and offered_slots != []:
+                return True
+
+        return False
 
     def _merge_shadow_data_into_response(self, response: AgentResponse, extra_data: dict[str, Any]) -> AgentResponse:
         if not extra_data:

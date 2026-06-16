@@ -7,7 +7,7 @@ import pytest
 from app.config import Settings
 from app.schemas.agent import AgentResponse
 from app.schemas.agent import AgentRequest, Contact
-from app.services.backend_client import BackendAiUsagePolicy, BackendAiUsageSnapshot, BackendExternalTool, BackendRoutingEntryPointUtmContext, BackendTenant, CommercialContext
+from app.services.backend_client import BackendAiUsagePolicy, BackendAiUsageSnapshot, BackendConversationMessagePayload, BackendExternalTool, BackendRoutingEntryPointUtmContext, BackendTenant, CommercialContext
 from app.services.agent_orchestration.debug.orchestration_trace import OrchestrationTrace
 from app.services.agent_orchestration.execution.appointment_availability_execution_service import (
     AppointmentAvailabilityExecutionOutcome,
@@ -92,6 +92,7 @@ class RecordingBackendClient:
         self.tenant_context = tenant_context
         self.conversation_result = conversation_result
         self.summary_context = summary_context
+        self._stored_conversation_messages: dict[str, list[dict[str, object]]] = {}
         self.calls: list[tuple[str, tuple[object, ...]]] = []
 
     async def resolve_entrypoint_ref(self, ref: str) -> BackendRoutingEntryPointUtmContext | None:
@@ -130,7 +131,11 @@ class RecordingBackendClient:
         return self.conversation_result or {"created": True, "conversation": {"id": "conversation-1", "status": "active"}}
 
     async def create_conversation_message(self, payload):
-        self.calls.append(("create_conversation_message", (payload.model_dump(by_alias=True),)))
+        payload_dict = payload.model_dump(by_alias=True)
+        self.calls.append(("create_conversation_message", (payload_dict,)))
+        conversation_id = payload_dict.get("conversation_id")
+        if isinstance(conversation_id, str) and conversation_id.strip() != "":
+            self._stored_conversation_messages.setdefault(conversation_id, []).append(payload_dict)
         return type(
             "BackendConversationMessageResultStub",
             (),
@@ -152,9 +157,39 @@ class RecordingBackendClient:
             },
         )()
 
-    async def get_conversation_summary_context(self, conversation_id: str, limit: int = 20):
-        self.calls.append(("get_conversation_summary_context", (conversation_id, limit)))
-        return self.summary_context
+    async def get_conversation_summary_context(
+        self,
+        conversation_id: str,
+        limit: int = 20,
+        tenant_id: str | None = None,
+        external_conversation_id: str | None = None,
+        customer_phone: str | None = None,
+        channel_type: str | None = None,
+    ):
+        self.calls.append(("get_conversation_summary_context", (conversation_id, limit, tenant_id, external_conversation_id, customer_phone, channel_type)))
+        if self.summary_context is not None:
+            return self.summary_context
+
+        messages = self._stored_conversation_messages.get(conversation_id, [])
+        if messages == [] and external_conversation_id is not None:
+            messages = self._stored_conversation_messages.get(external_conversation_id, [])
+        if messages == []:
+            return None
+
+        class SummaryMessageStub:
+            def __init__(self, payload: dict[str, object]) -> None:
+                self.payload = payload
+
+            def model_dump(self):
+                return self.payload
+
+        return type(
+            "SummaryContextStub",
+            (),
+            {
+                "messages": [SummaryMessageStub(message) for message in messages[-limit:]],
+            },
+        )()
 
     async def get_contact_context_cache(self, tenant_id: str, contact_key: str, provider: str = "contact_context"):
         self.calls.append(("get_contact_context_cache", (tenant_id, contact_key, provider)))
@@ -1106,7 +1141,8 @@ async def test_runtime_keeps_cursor_for_slot_selection_followup(monkeypatch: pyt
     response = await runtime.respond(payload)
 
     assert response.intent == "select_offered_slot"
-    assert response.reply == "Perfecto. Estoy revisando ese horario. Si necesito algún dato adicional para cerrarlo, te lo pediré ahora."
+    assert "me dices tu nombre" in response.reply
+    assert response.data_to_save["required_next_action"] == "collect_customer_name"
     assert response.data_to_save["new_llm_orchestration_selected_slot"]["owner_id"] == "owner-uuid"
     assert response.data_to_save["new_llm_orchestration_offered_slots"][0]["owner_id"] == "owner-uuid"
 
@@ -2696,6 +2732,7 @@ class RecordingAppointmentAvailabilityLLMClient:
                 "content": response.get("content", ""),
                 "response_id": response.get("response_id", f"resp-{response_index + 1}"),
                 "tool_traces": response.get("tool_traces", []),
+                "raw_payload": response.get("raw_payload"),
             },
         )()
 
@@ -2956,8 +2993,17 @@ def build_offered_slots_context_message() -> dict[str, object]:
             "timezone": "Atlantic/Canary",
             "service_id": "service-uuid",
             "service_name": "Láser cuerpo entero",
+            "duration_minutes": 90,
             "owner_id": "owner-claudia-uuid",
             "owner_name": "Claudia Estética",
+            "owner_email": "claudia@example.com",
+            "owner_preferred": True,
+            "owner": {
+                "id": "owner-claudia-uuid",
+                "name": "Claudia Estética",
+                "email": "claudia@example.com",
+                "preferred": True,
+            },
             "slot_label": "16:00",
             "display_time": "16:00",
         },
@@ -2967,8 +3013,17 @@ def build_offered_slots_context_message() -> dict[str, object]:
             "timezone": "Atlantic/Canary",
             "service_id": "service-uuid",
             "service_name": "Láser cuerpo entero",
+            "duration_minutes": 90,
             "owner_id": "owner-maria-uuid",
             "owner_name": "María Gutiérrez",
+            "owner_email": "maria@example.com",
+            "owner_preferred": False,
+            "owner": {
+                "id": "owner-maria-uuid",
+                "name": "María Gutiérrez",
+                "email": "maria@example.com",
+                "preferred": False,
+            },
             "slot_label": "16:30",
             "display_time": "16:30",
         },
@@ -2978,8 +3033,17 @@ def build_offered_slots_context_message() -> dict[str, object]:
             "timezone": "Atlantic/Canary",
             "service_id": "service-uuid",
             "service_name": "Láser cuerpo entero",
+            "duration_minutes": 90,
             "owner_id": "owner-claudia-uuid",
             "owner_name": "Claudia Estética",
+            "owner_email": "claudia@example.com",
+            "owner_preferred": True,
+            "owner": {
+                "id": "owner-claudia-uuid",
+                "name": "Claudia Estética",
+                "email": "claudia@example.com",
+                "preferred": True,
+            },
             "slot_label": "17:00",
             "display_time": "17:00",
         },
@@ -2997,6 +3061,24 @@ def build_offered_slots_context_message() -> dict[str, object]:
                 "new_llm_orchestration_offered_slots_count": len(offered_slots),
             }
         },
+    }
+
+
+def build_availability_summary_raw_payload(offered_slots: list[dict[str, object]], reply: str) -> dict[str, object]:
+    return {
+        "data_to_save": {
+            "new_llm_orchestration_appointment_availability_attempted": True,
+            "new_llm_orchestration_appointment_availability_ok": True,
+            "new_llm_orchestration_appointment_availability_used": True,
+            "new_llm_orchestration_appointment_availability_trace": {
+                "attempted": True,
+                "ok": True,
+                "reply": reply,
+                "offered_slots": offered_slots,
+            },
+            "new_llm_orchestration_offered_slots": offered_slots,
+            "new_llm_orchestration_offered_slots_count": len(offered_slots),
+        }
     }
 
 
@@ -3122,36 +3204,59 @@ async def test_appointment_availability_execution_service_filters_tools_and_uses
                     {
                         "tool_name": "appointment_availability",
                         "status": "completed",
-                        "output": {
-                            "available": True,
-                            "slots": [
-                                {
-                                    "start": "2026-06-16T16:00:00+01:00",
-                                    "end": "2026-06-16T17:30:00+01:00",
-                                    "timezone": "Atlantic/Canary",
-                                    "owner": {
-                                        "id": "owner-claudia-uuid",
-                                        "name": "Claudia Estética",
-                                        "email": "claudia@example.com",
-                                        "ref": "claudia-ref",
+                        "output": json.dumps(
+                            {
+                                "available": True,
+                                "slots": [
+                                    {
+                                        "start": "2026-06-16T16:00:00+01:00",
+                                        "end": "2026-06-16T17:30:00+01:00",
+                                        "timezone": "Atlantic/Canary",
+                                        "duration_minutes": 90,
+                                        "owner": {
+                                            "id": "owner-claudia-uuid",
+                                            "name": "Claudia Estética",
+                                            "email": "claudia@example.com",
+                                            "ref": "claudia-ref",
+                                            "preferred": True,
+                                        },
                                     },
-                                },
-                                {
-                                    "start": "2026-06-16T16:30:00+01:00",
-                                    "end": "2026-06-16T18:00:00+01:00",
-                                    "timezone": "Atlantic/Canary",
-                                    "owner_id": "owner-maria-uuid",
-                                    "owner_name": "María Gutiérrez",
-                                },
-                                {
-                                    "start": "2026-06-16T17:00:00+01:00",
-                                    "end": "2026-06-16T18:30:00+01:00",
-                                    "timezone": "Atlantic/Canary",
-                                    "owner_id": "owner-claudia-uuid",
-                                    "owner_name": "Claudia Estética",
-                                },
-                            ],
-                        },
+                                    {
+                                        "start": "2026-06-16T16:30:00+01:00",
+                                        "end": "2026-06-16T18:00:00+01:00",
+                                        "timezone": "Atlantic/Canary",
+                                        "duration_minutes": 90,
+                                        "owner_id": "owner-maria-uuid",
+                                        "owner_name": "María Gutiérrez",
+                                        "owner_email": "maria@example.com",
+                                        "owner_preferred": False,
+                                        "owner": {
+                                            "id": "owner-maria-uuid",
+                                            "name": "María Gutiérrez",
+                                            "email": "maria@example.com",
+                                            "preferred": False,
+                                        },
+                                    },
+                                    {
+                                        "start": "2026-06-16T17:00:00+01:00",
+                                        "end": "2026-06-16T18:30:00+01:00",
+                                        "timezone": "Atlantic/Canary",
+                                        "duration_minutes": 90,
+                                        "owner_id": "owner-claudia-uuid",
+                                        "owner_name": "Claudia Estética",
+                                        "owner_email": "claudia@example.com",
+                                        "owner_preferred": True,
+                                        "owner": {
+                                            "id": "owner-claudia-uuid",
+                                            "name": "Claudia Estética",
+                                            "email": "claudia@example.com",
+                                            "preferred": True,
+                                        },
+                                    },
+                                ],
+                            },
+                            ensure_ascii=False,
+                        ),
                     }
                 ],
                 "response_id": "resp-sequence",
@@ -3191,6 +3296,8 @@ async def test_appointment_availability_execution_service_filters_tools_and_uses
     assert outcome.offered_slots[0]["owner_name"] == "Claudia Estética"
     assert outcome.offered_slots[0]["owner_email"] == "claudia@example.com"
     assert outcome.offered_slots[0]["owner_ref"] == "claudia-ref"
+    assert outcome.offered_slots[0]["owner"]["id"] == "owner-claudia-uuid"
+    assert outcome.offered_slots[0]["owner"]["preferred"] is True
     assert fake_llm.resolve_configuration_calls == 1
     assert len(fake_llm.calls) == 1
     assert fake_llm.calls[0]["allowed_tools"] == ["services_search", "appointment_availability"]
@@ -3202,6 +3309,165 @@ async def test_appointment_availability_execution_service_filters_tools_and_uses
     assert "services_search una sola vez" in fake_llm.calls[0]["system_prompt"]
     assert "appointment_availability una sola vez" in fake_llm.calls[0]["system_prompt"]
     assert outcome.bounded_single_tool_call is False
+
+
+@pytest.mark.asyncio
+async def test_runtime_recovers_offered_slots_from_backend_summary_context_and_selects_slot(monkeypatch: pytest.MonkeyPatch):
+    backend = RecordingBackendClient(
+        ref_context=BackendRoutingEntryPointUtmContext.model_validate(
+            {
+                "entry_point_utm_id": "utm-1",
+                "ref": "abc123",
+                "entry_point_id": "entrypoint-1",
+                "entry_point_code": "crm-demo",
+                "tenant_id": "tenant-1",
+                "tenant_slug": "negocio-demo",
+                "product_id": "product-1",
+                "product_name": "CRM Automation",
+                "playbook_id": "playbook-1",
+                "crm_branch_ref": "branch-1",
+                "utm_source": "google",
+                "utm_medium": "cpc",
+                "utm_campaign": "crm_pymes",
+                "status": "matched",
+            }
+        ),
+        tenant_context=build_context(),
+        mcp_config=McpRemoteConfig(
+            enabled=True,
+            server_label="tenant_main_mcp",
+            server_url="https://mcp.example.test",
+            allowed_tools=["services_search", "appointment_availability", "appointment_confirm"],
+            timeout_seconds=15,
+        ),
+        conversation_result={
+            "created": True,
+            "conversation": {
+                "id": "conversation-1",
+                "status": "active",
+                "summary": None,
+            },
+        },
+    )
+    backend.settings = Settings()
+    backend.settings.new_llm_orchestration_enabled = True
+    backend.settings.new_llm_orchestration_catalog_execution_enabled = False
+    backend.settings.new_llm_orchestration_appointment_availability_enabled = True
+    backend.settings.new_llm_orchestration_slot_selection_enabled = True
+
+    offered_slots = [
+        {
+            "start": "2026-06-16T16:00:00+01:00",
+            "end": "2026-06-16T17:30:00+01:00",
+            "timezone": "Atlantic/Canary",
+            "service_id": "service-uuid",
+            "service_name": "Láser cuerpo entero",
+            "duration_minutes": 90,
+            "owner_id": "owner-claudia-uuid",
+            "owner_name": "Claudia Estética",
+            "owner_email": "claudia@example.com",
+            "owner_ref": "claudia-ref",
+            "owner_preferred": True,
+            "owner": {
+                "id": "owner-claudia-uuid",
+                "name": "Claudia Estética",
+                "email": "claudia@example.com",
+                "preferred": True,
+                "ref": "claudia-ref",
+            },
+            "slot_label": "16:00",
+            "display_time": "16:00",
+        },
+        {
+            "start": "2026-06-16T16:30:00+01:00",
+            "end": "2026-06-16T18:00:00+01:00",
+            "timezone": "Atlantic/Canary",
+            "service_id": "service-uuid",
+            "service_name": "Láser cuerpo entero",
+            "duration_minutes": 90,
+            "owner_id": "owner-maria-uuid",
+            "owner_name": "María Gutiérrez",
+            "owner_email": "maria@example.com",
+            "owner_preferred": False,
+            "owner": {
+                "id": "owner-maria-uuid",
+                "name": "María Gutiérrez",
+                "email": "maria@example.com",
+                "preferred": False,
+            },
+            "slot_label": "16:30",
+            "display_time": "16:30",
+        },
+    ]
+    await backend.create_conversation_message(
+        BackendConversationMessagePayload(
+            conversation_id="conversation-1",
+            direction="outbound",
+            role="assistant",
+            message_type="text",
+            body="Para láser cuerpo entero mañana por la tarde tengo 16:00 y 16:30. ¿Cuál prefieres?",
+            provider="openai",
+            model="gpt-4.1-mini",
+            latency_ms=62,
+            intent="request_availability",
+            score=91,
+            action="answer_question",
+            needs_human=False,
+            raw_payload=build_availability_summary_raw_payload(offered_slots, "Para láser cuerpo entero mañana por la tarde tengo 16:00 y 16:30. ¿Cuál prefieres?"),
+            metadata={
+                "data_to_save": build_availability_summary_raw_payload(offered_slots, "Para láser cuerpo entero mañana por la tarde tengo 16:00 y 16:30. ¿Cuál prefieres?")[
+                    "data_to_save"
+                ],
+            },
+        )
+    )
+
+    async def fake_second_shadow_execute(self, payload, routing, backend_context, contact_context):
+        trace = build_slot_selection_shadow_trace()
+        trace.steps[0].output["entities"]["time"] = "16:00"
+        trace.steps[0].output["entities"]["slot_reference"] = "exact_time"
+        trace.steps[0].output["entities"]["selected_slot_index"] = None
+        trace.steps[0].output["entities"]["owner_name"] = None
+        trace.steps[0].output["entities"]["owner_id"] = None
+        return trace
+
+    monkeypatch.setattr(DecisionEngine, "decide", fail_if_decide_called)
+    monkeypatch.setattr(CatalogExecutionService, "execute", assert_slice_not_called)
+    monkeypatch.setattr(
+        AgentRuntime,
+        "_resolve_agenda_effective_timezone_details",
+        lambda self, backend_context, contact_context=None: ("Atlantic/Canary", "crm_tenant"),
+    )
+
+    runtime = AgentRuntime(backend, RuntimeRoutingResolver(backend), DecisionEngine(backend))  # type: ignore[arg-type]
+
+    monkeypatch.setattr(ShadowPlanningService, "execute", fake_second_shadow_execute)
+    second_response = await runtime.respond(
+        AgentRequest(
+            tenant_id="tenant-1",
+            entrypoint_ref="abc123",
+            message="Elijo las 16:00",
+            contact=Contact(phone="+34999999999"),
+            conversation={"external_id": "slot-owner-flow-001"},
+        )
+    )
+
+    assert second_response.intent == "select_offered_slot"
+    assert second_response.data_to_save["new_llm_orchestration_slot_selection_attempted"] is True
+    assert second_response.data_to_save["new_llm_orchestration_slot_selection_ok"] is True
+    assert second_response.data_to_save["new_llm_orchestration_selected_slot"]["start"] == "2026-06-16T16:00:00+01:00"
+    assert second_response.data_to_save["new_llm_orchestration_selected_slot"]["owner"]["id"] == "owner-claudia-uuid"
+    assert second_response.data_to_save["new_llm_orchestration_selected_slot"]["owner"]["preferred"] is True
+    assert second_response.data_to_save["new_llm_orchestration_slot_selection_trace"]["appointment_context"]["offered_slots"][0]["owner"]["id"] == "owner-claudia-uuid"
+    assert second_response.data_to_save["new_llm_orchestration_slot_selection_trace"]["offered_slots"][0]["owner"]["name"] == "Claudia Estética"
+    assert any(
+        call[0] == "get_conversation_summary_context"
+        and call[1][0] == "conversation-1"
+        and call[1][2] == "tenant-1"
+        and call[1][3] == "slot-owner-flow-001"
+        and call[1][4] == "+34999999999"
+        for call in backend.calls
+    )
 
 
 @pytest.mark.asyncio
@@ -3417,7 +3683,99 @@ async def test_slot_selection_execution_service_selects_exact_time_from_structur
     assert outcome.selected_slot["owner_name"] == "María Gutiérrez"
     assert outcome.selected_slot_match_count == 1
     assert outcome.selected_slot_ambiguous is False
-    assert outcome.reply == "Perfecto, tengo seleccionado el horario de 16:30 con María Gutiérrez para Láser cuerpo entero. ¿Confirmo la reserva?"
+    assert outcome.reply == "Perfecto, tengo el martes 16/06 a las 16:30 con María Gutiérrez para Láser cuerpo entero. ¿Confirmo la cita?"
+
+
+@pytest.mark.asyncio
+async def test_slot_selection_execution_service_marks_time_only_selection_as_ambiguous_when_owner_collides():
+    service = SlotSelectionExecutionService(settings=Settings())  # type: ignore[arg-type]
+    trace = build_slot_selection_shadow_trace()
+    context_message = build_offered_slots_context_message()
+    offered_slots = context_message["metadata"]["data_to_save"]["new_llm_orchestration_offered_slots"]
+    offered_slots[1]["start"] = "2026-06-16T16:00:00+01:00"
+    offered_slots[1]["end"] = "2026-06-16T17:30:00+01:00"
+    offered_slots[1]["display_time"] = "16:00"
+    offered_slots[1]["slot_label"] = "16:00"
+
+    payload = AgentRequest(
+        tenant_id="tenant-1",
+        message="Elijo las 16:00",
+        contact=Contact(phone="+34999999999", name="Federico Martín"),
+        conversation={
+            "external_id": "conversation-1",
+            "context_messages": [context_message],
+        },
+    )
+
+    trace.steps[0].output["entities"]["time"] = "16:00"
+    trace.steps[0].output["entities"]["slot_reference"] = "exact_time"
+    trace.steps[0].output["entities"]["selected_slot_index"] = None
+    trace.steps[0].output["entities"]["owner_name"] = None
+    trace.steps[0].output["entities"]["owner_id"] = None
+
+    outcome = await service.execute(
+        payload,
+        RoutingContext(tenant_id="tenant-1", tenant_slug="negocio-demo"),
+        build_context(),
+        None,
+        trace,
+        McpRemoteConfig(enabled=True, server_label="tenant_main_mcp", server_url="https://mcp.example.test", allowed_tools=["appointment_availability"], timeout_seconds=15),
+    )
+
+    assert outcome.ok is True
+    assert outcome.selected_slot is None
+    assert outcome.selected_slot_ambiguous is True
+    assert outcome.selected_slot_match_count == 2
+    assert "varios horarios posibles" in outcome.reply.lower()
+    assert "claudia" in outcome.reply.lower()
+    assert "maría" in outcome.reply.lower() or "maria" in outcome.reply.lower()
+
+
+@pytest.mark.asyncio
+async def test_slot_selection_execution_service_selects_time_when_owner_is_structured():
+    service = SlotSelectionExecutionService(settings=Settings())  # type: ignore[arg-type]
+    trace = build_slot_selection_shadow_trace()
+    context_message = build_offered_slots_context_message()
+    offered_slots = context_message["metadata"]["data_to_save"]["new_llm_orchestration_offered_slots"]
+    offered_slots[1]["start"] = "2026-06-16T16:00:00+01:00"
+    offered_slots[1]["end"] = "2026-06-16T17:30:00+01:00"
+    offered_slots[1]["display_time"] = "16:00"
+    offered_slots[1]["slot_label"] = "16:00"
+
+    payload = AgentRequest(
+        tenant_id="tenant-1",
+        message="El de María a las 16:00",
+        contact=Contact(phone="+34999999999", name="Federico Martín"),
+        conversation={
+            "external_id": "conversation-1",
+            "context_messages": [context_message],
+        },
+    )
+
+    trace.steps[0].output["entities"]["time"] = "16:00"
+    trace.steps[0].output["entities"]["slot_reference"] = "exact_time"
+    trace.steps[0].output["entities"]["selected_slot_index"] = None
+    trace.steps[0].output["entities"]["owner_name"] = "María"
+    trace.steps[0].output["entities"]["owner_id"] = None
+
+    outcome = await service.execute(
+        payload,
+        RoutingContext(tenant_id="tenant-1", tenant_slug="negocio-demo"),
+        build_context(),
+        None,
+        trace,
+        McpRemoteConfig(enabled=True, server_label="tenant_main_mcp", server_url="https://mcp.example.test", allowed_tools=["appointment_availability"], timeout_seconds=15),
+    )
+
+    assert outcome.ok is True
+    assert outcome.selected_slot is not None
+    assert outcome.selected_slot["start"] == "2026-06-16T16:00:00+01:00"
+    assert outcome.selected_slot["owner_name"] == "María Gutiérrez"
+    assert outcome.selected_slot["owner"]["id"] == "owner-maria-uuid"
+    assert outcome.selected_slot["owner"]["email"] == "maria@example.com"
+    assert outcome.selected_slot["owner"]["preferred"] is False
+    assert outcome.selection_mode == "exact_time_with_owner"
+    assert "María Gutiérrez" in outcome.reply
 
 
 @pytest.mark.asyncio
@@ -3926,28 +4284,43 @@ async def test_runtime_applies_appointment_availability_slice_when_shadow_planni
             },
             bounded_single_tool_call=True,
             mcp_allowed_tools=["services_search", "appointment_availability"],
-            offered_slots=[
-                {
-                    "start": "2026-06-16T16:00:00+01:00",
-                    "end": "2026-06-16T17:30:00+01:00",
-                    "timezone": "Atlantic/Canary",
-                    "service_id": "service-uuid",
-                    "service_name": "Láser cuerpo entero",
-                    "owner_id": "owner-claudia-uuid",
-                    "owner_name": "Claudia Estética",
-                    "owner_email": "claudia@example.com",
-                    "owner_ref": "claudia-ref",
-                },
-                {
-                    "start": "2026-06-16T16:30:00+01:00",
-                    "end": "2026-06-16T18:00:00+01:00",
-                    "timezone": "Atlantic/Canary",
-                    "service_id": "service-uuid",
-                    "service_name": "Láser cuerpo entero",
-                    "owner_id": "owner-maria-uuid",
-                    "owner_name": "María Gutiérrez",
-                },
-            ],
+                offered_slots=[
+                    {
+                        "start": "2026-06-16T16:00:00+01:00",
+                        "end": "2026-06-16T17:30:00+01:00",
+                        "timezone": "Atlantic/Canary",
+                        "service_id": "service-uuid",
+                        "service_name": "Láser cuerpo entero",
+                        "owner_id": "owner-claudia-uuid",
+                        "owner_name": "Claudia Estética",
+                        "owner_email": "claudia@example.com",
+                        "owner_ref": "claudia-ref",
+                        "owner_preferred": True,
+                        "owner": {
+                            "id": "owner-claudia-uuid",
+                            "name": "Claudia Estética",
+                            "email": "claudia@example.com",
+                            "preferred": True,
+                        },
+                    },
+                    {
+                        "start": "2026-06-16T16:30:00+01:00",
+                        "end": "2026-06-16T18:00:00+01:00",
+                        "timezone": "Atlantic/Canary",
+                        "service_id": "service-uuid",
+                        "service_name": "Láser cuerpo entero",
+                        "owner_id": "owner-maria-uuid",
+                        "owner_name": "María Gutiérrez",
+                        "owner_email": "maria@example.com",
+                        "owner_preferred": False,
+                        "owner": {
+                            "id": "owner-maria-uuid",
+                            "name": "María Gutiérrez",
+                            "email": "maria@example.com",
+                            "preferred": False,
+                        },
+                    },
+                ],
             mcp_tool_traces=[
                 {"tool_name": "services_search", "status": "completed"},
                 {"tool_name": "appointment_availability", "status": "completed"},
@@ -3995,6 +4368,10 @@ async def test_runtime_applies_appointment_availability_slice_when_shadow_planni
     assert response.data_to_save["new_llm_orchestration_offered_slots"][0]["owner_name"] == "Claudia Estética"
     assert response.data_to_save["new_llm_orchestration_offered_slots"][0]["owner_email"] == "claudia@example.com"
     assert response.data_to_save["new_llm_orchestration_offered_slots"][0]["owner_ref"] == "claudia-ref"
+    assert response.data_to_save["new_llm_orchestration_offered_slots"][0]["owner"]["id"] == "owner-claudia-uuid"
+    assert response.data_to_save["new_llm_orchestration_offered_slots"][0]["owner"]["name"] == "Claudia Estética"
+    assert response.data_to_save["new_llm_orchestration_offered_slots"][0]["owner"]["email"] == "claudia@example.com"
+    assert response.data_to_save["new_llm_orchestration_offered_slots"][0]["owner"]["preferred"] is True
 
 
 @pytest.mark.asyncio
@@ -4268,6 +4645,173 @@ async def test_runtime_applies_slot_selection_slice_from_structured_offered_slot
     backend.settings.new_llm_orchestration_slot_selection_enabled = True
 
     async def fake_shadow_execute(self, payload, routing, backend_context, contact_context):
+        trace = build_slot_selection_shadow_trace()
+        trace.steps[0].output["entities"]["time"] = "16:30"
+        trace.steps[0].output["entities"]["slot_reference"] = "exact_time"
+        trace.steps[0].output["entities"]["selected_slot_index"] = None
+        trace.steps[0].output["entities"]["owner_name"] = None
+        trace.steps[0].output["entities"]["owner_id"] = None
+        return trace
+
+    monkeypatch.setattr(DecisionEngine, "decide", fail_if_decide_called)
+    monkeypatch.setattr(ShadowPlanningService, "execute", fake_shadow_execute)
+    monkeypatch.setattr(CatalogExecutionService, "execute", assert_slice_not_called)
+    monkeypatch.setattr(AppointmentAvailabilityExecutionService, "execute", assert_slice_not_called)
+    monkeypatch.setattr(
+        AgentRuntime,
+        "_resolve_agenda_effective_timezone_details",
+        lambda self, backend_context, contact_context=None: ("Atlantic/Canary", "crm_tenant"),
+    )
+
+    runtime = AgentRuntime(backend, RuntimeRoutingResolver(backend), DecisionEngine(backend))  # type: ignore[arg-type]
+
+    offered_slots_context = build_offered_slots_context_message()
+    offered_slots = offered_slots_context["metadata"]["data_to_save"]["new_llm_orchestration_offered_slots"]
+    await backend.create_conversation_message(
+        BackendConversationMessagePayload(
+            conversation_id="conversation-1",
+            direction="outbound",
+            role="assistant",
+            message_type="text",
+            body="Para el lunes 16 de junio por la tarde hay disponibilidad a las 16:00, 16:30 y 17:00.",
+            provider="openai",
+            model="gpt-4.1-mini",
+            latency_ms=62,
+            intent="request_availability",
+            score=91,
+            action="answer_question",
+            needs_human=False,
+            raw_payload=build_availability_summary_raw_payload(
+                offered_slots,
+                "Para el lunes 16 de junio por la tarde hay disponibilidad a las 16:00, 16:30 y 17:00.",
+            ),
+            metadata={
+                "data_to_save": build_availability_summary_raw_payload(
+                    offered_slots,
+                    "Para el lunes 16 de junio por la tarde hay disponibilidad a las 16:00, 16:30 y 17:00.",
+                )["data_to_save"],
+            },
+        )
+    )
+
+    payload = AgentRequest(
+        tenant_id="tenant-ignored",
+        entrypoint_ref="abc123",
+        message="Prefiero el de las 16:30",
+        contact=Contact(phone="+34999999999", name="Federico Martín"),
+        conversation={
+            "external_id": "conversation-1",
+        },
+    )
+
+    response = await runtime.respond(payload)
+
+    assert response.reply == "Perfecto, tengo el martes 16/06 a las 16:30 con María Gutiérrez para Láser cuerpo entero. ¿Confirmo la cita?"
+    assert response.intent == "select_offered_slot"
+    assert response.action == "answer_question"
+    assert response.data_to_save["new_llm_orchestration_slot_selection_attempted"] is True
+    assert response.data_to_save["new_llm_orchestration_slot_selection_ok"] is True
+    assert response.data_to_save["new_llm_orchestration_slot_selection_used"] is True
+    assert response.data_to_save["new_llm_orchestration_slot_selection_trace"]["ok"] is True
+    assert response.data_to_save["selected_slot"]["start"] == "2026-06-16T16:30:00+01:00"
+    assert response.data_to_save["required_next_action"] == "appointment_confirm"
+    assert response.data_to_save["new_llm_orchestration_selected_slot"]["start"] == "2026-06-16T16:30:00+01:00"
+    assert response.data_to_save["new_llm_orchestration_offered_slots_count"] == 3
+    assert "appointment_confirm" not in json.dumps(response.data_to_save.get("new_llm_orchestration_slot_selection_trace", {}))
+    assert any(
+        call[0] == "get_conversation_summary_context"
+        and call[1][0] == "conversation-1"
+        and call[1][2] == "tenant-1"
+        and call[1][3] == "conversation-1"
+        and call[1][4] == "+34999999999"
+        for call in backend.calls
+    )
+
+
+@pytest.mark.asyncio
+async def test_runtime_recovers_summary_context_from_external_id_when_internal_conversation_id_is_missing(monkeypatch: pytest.MonkeyPatch):
+    backend = RecordingBackendClient(
+        ref_context=BackendRoutingEntryPointUtmContext.model_validate(
+            {
+                "entry_point_utm_id": "utm-1",
+                "ref": "abc123",
+                "entry_point_id": "entrypoint-1",
+                "entry_point_code": "crm-demo",
+                "tenant_id": "tenant-1",
+                "tenant_slug": "negocio-demo",
+                "product_id": "product-1",
+                "product_name": "CRM Automation",
+                "playbook_id": "playbook-1",
+                "crm_branch_ref": "branch-1",
+                "utm_source": "google",
+                "utm_medium": "cpc",
+                "utm_campaign": "crm_pymes",
+            }
+        ),
+        tenant_context=build_context(),
+        conversation_result={
+            "created": True,
+            "conversation": {
+                "status": "active",
+                "summary": None,
+            },
+        },
+    )
+    backend.settings = Settings()
+    backend.settings.new_llm_orchestration_enabled = True
+    backend.settings.new_llm_orchestration_catalog_execution_enabled = False
+    backend.settings.new_llm_orchestration_appointment_availability_enabled = False
+    backend.settings.new_llm_orchestration_slot_selection_enabled = True
+
+    offered_slots = [
+        {
+            "start": "2026-06-16T16:00:00+01:00",
+            "end": "2026-06-16T17:30:00+01:00",
+            "timezone": "Atlantic/Canary",
+            "service_id": "service-uuid",
+            "service_name": "Láser cuerpo entero",
+            "duration_minutes": 90,
+            "owner": {
+                "id": "owner-claudia-uuid",
+                "name": "Claudia Estética",
+                "email": "claudia@example.com",
+                "preferred": True,
+            },
+            "slot_label": "16:00",
+            "display_time": "16:00",
+        }
+    ]
+
+    class SummaryMessageStub:
+        def __init__(self, payload: dict[str, object]) -> None:
+            self.payload = payload
+
+        def model_dump(self):
+            return self.payload
+
+    class SummaryContextStub:
+        def __init__(self, messages: list[SummaryMessageStub]) -> None:
+            self.messages = messages
+
+    backend.summary_context = SummaryContextStub(
+        [
+            SummaryMessageStub(
+                {
+                    "conversation_id": "conversation-1",
+                    "direction": "outbound",
+                    "role": "assistant",
+                    "message_type": "text",
+                    "body": "Para láser cuerpo entero mañana por la tarde tengo 16:00. ¿Cuál prefieres?",
+                    "raw_payload": build_availability_summary_raw_payload(
+                        offered_slots,
+                        "Para láser cuerpo entero mañana por la tarde tengo 16:00. ¿Cuál prefieres?",
+                    ),
+                }
+            )
+        ]
+    )
+
+    async def fake_shadow_execute(self, payload, routing, backend_context, contact_context):
         return build_slot_selection_shadow_trace()
 
     monkeypatch.setattr(DecisionEngine, "decide", fail_if_decide_called)
@@ -4281,29 +4825,44 @@ async def test_runtime_applies_slot_selection_slice_from_structured_offered_slot
     )
 
     runtime = AgentRuntime(backend, RuntimeRoutingResolver(backend), DecisionEngine(backend))  # type: ignore[arg-type]
-    payload = AgentRequest(
-        tenant_id="tenant-ignored",
-        entrypoint_ref="abc123",
-        message="Prefiero el de las 16:30",
-        contact=Contact(phone="+34999999999", name="Federico Martín"),
-        conversation={
-            "external_id": "conversation-1",
-            "context_messages": [build_offered_slots_context_message()],
-        },
+
+    async def fake_external_id_shadow_execute(self, payload, routing, backend_context, contact_context):
+        trace = build_slot_selection_shadow_trace()
+        trace.steps[0].output["entities"]["time"] = "16:00"
+        trace.steps[0].output["entities"]["slot_reference"] = "exact_time"
+        trace.steps[0].output["entities"]["selected_slot_index"] = None
+        trace.steps[0].output["entities"]["owner_name"] = None
+        trace.steps[0].output["entities"]["owner_id"] = None
+        return trace
+
+    monkeypatch.setattr(ShadowPlanningService, "execute", fake_external_id_shadow_execute)
+
+    response = await runtime.respond(
+        AgentRequest(
+            tenant_id="tenant-1",
+            entrypoint_ref="abc123",
+            message="Elijo las 16:00",
+            contact=Contact(phone="+34999999999"),
+            conversation={"external_id": "external-slot-flow-001"},
+        )
     )
 
-    response = await runtime.respond(payload)
-
-    assert response.reply == "Perfecto. Estoy revisando ese horario. Si necesito algún dato adicional para cerrarlo, te lo pediré ahora."
     assert response.intent == "select_offered_slot"
-    assert response.action == "answer_question"
     assert response.data_to_save["new_llm_orchestration_slot_selection_attempted"] is True
     assert response.data_to_save["new_llm_orchestration_slot_selection_ok"] is True
-    assert response.data_to_save["new_llm_orchestration_slot_selection_used"] is True
-    assert response.data_to_save["new_llm_orchestration_slot_selection_trace"]["ok"] is True
-    assert response.data_to_save["new_llm_orchestration_selected_slot"]["start"] == "2026-06-16T16:30:00+01:00"
-    assert response.data_to_save["new_llm_orchestration_offered_slots_count"] == 3
-    assert "appointment_confirm" not in json.dumps(response.data_to_save.get("new_llm_orchestration_slot_selection_trace", {}))
+    assert response.data_to_save.get("new_llm_orchestration_slot_selection_fallback_reason") != "offered_slots_missing"
+    assert response.data_to_save["selected_slot"] is not None
+    assert response.data_to_save["required_next_action"] == "collect_customer_name"
+    assert response.data_to_save["new_llm_orchestration_selected_slot"] is not None
+    assert response.data_to_save["new_llm_orchestration_selected_slot"]["owner"]["id"] == "owner-claudia-uuid"
+    assert response.data_to_save["new_llm_orchestration_slot_selection_trace"]["appointment_context"]["offered_slots"][0]["owner"]["name"] == "Claudia Estética"
+    assert any(
+        call[0] == "get_conversation_summary_context"
+        and call[1][0] == "external-slot-flow-001"
+        and call[1][2] == "tenant-1"
+        and call[1][3] == "external-slot-flow-001"
+        for call in backend.calls
+    )
 
 
 @pytest.mark.asyncio
