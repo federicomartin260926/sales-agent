@@ -65,11 +65,15 @@ class OrchestrationContextBuilder:
         persisted_contact_name = self._latest_persisted_contact_name(conversation_messages)
         offered_slots = self._latest_offered_slots(conversation_messages)
         selected_slot = self._latest_selected_slot(conversation_messages)
+        existing_appointment = self._latest_existing_appointment(conversation_messages)
+        existing_appointments = self._latest_existing_appointments(conversation_messages)
         required_next_action = self._latest_required_next_action(conversation_messages)
 
         appointment: dict[str, Any] = {
             "offered_slots": offered_slots,
             "selected_slot": selected_slot,
+            "existing_appointment": existing_appointment,
+            "existing_appointments": existing_appointments,
             "required_next_action": required_next_action,
             "timezone": timezone,
             "timezone_source": timezone_source,
@@ -116,11 +120,17 @@ class OrchestrationContextBuilder:
         selected_end = self._clean(selected_slot.get("end") or selected_slot.get("end_at") or selected_slot.get("endAt"))
         selected_service_id = self._clean(selected_slot.get("service_id") or selected_slot.get("serviceId"))
         selected_owner_id = self._clean(selected_slot.get("owner_id") or selected_slot.get("ownerId"))
+        if selected_owner_id is None:
+            owner = selected_slot.get("owner")
+            if isinstance(owner, dict):
+                selected_owner_id = self._clean(owner.get("id"))
 
+        candidates: list[dict[str, Any]] = []
         for slot in offered_slots:
             if not isinstance(slot, dict):
                 continue
-            if selected_start is None or selected_start != self._clean(slot.get("start") or slot.get("start_at") or slot.get("startAt")):
+            offered_start = self._clean(slot.get("start") or slot.get("start_at") or slot.get("startAt"))
+            if selected_start is None or selected_start != offered_start:
                 continue
             slot_end = self._clean(slot.get("end") or slot.get("end_at") or slot.get("endAt"))
             if selected_end is not None and slot_end is not None and selected_end != slot_end:
@@ -129,9 +139,42 @@ class OrchestrationContextBuilder:
             if selected_service_id is not None and slot_service_id is not None and selected_service_id != slot_service_id:
                 continue
             slot_owner_id = self._clean(slot.get("owner_id") or slot.get("ownerId"))
+            if slot_owner_id is None:
+                owner = slot.get("owner")
+                if isinstance(owner, dict):
+                    slot_owner_id = self._clean(owner.get("id"))
             if selected_owner_id is not None and slot_owner_id is not None and selected_owner_id != slot_owner_id:
                 continue
-            return dict(slot)
+            candidates.append(dict(slot))
+
+        if len(candidates) == 1:
+            return candidates[0]
+        return None
+
+    def validate_existing_appointment(
+        self,
+        selected_appointment: dict[str, Any] | None,
+        existing_appointments: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        """Validate a selected existing appointment by id only.
+
+        The LLM chooses which appointment it means. SA only checks that the
+        selected id exists in the structured list already present in context.
+        """
+        if not isinstance(selected_appointment, dict) or not isinstance(existing_appointments, list) or not existing_appointments:
+            return None
+
+        selected_id = self._clean(selected_appointment.get("id"))
+        if selected_id is None:
+            return None
+
+        for appointment in existing_appointments:
+            if not isinstance(appointment, dict):
+                continue
+            appointment_id = self._clean(appointment.get("id"))
+            if appointment_id is not None and appointment_id == selected_id:
+                return dict(appointment)
+
         return None
 
     def _latest_offered_slots(self, messages: list[dict[str, Any]], max_slots: int = 60) -> list[dict[str, Any]]:
@@ -149,6 +192,22 @@ class OrchestrationContextBuilder:
                 if isinstance(slot, dict) and slot:
                     return dict(slot)
         return None
+
+    def _latest_existing_appointment(self, messages: list[dict[str, Any]]) -> dict[str, Any] | None:
+        for message in reversed(messages):
+            for data in self._data_to_save_candidates(message):
+                appointment = data.get("existing_appointment")
+                if isinstance(appointment, dict) and appointment:
+                    return dict(appointment)
+        return None
+
+    def _latest_existing_appointments(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        for message in reversed(messages):
+            for data in self._data_to_save_candidates(message):
+                appointments = data.get("existing_appointments")
+                if isinstance(appointments, list):
+                    return [dict(appointment) for appointment in appointments if isinstance(appointment, dict)]
+        return []
 
     def _latest_required_next_action(self, messages: list[dict[str, Any]]) -> str | None:
         for message in reversed(messages):

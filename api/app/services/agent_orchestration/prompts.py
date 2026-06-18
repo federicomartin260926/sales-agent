@@ -27,6 +27,7 @@ INTENT_VALUES = [
     "inventory_similarity_search",
     "request_availability",
     "select_offered_slot",
+    "select_existing_appointment",
     "request_booking_confirmation",
     "request_reschedule",
     "request_cancel",
@@ -187,6 +188,10 @@ Reglas para agenda:
 - Para "mañana por la tarde", usa entities.date="tomorrow" y entities.time_of_day="afternoon".
 - Para "pasado mañana", usa entities.date="day_after_tomorrow".
 - Si el usuario elige entre slots ya ofrecidos, usa intent="select_offered_slot" y action="prepare_booking_confirmation".
+- Si hay varios slots con la misma hora, no basta con la hora: si el usuario menciona profesional/owner, usa esa referencia para distinguir el slot correcto dentro de appointment.offered_slots.
+- Si el usuario dice "el de las 16:00 con María", sigue siendo select_offered_slot, pero la selección debe resolverse contra el owner del slot ofrecido, no solo contra el start/time.
+- Si el contexto indica que hay existing_appointments y el usuario elige una de esas citas por hora, fecha, profesional, índice o referencia similar, NO uses intent="select_offered_slot"; usa intent="select_existing_appointment" y action="prepare_reschedule".
+- select_offered_slot se reserva para elegir horarios nuevos ofrecidos en appointment.offered_slots.
 - Si el usuario dice "el de las 16:30", devuelve entities.time="16:30" y entities.slot_reference="exact_time".
 - Si el usuario dice "el primero", devuelve entities.selected_slot_index=0 y entities.slot_reference="first".
 - Si el usuario dice "el último", devuelve entities.slot_reference="last".
@@ -366,9 +371,34 @@ Reglas de catálogo/servicios:
 Reglas de agenda:
 - appointment.offered_slots es la fuente de verdad para slots previamente ofrecidos.
 - Si debes seleccionar un turno, compara el mensaje humano con appointment.offered_slots y devuelve selected_slot copiando literalmente el slot elegido.
-- selected_slot debe ser un objeto copiado de appointment.offered_slots o de una tool de disponibilidad recién ejecutada.
+- Si hay varios slots con la misma hora, no elijas por start/time solamente; usa la referencia explícita del profesional/owner cuando exista.
+- Si el usuario menciona un profesional/owner, el selected_slot devuelto debe corresponder a ese owner; no digas que has seleccionado "con María" si selected_slot.owner.name/id no coincide con María.
+- selected_slot debe ser el objeto exacto de appointment.offered_slots o de una tool de disponibilidad recién ejecutada, incluyendo owner si existe.
 - No inventes selected_slot.
 - No devuelvas selected_slot parcial si faltan start/end/service/owner necesarios.
+- appointment.existing_appointment y appointment.existing_appointments son la fuente de verdad para flujos de reprogramación.
+- Si el usuario quiere reprogramar y no hay existing_appointment ni existing_appointments, usa appointment_events si está disponible; si no, pide datos suficientes o deriva según contexto.
+- Si existing_appointments contiene varias citas, no elijas una sin una referencia clara y estructurada; pide al usuario que indique cuál quiere cambiar y no llames appointment_reschedule.
+- Si intent="select_existing_appointment", usa runtime_context.appointment.existing_appointments como fuente de verdad; no devuelvas selected_slot; devuelve en data_to_save.existing_appointment la cita completa seleccionada o al menos el objeto con id y campos disponibles; si no puedes seleccionar con seguridad entre varias, pide aclaración.
+- Si intent="select_existing_appointment" y existing_appointments ya está en contexto, no llames tools para seleccionar.
+- Después de seleccionar una cita existente, pide el nuevo día/hora/franja para reprogramarla y no llames appointment_reschedule todavía.
+- Si existing_appointment existe y todavía no hay selected_slot nuevo, pide un nuevo día/hora/franja; o usa appointment_availability si el usuario ya indicó una preferencia temporal.
+- Mantén servicio, profesional/owner, duración y timezone de la cita existente cuando estén disponibles.
+- Si hay offered_slots y el usuario selecciona un nuevo horario, devuelve selected_slot estructurado y no llames appointment_reschedule todavía; pide confirmación explícita del cambio.
+- Solo llama appointment_reschedule si está en tool_plan.allowed_tools, existe appointment.existing_appointment, existe appointment.selected_slot, el usuario confirmó explícitamente el cambio y required_next_action permite appointment_reschedule.
+- Si appointment_reschedule devuelve error, no afirmes que la cita se cambió; explica brevemente que no se pudo reprogramar y ofrece alternativa o handoff si corresponde.
+- No inventes appointment_id, serviceId, owner, timezone, fechas ni horas.
+- Si runtime_context.contact.name existe o conversation.persisted_contact_name existe, no pidas el nombre de nuevo.
+- Si el contacto ya tiene nombre/teléfono suficiente y existing_appointment + selected_slot están presentes, pide confirmación explícita del cambio y usa required_next_action orientado a confirmar el cambio; no uses required_next_action="collect_customer_name" si el nombre ya está disponible en contexto.
+- Si existing_appointment + selected_slot están presentes para una reprogramación, esto no es una nueva reserva: usa required_next_action="appointment_reschedule" y pide confirmación explícita del cambio, por ejemplo "¿Confirmas que quieres cambiar tu cita al [slot]?"; no uses appointment_confirm ni hables de "reserva".
+- Si existing_appointment existe y el usuario confirma el cambio, mantén el flujo de reprogramación y no lo conviertas en una nueva reserva: no uses appointment_confirm, no pidas servicio de nuevo y usa required_next_action="appointment_reschedule".
+- Si existing_appointment existe, selected_slot está presente y el usuario confirma el cambio, no preguntes por el servicio ni por datos de una cita nueva: el servicio, duración, owner y timezone ya se heredan de la cita existente o del slot seleccionado.
+- Si existing_appointment existe y el usuario confirma el cambio, la respuesta debe hablar de cambiar o reprogramar la cita, no de confirmar una reserva.
+- Si existing_appointment existe y selected_slot está presente, no uses intent="request_booking_confirmation" para disparar appointment_confirm; ese camino solo aplica a citas nuevas sin existing_appointment.
+- Si el usuario dice "sí, confirma el cambio" con existing_appointment + selected_slot, interpreta que confirma la reprogramación y usa required_next_action="appointment_reschedule".
+- appointment_events requiere date_from y date_to.
+- Si quieres consultar citas existentes para reprogramar, cancelar o revisar disponibilidad histórica y no hay fechas concretas en el contexto, construye una ventana futura razonable usando current_date y timezone disponibles, por defecto amplia, por ejemplo desde current_date hasta current_date + 90 días.
+- No inventes citas ni asumas que no existen si appointment_events devuelve validation_error; si la tool falla por rango inválido, informa que no se pudo consultar y pide el dato faltante o reintenta con un rango válido si la tool sigue disponible.
 - Si runtime_context.contact.phone existe, considéralo un teléfono de contacto válido para la reserva y no lo pidas de nuevo.
 - Si ya existe runtime_context.contact.phone y el usuario acaba de aportar contact_name con selected_slot presente, el siguiente paso es pedir confirmación explícita de la reserva.
 - Si el usuario dice "a las 5", decide si corresponde a un slot claro en offered_slots; si no hay contexto suficiente, pregunta.

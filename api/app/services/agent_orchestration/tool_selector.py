@@ -53,8 +53,36 @@ class ToolSelector:
                     reason=f"domain={plan.domain};intent={plan.intent};offered_slots_present=true",
                 )
 
+        if plan.intent == "select_existing_appointment":
+            return ToolPlan(
+                allowed_tools=[],
+                read_tools=[],
+                write_tools=[],
+                reason=f"domain={plan.domain};intent={plan.intent};existing_appointments_selected_by_llm=true",
+            )
+
         if plan.intent == "request_booking_confirmation":
-            selected_slot = context.appointment.get("selected_slot") if isinstance(context.appointment, dict) else None
+            appointment = context.appointment if isinstance(context.appointment, dict) else {}
+            existing_appointment = appointment.get("existing_appointment")
+            selected_slot = appointment.get("selected_slot")
+
+            if isinstance(existing_appointment, dict) and existing_appointment:
+                if isinstance(selected_slot, dict) and bool(selected_slot):
+                    appointment_reschedule_allowed = "appointment_reschedule" in configured
+                    return ToolPlan(
+                        allowed_tools=["appointment_reschedule"] if appointment_reschedule_allowed else [],
+                        read_tools=[],
+                        write_tools=["appointment_reschedule"] if appointment_reschedule_allowed else [],
+                        reason=f"domain={plan.domain};intent={plan.intent};existing_appointment_present;selected_slot_present;route_to_reschedule=true",
+                    )
+
+                return ToolPlan(
+                    allowed_tools=[],
+                    read_tools=[],
+                    write_tools=[],
+                    reason=f"domain={plan.domain};intent={plan.intent};existing_appointment_blocks_booking_confirmation=true",
+                )
+
             if not isinstance(selected_slot, dict) or not selected_slot:
                 return ToolPlan(
                     allowed_tools=[],
@@ -70,6 +98,46 @@ class ToolSelector:
                 read_tools=[],
                 write_tools=["appointment_confirm"] if appointment_confirm_allowed else [],
                 reason=f"domain={plan.domain};intent={plan.intent};selected_slot_present=true",
+            )
+
+        if plan.intent == "request_reschedule":
+            appointment = context.appointment if isinstance(context.appointment, dict) else {}
+            existing_appointment = appointment.get("existing_appointment")
+            selected_slot = appointment.get("selected_slot")
+            required_next_action = appointment.get("required_next_action")
+
+            ready_for_reschedule = (
+                isinstance(existing_appointment, dict)
+                and bool(existing_appointment)
+                and isinstance(selected_slot, dict)
+                and bool(selected_slot)
+                and required_next_action == "appointment_reschedule"
+            )
+
+            if ready_for_reschedule:
+                appointment_reschedule_allowed = "appointment_reschedule" in configured
+                return ToolPlan(
+                    allowed_tools=["appointment_reschedule"] if appointment_reschedule_allowed else [],
+                    read_tools=[],
+                    write_tools=["appointment_reschedule"] if appointment_reschedule_allowed else [],
+                    reason=f"domain={plan.domain};intent={plan.intent};ready_for_reschedule=true",
+                )
+
+            if not isinstance(existing_appointment, dict) or not existing_appointment:
+                read_tools = self._intersect(["appointment_events"], configured)
+                return ToolPlan(
+                    allowed_tools=read_tools,
+                    read_tools=read_tools,
+                    write_tools=[],
+                    reason=f"domain={plan.domain};intent={plan.intent};existing_appointment_missing=true",
+                )
+
+            read_tools = self._intersect(["appointment_availability"], configured)
+            return ToolPlan(
+                allowed_tools=read_tools,
+                read_tools=read_tools,
+                write_tools=[],
+                reason=f"domain={plan.domain};intent={plan.intent};selected_slot_missing=true",
             )
 
         desired_read: list[str] = []

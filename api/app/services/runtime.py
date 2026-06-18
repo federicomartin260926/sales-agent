@@ -292,8 +292,11 @@ class AgentRuntime:
         audio_result: AudioTranscriptionResult | None = None,
     ) -> AgentResponse:
         offered_slots = runtime_context.appointment.get("offered_slots") if isinstance(runtime_context.appointment, dict) else []
-        validated_selected_slot = self.context_builder.validate_selected_slot(final.selected_slot, offered_slots if isinstance(offered_slots, list) else [])
-        selected_slot_invalid = final.selected_slot is not None and validated_selected_slot is None
+        validated_selected_slot = None
+        selected_slot_invalid = False
+        if final.intent != "select_existing_appointment":
+            validated_selected_slot = self.context_builder.validate_selected_slot(final.selected_slot, offered_slots if isinstance(offered_slots, list) else [])
+            selected_slot_invalid = final.selected_slot is not None and validated_selected_slot is None
 
         data_to_save: dict[str, Any] = {
             "orchestration_version": "llm_context_tools_v2_audio",
@@ -303,6 +306,42 @@ class AgentRuntime:
             "mcp_tool_traces": [trace.model_dump(exclude_none=True) for trace in getattr(llm_result, "tool_traces", [])] if llm_result is not None else [],
         }
         data_to_save.update(final.data_to_save or {})
+        if final.intent == "select_existing_appointment":
+            data_to_save.pop("selected_slot", None)
+            data_to_save.pop("new_llm_orchestration_selected_slot", None)
+
+        candidate_existing_appointment = data_to_save.get("existing_appointment")
+        existing_appointments = runtime_context.appointment.get("existing_appointments") if isinstance(runtime_context.appointment, dict) else []
+        existing_appointment_invalid = False
+        if candidate_existing_appointment is not None:
+            validated_existing_appointment = self.context_builder.validate_existing_appointment(
+                candidate_existing_appointment if isinstance(candidate_existing_appointment, dict) else None,
+                existing_appointments if isinstance(existing_appointments, list) else [],
+            )
+            if validated_existing_appointment is not None:
+                data_to_save["existing_appointment"] = validated_existing_appointment
+            else:
+                existing_appointment_invalid = True
+                data_to_save["existing_appointment_validation_error"] = "existing_appointment_not_in_existing_appointments"
+                data_to_save["invalid_existing_appointment"] = candidate_existing_appointment
+
+        if not existing_appointment_invalid:
+            current_existing_appointment = data_to_save.get("existing_appointment")
+            if not isinstance(current_existing_appointment, dict) or not current_existing_appointment:
+                runtime_existing_appointment = runtime_context.appointment.get("existing_appointment") if isinstance(runtime_context.appointment, dict) else None
+                if isinstance(runtime_existing_appointment, dict) and runtime_existing_appointment:
+                    data_to_save["existing_appointment"] = dict(runtime_existing_appointment)
+
+            if isinstance(data_to_save.get("existing_appointment"), dict) and "existing_appointments_count" not in data_to_save:
+                data_to_save["existing_appointments_count"] = 1
+
+        current_selected_slot = data_to_save.get("selected_slot")
+        if not isinstance(current_selected_slot, dict) or not current_selected_slot:
+            runtime_selected_slot = runtime_context.appointment.get("selected_slot") if isinstance(runtime_context.appointment, dict) else None
+            if isinstance(runtime_selected_slot, dict) and runtime_selected_slot:
+                data_to_save["selected_slot"] = dict(runtime_selected_slot)
+                if "new_llm_orchestration_selected_slot" not in data_to_save:
+                    data_to_save["new_llm_orchestration_selected_slot"] = dict(runtime_selected_slot)
 
         if audio_result is not None:
             data_to_save["audio_transcription"] = self.audio_preprocessor.audio_result_payload(audio_result)
@@ -347,6 +386,19 @@ class AgentRuntime:
                 if isinstance(runtime_context_summary, dict):
                     runtime_context_summary["offered_slots_count"] = len(offered_slots)
 
+        events_result = self._latest_appointment_events_result(llm_result)
+        if events_result is not None:
+            appointments = events_result.get("existing_appointments")
+            if isinstance(appointments, list):
+                data_to_save["existing_appointments"] = appointments
+                data_to_save["existing_appointments_count"] = len(appointments)
+                if len(appointments) == 1:
+                    data_to_save["existing_appointment"] = appointments[0]
+
+            raw_summary = events_result.get("raw_summary")
+            if raw_summary is not None:
+                data_to_save["appointment_events_raw_summary"] = raw_summary
+
         if offered_slots and "new_llm_orchestration_offered_slots" not in data_to_save:
             # Preserve structured slots for future turns. These are not a text
             # summary; they are the source of truth the next LLM turn must use.
@@ -366,14 +418,16 @@ class AgentRuntime:
         self._refresh_context_summary_after_response(data_to_save)
 
         reply = final.reply.strip() if isinstance(final.reply, str) and final.reply.strip() else "¿Puedes repetirlo de otra forma?"
-        if selected_slot_invalid:
+        if existing_appointment_invalid:
+            reply = "No he podido identificar con seguridad cuál de tus citas quieres cambiar. ¿Puedes indicarme cuál?"
+        elif selected_slot_invalid:
             reply = "No he podido validar el horario seleccionado. ¿Quieres que revise disponibilidad de nuevo?"
 
         return AgentResponse(
             reply=reply,
             intent=final.intent or plan.intent or "unknown",
             score=final.score,
-            action="ask_clarification" if selected_slot_invalid else final.action,
+            action="ask_clarification" if (existing_appointment_invalid or selected_slot_invalid) else final.action,
             needs_human=bool(final.needs_human),
             data_to_save=data_to_save,
             provider=getattr(llm_result, "provider", None) if llm_result is not None else None,
@@ -505,6 +559,61 @@ class AgentRuntime:
                 "timezone_source": timezone_source,
                 "raw_summary": raw_summary,
                 "owner_resolution": owner_resolution,
+            }
+
+        return None
+
+    def _latest_appointment_events_result(self, llm_result: Any | None) -> dict[str, Any] | None:
+        if llm_result is None:
+            return None
+
+        tool_traces = getattr(llm_result, "tool_traces", [])
+        if not isinstance(tool_traces, list) or tool_traces == []:
+            return None
+
+        for trace in reversed(tool_traces):
+            trace_type = self._clean(getattr(trace, "type", None))
+            tool_name = self._clean(getattr(trace, "tool_name", None))
+            if trace_type != "mcp_call" or tool_name != "appointment_events":
+                continue
+
+            status = self._clean(getattr(trace, "status", None))
+            if status is not None and status != "completed":
+                continue
+
+            output = getattr(trace, "output", None)
+            if output is None or output == "" or output == {}:
+                continue
+
+            parsed_output: dict[str, Any] | None = None
+            if isinstance(output, dict):
+                parsed_output = output
+            elif isinstance(output, str):
+                parsed_output = self._json_dict(output)
+            else:
+                continue
+
+            if not isinstance(parsed_output, dict) or parsed_output == {}:
+                continue
+
+            raw_summary = parsed_output.get("raw_summary")
+
+            normalized_appointments: list[dict[str, Any]] = []
+            found_list = False
+            for key in ("events", "appointments", "items", "results"):
+                value = parsed_output.get(key)
+                if not isinstance(value, list):
+                    continue
+                found_list = True
+                normalized_appointments = [dict(item) for item in value if isinstance(item, dict)]
+                break
+
+            if not found_list:
+                normalized_appointments = []
+
+            return {
+                "existing_appointments": normalized_appointments,
+                "raw_summary": raw_summary,
             }
 
         return None
@@ -652,11 +761,20 @@ class AgentRuntime:
     def _context_summary(self, runtime_context: Any) -> dict[str, Any]:
         appointment = runtime_context.appointment if isinstance(runtime_context.appointment, dict) else {}
         conversation = runtime_context.conversation if isinstance(runtime_context.conversation, dict) else {}
+        existing_appointments = appointment.get("existing_appointments")
+        existing_appointments_count = appointment.get("existing_appointments_count")
+        if not isinstance(existing_appointments_count, int):
+            if isinstance(existing_appointments, list):
+                existing_appointments_count = len(existing_appointments)
+            else:
+                existing_appointments_count = 0
         return {
             "timezone": runtime_context.timezone,
             "timezone_source": runtime_context.timezone_source,
             "offered_slots_count": len(appointment.get("offered_slots") or []),
             "has_selected_slot": isinstance(appointment.get("selected_slot"), dict),
+            "has_existing_appointment": bool(existing_appointments_count) or isinstance(appointment.get("existing_appointment"), dict),
+            "existing_appointments_count": existing_appointments_count,
             "required_next_action": appointment.get("required_next_action"),
             "recent_messages_count": len(conversation.get("recent_messages") or []),
         }
@@ -705,6 +823,22 @@ class AgentRuntime:
             selected_slot = data_to_save.get("new_llm_orchestration_selected_slot")
         has_selected_slot = isinstance(selected_slot, dict) and bool(selected_slot)
         runtime_context_summary["has_selected_slot"] = has_selected_slot
+
+        existing_appointment = data_to_save.get("existing_appointment")
+        existing_appointments_count = data_to_save.get("existing_appointments_count")
+        if not isinstance(existing_appointments_count, int):
+            existing_appointments = data_to_save.get("existing_appointments")
+            if isinstance(existing_appointments, list):
+                existing_appointments_count = len(existing_appointments)
+            elif isinstance(existing_appointment, dict):
+                existing_appointments_count = 1
+
+        has_existing_appointment = isinstance(existing_appointment, dict) or (
+            isinstance(existing_appointments_count, int) and existing_appointments_count > 0
+        )
+        runtime_context_summary["has_existing_appointment"] = has_existing_appointment
+        if isinstance(existing_appointments_count, int):
+            runtime_context_summary["existing_appointments_count"] = existing_appointments_count
 
         offered_slots_count = data_to_save.get("new_llm_orchestration_offered_slots_count")
         if isinstance(offered_slots_count, int):

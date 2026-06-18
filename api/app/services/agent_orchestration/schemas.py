@@ -38,6 +38,7 @@ Intent = Literal[
     "inventory_similarity_search",
     "request_availability",
     "select_offered_slot",
+    "select_existing_appointment",
     "request_booking_confirmation",
     "request_reschedule",
     "request_cancel",
@@ -500,6 +501,7 @@ NextAction = Literal[
     "select_offered_slot",
     "confirm_selected_slot",
     "appointment_confirm",
+    "appointment_reschedule",
     "handoff_to_human",
 ]
 
