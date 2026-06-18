@@ -180,6 +180,17 @@ class AgentRequest(BaseModel):
         if isinstance(message, (dict, str)):
             normalized["message"] = message
 
+        # Accept external_conversation_id at top level for direct curl/wa-gateway payloads.
+        # Internally we keep it in conversation.external_id.
+        top_external_id = normalized.get("external_conversation_id") or normalized.get("externalConversationId")
+        if isinstance(top_external_id, str) and top_external_id.strip() != "":
+            conversation_payload = normalized.get("conversation")
+            if not isinstance(conversation_payload, dict):
+                conversation_payload = {}
+            conversation_payload = dict(conversation_payload)
+            conversation_payload.setdefault("external_id", top_external_id.strip())
+            normalized["conversation"] = conversation_payload
+
         contact = normalized.get("contact")
         if isinstance(contact, dict):
             normalized["contact"] = dict(contact)

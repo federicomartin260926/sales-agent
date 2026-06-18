@@ -324,6 +324,81 @@ final class InternalConversationSummaryControllerTest extends TestCase
         self::assertSame($conversationTwo->getId()->toRfc4122(), $payloadTenantTwo['conversation']['id']);
     }
 
+    public function testSummaryContextByExternalIdEndpointResolvesWithoutUuidPath(): void
+    {
+        $tenant = $this->createTenant();
+        $conversation = $this->createConversation($tenant);
+        $conversation->setExternalConversationId('shared-external-id');
+
+        $conversations = new class($tenant, $conversation) extends ConversationRepository {
+            public function __construct(
+                private readonly Tenant $tenant,
+                private readonly Conversation $conversation,
+            ) {
+            }
+
+            public function find($id, $lockMode = null, $lockVersion = null): ?object
+            {
+                return null;
+            }
+
+            /**
+             * @return list<Conversation>
+             */
+            public function findByTenantAndExternalConversationId(Tenant $tenant, string $externalConversationId, ?string $customerPhone = null, int $limit = 2): array
+            {
+                if ($tenant === $this->tenant && $externalConversationId === 'shared-external-id') {
+                    return [$this->conversation];
+                }
+
+                return [];
+            }
+        };
+
+        $tenants = new class($tenant) extends TenantRepository {
+            public function __construct(private readonly Tenant $tenant)
+            {
+            }
+
+            public function find($id, $lockMode = null, $lockVersion = null): ?object
+            {
+                if ((string) $id === (string) $this->tenant->getId()) {
+                    return $this->tenant;
+                }
+
+                return null;
+            }
+        };
+
+        $conversationMessages = new class extends ConversationMessageRepository {
+            public function __construct()
+            {
+            }
+
+            public function findRecentByConversation(Conversation $conversation, int $limit = 20): array
+            {
+                return [];
+            }
+        };
+
+        $controller = $this->controller($conversations, $conversationMessages, $tenants);
+
+        $response = $controller->summaryContextByExternalId(
+            Request::create('/api/internal/conversations/summary-context', 'GET', [
+                'limit' => 2,
+                'tenant_id' => (string) $tenant->getId(),
+                'external_conversation_id' => 'shared-external-id',
+            ], [], [], [
+                'HTTP_AUTHORIZATION' => 'Bearer '.self::TOKEN,
+            ])
+        );
+
+        self::assertSame(200, $response->getStatusCode());
+        $payload = json_decode((string) $response->getContent(), true);
+        self::assertSame($conversation->getId()->toRfc4122(), $payload['conversation']['id']);
+        self::assertSame('shared-external-id', $payload['conversation']['externalConversationId']);
+    }
+
     public function testSummaryContextFallsBackToExternalIdWithoutInternalConversationId(): void
     {
         $tenant = $this->createTenant();

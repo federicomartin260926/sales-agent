@@ -71,6 +71,14 @@ final class ConversationServiceTest extends TestCase
                 return null;
             }
 
+            /**
+             * @return list<Conversation>
+             */
+            public function findByTenantAndExternalConversationId(Tenant $tenant, string $externalConversationId, ?string $customerPhone = null, int $limit = 2): array
+            {
+                return [];
+            }
+
             public function save(Conversation $conversation, bool $flush = true): void
             {
                 $this->savedConversations[] = $conversation;
@@ -111,7 +119,7 @@ final class ConversationServiceTest extends TestCase
         $existingConversation->setEntryPoint($entryPoint);
 
         $conversationRepository = new class($existingConversation) extends ConversationRepository {
-            public function __construct(private readonly Conversation $conversation)
+            public function __construct(private Conversation $conversation)
             {
             }
 
@@ -131,5 +139,92 @@ final class ConversationServiceTest extends TestCase
         self::assertFalse($result['created']);
         self::assertSame($existingConversation, $result['conversation']);
         self::assertSame('Nuevo mensaje', $result['conversation']->getFirstMessage());
+    }
+
+    public function testUpsertPrefersExternalConversationIdOverActiveConversationByPhone(): void
+    {
+        $tenant = $this->createTenant();
+        $product = $this->createProduct($tenant);
+        $entryPoint = new EntryPoint($product, 'crm-demo', 'CRM Demo');
+
+        $existingConversation = new Conversation($tenant, '+34999999999');
+        $existingConversation->setProduct($product);
+        $existingConversation->setEntryPoint($entryPoint);
+        $existingConversation->setExternalConversationId('preconfirm-collect-name-002');
+
+        $conversationRepository = new class($existingConversation) extends ConversationRepository {
+            public function __construct(private Conversation $conversation)
+            {
+            }
+
+            public function findActiveByTenantPhone(Tenant $tenant, string $customerPhone): ?Conversation
+            {
+                return $this->conversation;
+            }
+
+            /**
+             * @return list<Conversation>
+             */
+            public function findByTenantAndExternalConversationId(Tenant $tenant, string $externalConversationId, ?string $customerPhone = null, int $limit = 2): array
+            {
+                return [];
+            }
+
+            public function save(Conversation $conversation, bool $flush = true): void
+            {
+                $this->conversation = $conversation;
+            }
+        };
+
+        $service = new ConversationService($conversationRepository);
+        $result = $service->upsert($tenant, '+34999999999', $product, $entryPoint, null, null, 'Quiero reservar', 'preconfirm-final-001');
+
+        self::assertTrue($result['created']);
+        self::assertNotSame($existingConversation, $result['conversation']);
+        self::assertSame('preconfirm-final-001', $result['conversation']->getExternalConversationId());
+        self::assertSame('Quiero reservar', $result['conversation']->getFirstMessage());
+    }
+
+    public function testUpsertReusesExactExternalConversationIdWhenPresent(): void
+    {
+        $tenant = $this->createTenant();
+        $product = $this->createProduct($tenant);
+        $entryPoint = new EntryPoint($product, 'crm-demo', 'CRM Demo');
+
+        $existingConversation = new Conversation($tenant, '+34999999999');
+        $existingConversation->setProduct($product);
+        $existingConversation->setEntryPoint($entryPoint);
+        $existingConversation->setExternalConversationId('preconfirm-final-001');
+
+        $conversationRepository = new class($existingConversation) extends ConversationRepository {
+            public function __construct(private Conversation $conversation)
+            {
+            }
+
+            public function findActiveByTenantPhone(Tenant $tenant, string $customerPhone): ?Conversation
+            {
+                return null;
+            }
+
+            /**
+             * @return list<Conversation>
+             */
+            public function findByTenantAndExternalConversationId(Tenant $tenant, string $externalConversationId, ?string $customerPhone = null, int $limit = 2): array
+            {
+                return $externalConversationId === 'preconfirm-final-001' ? [$this->conversation] : [];
+            }
+
+            public function save(Conversation $conversation, bool $flush = true): void
+            {
+                $this->conversation = $conversation;
+            }
+        };
+
+        $service = new ConversationService($conversationRepository);
+        $result = $service->upsert($tenant, '+34999999999', $product, $entryPoint, null, null, 'Segundo turno', 'preconfirm-final-001');
+
+        self::assertFalse($result['created']);
+        self::assertSame($existingConversation, $result['conversation']);
+        self::assertSame('Segundo turno', $result['conversation']->getFirstMessage());
     }
 }

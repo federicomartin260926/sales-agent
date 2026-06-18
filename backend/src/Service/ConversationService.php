@@ -32,7 +32,20 @@ final class ConversationService
         ?string $crmBranchRef = null,
         ?string $summary = null,
     ): array {
-        $conversation = $this->conversations->findActiveByTenantPhone($tenant, $customerPhone);
+        $externalConversationId = $externalConversationId !== null ? trim($externalConversationId) : null;
+        $conversation = null;
+
+        if ($externalConversationId !== null && $externalConversationId !== '') {
+            $candidates = $this->conversations->findByTenantAndExternalConversationId($tenant, $externalConversationId, $customerPhone, 2);
+            if (count($candidates) === 1) {
+                $conversation = $candidates[0];
+            }
+        }
+
+        if (!$conversation instanceof Conversation && ($externalConversationId === null || $externalConversationId === '')) {
+            $conversation = $this->conversations->findActiveByTenantPhone($tenant, $customerPhone);
+        }
+
         $created = false;
 
         if (!$conversation instanceof Conversation) {
@@ -82,8 +95,8 @@ final class ConversationService
             $conversation->setSummary(trim($summary));
         }
 
-        if ($externalConversationId !== null && trim($externalConversationId) !== '') {
-            $conversation->setExternalConversationId(trim($externalConversationId));
+        if ($externalConversationId !== null && $externalConversationId !== '') {
+            $conversation->setExternalConversationId($externalConversationId);
         }
 
         $this->conversations->save($conversation);

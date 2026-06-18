@@ -26,6 +26,48 @@ final class InternalConversationSummaryController extends AbstractApiController
     ) {
     }
 
+    #[Route('/summary-context', methods: ['GET'])]
+    public function summaryContextByExternalId(Request $request): JsonResponse
+    {
+        if (!$this->validator->isAuthorized($request)) {
+            return $this->json(['message' => 'Unauthorized'], JsonResponse::HTTP_UNAUTHORIZED);
+        }
+
+        $conversation = $this->resolveConversationByExternalId($request);
+        if (!$conversation instanceof Conversation) {
+            return $this->notFound('Conversation not found');
+        }
+
+        $limit = $this->normalizeLimit($request->query->get('limit'));
+        $messages = $this->conversationMessages->findRecentByConversation($conversation, $limit);
+
+        return $this->json([
+            'conversation' => $conversation->toArray(),
+            'messages' => array_map(
+                fn (ConversationMessage $message): array => [
+                    'id' => $message->getId()->toRfc4122(),
+                    'conversation_id' => $message->getConversation()->getId()->toRfc4122(),
+                    'direction' => $message->getDirection(),
+                    'role' => $message->getRole(),
+                    'message_type' => $message->getMessageType(),
+                    'body' => $message->getBody(),
+                    'provider' => $message->getProvider(),
+                    'model' => $message->getModel(),
+                    'latency_ms' => $message->getLatencyMs(),
+                    'intent' => $message->getIntent(),
+                    'score' => $message->getScore(),
+                    'action' => $message->getAction(),
+                    'needs_human' => $message->isNeedsHuman(),
+                    'raw_payload' => $this->normalizeRawPayload($message->getRawPayload()),
+                    'metadata' => $this->normalizeMetadata($message->getMetadata()),
+                    'created_at' => $message->getCreatedAt()->format(\DateTimeInterface::ATOM),
+                ],
+                $messages,
+            ),
+            'limit' => $limit,
+        ]);
+    }
+
     #[Route('/{conversationId}/summary-context', methods: ['GET'])]
     public function summaryContext(string $conversationId, Request $request): JsonResponse
     {
@@ -38,6 +80,11 @@ final class InternalConversationSummaryController extends AbstractApiController
             return $this->notFound('Conversation not found');
         }
 
+        return $this->buildSummaryContextResponse($conversation, $request);
+    }
+
+    private function buildSummaryContextResponse(Conversation $conversation, Request $request): JsonResponse
+    {
         $limit = $this->normalizeLimit($request->query->get('limit'));
         $messages = $this->conversationMessages->findRecentByConversation($conversation, $limit);
 
@@ -98,6 +145,10 @@ final class InternalConversationSummaryController extends AbstractApiController
             return $this->resolveConversationByExternalId($request);
         }
 
+        if (!$this->looksLikeUuid($conversationId)) {
+            return $this->resolveConversationByExternalId($request);
+        }
+
         $conversation = $this->conversations->find($conversationId);
         if (!$conversation instanceof Conversation) {
             return $this->resolveConversationByExternalId($request);
@@ -136,6 +187,11 @@ final class InternalConversationSummaryController extends AbstractApiController
         }
 
         return $candidates[0];
+    }
+
+    private function looksLikeUuid(string $value): bool
+    {
+        return preg_match('/^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89aAbB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$/', trim($value)) === 1;
     }
 
     private function normalizeLimit(mixed $value): int

@@ -56,6 +56,7 @@ final class InternalApiSecurityTest extends WebTestCase
         yield 'entry point ref' => ['/api/internal/routing/entrypoint-ref/abc123', 'GET'];
         yield 'whatsapp phone' => ['/api/internal/routing/whatsapp-phone/phone-number-id-1', 'GET'];
         yield 'conversation upsert' => ['/api/internal/conversations/upsert', 'POST'];
+        yield 'conversation summary context by external id' => ['/api/internal/conversations/summary-context', 'GET'];
         yield 'conversation summary context' => ['/api/internal/conversations/conversation-1/summary-context', 'GET'];
         yield 'conversation summary update' => ['/api/internal/conversations/conversation-1/summary', 'POST'];
     }
@@ -200,7 +201,6 @@ final class InternalApiSecurityTest extends WebTestCase
             'customer_phone' => '+34999999999',
             'customer_name' => 'Ana García',
             'first_message' => 'Hola, quiero información.',
-            'external_conversation_id' => 'wa-conversation-1',
             'entry_point_id' => $entryPoint->getId()->toRfc4122(),
             'entry_point_utm_id' => $entryPointUtm->getId()->toRfc4122(),
             'product_id' => $product->getId()->toRfc4122(),

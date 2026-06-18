@@ -1004,11 +1004,18 @@ class BackendClient:
             params["channel_type"] = channel_type.strip()
         try:
             async with httpx.AsyncClient(base_url=base_url, timeout=timeout, transport=self.transport) as client:
-                response = await client.get(
-                    f"/api/internal/conversations/{conversation_id.strip()}/summary-context",
-                    params=params,
-                    headers=self._auth_headers(),
-                )
+                if external_conversation_id is not None and external_conversation_id.strip() != "":
+                    response = await client.get(
+                        "/api/internal/conversations/summary-context",
+                        params=params,
+                        headers=self._auth_headers(),
+                    )
+                else:
+                    response = await client.get(
+                        f"/api/internal/conversations/{conversation_id.strip()}/summary-context",
+                        params=params,
+                        headers=self._auth_headers(),
+                    )
                 if response.status_code == httpx.codes.NOT_FOUND:
                     return None
                 if response.status_code >= 400:
