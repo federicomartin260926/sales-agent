@@ -146,6 +146,9 @@ class AgentRuntime:
         # tenant/timezone/contact state. Runtime itself should stay linear.
         conversation_messages = await self.context_builder.load_conversation_messages(payload, routing, limit=12)
 
+        if backend_context is None:
+            backend_context = await self._fetch_backend_context(payload, routing)
+
         intent_plan = await self._classify_intent(payload, routing, backend_context, conversation_messages)
         runtime_context = self.context_builder.build(payload, routing, backend_context, intent_plan, conversation_messages)
         tool_plan = self.tool_selector.select(intent_plan, runtime_context, mcp_config)
@@ -165,12 +168,25 @@ class AgentRuntime:
 
     # Load tenant/product/playbook/entry-point context from Symfony backend.
     async def _fetch_backend_context(self, payload: AgentRequest, routing: RoutingContext) -> CommercialContext | None:
-        return await self.backend_client.fetch_tenant_context(
+        backend_context = await self.backend_client.fetch_tenant_context(
             routing.tenant_id,
             selected_product_id=routing.product_id,
             selected_playbook_id=routing.playbook_id,
             entry_point_id=routing.entry_point_id,
             entrypoint_ref=routing.entrypoint_ref or payload.entrypoint_ref,
+            customer_phone=payload.contact.phone,
+            external_channel_id=routing.external_channel_id or payload.external_channel_id,
+            current_message=payload.message.text,
+        )
+        if backend_context is not None:
+            return backend_context
+
+        # Fallback: if a scoped lookup fails, retry with tenant-only context so
+        # handoff and commercial policy remain available instead of dropping to
+        # a minimal runtime tenant. This keeps the LLM-led flow operational when
+        # entrypoint/product scoping is incomplete or temporarily inconsistent.
+        return await self.backend_client.fetch_tenant_context(
+            routing.tenant_id,
             customer_phone=payload.contact.phone,
             external_channel_id=routing.external_channel_id or payload.external_channel_id,
             current_message=payload.message.text,

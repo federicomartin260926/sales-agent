@@ -61,6 +61,42 @@ class ToolSelector:
                 reason=f"domain={plan.domain};intent={plan.intent};existing_appointments_selected_by_llm=true",
             )
 
+        if plan.domain == "handoff" or plan.intent == "request_handoff":
+            handoff_enabled, handoff_strategy = self._handoff_settings(context)
+            external_handoff_enabled = handoff_enabled and handoff_strategy in {"n8n_webhook", "manual_wa_link_and_n8n"}
+            handoff_request_allowed = external_handoff_enabled and "handoff_request" in configured
+
+            if handoff_request_allowed:
+                return ToolPlan(
+                    allowed_tools=["handoff_request"],
+                    read_tools=[],
+                    write_tools=["handoff_request"],
+                    reason=f"domain={plan.domain};intent={plan.intent};handoff_enabled=true;handoff_strategy={handoff_strategy};route_to_handoff_request=true",
+                )
+
+            if not handoff_enabled:
+                return ToolPlan(
+                    allowed_tools=[],
+                    read_tools=[],
+                    write_tools=[],
+                    reason=f"domain={plan.domain};intent={plan.intent};handoff_disabled=true",
+                )
+
+            if handoff_strategy == "manual_wa_link":
+                return ToolPlan(
+                    allowed_tools=[],
+                    read_tools=[],
+                    write_tools=[],
+                    reason=f"domain={plan.domain};intent={plan.intent};handoff_manual_link_only=true",
+                )
+
+            return ToolPlan(
+                allowed_tools=[],
+                read_tools=[],
+                write_tools=[],
+                reason=f"domain={plan.domain};intent={plan.intent};handoff_external_tool_not_configured=true",
+            )
+
         if plan.intent == "request_booking_confirmation":
             appointment = context.appointment if isinstance(context.appointment, dict) else {}
             existing_appointment = appointment.get("existing_appointment")
@@ -215,3 +251,20 @@ class ToolSelector:
     def _intersect(self, desired: list[str], configured: list[str]) -> list[str]:
         configured_set = set(configured)
         return [tool for tool in dict.fromkeys(desired) if tool in configured_set]
+
+    def _handoff_settings(self, context: RuntimeContext) -> tuple[bool, str]:
+        tenant = self._read_value(context, "tenant", {}) or {}
+        handoff = self._read_value(tenant, "handoff", {}) or {}
+
+        enabled = bool(self._read_value(handoff, "enabled", False))
+        strategy = self._read_value(handoff, "strategy", "disabled")
+        normalized = str(strategy).strip().lower() if strategy is not None else "disabled"
+        if normalized not in {"disabled", "manual_wa_link", "n8n_webhook", "manual_wa_link_and_n8n"}:
+            normalized = "disabled"
+
+        return enabled, normalized
+
+    def _read_value(self, value: Any, key: str, default: Any = None) -> Any:
+        if isinstance(value, dict):
+            return value.get(key, default)
+        return getattr(value, key, default)
