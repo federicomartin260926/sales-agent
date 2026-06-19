@@ -205,6 +205,7 @@ Reglas para agenda:
 - Si el usuario quiere cancelar una cita, usa intent="request_cancel" y action="prepare_cancel".
 - Si el usuario aporta o corrige nombre, teléfono o email para una cita, usa intent="provide_contact_data" y action="collect_missing_data".
 - Si el contexto indica que ya hay selected_slot y falta contact.name, y el usuario aporta un nombre, clasifica como intent="provide_contact_data".
+- Si selected_slot existe y required_next_action="collect_customer_name", ese nombre forma parte del flujo de appointment; clasifica como domain="appointment", intent="provide_contact_data" y action="collect_missing_data". No uses domain="crm" ni action="handoff_to_human" en ese caso salvo que el usuario pida explícitamente una persona o un seguimiento comercial sin cita.
 
 Reglas de contacto y CRM:
 - Si el usuario aporta datos de contacto sin una intención clara de agenda, usa domain="crm", intent="provide_contact_data", action="create_or_update_crm_contact".
@@ -392,6 +393,7 @@ Reglas de agenda:
 - Si appointment_reschedule devuelve error, no afirmes que la cita se cambió; explica brevemente que no se pudo reprogramar y ofrece alternativa o handoff si corresponde.
 - No inventes appointment_id, serviceId, owner, timezone, fechas ni horas.
 - Si runtime_context.contact.name existe o conversation.persisted_contact_name existe, no pidas el nombre de nuevo.
+- Si runtime_context.appointment.selected_slot existe y runtime_context.appointment.required_next_action="collect_customer_name", el turno actual sigue siendo de appointment. Cuando el usuario aporta el nombre, responde con algo equivalente a "Perfecto, [nombre]. ¿Confirmas que quieres dejar la cita preparada?" y usa required_next_action="confirm_selected_slot". No uses handoff_to_human ni crm_contact_submit en ese paso.
 - Si el contacto ya tiene nombre/teléfono suficiente y existing_appointment + selected_slot están presentes, pide confirmación explícita del cambio y usa required_next_action orientado a confirmar el cambio; no uses required_next_action="collect_customer_name" si el nombre ya está disponible en contexto.
 - Si existing_appointment + selected_slot están presentes para una reprogramación, esto no es una nueva reserva: usa required_next_action="appointment_reschedule" y pide confirmación explícita del cambio, por ejemplo "¿Confirmas que quieres cambiar tu cita al [slot]?"; no uses appointment_confirm ni hables de "reserva".
 - Si existing_appointment existe y el usuario confirma el cambio, mantén el flujo de reprogramación y no lo conviertas en una nueva reserva: no uses appointment_confirm, no pidas servicio de nuevo y usa required_next_action="appointment_reschedule".
@@ -412,6 +414,7 @@ Reglas de agenda:
 - No inventes citas ni asumas que no existen si appointment_events devuelve validation_error; si la tool falla por rango inválido, informa que no se pudo consultar y pide el dato faltante o reintenta con un rango válido si la tool sigue disponible.
 - Si runtime_context.contact.phone existe, considéralo un teléfono de contacto válido para la reserva y no lo pidas de nuevo.
 - Si ya existe runtime_context.contact.phone y el usuario acaba de aportar contact_name con selected_slot presente, el siguiente paso es pedir confirmación explícita de la reserva.
+- Si runtime_context.appointment.selected_slot existe y runtime_context.appointment.required_next_action="collect_customer_name", y el usuario aporta su nombre para completar la cita, no lo mandes a CRM ni a handoff: mantén el flujo de appointment, responde con una confirmación breve del nombre y pide la confirmación final explícita de la cita. En ese caso usa required_next_action="confirm_selected_slot".
 - Si el usuario dice "a las 5", decide si corresponde a un slot claro en offered_slots; si no hay contexto suficiente, pregunta.
 - Si hay varios slots compatibles, pregunta cuál prefiere.
 - Si el usuario pide disponibilidad, usa appointment_availability si está disponible.

@@ -428,6 +428,10 @@ class AgentRuntime:
         if appointment_cancel_result is not None:
             data_to_save.update(appointment_cancel_result)
 
+        appointment_confirm_result = self._latest_appointment_confirm_result(llm_result)
+        if appointment_confirm_result is not None:
+            data_to_save.update(appointment_confirm_result)
+
         if offered_slots and "new_llm_orchestration_offered_slots" not in data_to_save:
             # Preserve structured slots for future turns. These are not a text
             # summary; they are the source of truth the next LLM turn must use.
@@ -440,6 +444,15 @@ class AgentRuntime:
         elif selected_slot_invalid:
             data_to_save["selected_slot_validation_error"] = "selected_slot_not_in_offered_slots"
             data_to_save["invalid_selected_slot"] = final.selected_slot
+
+        active_contact_collection = (
+            isinstance(runtime_context.appointment, dict)
+            and isinstance(runtime_context.appointment.get("selected_slot"), dict)
+            and bool(runtime_context.appointment.get("selected_slot"))
+            and runtime_context.appointment.get("required_next_action") == "collect_customer_name"
+        )
+        if active_contact_collection and "required_next_action" not in data_to_save:
+            data_to_save["required_next_action"] = "confirm_selected_slot"
 
         if final.required_next_action:
             data_to_save["required_next_action"] = final.required_next_action
@@ -769,6 +782,55 @@ class AgentRuntime:
         if data["appointment_cancel_error_code"] is None:
             data["appointment_cancel_error_code"] = trace_error_code
         return self._compact_observability_payload(data)
+
+    def _latest_appointment_confirm_result(self, llm_result: Any | None) -> dict[str, Any] | None:
+        trace, parsed_output = self._latest_mcp_call_output(llm_result, "appointment_confirm")
+        if trace is None:
+            return None
+
+        trace_status = self._clean(getattr(trace, "status", None))
+        trace_error_code = self._clean(getattr(trace, "error_code", None))
+        post_processed = parsed_output is not None or trace_status is not None or trace_error_code is not None
+        if not post_processed:
+            return None
+
+        data: dict[str, Any] = {
+            "appointment_confirm_post_processed": True,
+        }
+
+        appointment_payload = parsed_output.get("appointment") if isinstance(parsed_output, dict) else None
+        if not isinstance(appointment_payload, dict):
+            appointment_payload = {}
+
+        raw_summary = parsed_output.get("raw_summary") if isinstance(parsed_output, dict) else None
+        if not isinstance(raw_summary, dict):
+            raw_summary = None
+
+        data["appointment_confirmed"] = self._resolve_bool_field(
+            parsed_output,
+            ("ok", "confirmed"),
+            false_values={"error", "failed", "failure", "rejected", "validation_error", "not_confirmed"},
+            nested=appointment_payload,
+            status=trace_status,
+            error_code=trace_error_code,
+        )
+        data["appointment_confirm_status"] = self._resolve_string_field(parsed_output, ("status",), nested=appointment_payload)
+        if data["appointment_confirm_status"] is None and raw_summary is not None:
+            data["appointment_confirm_status"] = self._resolve_string_field(raw_summary, ("status",))
+        if data["appointment_confirm_status"] is None:
+            data["appointment_confirm_status"] = trace_status
+
+        data["appointment_id"] = self._resolve_string_field(parsed_output, ("appointmentId", "appointment_id", "id"), nested=appointment_payload)
+        data["appointment_lead_id"] = self._resolve_string_field(parsed_output, ("leadId", "lead_id"), nested=appointment_payload)
+        data["appointment_customer_id"] = self._resolve_string_field(parsed_output, ("customerId", "customer_id"), nested=appointment_payload)
+        data["appointment_start_at"] = self._resolve_string_field(parsed_output, ("startAt", "start_at"), nested=appointment_payload)
+        data["appointment_end_at"] = self._resolve_string_field(parsed_output, ("endAt", "end_at"), nested=appointment_payload)
+        data["appointment_timezone"] = self._resolve_string_field(parsed_output, ("timezone",), nested=appointment_payload)
+        data["appointment_confirm_error_code"] = self._resolve_string_field(parsed_output, ("error_code", "errorCode"), nested=appointment_payload)
+        if data["appointment_confirm_error_code"] is None:
+            data["appointment_confirm_error_code"] = trace_error_code
+
+        return data
 
     def _latest_mcp_call_output(self, llm_result: Any | None, tool_name: str) -> tuple[Any | None, dict[str, Any] | None]:
         if llm_result is None:

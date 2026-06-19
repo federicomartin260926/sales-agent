@@ -112,6 +112,18 @@ class ToolSelector:
             selected_slot = appointment.get("selected_slot")
             required_next_action = appointment.get("required_next_action")
 
+            if (
+                isinstance(selected_slot, dict)
+                and bool(selected_slot)
+                and required_next_action in {"collect_customer_name", "collect_contact_data"}
+            ):
+                return ToolPlan(
+                    allowed_tools=[],
+                    read_tools=[],
+                    write_tools=[],
+                    reason=f"domain={plan.domain};intent={plan.intent};appointment_flow_waiting_for_contact_data=true",
+                )
+
             if isinstance(existing_appointment, dict) and existing_appointment:
                 if required_next_action == "appointment_cancel":
                     appointment_cancel_allowed = "appointment_cancel" in configured
