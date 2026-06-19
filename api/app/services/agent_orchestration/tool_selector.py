@@ -65,8 +65,17 @@ class ToolSelector:
             appointment = context.appointment if isinstance(context.appointment, dict) else {}
             existing_appointment = appointment.get("existing_appointment")
             selected_slot = appointment.get("selected_slot")
+            required_next_action = appointment.get("required_next_action")
 
             if isinstance(existing_appointment, dict) and existing_appointment:
+                if required_next_action == "appointment_cancel":
+                    appointment_cancel_allowed = "appointment_cancel" in configured
+                    return ToolPlan(
+                        allowed_tools=["appointment_cancel"] if appointment_cancel_allowed else [],
+                        read_tools=[],
+                        write_tools=["appointment_cancel"] if appointment_cancel_allowed else [],
+                        reason=f"domain={plan.domain};intent={plan.intent};existing_appointment_present;route_to_cancel=true",
+                    )
                 if isinstance(selected_slot, dict) and bool(selected_slot):
                     appointment_reschedule_allowed = "appointment_reschedule" in configured
                     return ToolPlan(
@@ -98,6 +107,36 @@ class ToolSelector:
                 read_tools=[],
                 write_tools=["appointment_confirm"] if appointment_confirm_allowed else [],
                 reason=f"domain={plan.domain};intent={plan.intent};selected_slot_present=true",
+            )
+
+        if plan.intent == "request_cancel":
+            appointment = context.appointment if isinstance(context.appointment, dict) else {}
+            existing_appointment = appointment.get("existing_appointment")
+            required_next_action = appointment.get("required_next_action")
+
+            if not isinstance(existing_appointment, dict) or not existing_appointment:
+                read_tools = self._intersect(["appointment_events"], configured)
+                return ToolPlan(
+                    allowed_tools=read_tools,
+                    read_tools=read_tools,
+                    write_tools=[],
+                    reason=f"domain={plan.domain};intent={plan.intent};existing_appointment_missing=true",
+                )
+
+            if required_next_action == "appointment_cancel":
+                appointment_cancel_allowed = "appointment_cancel" in configured
+                return ToolPlan(
+                    allowed_tools=["appointment_cancel"] if appointment_cancel_allowed else [],
+                    read_tools=[],
+                    write_tools=["appointment_cancel"] if appointment_cancel_allowed else [],
+                    reason=f"domain={plan.domain};intent={plan.intent};existing_appointment_present;route_to_cancel=true",
+                )
+
+            return ToolPlan(
+                allowed_tools=[],
+                read_tools=[],
+                write_tools=[],
+                reason=f"domain={plan.domain};intent={plan.intent};existing_appointment_present;waiting_for_cancel_confirmation=true",
             )
 
         if plan.intent == "request_reschedule":
