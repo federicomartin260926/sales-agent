@@ -28,7 +28,6 @@ from app.services.backend_client import (
     BackendConversationUpsertPayload,
     CommercialContext,
 )
-from app.services.decision_engine import DecisionEngine
 from app.services.llm_client import LLMClient
 from app.services.routing_resolver import RoutingContext, RuntimeRoutingResolver
 from app.services.runtime_settings_client import RuntimeSettingsClient
@@ -61,7 +60,6 @@ class AgentRuntime:
         self,
         backend_client: BackendClient,
         routing_resolver: RuntimeRoutingResolver,
-        decision_engine: DecisionEngine | None = None,
         ai_usage_guard: AiUsageGuard | None = None,
         settings: Settings | None = None,
         audio_gateway_client: AudioGatewayClient | None = None,
@@ -69,7 +67,6 @@ class AgentRuntime:
     ) -> None:
         self.backend_client = backend_client
         self.routing_resolver = routing_resolver
-        self.decision_engine = decision_engine
         self.ai_usage_guard = ai_usage_guard
         self.settings = settings or backend_client.settings
 

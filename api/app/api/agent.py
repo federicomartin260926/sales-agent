@@ -2,7 +2,6 @@ from fastapi import APIRouter, Depends
 
 from app.schemas.agent import AgentRequest, AgentResponse
 from app.services.backend_client import BackendClient
-from app.services.decision_engine import DecisionEngine
 from app.config import get_settings
 from app.services.ai_usage_guard import AiUsageGuard
 from app.security import require_internal_api_token
@@ -20,12 +19,6 @@ def get_routing_resolver(backend_client: BackendClient = Depends(get_backend_cli
     return RuntimeRoutingResolver(backend_client)
 
 
-def get_decision_engine(
-    backend_client: BackendClient = Depends(get_backend_client),
-) -> DecisionEngine:
-    return DecisionEngine(backend_client)
-
-
 def get_ai_usage_guard(
     backend_client: BackendClient = Depends(get_backend_client),
 ) -> AiUsageGuard:
@@ -35,10 +28,9 @@ def get_ai_usage_guard(
 def get_agent_runtime(
     backend_client: BackendClient = Depends(get_backend_client),
     routing_resolver: RuntimeRoutingResolver = Depends(get_routing_resolver),
-    decision_engine: DecisionEngine = Depends(get_decision_engine),
     ai_usage_guard: AiUsageGuard = Depends(get_ai_usage_guard),
 ) -> AgentRuntime:
-    return AgentRuntime(backend_client, routing_resolver, decision_engine, ai_usage_guard)
+    return AgentRuntime(backend_client, routing_resolver, ai_usage_guard=ai_usage_guard)
 
 
 @router.post("/agent/respond", response_model=AgentResponse)
