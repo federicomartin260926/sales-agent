@@ -412,6 +412,22 @@ class AgentRuntime:
             if raw_summary is not None:
                 data_to_save["appointment_events_raw_summary"] = raw_summary
 
+        handoff_result = self._latest_handoff_request_result(llm_result)
+        if handoff_result is not None:
+            data_to_save.update(handoff_result)
+
+        crm_result = self._latest_crm_contact_submit_result(llm_result)
+        if crm_result is not None:
+            data_to_save.update(crm_result)
+
+        appointment_reschedule_result = self._latest_appointment_reschedule_result(llm_result)
+        if appointment_reschedule_result is not None:
+            data_to_save.update(appointment_reschedule_result)
+
+        appointment_cancel_result = self._latest_appointment_cancel_result(llm_result)
+        if appointment_cancel_result is not None:
+            data_to_save.update(appointment_cancel_result)
+
         if offered_slots and "new_llm_orchestration_offered_slots" not in data_to_save:
             # Preserve structured slots for future turns. These are not a text
             # summary; they are the source of truth the next LLM turn must use.
@@ -630,6 +646,214 @@ class AgentRuntime:
             }
 
         return None
+
+    def _latest_handoff_request_result(self, llm_result: Any | None) -> dict[str, Any] | None:
+        trace, parsed_output = self._latest_mcp_call_output(llm_result, "handoff_request")
+        if trace is None:
+            return None
+
+        trace_status = self._clean(getattr(trace, "status", None))
+        trace_error_code = self._clean(getattr(trace, "error_code", None))
+        data: dict[str, Any] = {}
+        post_processed = parsed_output is not None or trace_status is not None or trace_error_code is not None
+        if not post_processed:
+            return None
+
+        data["handoff_requested"] = self._resolve_bool_field(
+            parsed_output,
+            ("ok", "handoff_requested"),
+            false_values={"error", "failed", "failure", "rejected", "cancelled", "canceled", "not_requested"},
+            status=trace_status,
+            error_code=trace_error_code,
+        )
+        data["handoff_status"] = self._resolve_string_field(parsed_output, ("status",))
+        if data["handoff_status"] is None:
+            data["handoff_status"] = trace_status
+        data["handoff_external_reference"] = self._resolve_string_field(parsed_output, ("external_reference", "externalReference"))
+        data["handoff_provider"] = self._resolve_string_field(parsed_output, ("provider",))
+        data["handoff_error_code"] = self._resolve_string_field(parsed_output, ("error_code", "errorCode"))
+        if data["handoff_error_code"] is None:
+            data["handoff_error_code"] = trace_error_code
+        return self._compact_observability_payload(data)
+
+    def _latest_crm_contact_submit_result(self, llm_result: Any | None) -> dict[str, Any] | None:
+        trace, parsed_output = self._latest_mcp_call_output(llm_result, "crm_contact_submit")
+        if trace is None:
+            return None
+
+        trace_status = self._clean(getattr(trace, "status", None))
+        trace_error_code = self._clean(getattr(trace, "error_code", None))
+        data: dict[str, Any] = {}
+        post_processed = parsed_output is not None or trace_status is not None or trace_error_code is not None
+        if not post_processed:
+            return None
+
+        crm_result = parsed_output.get("crm_result") if isinstance(parsed_output, dict) else None
+        if not isinstance(crm_result, dict):
+            crm_result = {}
+
+        data["crm_contact_submitted"] = self._resolve_bool_field(
+            parsed_output,
+            ("ok", "submitted"),
+            false_values={"error", "failed", "failure", "rejected", "validation_error", "not_submitted"},
+            nested=crm_result,
+            status=trace_status,
+            error_code=trace_error_code,
+        )
+        data["crm_contact_status"] = self._resolve_string_field(parsed_output, ("status",), nested=crm_result)
+        if data["crm_contact_status"] is None:
+            data["crm_contact_status"] = trace_status
+        data["crm_contact_id"] = self._resolve_string_field(parsed_output, ("contactId", "contact_id"), nested=crm_result)
+        data["crm_lead_id"] = self._resolve_string_field(parsed_output, ("leadId", "lead_id"), nested=crm_result)
+        data["crm_customer_id"] = self._resolve_string_field(parsed_output, ("customerId", "customer_id"), nested=crm_result)
+        data["crm_decision"] = self._resolve_string_field(parsed_output, ("decision",), nested=crm_result)
+        data["crm_activity_created"] = self._resolve_bool_field(parsed_output, ("activityCreated", "activity_created"), nested=crm_result)
+        data["crm_summary_stored"] = self._resolve_bool_field(parsed_output, ("summaryStored", "summary_stored"), nested=crm_result)
+        data["crm_error_code"] = self._resolve_string_field(parsed_output, ("error_code", "errorCode"), nested=crm_result)
+        if data["crm_error_code"] is None:
+            data["crm_error_code"] = trace_error_code
+        return self._compact_observability_payload(data)
+
+    def _latest_appointment_reschedule_result(self, llm_result: Any | None) -> dict[str, Any] | None:
+        trace, parsed_output = self._latest_mcp_call_output(llm_result, "appointment_reschedule")
+        if trace is None:
+            return None
+
+        trace_status = self._clean(getattr(trace, "status", None))
+        trace_error_code = self._clean(getattr(trace, "error_code", None))
+        data: dict[str, Any] = {
+            "appointment_reschedule_post_processed": True,
+        }
+        data["appointment_rescheduled"] = self._resolve_bool_field(
+            parsed_output,
+            ("ok", "rescheduled"),
+            false_values={"error", "failed", "failure", "rejected", "validation_error", "not_rescheduled"},
+            status=trace_status,
+            error_code=trace_error_code,
+        )
+        data["appointment_reschedule_status"] = self._resolve_string_field(parsed_output, ("status",))
+        if data["appointment_reschedule_status"] is None:
+            data["appointment_reschedule_status"] = trace_status
+        data["appointment_id"] = self._resolve_string_field(parsed_output, ("appointmentId", "appointment_id"))
+        data["appointment_old_start_at"] = self._resolve_string_field(parsed_output, ("old_start_at", "oldStartAt"))
+        data["appointment_old_end_at"] = self._resolve_string_field(parsed_output, ("old_end_at", "oldEndAt"))
+        data["appointment_new_start_at"] = self._resolve_string_field(parsed_output, ("new_start_at", "newStartAt"))
+        data["appointment_new_end_at"] = self._resolve_string_field(parsed_output, ("new_end_at", "newEndAt"))
+        data["appointment_reschedule_error_code"] = self._resolve_string_field(parsed_output, ("error_code", "errorCode"))
+        if data["appointment_reschedule_error_code"] is None:
+            data["appointment_reschedule_error_code"] = trace_error_code
+        return self._compact_observability_payload(data)
+
+    def _latest_appointment_cancel_result(self, llm_result: Any | None) -> dict[str, Any] | None:
+        trace, parsed_output = self._latest_mcp_call_output(llm_result, "appointment_cancel")
+        if trace is None:
+            return None
+
+        trace_status = self._clean(getattr(trace, "status", None))
+        trace_error_code = self._clean(getattr(trace, "error_code", None))
+        data: dict[str, Any] = {
+            "appointment_cancel_post_processed": True,
+        }
+        data["appointment_cancelled"] = self._resolve_bool_field(
+            parsed_output,
+            ("ok", "cancelled"),
+            false_values={"error", "failed", "failure", "rejected", "validation_error", "not_cancelled"},
+            status=trace_status,
+            error_code=trace_error_code,
+        )
+        data["appointment_cancel_status"] = self._resolve_string_field(parsed_output, ("status",))
+        if data["appointment_cancel_status"] is None:
+            data["appointment_cancel_status"] = trace_status
+        data["appointment_id"] = self._resolve_string_field(parsed_output, ("appointmentId", "appointment_id"))
+        data["appointment_cancel_error_code"] = self._resolve_string_field(parsed_output, ("error_code", "errorCode"))
+        if data["appointment_cancel_error_code"] is None:
+            data["appointment_cancel_error_code"] = trace_error_code
+        return self._compact_observability_payload(data)
+
+    def _latest_mcp_call_output(self, llm_result: Any | None, tool_name: str) -> tuple[Any | None, dict[str, Any] | None]:
+        if llm_result is None:
+            return None, None
+
+        tool_traces = getattr(llm_result, "tool_traces", [])
+        if not isinstance(tool_traces, list) or tool_traces == []:
+            return None, None
+
+        for trace in reversed(tool_traces):
+            trace_type = self._clean(getattr(trace, "type", None))
+            candidate_tool_name = self._clean(getattr(trace, "tool_name", None))
+            if trace_type != "mcp_call" or candidate_tool_name != tool_name:
+                continue
+
+            parsed_output = self._tool_trace_output_dict(trace)
+            if parsed_output is None and self._clean(getattr(trace, "status", None)) is None and self._clean(getattr(trace, "error_code", None)) is None:
+                return trace, None
+
+            return trace, parsed_output
+
+        return None, None
+
+    def _tool_trace_output_dict(self, trace: Any) -> dict[str, Any] | None:
+        output = getattr(trace, "output", None)
+        if isinstance(output, dict):
+            return output
+        if isinstance(output, str):
+            parsed_output = self._json_dict(output)
+            if isinstance(parsed_output, dict):
+                return parsed_output
+        return None
+
+    def _resolve_string_field(self, payload: dict[str, Any] | None, field_names: tuple[str, ...], nested: dict[str, Any] | None = None) -> str | None:
+        candidates = [payload, nested]
+        for source in candidates:
+            if not isinstance(source, dict):
+                continue
+            for field_name in field_names:
+                value = source.get(field_name)
+                cleaned = self._clean(value)
+                if cleaned is not None:
+                    return cleaned
+        return None
+
+    def _resolve_bool_field(
+        self,
+        payload: dict[str, Any] | None,
+        true_fields: tuple[str, ...],
+        false_values: set[str] | None = None,
+        nested: dict[str, Any] | None = None,
+        status: str | None = None,
+        error_code: str | None = None,
+    ) -> bool | None:
+        false_values = false_values or set()
+        candidates = [payload, nested]
+        for source in candidates:
+            if not isinstance(source, dict):
+                continue
+            for field_name in true_fields:
+                value = source.get(field_name)
+                if isinstance(value, bool):
+                    return value
+                if isinstance(value, str):
+                    normalized = value.strip().lower()
+                    if normalized in {"true", "1", "yes", "ok", "success", "succeeded", "completed"}:
+                        return True
+                    if normalized in false_values:
+                        return False
+
+        if isinstance(status, str):
+            normalized_status = status.strip().lower()
+            if normalized_status in {"completed", "success", "succeeded", "ok"}:
+                return True
+            if normalized_status in {"failed", "failure", "error", "rejected", "cancelled", "canceled"}:
+                return False
+
+        if error_code is not None:
+            return False
+
+        return None
+
+    def _compact_observability_payload(self, data: dict[str, Any]) -> dict[str, Any] | None:
+        compact = {key: value for key, value in data.items() if value is not None}
+        return compact or None
 
     def _slot_duration_minutes(self, slot: dict[str, Any]) -> int | None:
         start_value = slot.get("start") or slot.get("start_at") or slot.get("startAt")
