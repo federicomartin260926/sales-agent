@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from app.schemas.llm import McpRemoteConfig
 from app.services.agent_orchestration.schemas import IntentPlan, RuntimeContext, ToolPlan
 
@@ -36,12 +38,19 @@ class ToolSelector:
             return ToolPlan(reason="mcp_disabled_or_no_tools")
 
         if plan.intent == "provide_contact_data":
-            return ToolPlan(
-                allowed_tools=[],
-                read_tools=[],
-                write_tools=[],
-                reason=f"domain={plan.domain};intent={plan.intent};contact_data_only=true",
-            )
+            appointment = context.appointment if isinstance(context.appointment, dict) else {}
+            if self._has_active_appointment_flow(appointment):
+                return ToolPlan(
+                    allowed_tools=[],
+                    read_tools=[],
+                    write_tools=[],
+                    reason=f"domain={plan.domain};intent={plan.intent};appointment_flow_active=true",
+                )
+
+            return self._crm_contact_submit_plan(plan, context, configured, allow_followup_read=True)
+
+        if plan.domain == "crm" or plan.intent == "request_quote":
+            return self._crm_contact_submit_plan(plan, context, configured, allow_followup_read=True)
 
         if plan.intent == "select_offered_slot":
             offered_slots = context.appointment.get("offered_slots") if isinstance(context.appointment, dict) else []
@@ -268,3 +277,79 @@ class ToolSelector:
         if isinstance(value, dict):
             return value.get(key, default)
         return getattr(value, key, default)
+
+    def _crm_contact_submit_plan(
+        self,
+        plan: IntentPlan,
+        context: RuntimeContext,
+        configured: list[str],
+        allow_followup_read: bool,
+    ) -> ToolPlan:
+        contact = context.contact if isinstance(context.contact, dict) else {}
+        has_contact_minimum = self._has_contact_minimum(contact)
+
+        if not has_contact_minimum:
+            return ToolPlan(
+                allowed_tools=[],
+                read_tools=[],
+                write_tools=[],
+                reason=f"domain={plan.domain};intent={plan.intent};crm_contact_submit_missing_contact=true",
+            )
+
+        contact_context_available = "contact_context" in configured
+        crm_submit_available = "crm_contact_submit" in configured
+
+        read_tools: list[str] = []
+        if contact_context_available and allow_followup_read:
+            read_tools.append("contact_context")
+
+        if not crm_submit_available:
+            return ToolPlan(
+                allowed_tools=read_tools,
+                read_tools=read_tools,
+                write_tools=[],
+                reason=f"domain={plan.domain};intent={plan.intent};crm_contact_submit_not_configured=true",
+            )
+
+        allowed_tools = list(dict.fromkeys([*read_tools, "crm_contact_submit"]))
+        return ToolPlan(
+            allowed_tools=allowed_tools,
+            read_tools=read_tools,
+            write_tools=["crm_contact_submit"],
+            reason=f"domain={plan.domain};intent={plan.intent};route_to_crm_contact_submit=true",
+        )
+
+    def _has_contact_minimum(self, contact: Any) -> bool:
+        if not isinstance(contact, dict):
+            return False
+        phone = self._read_value(contact, "phone")
+        email = self._read_value(contact, "email")
+        return self._is_non_empty_string(phone) or self._is_non_empty_string(email)
+
+    def _has_active_appointment_flow(self, appointment: Any) -> bool:
+        if not isinstance(appointment, dict):
+            return False
+
+        if self._read_value(appointment, "selected_slot") not in (None, {}, []):
+            return True
+        if self._read_value(appointment, "existing_appointment") not in (None, {}, []):
+            return True
+        if self._read_value(appointment, "existing_appointments") not in (None, [], {}):
+            return True
+
+        required_next_action = self._read_value(appointment, "required_next_action")
+        if isinstance(required_next_action, str) and required_next_action.strip() != "":
+            return required_next_action.strip() in {
+                "collect_customer_name",
+                "collect_contact_data",
+                "select_offered_slot",
+                "confirm_selected_slot",
+                "appointment_confirm",
+                "appointment_reschedule",
+                "appointment_cancel",
+            }
+
+        return False
+
+    def _is_non_empty_string(self, value: Any) -> bool:
+        return isinstance(value, str) and value.strip() != ""
