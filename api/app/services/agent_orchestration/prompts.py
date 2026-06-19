@@ -91,6 +91,7 @@ FINAL_ACTION_VALUES = [
 NEXT_ACTION_VALUES = [
     "none",
     "ask_clarification",
+    "resolve_existing_appointment",
     "collect_customer_name",
     "collect_contact_data",
     "select_offered_slot",
@@ -382,6 +383,12 @@ Reglas de agenda:
 - No devuelvas selected_slot parcial si faltan start/end/service/owner necesarios.
 - appointment.existing_appointment y appointment.existing_appointments son la fuente de verdad para flujos de reprogramación.
 - Si el usuario quiere reprogramar y no hay existing_appointment ni existing_appointments, usa appointment_events si está disponible; si no, pide datos suficientes o deriva según contexto.
+- Si tool_plan.allowed_tools contiene solo appointment_events para resolver una cita existente, debes llamar appointment_events antes de responder.
+- No digas que no hay cita registrada salvo que appointment_events haya devuelto found=false o count=0.
+- Si no hay existing_appointment, no selecciones ni confirmes un nuevo slot aunque existan offered_slots previos; primero resuelve la cita original con appointment_events.
+- Si appointment.required_next_action="resolve_existing_appointment" o hay appointment.existing_appointments sin appointment.existing_appointment, ayuda a identificar cuál cita existente quiere modificar o cancelar.
+- En ese estado no selecciones slots nuevos, no llames appointment_confirm y no confirmes una reserva nueva.
+- Si hay varias citas, pide al usuario que indique cuál o selecciona solo si la referencia coincide claramente con una cita del listado estructurado.
 - Si existing_appointments contiene varias citas, no elijas una sin una referencia clara y estructurada; pide al usuario que indique cuál quiere cambiar y no llames appointment_reschedule.
 - Si intent="select_existing_appointment", usa runtime_context.appointment.existing_appointments como fuente de verdad; no devuelvas selected_slot; devuelve en data_to_save.existing_appointment la cita completa seleccionada o al menos el objeto con id y campos disponibles; si no puedes seleccionar con seguridad entre varias, pide aclaración.
 - Si intent="select_existing_appointment" y existing_appointments ya está en contexto, no llames tools para seleccionar.
@@ -405,6 +412,7 @@ Reglas de agenda:
 - Si el usuario dice "sí, cancélala" o "confirmo la cancelación" con existing_appointment ya identificado, interpreta que confirma la cancelación y usa required_next_action="appointment_cancel".
 - Para appointment_reschedule, appointment_confirm, appointment_availability y appointment_cancel, el argumento timezone debe salir del timezone operativo de agenda con esta prioridad: 1) runtime_context.appointment.selected_slot.timezone, 2) runtime_context.appointment.existing_appointment.timezone, 3) runtime_context.appointment.timezone, 4) runtime_context.timezone o business timezone, 5) temporal_context.timezone solo si no existe ninguno de los anteriores; no uses temporal_context.timezone si ya existe un timezone operativo de agenda, y el valor enviado en tool arguments.timezone debe coincidir exactamente con el timezone elegido.
 - Para cancelar una cita, no uses appointment_confirm ni appointment_reschedule. Si no hay existing_appointment, usa appointment_events para buscar citas. Si hay varias, usa select_existing_appointment para elegir una cita exacta. Si existing_appointment está presente y el usuario confirma la cancelación, usa required_next_action="appointment_cancel" y llama appointment_cancel. La cancelación no usa selected_slot.
+- Si tool_plan.allowed_tools contiene solo appointment_events para resolver la cita existente en cancelación, debes llamar appointment_events antes de responder.
 - Si ya identificaste existing_appointment para cancelar, la pregunta de cierre debe ser explícita de cancelación: por ejemplo "¿Confirmas que quieres cancelar tu cita del [fecha/hora]?".
 - Si ya identificaste existing_appointment para cancelar y todavía no existe confirmación del usuario, deja required_next_action="appointment_cancel" para preparar el siguiente turno; no uses ask_clarification en ese paso.
 - Si el usuario dice "sí, cancélala" o "confirmo la cancelación" y existing_appointment ya está identificado, interpreta que confirma la cancelación y usa required_next_action="appointment_cancel".

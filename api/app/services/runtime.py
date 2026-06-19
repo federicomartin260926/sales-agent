@@ -264,12 +264,14 @@ class AgentRuntime:
         effective_mcp_config = self._filtered_mcp_config(mcp_config, tool_plan.allowed_tools)
         try:
             if effective_mcp_config.enabled and effective_mcp_config.allowed_tools:
+                tool_choice = self._forced_mcp_tool_choice(tool_plan, effective_mcp_config)
                 result = await self.llm_client.generate_with_mcp(
                     self.settings.llm_provider,
                     FINAL_SYSTEM_PROMPT,
                     prompt,
                     effective_mcp_config,
                     previous_response_id=None,
+                    tool_choice=tool_choice,
                     parallel_tool_calls=False,
                     max_tool_rounds=4,
                 )
@@ -293,6 +295,17 @@ class AgentRuntime:
             )
             return fallback, None
 
+    def _forced_mcp_tool_choice(self, tool_plan: ToolPlan, mcp_config: McpRemoteConfig) -> dict[str, Any] | None:
+        must_call_tool = self._clean(tool_plan.must_call_tool)
+        server_label = self._clean(mcp_config.server_label)
+        if must_call_tool is None or server_label is None:
+            return None
+
+        if must_call_tool not in tool_plan.allowed_tools:
+            return None
+
+        return {"type": "mcp", "server_label": server_label, "name": must_call_tool}
+
     # Convert the final LLM result into the public AgentResponse and persistable metadata.
     def _build_agent_response(
         self,
@@ -305,11 +318,6 @@ class AgentRuntime:
         audio_result: AudioTranscriptionResult | None = None,
     ) -> AgentResponse:
         offered_slots = runtime_context.appointment.get("offered_slots") if isinstance(runtime_context.appointment, dict) else []
-        validated_selected_slot = None
-        selected_slot_invalid = False
-        if final.intent != "select_existing_appointment":
-            validated_selected_slot = self.context_builder.validate_selected_slot(final.selected_slot, offered_slots if isinstance(offered_slots, list) else [])
-            selected_slot_invalid = final.selected_slot is not None and validated_selected_slot is None
 
         data_to_save: dict[str, Any] = {
             "orchestration_version": "llm_context_tools_v2_audio",
@@ -348,10 +356,42 @@ class AgentRuntime:
             if isinstance(data_to_save.get("existing_appointment"), dict) and "existing_appointments_count" not in data_to_save:
                 data_to_save["existing_appointments_count"] = 1
 
+        appointment_lookup_required = self._appointment_lookup_required(runtime_context)
+        existing_appointment_selection_required = self._existing_appointment_selection_required(runtime_context)
+        appointment_resolution_blocked = appointment_lookup_required or existing_appointment_selection_required
+        appointment_events_trace, _ = self._latest_mcp_call_output(llm_result, "appointment_events")
+        appointment_events_required_but_not_called = (
+            appointment_lookup_required
+            and self._appointment_events_was_allowed(tool_plan)
+            and appointment_events_trace is None
+        )
+
+        validated_selected_slot = None
+        selected_slot_invalid = False
+        if final.intent != "select_existing_appointment" and not appointment_resolution_blocked:
+            validated_selected_slot = self.context_builder.validate_selected_slot(final.selected_slot, offered_slots if isinstance(offered_slots, list) else [])
+            selected_slot_invalid = final.selected_slot is not None and validated_selected_slot is None
+
+        if appointment_resolution_blocked:
+            data_to_save["booking_confirmation_blocked_by_existing_appointment_resolution"] = True
+            data_to_save["existing_appointment_required_before_slot"] = True
+            data_to_save["existing_appointment_resolution_blocked"] = True
+            data_to_save["required_next_action"] = "resolve_existing_appointment"
+            data_to_save["selected_slot"] = None
+            data_to_save["new_llm_orchestration_selected_slot"] = None
+            data_to_save["new_llm_orchestration_offered_slots"] = []
+            data_to_save["new_llm_orchestration_offered_slots_count"] = 0
+            if appointment_events_required_but_not_called:
+                data_to_save["appointment_events_required_but_not_called"] = True
+
         current_selected_slot = data_to_save.get("selected_slot")
         if not isinstance(current_selected_slot, dict) or not current_selected_slot:
             runtime_selected_slot = runtime_context.appointment.get("selected_slot") if isinstance(runtime_context.appointment, dict) else None
-            if isinstance(runtime_selected_slot, dict) and runtime_selected_slot:
+            allow_runtime_selected_slot_fallback = (
+                not appointment_resolution_blocked
+                and final.intent not in {"request_reschedule", "request_cancel", "select_existing_appointment"}
+            )
+            if allow_runtime_selected_slot_fallback and isinstance(runtime_selected_slot, dict) and runtime_selected_slot:
                 data_to_save["selected_slot"] = dict(runtime_selected_slot)
                 if "new_llm_orchestration_selected_slot" not in data_to_save:
                     data_to_save["new_llm_orchestration_selected_slot"] = dict(runtime_selected_slot)
@@ -460,6 +500,8 @@ class AgentRuntime:
         self._refresh_context_summary_after_response(data_to_save)
 
         reply = final.reply.strip() if isinstance(final.reply, str) and final.reply.strip() else "¿Puedes repetirlo de otra forma?"
+        if appointment_resolution_blocked:
+            reply = self._appointment_resolution_blocked_reply(runtime_context)
         if existing_appointment_invalid:
             reply = "No he podido identificar con seguridad cuál de tus citas quieres cambiar. ¿Puedes indicarme cuál?"
         elif selected_slot_invalid:
@@ -469,13 +511,79 @@ class AgentRuntime:
             reply=reply,
             intent=final.intent or plan.intent or "unknown",
             score=final.score,
-            action="ask_clarification" if (existing_appointment_invalid or selected_slot_invalid) else final.action,
+            action="ask_clarification" if (appointment_resolution_blocked or existing_appointment_invalid or selected_slot_invalid) else final.action,
             needs_human=bool(final.needs_human),
             data_to_save=data_to_save,
             provider=getattr(llm_result, "provider", None) if llm_result is not None else None,
             model=getattr(llm_result, "model", None) if llm_result is not None else None,
             latency_ms=int((time.monotonic() - started_at) * 1000),
         )
+
+    def _appointment_lookup_required(self, runtime_context: Any) -> bool:
+        appointment = runtime_context.appointment if isinstance(runtime_context.appointment, dict) else {}
+        return (not self._has_existing_appointment(appointment)) and (not self._has_existing_appointment_candidates(appointment))
+
+    def _existing_appointment_selection_required(self, runtime_context: Any) -> bool:
+        appointment = runtime_context.appointment if isinstance(runtime_context.appointment, dict) else {}
+        return (not self._has_existing_appointment(appointment)) and self._has_existing_appointment_candidates(appointment)
+
+    def _appointment_events_was_allowed(self, tool_plan: ToolPlan) -> bool:
+        if self._clean(tool_plan.must_call_tool) == "appointment_events":
+            return True
+        return "appointment_events" in tool_plan.allowed_tools
+
+    def _has_existing_appointment(self, appointment: Any) -> bool:
+        if not isinstance(appointment, dict):
+            return False
+
+        existing_appointment = appointment.get("existing_appointment")
+        return isinstance(existing_appointment, dict) and bool(existing_appointment)
+
+    def _has_existing_appointment_candidates(self, appointment: Any) -> bool:
+        if not isinstance(appointment, dict):
+            return False
+
+        existing_appointments = appointment.get("existing_appointments")
+        if isinstance(existing_appointments, list) and existing_appointments:
+            return True
+
+        existing_appointments_count = appointment.get("existing_appointments_count")
+        return isinstance(existing_appointments_count, int) and existing_appointments_count > 0
+
+    def _appointment_resolution_blocked_reply(self, runtime_context: Any) -> str:
+        appointment = runtime_context.appointment if isinstance(runtime_context.appointment, dict) else {}
+        existing_appointments = appointment.get("existing_appointments")
+        if isinstance(existing_appointments, list) and existing_appointments:
+            lines: list[str] = []
+            for candidate in existing_appointments[:3]:
+                if not isinstance(candidate, dict):
+                    continue
+                label_parts: list[str] = []
+                appointment_id = self._clean(candidate.get("id"))
+                if appointment_id is not None:
+                    label_parts.append(f"ID {appointment_id}")
+
+                start = self._clean(candidate.get("start") or candidate.get("start_at") or candidate.get("startAt"))
+                if start is not None:
+                    label_parts.append(start)
+
+                service_name = self._clean(candidate.get("service_name") or candidate.get("serviceName"))
+                if service_name is not None:
+                    label_parts.append(service_name)
+
+                owner_name = self._clean(candidate.get("owner_name") or candidate.get("ownerName"))
+                if owner_name is not None:
+                    label_parts.append(owner_name)
+
+                if label_parts:
+                    lines.append(" - " + " | ".join(label_parts))
+
+            if lines:
+                return "He encontrado varias citas activas. Necesito que me indiques cuál quieres cambiar o cancelar.\n" + "\n".join(lines)
+
+            return "He encontrado varias citas activas. Necesito que me indiques cuál quieres cambiar o cancelar."
+
+        return "Necesito consultar tu cita existente antes de cambiarla o cancelarla. Si me das la fecha aproximada o la hora, la localizo."
 
     def _latest_appointment_availability_result(self, llm_result: Any | None) -> dict[str, Any] | None:
         if llm_result is None:

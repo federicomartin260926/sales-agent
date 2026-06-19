@@ -53,7 +53,16 @@ class ToolSelector:
             return self._crm_contact_submit_plan(plan, context, configured, allow_followup_read=True)
 
         if plan.intent == "select_offered_slot":
-            offered_slots = context.appointment.get("offered_slots") if isinstance(context.appointment, dict) else []
+            appointment = context.appointment if isinstance(context.appointment, dict) else {}
+            if self._existing_appointment_selection_required(appointment):
+                return ToolPlan(
+                    allowed_tools=[],
+                    read_tools=[],
+                    write_tools=[],
+                    reason=f"domain={plan.domain};intent={plan.intent};existing_appointment_selection_required_blocks_new_slot_selection=true",
+                )
+
+            offered_slots = appointment.get("offered_slots") if isinstance(appointment, dict) else []
             if isinstance(offered_slots, list) and offered_slots:
                 return ToolPlan(
                     allowed_tools=[],
@@ -108,9 +117,10 @@ class ToolSelector:
 
         if plan.intent == "request_booking_confirmation":
             appointment = context.appointment if isinstance(context.appointment, dict) else {}
-            existing_appointment = appointment.get("existing_appointment")
             selected_slot = appointment.get("selected_slot")
             required_next_action = appointment.get("required_next_action")
+            existing_appointment = appointment.get("existing_appointment")
+            selection_required = self._existing_appointment_selection_required(appointment)
 
             if (
                 isinstance(selected_slot, dict)
@@ -122,6 +132,22 @@ class ToolSelector:
                     read_tools=[],
                     write_tools=[],
                     reason=f"domain={plan.domain};intent={plan.intent};appointment_flow_waiting_for_contact_data=true",
+                )
+
+            if self._clean(required_next_action) == "resolve_existing_appointment" and not self._has_existing_appointment(appointment):
+                return ToolPlan(
+                    allowed_tools=[],
+                    read_tools=[],
+                    write_tools=[],
+                    reason=f"domain={plan.domain};intent={plan.intent};existing_appointment_resolution_required_blocks_booking_confirmation=true",
+                )
+
+            if selection_required:
+                return ToolPlan(
+                    allowed_tools=[],
+                    read_tools=[],
+                    write_tools=[],
+                    reason=f"domain={plan.domain};intent={plan.intent};existing_appointment_selection_required_blocks_booking_confirmation=true",
                 )
 
             if isinstance(existing_appointment, dict) and existing_appointment:
@@ -170,14 +196,24 @@ class ToolSelector:
             appointment = context.appointment if isinstance(context.appointment, dict) else {}
             existing_appointment = appointment.get("existing_appointment")
             required_next_action = appointment.get("required_next_action")
+            has_candidates = self._has_existing_appointment_candidates(appointment)
 
-            if not isinstance(existing_appointment, dict) or not existing_appointment:
+            if not self._has_existing_appointment(appointment):
+                if has_candidates:
+                    return ToolPlan(
+                        allowed_tools=[],
+                        read_tools=[],
+                        write_tools=[],
+                        reason=f"domain={plan.domain};intent={plan.intent};existing_appointment_selection_required=true",
+                    )
+
                 read_tools = self._intersect(["appointment_events"], configured)
                 return ToolPlan(
                     allowed_tools=read_tools,
                     read_tools=read_tools,
                     write_tools=[],
-                    reason=f"domain={plan.domain};intent={plan.intent};existing_appointment_missing=true",
+                    must_call_tool="appointment_events" if "appointment_events" in read_tools else None,
+                    reason=f"domain={plan.domain};intent={plan.intent};existing_appointment_missing=true;must_resolve_existing_appointment=true",
                 )
 
             if required_next_action == "appointment_cancel":
@@ -201,10 +237,10 @@ class ToolSelector:
             existing_appointment = appointment.get("existing_appointment")
             selected_slot = appointment.get("selected_slot")
             required_next_action = appointment.get("required_next_action")
+            has_candidates = self._has_existing_appointment_candidates(appointment)
 
             ready_for_reschedule = (
-                isinstance(existing_appointment, dict)
-                and bool(existing_appointment)
+                self._has_existing_appointment(appointment)
                 and isinstance(selected_slot, dict)
                 and bool(selected_slot)
                 and required_next_action == "appointment_reschedule"
@@ -219,13 +255,22 @@ class ToolSelector:
                     reason=f"domain={plan.domain};intent={plan.intent};ready_for_reschedule=true",
                 )
 
-            if not isinstance(existing_appointment, dict) or not existing_appointment:
+            if not self._has_existing_appointment(appointment):
+                if has_candidates:
+                    return ToolPlan(
+                        allowed_tools=[],
+                        read_tools=[],
+                        write_tools=[],
+                        reason=f"domain={plan.domain};intent={plan.intent};existing_appointment_selection_required=true",
+                    )
+
                 read_tools = self._intersect(["appointment_events"], configured)
                 return ToolPlan(
                     allowed_tools=read_tools,
                     read_tools=read_tools,
                     write_tools=[],
-                    reason=f"domain={plan.domain};intent={plan.intent};existing_appointment_missing=true",
+                    must_call_tool="appointment_events" if "appointment_events" in read_tools else None,
+                    reason=f"domain={plan.domain};intent={plan.intent};existing_appointment_missing=true;must_resolve_existing_appointment=true",
                 )
 
             read_tools = self._intersect(["appointment_availability"], configured)
@@ -365,3 +410,38 @@ class ToolSelector:
 
     def _is_non_empty_string(self, value: Any) -> bool:
         return isinstance(value, str) and value.strip() != ""
+
+    def _clean(self, value: Any) -> str | None:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            cleaned = value.strip()
+            return cleaned or None
+        return None
+
+    def _has_existing_appointment(self, appointment: Any) -> bool:
+        if not isinstance(appointment, dict):
+            return False
+
+        existing_appointment = appointment.get("existing_appointment")
+        return isinstance(existing_appointment, dict) and existing_appointment
+
+    def _has_existing_appointment_candidates(self, appointment: Any) -> bool:
+        if not isinstance(appointment, dict):
+            return False
+
+        existing_appointments = appointment.get("existing_appointments")
+        if isinstance(existing_appointments, list) and existing_appointments:
+            return True
+
+        existing_appointments_count = appointment.get("existing_appointments_count")
+        if isinstance(existing_appointments_count, int) and existing_appointments_count > 0:
+            return True
+
+        return False
+
+    def _existing_appointment_selection_required(self, appointment: Any) -> bool:
+        if not isinstance(appointment, dict):
+            return False
+
+        return (not self._has_existing_appointment(appointment)) and self._has_existing_appointment_candidates(appointment)

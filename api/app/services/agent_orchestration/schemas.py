@@ -441,6 +441,7 @@ class ToolPlan(BaseModel):
     allowed_tools: list[str] = Field(default_factory=list)
     read_tools: list[str] = Field(default_factory=list)
     write_tools: list[str] = Field(default_factory=list)
+    must_call_tool: str | None = None
     reason: str | None = None
 
     @field_validator("allowed_tools", "read_tools", "write_tools", mode="before")
@@ -458,6 +459,19 @@ class ToolPlan(BaseModel):
                     normalized.append(candidate)
 
         return list(dict.fromkeys(normalized))
+
+    @field_validator("must_call_tool", mode="before")
+    @classmethod
+    def _normalize_must_call_tool(cls, value: Any) -> str | None:
+        if not isinstance(value, str):
+            return None
+
+        candidate = value.strip()
+        if candidate == "":
+            return None
+
+        known_tools = LOOKUP_TOOL_NAMES | WRITE_TOOL_NAMES
+        return candidate if candidate in known_tools else None
 
     @field_validator("reason", mode="before")
     @classmethod
@@ -496,6 +510,7 @@ ResponseAction = Literal[
 NextAction = Literal[
     "none",
     "ask_clarification",
+    "resolve_existing_appointment",
     "collect_customer_name",
     "collect_contact_data",
     "select_offered_slot",

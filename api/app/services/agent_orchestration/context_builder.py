@@ -68,6 +68,20 @@ class OrchestrationContextBuilder:
         existing_appointment = self._latest_existing_appointment(conversation_messages)
         existing_appointments = self._latest_existing_appointments(conversation_messages)
         required_next_action = self._latest_required_next_action(conversation_messages)
+        resolution_required = (
+            required_next_action == "resolve_existing_appointment"
+            or (isinstance(existing_appointments, list) and existing_appointments != [] and not isinstance(existing_appointment, dict))
+            or (
+                len(existing_appointments) > 0
+                and not isinstance(existing_appointment, dict)
+            )
+        )
+
+        if resolution_required or (
+            isinstance(existing_appointment, dict)
+            and required_next_action not in {"collect_customer_name", "confirm_selected_slot", "appointment_reschedule"}
+        ):
+            selected_slot = None
 
         appointment: dict[str, Any] = {
             "offered_slots": offered_slots,
@@ -180,6 +194,8 @@ class OrchestrationContextBuilder:
     def _latest_offered_slots(self, messages: list[dict[str, Any]], max_slots: int = 60) -> list[dict[str, Any]]:
         for message in reversed(messages):
             for data in self._data_to_save_candidates(message):
+                if self._is_truthy(data.get("existing_appointment_resolution_blocked")):
+                    return []
                 slots = data.get("new_llm_orchestration_offered_slots") or data.get("offered_slots")
                 if isinstance(slots, list) and slots:
                     return [dict(slot) for slot in slots if isinstance(slot, dict)][:max_slots]
@@ -188,6 +204,8 @@ class OrchestrationContextBuilder:
     def _latest_selected_slot(self, messages: list[dict[str, Any]]) -> dict[str, Any] | None:
         for message in reversed(messages):
             for data in self._data_to_save_candidates(message):
+                if self._is_truthy(data.get("existing_appointment_resolution_blocked")):
+                    return None
                 slot = data.get("selected_slot") or data.get("new_llm_orchestration_selected_slot")
                 if isinstance(slot, dict) and slot:
                     return dict(slot)
@@ -328,3 +346,10 @@ class OrchestrationContextBuilder:
             return None
         cleaned = value.strip()
         return cleaned or None
+
+    def _is_truthy(self, value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return False
