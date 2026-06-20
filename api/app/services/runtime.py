@@ -215,9 +215,9 @@ class AgentRuntime:
                 for m in conversation_messages[-8:]
                 if isinstance(m, dict)
             ],
-            "has_offered_slots": bool(self.context_builder._latest_offered_slots(conversation_messages)),
-            "has_selected_slot": self.context_builder._latest_selected_slot(conversation_messages) is not None,
-            "required_next_action": self.context_builder._latest_required_next_action(conversation_messages),
+            "has_offered_slots": bool(self._offered_slots_in_messages(conversation_messages)),
+            "has_selected_slot": self._selected_slot_in_messages(conversation_messages) is not None,
+            "required_next_action": self._required_next_action_in_messages(conversation_messages),
             "temporal_context": {
                 "current_datetime": now.isoformat(),
                 "current_date": now.date().isoformat(),
@@ -344,90 +344,23 @@ class AgentRuntime:
         }
         data_to_save.update(final.data_to_save or {})
 
-        candidate_existing_appointment = (
-            appointment_structured_data.existing_appointment
-            if appointment_structured_data is not None
-            else None
-        )
-        existing_appointments = (
-            appointment_structured_data.existing_appointments
-            if appointment_structured_data is not None and isinstance(appointment_structured_data.existing_appointments, list) and appointment_structured_data.existing_appointments
-            else runtime_context.appointment.get("existing_appointments") if isinstance(runtime_context.appointment, dict) else []
-        )
-        existing_appointment_invalid = False
-        if candidate_existing_appointment is not None:
-            validated_existing_appointment = self.context_builder.validate_existing_appointment(
-                candidate_existing_appointment if isinstance(candidate_existing_appointment, dict) else None,
-                existing_appointments if isinstance(existing_appointments, list) else [],
-            )
-            if validated_existing_appointment is not None:
+        current_existing_appointment = structured_data.get("appointment", {}).get("existing_appointment") if isinstance(structured_data, dict) else None
+        if not isinstance(current_existing_appointment, dict) or not current_existing_appointment:
+            runtime_existing_appointment = runtime_context.appointment.get("existing_appointment") if isinstance(runtime_context.appointment, dict) else None
+            if isinstance(runtime_existing_appointment, dict) and runtime_existing_appointment:
                 structured_data.setdefault("appointment", {})
                 if isinstance(structured_data["appointment"], dict):
-                    structured_data["appointment"]["existing_appointment"] = validated_existing_appointment
+                    structured_data["appointment"]["existing_appointment"] = dict(runtime_existing_appointment)
                     data_to_save["structured_data"] = structured_data
-            else:
-                existing_appointment_invalid = True
-                data_to_save["existing_appointment_validation_error"] = "existing_appointment_not_in_existing_appointments"
-                data_to_save["invalid_existing_appointment"] = candidate_existing_appointment
 
-        if not existing_appointment_invalid:
-            current_existing_appointment = structured_data.get("appointment", {}).get("existing_appointment") if isinstance(structured_data, dict) else None
-            if not isinstance(current_existing_appointment, dict) or not current_existing_appointment:
-                runtime_existing_appointment = runtime_context.appointment.get("existing_appointment") if isinstance(runtime_context.appointment, dict) else None
-                if isinstance(runtime_existing_appointment, dict) and runtime_existing_appointment:
-                    structured_data.setdefault("appointment", {})
-                    if isinstance(structured_data["appointment"], dict):
-                        structured_data["appointment"]["existing_appointment"] = dict(runtime_existing_appointment)
-                        data_to_save["structured_data"] = structured_data
-
-            current_existing_appointment = structured_data.get("appointment", {}).get("existing_appointment") if isinstance(structured_data, dict) else None
-            if isinstance(current_existing_appointment, dict) and "existing_appointments_count" not in data_to_save:
-                data_to_save["existing_appointments_count"] = 1
-
-        existing_appointment_resolution_required = self._existing_appointment_resolution_required(final, runtime_context)
-        appointment_lookup_required = existing_appointment_resolution_required and self._appointment_lookup_required(runtime_context)
-        existing_appointment_selection_required = existing_appointment_resolution_required and self._existing_appointment_selection_required(runtime_context)
-        appointment_resolution_blocked = appointment_lookup_required or existing_appointment_selection_required
-        appointment_events_trace, _ = self._latest_mcp_call_output(llm_result, "appointment_events")
-        appointment_events_required_but_not_called = (
-            appointment_lookup_required
-            and self._appointment_events_was_allowed(tool_plan)
-            and appointment_events_trace is None
-        )
-
-        validated_selected_slot = None
-        selected_slot_invalid = False
-        if final.intent != "select_existing_appointment" and not appointment_resolution_blocked:
-            selected_slot_candidate = appointment_structured_data.selected_slot if appointment_structured_data is not None else None
-            validated_selected_slot = self.context_builder.validate_selected_slot(
-                selected_slot_candidate,
-                offered_slots if isinstance(offered_slots, list) else [],
-            )
-            selected_slot_invalid = selected_slot_candidate is not None and validated_selected_slot is None
-
-        if appointment_resolution_blocked:
-            data_to_save["booking_confirmation_blocked_by_existing_appointment_resolution"] = True
-            data_to_save["existing_appointment_required_before_slot"] = True
-            data_to_save["existing_appointment_resolution_blocked"] = True
-            data_to_save["required_next_action"] = "resolve_existing_appointment"
-            if isinstance(structured_data, dict):
-                appointment_data = structured_data.get("appointment")
-                if isinstance(appointment_data, dict):
-                    appointment_data["selected_slot"] = None
-                    appointment_data["offered_slots"] = []
-                    data_to_save["structured_data"] = structured_data
-            if appointment_events_required_but_not_called:
-                data_to_save["appointment_events_required_but_not_called"] = True
-        elif self._has_existing_appointment_candidates(runtime_context.appointment):
-            data_to_save["ignored_existing_appointments_for_new_booking"] = True
+        current_existing_appointment = structured_data.get("appointment", {}).get("existing_appointment") if isinstance(structured_data, dict) else None
+        if isinstance(current_existing_appointment, dict) and "existing_appointments_count" not in data_to_save:
+            data_to_save["existing_appointments_count"] = 1
 
         current_selected_slot = structured_data.get("appointment", {}).get("selected_slot") if isinstance(structured_data, dict) else None
         if not isinstance(current_selected_slot, dict) or not current_selected_slot:
             runtime_selected_slot = runtime_context.appointment.get("selected_slot") if isinstance(runtime_context.appointment, dict) else None
-            allow_runtime_selected_slot_fallback = (
-                not appointment_resolution_blocked
-                and final.intent not in {"request_reschedule", "request_cancel", "select_existing_appointment"}
-            )
+            allow_runtime_selected_slot_fallback = final.intent not in {"request_reschedule", "request_cancel", "select_existing_appointment"}
             if allow_runtime_selected_slot_fallback and isinstance(runtime_selected_slot, dict) and runtime_selected_slot:
                 structured_data.setdefault("appointment", {})
                 if isinstance(structured_data["appointment"], dict):
@@ -508,6 +441,13 @@ class AgentRuntime:
                     len(persisted_offered_slots) if isinstance(persisted_offered_slots, list) else 0
                 )
 
+        contact_context_result = self._contact_context_result(llm_result)
+        if contact_context_result is not None:
+            structured_data.setdefault("crm_contact", {})
+            if isinstance(structured_data["crm_contact"], dict):
+                structured_data["crm_contact"]["contact_context"] = contact_context_result
+                data_to_save["structured_data"] = structured_data
+
         events_result = self._latest_appointment_events_result(llm_result)
         if events_result is not None:
             appointments = events_result.get("existing_appointments")
@@ -547,24 +487,14 @@ class AgentRuntime:
         if appointment_confirm_result is not None:
             data_to_save.update(appointment_confirm_result)
 
-        if validated_selected_slot is not None:
-            structured_data.setdefault("appointment", {})
-            if isinstance(structured_data["appointment"], dict):
-                structured_data["appointment"]["selected_slot"] = validated_selected_slot
-                data_to_save["structured_data"] = structured_data
-        elif selected_slot_invalid:
-            if "selected_slot_validation_error" not in data_to_save:
-                data_to_save["selected_slot_validation_error"] = "selected_slot_not_in_offered_slots"
-                data_to_save["invalid_selected_slot"] = appointment_structured_data.selected_slot if appointment_structured_data is not None else None
-
-        active_contact_collection = (
-            isinstance(runtime_context.appointment, dict)
-            and isinstance(runtime_context.appointment.get("selected_slot"), dict)
-            and bool(runtime_context.appointment.get("selected_slot"))
-            and runtime_context.appointment.get("required_next_action") == "collect_customer_name"
-        )
-        if active_contact_collection and "required_next_action" not in data_to_save:
-            data_to_save["required_next_action"] = "confirm_selected_slot"
+        current_selected_slot = structured_data.get("appointment", {}).get("selected_slot") if isinstance(structured_data, dict) else None
+        if not isinstance(current_selected_slot, dict) or not current_selected_slot:
+            runtime_selected_slot = runtime_context.appointment.get("selected_slot") if isinstance(runtime_context.appointment, dict) else None
+            if isinstance(runtime_selected_slot, dict) and runtime_selected_slot:
+                structured_data.setdefault("appointment", {})
+                if isinstance(structured_data["appointment"], dict):
+                    structured_data["appointment"]["selected_slot"] = dict(runtime_selected_slot)
+                    data_to_save["structured_data"] = structured_data
 
         if final.required_next_action:
             data_to_save["required_next_action"] = final.required_next_action
@@ -572,45 +502,18 @@ class AgentRuntime:
         self._refresh_context_summary_after_response(data_to_save)
 
         reply = final.reply.strip() if isinstance(final.reply, str) and final.reply.strip() else "¿Puedes repetirlo de otra forma?"
-        if appointment_resolution_blocked:
-            reply = self._appointment_resolution_blocked_reply(runtime_context)
-        if existing_appointment_invalid:
-            reply = "No he podido identificar con seguridad cuál de tus citas quieres cambiar. ¿Puedes indicarme cuál?"
-        elif selected_slot_invalid:
-            reply = "No he podido validar el horario seleccionado. ¿Quieres que revise disponibilidad de nuevo?"
 
         return AgentResponse(
             reply=reply,
             intent=final.intent or plan.intent or "unknown",
             score=final.score,
-            action="ask_clarification" if (appointment_resolution_blocked or existing_appointment_invalid or selected_slot_invalid) else final.action,
+            action=final.action,
             needs_human=bool(final.needs_human),
             data_to_save=data_to_save,
             provider=getattr(llm_result, "provider", None) if llm_result is not None else None,
             model=getattr(llm_result, "model", None) if llm_result is not None else None,
             latency_ms=int((time.monotonic() - started_at) * 1000),
         )
-
-    def _appointment_lookup_required(self, runtime_context: Any) -> bool:
-        appointment = runtime_context.appointment if isinstance(runtime_context.appointment, dict) else {}
-        return (not self._has_existing_appointment(appointment)) and (not self._has_existing_appointment_candidates(appointment))
-
-    def _existing_appointment_selection_required(self, runtime_context: Any) -> bool:
-        appointment = runtime_context.appointment if isinstance(runtime_context.appointment, dict) else {}
-        return (not self._has_existing_appointment(appointment)) and self._has_existing_appointment_candidates(appointment)
-
-    def _existing_appointment_resolution_required(self, final: Any, runtime_context: Any) -> bool:
-        final_intent = self._clean(getattr(final, "intent", None))
-        if final_intent in {"request_reschedule", "request_cancel", "select_existing_appointment"}:
-            return True
-
-        final_required_next_action = self._clean(getattr(final, "required_next_action", None))
-        if final_required_next_action in {"resolve_existing_appointment", "appointment_reschedule", "appointment_cancel"}:
-            return True
-
-        appointment = runtime_context.appointment if isinstance(runtime_context.appointment, dict) else {}
-        runtime_required_next_action = self._clean(appointment.get("required_next_action"))
-        return runtime_required_next_action in {"resolve_existing_appointment", "appointment_reschedule", "appointment_cancel"}
 
     def _validate_offered_slots_subset(
         self,
@@ -700,41 +603,6 @@ class AgentRuntime:
 
         existing_appointments_count = appointment.get("existing_appointments_count")
         return isinstance(existing_appointments_count, int) and existing_appointments_count > 0
-
-    def _appointment_resolution_blocked_reply(self, runtime_context: Any) -> str:
-        appointment = runtime_context.appointment if isinstance(runtime_context.appointment, dict) else {}
-        existing_appointments = appointment.get("existing_appointments")
-        if isinstance(existing_appointments, list) and existing_appointments:
-            lines: list[str] = []
-            for candidate in existing_appointments[:3]:
-                if not isinstance(candidate, dict):
-                    continue
-                label_parts: list[str] = []
-                appointment_id = self._clean(candidate.get("id"))
-                if appointment_id is not None:
-                    label_parts.append(f"ID {appointment_id}")
-
-                start = self._clean(candidate.get("start") or candidate.get("start_at") or candidate.get("startAt"))
-                if start is not None:
-                    label_parts.append(start)
-
-                service_name = self._clean(candidate.get("service_name") or candidate.get("serviceName"))
-                if service_name is not None:
-                    label_parts.append(service_name)
-
-                owner_name = self._clean(candidate.get("owner_name") or candidate.get("ownerName"))
-                if owner_name is not None:
-                    label_parts.append(owner_name)
-
-                if label_parts:
-                    lines.append(" - " + " | ".join(label_parts))
-
-            if lines:
-                return "He encontrado varias citas activas. Necesito que me indiques cuál quieres cambiar o cancelar.\n" + "\n".join(lines)
-
-            return "He encontrado varias citas activas. Necesito que me indiques cuál quieres cambiar o cancelar."
-
-        return "Necesito consultar tu cita existente antes de cambiarla o cancelarla. Si me das la fecha aproximada o la hora, la localizo."
 
     def _latest_appointment_availability_result(self, llm_result: Any | None) -> dict[str, Any] | None:
         if llm_result is None:
@@ -918,6 +786,89 @@ class AgentRuntime:
             }
 
         return None
+
+    def _effective_offered_slots(self, runtime_context: Any) -> list[dict[str, Any]]:
+        appointment = runtime_context.appointment if isinstance(runtime_context.appointment, dict) else {}
+        offered_slots = appointment.get("offered_slots")
+        if isinstance(offered_slots, list) and offered_slots:
+            return [dict(slot) for slot in offered_slots if isinstance(slot, dict)]
+
+        return []
+
+    def _offered_slots_in_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        for message in reversed(messages):
+            for data in self._data_to_save_candidates(message):
+                structured_data = data.get("structured_data")
+                if isinstance(structured_data, dict):
+                    appointment = structured_data.get("appointment")
+                    if isinstance(appointment, dict):
+                        slots = appointment.get("offered_slots")
+                        if isinstance(slots, list):
+                            return [dict(slot) for slot in slots if isinstance(slot, dict)]
+                slots = data.get("new_llm_orchestration_offered_slots") or data.get("offered_slots")
+                if isinstance(slots, list):
+                    return [dict(slot) for slot in slots if isinstance(slot, dict)]
+        return []
+
+    def _data_to_save_candidates(self, message: dict[str, Any]) -> list[dict[str, Any]]:
+        candidates: list[dict[str, Any]] = []
+        for root_key in ("raw_payload", "metadata"):
+            root = message.get(root_key)
+            if not isinstance(root, dict):
+                continue
+            data = root.get("data_to_save")
+            if isinstance(data, dict):
+                candidates.append(data)
+        return candidates
+
+    def _selected_slot_in_messages(self, messages: list[dict[str, Any]]) -> dict[str, Any] | None:
+        for message in reversed(messages):
+            for data in self._data_to_save_candidates(message):
+                structured_data = data.get("structured_data")
+                if isinstance(structured_data, dict):
+                    appointment = structured_data.get("appointment")
+                    if isinstance(appointment, dict):
+                        slot = appointment.get("selected_slot")
+                        if isinstance(slot, dict) and slot:
+                            return dict(slot)
+                slot = data.get("selected_slot") or data.get("new_llm_orchestration_selected_slot")
+                if isinstance(slot, dict) and slot:
+                    return dict(slot)
+        return None
+
+    def _required_next_action_in_messages(self, messages: list[dict[str, Any]]) -> str | None:
+        for message in reversed(messages):
+            for data in self._data_to_save_candidates(message):
+                action = data.get("required_next_action")
+                if isinstance(action, str) and action.strip():
+                    return action.strip()
+        return None
+
+    def _contact_context_result(self, llm_result: Any | None) -> dict[str, Any] | None:
+        trace, parsed_output = self._latest_mcp_call_output(llm_result, "contact_context")
+        if trace is None:
+            return None
+
+        trace_status = self._clean(getattr(trace, "status", None))
+        trace_error_code = self._clean(getattr(trace, "error_code", None))
+        post_processed = parsed_output is not None or trace_status is not None or trace_error_code is not None
+        if not post_processed:
+            return None
+
+        data: dict[str, Any] = {}
+        if isinstance(parsed_output, dict):
+            contact_context = parsed_output.get("contact_context")
+            if isinstance(contact_context, dict):
+                data = dict(contact_context)
+            elif parsed_output != {}:
+                data = dict(parsed_output)
+
+        if trace_status is not None:
+            data.setdefault("status", trace_status)
+        if trace_error_code is not None:
+            data.setdefault("error_code", trace_error_code)
+
+        return data if data != {} else None
 
     def _latest_handoff_request_result(self, llm_result: Any | None) -> dict[str, Any] | None:
         trace, parsed_output = self._latest_mcp_call_output(llm_result, "handoff_request")

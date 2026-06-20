@@ -606,6 +606,7 @@ class StructuredData(BaseModel):
 class ConversationTurn(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
+    turn_index: int | None = None
     role: str = "customer"
     text: str = ""
     domain: str | None = None
@@ -651,60 +652,13 @@ class CurrentMessage(BaseModel):
         return normalized if normalized != "" else None
 
 
-class LatestStructuredDataAppointment(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    latest_offered_slots: list[dict[str, Any]] = Field(default_factory=list)
-    latest_selected_slot: dict[str, Any] | None = None
-    latest_existing_appointments: list[dict[str, Any]] = Field(default_factory=list)
-    latest_existing_appointment: dict[str, Any] | None = None
-
-
-class LatestStructuredDataServices(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    latest_service_candidates: list[dict[str, Any]] = Field(default_factory=list)
-    latest_selected_service: dict[str, Any] | None = None
-
-
-class LatestStructuredDataCrmContact(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    latest_contact_context: dict[str, Any] | None = None
-
-
-class LatestStructuredDataHandoff(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    latest_request: dict[str, Any] | None = None
-
-
-class LatestStructuredDataGeneral(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
-    latest_answer_summary: str | None = None
-
-
-class LatestStructuredData(BaseModel):
-    """Mechanical index of the latest structured boxes found in history."""
-
-    model_config = ConfigDict(extra="ignore")
-
-    appointment: LatestStructuredDataAppointment = Field(default_factory=LatestStructuredDataAppointment)
-    services: LatestStructuredDataServices = Field(default_factory=LatestStructuredDataServices)
-    crm_contact: LatestStructuredDataCrmContact = Field(default_factory=LatestStructuredDataCrmContact)
-    handoff: LatestStructuredDataHandoff = Field(default_factory=LatestStructuredDataHandoff)
-    general: LatestStructuredDataGeneral = Field(default_factory=LatestStructuredDataGeneral)
-
-
 class ConversationContext(BaseModel):
-    """Current message plus persisted history and a mechanical structured-data index."""
+    """Current message plus persisted history."""
 
     model_config = ConfigDict(extra="ignore")
 
     current_message: CurrentMessage = Field(default_factory=CurrentMessage)
     history: list[ConversationTurn] = Field(default_factory=list)
-    latest_structured_data: LatestStructuredData = Field(default_factory=LatestStructuredData)
 
     @field_validator("current_message", mode="before")
     @classmethod

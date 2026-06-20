@@ -52,9 +52,9 @@
 * Write/action tools must be gated by explicit structured state and strong guardrails. Do not expose write tools merely because the user intent category sounds related.
 * For appointments:
 
-  * `appointment_confirm` must only be exposed when a selected slot has been validated and the user clearly confirms booking.
-  * `appointment_reschedule` must only be exposed when there is an existing appointment, a new selected slot validated against offered availability, and an explicit structured reschedule confirmation/next action.
-  * `appointment_cancel` must only be exposed when there is an existing appointment identified safely and an explicit structured cancellation confirmation/next action.
+  * `appointment_confirm` must only be exposed when the planner intent/action indicates booking confirmation and the tool is configured.
+  * `appointment_reschedule` must only be exposed when the planner intent/action indicates reprogramming and the tool is configured.
+  * `appointment_cancel` must only be exposed when the planner intent/action indicates cancellation and the tool is configured.
   * `appointment_availability` and `appointment_events` are read tools and may be exposed when they help the LLM reason.
 * CRM is the operational source of truth for appointment availability, bookings, rescheduling, cancellation, and agenda timezone when CRM integration is available.
 * SA may keep a conversational timezone fallback, but must not override CRM timezone for agenda operations.
@@ -114,7 +114,7 @@ Hard rules:
 * The second LLM input contract is `backend_context + conversation_context`.
 * `conversation_context.current_message` contains only the current incoming customer message.
 * `conversation_context.history` contains only previous persisted turns and excludes `current_message`.
-* `conversation_context.latest_structured_data` is derived only from `history` and must never contain values absent from `history`.
+* `conversation_context` contains only `current_message` and ordered `history`. Do not build a separate latest-state index.
 * Sales Agent must not interpret human language, match dates/times/text, reconstruct semantic data, or act as a complex state machine.
 * Domain data must live inside `structured_data.<domain>`.
 

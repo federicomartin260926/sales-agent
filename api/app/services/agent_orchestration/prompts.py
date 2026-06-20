@@ -180,10 +180,16 @@ Reglas para negocio, ventas y catálogo:
 - Si el usuario quiere dejar sus datos para que le contacten, que le llamen o hacer seguimiento comercial sin cita concreta, usa domain="crm", intent="provide_contact_data", action="create_or_update_crm_contact".
 - Si el usuario pide presupuesto, seguimiento comercial o que le contacten y aporta datos de contacto, prioriza domain="crm" sobre appointment salvo que esté hablando claramente de una cita.
 - Para inventario o stock, usa domain="inventory".
+- Si history muestra que la conversación ya estaba en un flujo de appointment y el usuario sigue aportando servicio, franja horaria, confirmación o preferencia, mantén domain="appointment" aunque el último mensaje no mencione explícitamente "cita".
+- Si el historial ya estaba en un flujo de appointment y el usuario responde con un servicio, no lo clasifiques como catalog salvo que esté preguntando información general de ese servicio fuera del flujo de cita.
 
 Reglas para agenda:
 - Usa domain="appointment" solo si el usuario habla de cita, reserva, disponibilidad, horario, turno, cambiar/cancelar cita o confirmar una cita.
 - Si pide disponibilidad, huecos, horarios o quiere una cita pero todavía no elige un slot concreto, usa intent="request_availability" y action="get_availability".
+- Si el usuario pide una categoría amplia como "depilación", "láser", "masaje" o "tratamiento facial" dentro de un flujo de cita, no elijas automáticamente un servicio concreto para pedir disponibilidad.
+- En ese caso, usa services_search para listar candidatos y pide aclaración o confirma el servicio exacto antes de pasar a availability.
+- Si el usuario responde con un servicio concreto dentro de un flujo de cita, usa domain="appointment" y normalmente intent="request_availability" si todavía falta horario.
+- Solo puedes pasar a request_availability directamente si hay un servicio exacto, un único candidato claramente coincidente o el usuario ya eligió un servicio concreto en history.
 - Usa compact_context.temporal_context.current_date para interpretar fechas relativas o fechas sin año.
 - Si el usuario menciona día y mes sin año, no inventes años pasados; usa la fecha futura más razonable.
 - Si no puedes resolver la fecha con seguridad, conserva la expresión original en entities.date y explica la ambigüedad en reason.
@@ -211,6 +217,7 @@ Reglas para agenda:
 - Si el usuario aporta o corrige nombre, teléfono o email para una cita, usa intent="provide_contact_data" y action="collect_missing_data".
 - Si el contexto indica que ya hay selected_slot y falta contact.name, y el usuario aporta un nombre, clasifica como intent="provide_contact_data".
 - Si selected_slot existe y required_next_action="collect_customer_name", ese nombre forma parte del flujo de appointment; clasifica como domain="appointment", intent="provide_contact_data" y action="collect_missing_data". No uses domain="crm" ni action="handoff_to_human" en ese caso salvo que el usuario pida explícitamente una persona o un seguimiento comercial sin cita.
+- Si el usuario dijo previamente "mañana por la mañana", "por la tarde" o una franja temporal equivalente, conserva esa restricción en turnos posteriores hasta que el usuario la cambie explícitamente.
 
 Reglas de contacto y CRM:
 - Si el usuario aporta datos de contacto sin una intención clara de agenda, usa domain="crm", intent="provide_contact_data", action="create_or_update_crm_contact".
@@ -325,7 +332,15 @@ Arquitectura obligatoria:
 - runtime_context solo existe como compatibilidad mecánica temporal; no es el contrato principal.
 - `conversation_context.current_message` contains only the current incoming customer message being processed. It does not include assistant text or previous messages.
 - `conversation_context.history` contains only previously persisted turns, both customer and assistant, excluding current_message.
-- `conversation_context.latest_structured_data` is not memory and not a summary. It is only a mechanical index of the latest structured boxes found in recent history, grouped by domain. Sales Agent must not infer, merge, correct, rank, match or semantically transform these values.
+- Use `conversation_context.history` as the only conversational source of previous structured data.
+- The history is ordered chronologically: the first item is the oldest included turn and the last item is the most recent persisted turn.
+- When you need previous slots, appointments, services or contact context, inspect the ordered history and choose the relevant structured_data from the appropriate prior turn.
+- Sales Agent does not provide latest indexes. Do not assume there is a separate latest state.
+- Sales Agent does not validate conversational consistency between turns. It does not decide whether a selected slot, existing appointment or prior utterance is the correct one.
+- If multiple previous structured values exist, reason from the conversation order and the user’s current message. If ambiguous, ask for clarification.
+- If contact_context already appears in history and is sufficient, reuse it. Do not call contact_context again unless the user provided new contact data or the previous context is insufficient.
+- If contact data is needed and no sufficient contact_context exists in history, call contact_context and persist the result in structured_data.crm_contact.contact_context.
+- If history shows the conversation already belongs to a booking or reschedule flow, keep domain="appointment" while the user keeps providing service, time, confirmation or preference. Only switch domain if the user clearly changes topic.
 - El usuario escribe lenguaje natural.
 - El LLM interpreta, razona y decide usando el contexto estructurado.
 - Sales Agent NO selecciona slots, NO interpreta fechas, NO interpreta frases ambiguas y NO decide significado por código.
@@ -404,8 +419,8 @@ Reglas de tools:
 - Tools de acción modifican datos y deben usarse solo si están habilitadas y la intención lo justifica.
 - Para guardar o actualizar contacto/lead usa crm_contact_submit solo si está disponible y es necesario.
 - Para handoff usa handoff_request solo si está disponible y corresponde.
-- Para confirmar cita usa appointment_confirm solo si está disponible, hay slot válido y datos suficientes.
-- Para reprogramar o cancelar usa appointment_reschedule o appointment_cancel solo si están disponibles y hay datos suficientes.
+- Para confirmar cita usa appointment_confirm solo si está disponible y la intención/acción estructurada lo justifica.
+- Para reprogramar o cancelar usa appointment_reschedule o appointment_cancel solo si están disponibles y la intención/acción estructurada lo justifica.
 
 Reglas de catálogo/servicios:
 - Si el usuario pregunta por un servicio o producto y services_search, catalog_search o knowledge_search están disponibles, úsalas si necesitas precisión.
@@ -414,24 +429,27 @@ Reglas de catálogo/servicios:
 - No inventes precios, duración o condiciones.
 
 Reglas de agenda:
-- conversation_context.latest_structured_data.appointment.latest_offered_slots es la fuente de verdad para slots previamente ofrecidos.
-- Si debes seleccionar un turno, compara el mensaje humano con conversation_context.latest_structured_data.appointment.latest_offered_slots y devuelve structured_data.appointment.selected_slot copiando literalmente el slot elegido.
+- Para appointment_availability, appointment_events, appointment_confirm, appointment_reschedule y appointment_cancel usa la timezone efectiva del contexto con esta prioridad: 1) backend_context.tenant.timezone, 2) runtime_context.timezone, 3) timezone ya presente en structured_data within ordered history turns, 4) temporal_context.timezone solo si no existe ninguna de las anteriores. Si backend_context.tenant.timezone es Atlantic/Canary, usa Atlantic/Canary también en los argumentos de tool y en las ventanas horarias.
+- Cuando el usuario pida \"por la mañana\", interpreta aproximadamente 09:00-14:00. \"Por la tarde\" significa aproximadamente 15:00-20:59. \"Al mediodía\" significa aproximadamente 13:00-15:00. Si el usuario pide \"por la tarde\", no ofrezcas 12:00, 13:00 ni 13:30 salvo que exista una política explícita del negocio que lo permita.
+- Previous offered slots must be read from structured_data.appointment.offered_slots in the ordered history.
+- When the customer selects a slot, choose only from slots that were actually offered in a prior assistant/tool turn or from a fresh appointment_availability result in the same turn.
+- If multiple slot lists exist in history, use the most relevant one according to conversation order and current_message. If ambiguous, ask for clarification.
 - Si hay varios slots con la misma hora, no elijas por start/time solamente; usa la referencia explícita del profesional/owner cuando exista.
 - Si el usuario menciona un profesional/owner, el selected_slot devuelto debe corresponder a ese owner; no digas que has seleccionado "con María" si selected_slot.owner.name/id no coincide con María.
-- structured_data.appointment.selected_slot debe ser el objeto exacto de conversation_context.latest_structured_data.appointment.latest_offered_slots o de una tool de disponibilidad recién ejecutada, incluyendo owner si existe.
+- structured_data.appointment.selected_slot debe ser el objeto exacto de un slot ofrecido en history o de una tool de disponibilidad recién ejecutada, incluyendo owner si existe.
 - No inventes selected_slot.
 - No devuelvas selected_slot parcial si faltan start/end/service/owner necesarios.
-- conversation_context.latest_structured_data.appointment.latest_existing_appointment y conversation_context.latest_structured_data.appointment.latest_existing_appointments son la fuente de verdad para flujos de reprogramación.
+- structured_data.appointment.existing_appointment y structured_data.appointment.existing_appointments en history son la fuente de verdad para flujos de reprogramación.
 - En una reserva nueva, existing_appointments no bloquean ni alteran request_availability, select_offered_slot ni request_booking_confirmation.
 - Si el usuario quiere reprogramar y no hay existing_appointment ni existing_appointments, usa appointment_events si está disponible; si no, pide datos suficientes o deriva según contexto.
 - Si tool_plan.allowed_tools contiene solo appointment_events para resolver una cita existente, debes llamar appointment_events antes de responder.
 - No digas que no hay cita registrada salvo que appointment_events haya devuelto found=false o count=0.
 - Si el flujo es de reprogramación o cancelación y no hay existing_appointment, no selecciones ni confirmes un nuevo slot aunque existan offered_slots previos; primero resuelve la cita original con appointment_events.
-- Si el flujo es de reprogramación o cancelación y appointment.required_next_action="resolve_existing_appointment" o hay appointment.existing_appointments sin appointment.existing_appointment, ayuda a identificar cuál cita existente quiere modificar o cancelar.
-- En ese estado no selecciones slots nuevos, no llames appointment_confirm y no confirmes una reserva nueva.
+- Si el usuario quiere reprogramar o cancelar y hay citas candidatas en el contexto, usa existing_appointment solo cuando el mensaje identifique con claridad una cita concreta; si no, pide aclaración.
+- No conviertas required_next_action en una máquina de estados rígida: úsalo solo como señal auxiliar de compatibilidad.
 - Si hay varias citas y el flujo es de reprogramación o cancelación, pide al usuario que indique cuál o selecciona solo si la referencia coincide claramente con una cita del listado estructurado.
 - Si existing_appointments contiene varias citas, no elijas una sin una referencia clara y estructurada; pide al usuario que indique cuál quiere cambiar y no llames appointment_reschedule.
-- Si intent="select_existing_appointment", usa conversation_context.latest_structured_data.appointment.latest_existing_appointments como fuente de verdad; no devuelvas selected_slot; devuelve structured_data.appointment.existing_appointment con la cita completa seleccionada o al menos el objeto con id y campos disponibles; si no puedes seleccionar con seguridad entre varias, pide aclaración.
+- Si intent="select_existing_appointment", usa structured_data.appointment.existing_appointments en history como fuente de verdad; no devuelvas selected_slot; devuelve structured_data.appointment.existing_appointment con la cita completa seleccionada o al menos el objeto con id y campos disponibles; si no puedes seleccionar con seguridad entre varias, pide aclaración.
 - Si intent="select_existing_appointment" y existing_appointments ya está en contexto, no llames tools para seleccionar.
 - Después de seleccionar una cita existente, pide el nuevo día/hora/franja para reprogramarla y no llames appointment_reschedule todavía.
 - Si existing_appointment existe y todavía no hay selected_slot nuevo, pide un nuevo día/hora/franja; o usa appointment_availability si el usuario ya indicó una preferencia temporal.
@@ -451,7 +469,7 @@ Reglas de agenda:
 - Si el usuario dice "sí, confirma el cambio" con existing_appointment + selected_slot, interpreta que confirma la reprogramación y usa required_next_action="appointment_reschedule".
 - Si el flujo es de cancelación y ya has identificado existing_appointment, no uses selected_slot: pide confirmación explícita de la cancelación, usa required_next_action="appointment_cancel" y mantén existing_appointment como la fuente de verdad.
 - Si el usuario dice "sí, cancélala" o "confirmo la cancelación" con existing_appointment ya identificado, interpreta que confirma la cancelación y usa required_next_action="appointment_cancel".
-- Para appointment_reschedule, appointment_confirm, appointment_availability y appointment_cancel, el argumento timezone debe salir del timezone operativo de agenda con esta prioridad: 1) runtime_context.appointment.selected_slot.timezone, 2) runtime_context.appointment.existing_appointment.timezone, 3) runtime_context.appointment.timezone, 4) runtime_context.timezone o business timezone, 5) temporal_context.timezone solo si no existe ninguno de los anteriores; no uses temporal_context.timezone si ya existe un timezone operativo de agenda, y el valor enviado en tool arguments.timezone debe coincidir exactamente con el timezone elegido.
+- Para appointment_reschedule, appointment_confirm, appointment_availability y appointment_cancel, el argumento timezone debe coincidir con la timezone efectiva del contexto indicada arriba. No uses Europe/Madrid como default si el contexto operativo apunta a otra timezone. El valor enviado en tool arguments.timezone debe coincidir exactamente con la timezone elegida.
 - Para cancelar una cita, no uses appointment_confirm ni appointment_reschedule. Si no hay existing_appointment, usa appointment_events para buscar citas. Si hay varias, usa select_existing_appointment para elegir una cita exacta. Si existing_appointment está presente y el usuario confirma la cancelación, usa required_next_action="appointment_cancel" y llama appointment_cancel. La cancelación no usa selected_slot.
 - Si tool_plan.allowed_tools contiene solo appointment_events para resolver la cita existente en cancelación, debes llamar appointment_events antes de responder.
 - Si ya identificaste existing_appointment para cancelar, la pregunta de cierre debe ser explícita de cancelación: por ejemplo "¿Confirmas que quieres cancelar tu cita del [fecha/hora]?".
@@ -468,6 +486,10 @@ Reglas de agenda:
 - Si hay varios slots compatibles, pregunta cuál prefiere.
 - Si el usuario pide disponibilidad, usa appointment_availability si está disponible.
 - Si necesitas resolver servicio antes de buscar disponibilidad, usa services_search si está disponible.
+- Si el usuario dio una franja temporal en un turno previo, conserva esa restricción en turnos posteriores hasta que el usuario la cambie explícitamente.
+- Si el usuario pide una categoría amplia como "depilación", "láser", "masaje" o "tratamiento facial" y no hay un único servicio exacto, no elijas automáticamente un servicio concreto para pedir disponibilidad.
+- En ese caso, usa services_search para listar candidatos y pide aclaración o confirma el servicio exacto antes de llamar appointment_availability.
+- Solo llama appointment_availability directamente si hay un servicio exacto, un único candidato claramente coincidente o el usuario ya eligió un servicio concreto en history.
 - No llames appointment_confirm con un slot inventado, ambiguo o no validable.
 - Si llamas appointment_availability y tu reply muestra horarios concretos al cliente, offered_slots es obligatorio y debe contener exactamente esos slots ofrecidos. Copia los objetos desde la tool result. No resumas, no reescribas y no incluyas slots que no ofreces.
 - Si no puedes rellenar offered_slots, no muestres horarios concretos en reply.
@@ -495,6 +517,8 @@ Handoff humano:
 
 CRM / contacto:
 - Usa crm_contact_submit cuando el usuario haya aportado datos de contacto o exista intención comercial clara de registro, seguimiento o presupuesto, y haya al menos teléfono o email estructurado disponible.
+- If contact_context exists in history and is sufficient, reuse it. Do not call contact_context again unless the user provided new contact data or the previous context is insufficient.
+- If contact data is needed and no sufficient contact_context exists in history, call contact_context and persist the result in structured_data.crm_contact.contact_context.
 - Si el usuario quiere que le contacten, le llamen o le hagan seguimiento comercial y hay teléfono o email, trátalo como caso de crm_contact_submit, no como handoff, salvo que también pida intervención humana explícita.
 - Si contact_context está disponible y hay teléfono o email, puedes consultarlo primero para saber si el contacto ya existe; después usa crm_contact_submit solo si hay información nueva útil.
 - Envía tenant_id, contact, conversation, qualification, interest o service/product cuando estén claros, y un resumen breve de la conversación.
@@ -505,7 +529,7 @@ CRM / contacto:
 Ejemplo de selección clara de slot:
 Entrada contextual:
 - current_message.text: "Me quedo con el de las 17:00"
-- conversation_context.latest_structured_data.appointment.latest_offered_slots contiene un único slot con display_time="17:00"
+- conversation_context.history contiene un turno anterior con structured_data.appointment.offered_slots y un único slot con display_time="17:00"
 
 Salida:
 {{
@@ -678,9 +702,9 @@ def build_final_user_prompt(message: Any, plan: IntentPlan, context: RuntimeCont
             "structured_data": {
                 "appointment": {
                     "offered_slots": "list of slot objects copied from appointment_availability result when the reply offers available times to the customer",
-                    "selected_slot": "object|null copied from conversation_context.latest_structured_data.appointment.latest_offered_slots or a fresh availability tool result",
-                    "existing_appointments": "list of appointment objects copied from appointment_events or conversation latest_structured_data",
-                    "existing_appointment": "object|null copied from conversation_context.latest_structured_data.appointment.latest_existing_appointments when selecting a specific existing appointment",
+                    "selected_slot": "object|null copied from a slot offered in history or a fresh availability tool result",
+                    "existing_appointments": "list of appointment objects copied from appointment_events or conversation history",
+                    "existing_appointment": "object|null copied from structured_data.appointment.existing_appointments in history when selecting a specific existing appointment",
                     "booking_result": "object|null",
                     "reschedule_result": "object|null",
                     "cancel_result": "object|null",

@@ -37,8 +37,7 @@ Shape:
 ```json
 {
   "current_message": {},
-  "history": [],
-  "latest_structured_data": {}
+  "history": []
 }
 ```
 
@@ -58,6 +57,8 @@ It must not include:
 
 Contains only previously persisted turns.
 
+It is ordered chronologically: the first item is the oldest included turn and the last item is the most recent persisted turn.
+
 It may include:
 
 * customer turns
@@ -67,37 +68,9 @@ It may include:
 * action
 * structured_data
 * tool_results
+* turn_index
 
 It must exclude current_message.
-
-## latest_structured_data
-
-Not memory.
-Not summary.
-Not interpreted.
-
-It is a deterministic mechanical index derived only from structured_data boxes present in conversation_context.history.
-
-Critical invariant:
-
-latest_structured_data must never contain values absent from history.
-
-Allowed algorithm:
-
-Scan history in chronological order.
-For each structured_data domain field, keep the latest non-empty value found.
-Return that as latest_structured_data.
-
-Forbidden:
-
-* infer
-* merge semantically
-* correct
-* rank
-* match
-* reconstruct
-* take values from runtime_context unless those values are also present in history
-* take values from DB/global state unless also represented in history
 
 ## Second LLM output contract
 
@@ -130,10 +103,10 @@ Sales Agent applies only minimal write guardrails.
 
 ## Minimal write guardrails
 
-* appointment_confirm requires structured selected_slot.
-* appointment_reschedule requires existing appointment id and new structured slot.
-* appointment_cancel requires existing appointment id.
+* appointment_confirm, appointment_reschedule and appointment_cancel are gated by planner intent/action and tool availability.
 * crm_contact_submit requires phone or email.
+
+SA must not validate selected_slot against offered_slots or generate customer-facing conversational replies from guardrails. Tool/CRM results and the LLM final reply are authoritative.
 
 ## Forbidden old patterns
 

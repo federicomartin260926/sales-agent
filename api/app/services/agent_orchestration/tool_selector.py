@@ -6,18 +6,17 @@ from app.schemas.llm import McpRemoteConfig
 from app.services.agent_orchestration.schemas import IntentPlan, RuntimeContext, ToolPlan
 
 
-READ_TOOLS = [
+APPOINTMENT_READ_TOOLS = [
     "contact_context",
     "services_search",
-    "appointment_availability",
     "appointment_events",
+    "appointment_availability",
 ]
 
-WRITE_TOOLS_BY_INTENT = {
+APPOINTMENT_WRITE_TOOLS_BY_INTENT = {
     "request_booking_confirmation": ["appointment_confirm"],
     "request_reschedule": ["appointment_reschedule"],
     "request_cancel": ["appointment_cancel"],
-    "request_handoff": ["handoff_request"],
 }
 
 CATALOG_READ_TOOLS = ["services_search"]
@@ -28,8 +27,8 @@ CRM_TOOLS = ["crm_contact_submit", "contact_context"]
 class ToolSelector:
     """Selects allowed MCP tools for the next LLM call.
 
-    SA does not decide what to do with user text. It only gives the LLM the tools
-    that are safe and relevant for the intent already returned by the LLM planner.
+    The selector only exposes tools relevant to the domain and intent already
+    returned by the LLM planner. It does not manage conversational microstates.
     """
 
     def select(self, plan: IntentPlan, context: RuntimeContext, mcp_config: McpRemoteConfig | None) -> ToolPlan:
@@ -37,46 +36,36 @@ class ToolSelector:
         if not configured:
             return ToolPlan(reason="mcp_disabled_or_no_tools")
 
-        if plan.intent == "provide_contact_data":
-            appointment = context.appointment if isinstance(context.appointment, dict) else {}
-            if self._has_active_appointment_flow(appointment):
-                return ToolPlan(
-                    allowed_tools=[],
-                    read_tools=[],
-                    write_tools=[],
-                    reason=f"domain={plan.domain};intent={plan.intent};appointment_flow_active=true",
-                )
+        if plan.domain == "appointment" or plan.intent in {
+            "request_availability",
+            "select_offered_slot",
+            "select_existing_appointment",
+            "request_booking_confirmation",
+            "request_reschedule",
+            "request_cancel",
+            "provide_contact_data",
+        }:
+            read_tools = self._intersect(APPOINTMENT_READ_TOOLS, configured)
+            write_tools = self._appointment_write_tools(plan.intent, context, configured)
 
-            return self._crm_contact_submit_plan(plan, context, configured, allow_followup_read=True)
+            allowed_tools = list(dict.fromkeys([*read_tools, *write_tools]))
+            return ToolPlan(
+                allowed_tools=allowed_tools,
+                read_tools=read_tools,
+                write_tools=write_tools,
+                reason=f"domain={plan.domain};intent={plan.intent};appointment_tools_exposed=true",
+            )
 
         if plan.domain == "crm" or plan.intent == "request_quote":
             return self._crm_contact_submit_plan(plan, context, configured, allow_followup_read=True)
 
-        if plan.intent == "select_offered_slot":
-            appointment = context.appointment if isinstance(context.appointment, dict) else {}
-            if self._requires_existing_appointment_resolution(plan, appointment) and self._existing_appointment_selection_required(appointment):
-                return ToolPlan(
-                    allowed_tools=[],
-                    read_tools=[],
-                    write_tools=[],
-                    reason=f"domain={plan.domain};intent={plan.intent};existing_appointment_selection_required_blocks_new_slot_selection=true",
-                )
-
-            offered_slots = appointment.get("offered_slots") if isinstance(appointment, dict) else []
-            if isinstance(offered_slots, list) and offered_slots:
-                return ToolPlan(
-                    allowed_tools=[],
-                    read_tools=[],
-                    write_tools=[],
-                    reason=f"domain={plan.domain};intent={plan.intent};offered_slots_present=true",
-                )
-
-        if plan.intent == "select_existing_appointment":
+        if plan.domain == "catalog" or plan.intent in {"ask_product_or_service_info", "catalog_search"}:
+            read_tools = self._intersect(CATALOG_READ_TOOLS, configured)
             return ToolPlan(
-                allowed_tools=[],
-                read_tools=[],
+                allowed_tools=read_tools,
+                read_tools=read_tools,
                 write_tools=[],
-                reason=f"domain={plan.domain};intent={plan.intent};existing_appointments_selected_by_llm=true",
+                reason=f"domain={plan.domain};intent={plan.intent};catalog_tools_exposed=true",
             )
 
         if plan.domain == "handoff" or plan.intent == "request_handoff":
@@ -92,229 +81,19 @@ class ToolSelector:
                     reason=f"domain={plan.domain};intent={plan.intent};handoff_enabled=true;handoff_strategy={handoff_strategy};route_to_handoff_request=true",
                 )
 
-            if not handoff_enabled:
-                return ToolPlan(
-                    allowed_tools=[],
-                    read_tools=[],
-                    write_tools=[],
-                    reason=f"domain={plan.domain};intent={plan.intent};handoff_disabled=true",
-                )
-
-            if handoff_strategy == "manual_wa_link":
-                return ToolPlan(
-                    allowed_tools=[],
-                    read_tools=[],
-                    write_tools=[],
-                    reason=f"domain={plan.domain};intent={plan.intent};handoff_manual_link_only=true",
-                )
-
             return ToolPlan(
                 allowed_tools=[],
                 read_tools=[],
                 write_tools=[],
-                reason=f"domain={plan.domain};intent={plan.intent};handoff_external_tool_not_configured=true",
+                reason=f"domain={plan.domain};intent={plan.intent};handoff_unavailable_or_disabled=true",
             )
 
-        if plan.intent == "request_booking_confirmation":
-            appointment = context.appointment if isinstance(context.appointment, dict) else {}
-            selected_slot = appointment.get("selected_slot")
-            required_next_action = appointment.get("required_next_action")
-            existing_appointment = appointment.get("existing_appointment")
-            selection_required = self._existing_appointment_selection_required(appointment)
-            existing_resolution_required = self._requires_existing_appointment_resolution(plan, appointment)
-
-            if (
-                isinstance(selected_slot, dict)
-                and bool(selected_slot)
-                and required_next_action in {"collect_customer_name", "collect_contact_data"}
-            ):
-                return ToolPlan(
-                    allowed_tools=[],
-                    read_tools=[],
-                    write_tools=[],
-                    reason=f"domain={plan.domain};intent={plan.intent};appointment_flow_waiting_for_contact_data=true",
-                )
-
-            if existing_resolution_required and self._clean(required_next_action) == "resolve_existing_appointment" and not self._has_existing_appointment(appointment):
-                return ToolPlan(
-                    allowed_tools=[],
-                    read_tools=[],
-                    write_tools=[],
-                    reason=f"domain={plan.domain};intent={plan.intent};existing_appointment_resolution_required_blocks_booking_confirmation=true",
-                )
-
-            if existing_resolution_required and selection_required:
-                return ToolPlan(
-                    allowed_tools=[],
-                    read_tools=[],
-                    write_tools=[],
-                    reason=f"domain={plan.domain};intent={plan.intent};existing_appointment_selection_required_blocks_booking_confirmation=true",
-                )
-
-            if existing_resolution_required and isinstance(existing_appointment, dict) and existing_appointment:
-                if required_next_action == "appointment_cancel":
-                    appointment_cancel_allowed = "appointment_cancel" in configured
-                    return ToolPlan(
-                        allowed_tools=["appointment_cancel"] if appointment_cancel_allowed else [],
-                        read_tools=[],
-                        write_tools=["appointment_cancel"] if appointment_cancel_allowed else [],
-                        reason=f"domain={plan.domain};intent={plan.intent};existing_appointment_present;route_to_cancel=true",
-                    )
-                if isinstance(selected_slot, dict) and bool(selected_slot):
-                    appointment_reschedule_allowed = "appointment_reschedule" in configured
-                    return ToolPlan(
-                        allowed_tools=["appointment_reschedule"] if appointment_reschedule_allowed else [],
-                        read_tools=[],
-                        write_tools=["appointment_reschedule"] if appointment_reschedule_allowed else [],
-                        reason=f"domain={plan.domain};intent={plan.intent};existing_appointment_present;selected_slot_present;route_to_reschedule=true",
-                    )
-
-                return ToolPlan(
-                    allowed_tools=[],
-                    read_tools=[],
-                    write_tools=[],
-                    reason=f"domain={plan.domain};intent={plan.intent};existing_appointment_blocks_booking_confirmation=true",
-                )
-
-            if not isinstance(selected_slot, dict) or not selected_slot:
-                return ToolPlan(
-                    allowed_tools=[],
-                    read_tools=[],
-                    write_tools=[],
-                    reason=f"domain={plan.domain};intent={plan.intent};missing_selected_slot=true",
-                )
-
-            appointment_confirm_allowed = "appointment_confirm" in configured
-            allowed_tools = ["appointment_confirm"] if appointment_confirm_allowed else []
-            return ToolPlan(
-                allowed_tools=allowed_tools,
-                read_tools=[],
-                write_tools=["appointment_confirm"] if appointment_confirm_allowed else [],
-                reason=f"domain={plan.domain};intent={plan.intent};selected_slot_present=true",
-            )
-
-        if plan.intent == "request_cancel":
-            appointment = context.appointment if isinstance(context.appointment, dict) else {}
-            existing_appointment = appointment.get("existing_appointment")
-            required_next_action = appointment.get("required_next_action")
-            has_candidates = self._has_existing_appointment_candidates(appointment)
-
-            if not self._has_existing_appointment(appointment):
-                if has_candidates:
-                    return ToolPlan(
-                        allowed_tools=[],
-                        read_tools=[],
-                        write_tools=[],
-                        reason=f"domain={plan.domain};intent={plan.intent};existing_appointment_selection_required=true",
-                    )
-
-                read_tools = self._intersect(["appointment_events"], configured)
-                return ToolPlan(
-                    allowed_tools=read_tools,
-                    read_tools=read_tools,
-                    write_tools=[],
-                    must_call_tool="appointment_events" if "appointment_events" in read_tools else None,
-                    reason=f"domain={plan.domain};intent={plan.intent};existing_appointment_missing=true;must_resolve_existing_appointment=true",
-                )
-
-            if required_next_action == "appointment_cancel":
-                appointment_cancel_allowed = "appointment_cancel" in configured
-                return ToolPlan(
-                    allowed_tools=["appointment_cancel"] if appointment_cancel_allowed else [],
-                    read_tools=[],
-                    write_tools=["appointment_cancel"] if appointment_cancel_allowed else [],
-                    reason=f"domain={plan.domain};intent={plan.intent};existing_appointment_present;route_to_cancel=true",
-                )
-
-            return ToolPlan(
-                allowed_tools=[],
-                read_tools=[],
-                write_tools=[],
-                reason=f"domain={plan.domain};intent={plan.intent};existing_appointment_present;waiting_for_cancel_confirmation=true",
-            )
-
-        if plan.intent == "request_reschedule":
-            appointment = context.appointment if isinstance(context.appointment, dict) else {}
-            existing_appointment = appointment.get("existing_appointment")
-            selected_slot = appointment.get("selected_slot")
-            required_next_action = appointment.get("required_next_action")
-            has_candidates = self._has_existing_appointment_candidates(appointment)
-
-            ready_for_reschedule = (
-                self._has_existing_appointment(appointment)
-                and isinstance(selected_slot, dict)
-                and bool(selected_slot)
-                and required_next_action == "appointment_reschedule"
-            )
-
-            if ready_for_reschedule:
-                appointment_reschedule_allowed = "appointment_reschedule" in configured
-                return ToolPlan(
-                    allowed_tools=["appointment_reschedule"] if appointment_reschedule_allowed else [],
-                    read_tools=[],
-                    write_tools=["appointment_reschedule"] if appointment_reschedule_allowed else [],
-                    reason=f"domain={plan.domain};intent={plan.intent};ready_for_reschedule=true",
-                )
-
-            if not self._has_existing_appointment(appointment):
-                if has_candidates:
-                    return ToolPlan(
-                        allowed_tools=[],
-                        read_tools=[],
-                        write_tools=[],
-                        reason=f"domain={plan.domain};intent={plan.intent};existing_appointment_selection_required=true",
-                    )
-
-                read_tools = self._intersect(["appointment_events"], configured)
-                return ToolPlan(
-                    allowed_tools=read_tools,
-                    read_tools=read_tools,
-                    write_tools=[],
-                    must_call_tool="appointment_events" if "appointment_events" in read_tools else None,
-                    reason=f"domain={plan.domain};intent={plan.intent};existing_appointment_missing=true;must_resolve_existing_appointment=true",
-                )
-
-            read_tools = self._intersect(["appointment_availability"], configured)
-            return ToolPlan(
-                allowed_tools=read_tools,
-                read_tools=read_tools,
-                write_tools=[],
-                reason=f"domain={plan.domain};intent={plan.intent};selected_slot_missing=true",
-            )
-
-        desired_read: list[str] = []
-        desired_write: list[str] = []
-
-        if plan.domain == "appointment" or plan.intent in {
-            "request_availability",
-            "select_offered_slot",
-            "provide_contact_data",
-        }:
-            desired_read.extend(["contact_context", "services_search", "appointment_availability"])
-            if self._should_expose_appointment_events(plan, context.appointment if isinstance(context.appointment, dict) else {}):
-                desired_read.append("appointment_events")
-            desired_write.extend(WRITE_TOOLS_BY_INTENT.get(plan.intent, []))
-
-        if plan.domain == "catalog" or plan.intent in {"ask_product_or_service_info", "catalog_search"}:
-            desired_read.extend(CATALOG_READ_TOOLS)
-
-        if plan.domain == "handoff" or plan.intent == "request_handoff":
-            desired_write.extend(HANDOFF_TOOLS)
-
-        if plan.domain == "crm":
-            desired_read.extend(["contact_context"])
-            desired_write.extend(CRM_TOOLS)
-
-        # For general turns, contact_context is harmless if configured, but avoid
-        # forcing tool usage. The LLM can answer without tools.
-        read_tools = self._intersect(desired_read, configured)
-        write_tools = self._intersect(desired_write, configured)
-        allowed_tools = list(dict.fromkeys([*read_tools, *write_tools]))
+        read_tools = self._intersect(["contact_context"], configured)
         return ToolPlan(
-            allowed_tools=allowed_tools,
+            allowed_tools=read_tools,
             read_tools=read_tools,
-            write_tools=write_tools,
-            reason=f"domain={plan.domain};intent={plan.intent}",
+            write_tools=[],
+            reason=f"domain={plan.domain};intent={plan.intent};default_tools_exposed=true",
         )
 
     def _intersect(self, desired: list[str], configured: list[str]) -> list[str]:
@@ -379,6 +158,20 @@ class ToolSelector:
             reason=f"domain={plan.domain};intent={plan.intent};route_to_crm_contact_submit=true",
         )
 
+    def _appointment_write_tools(self, intent: str, context: RuntimeContext, configured: list[str]) -> list[str]:
+        write_tools = self._intersect(APPOINTMENT_WRITE_TOOLS_BY_INTENT.get(intent, []), configured)
+
+        if intent == "request_booking_confirmation":
+            return ["appointment_confirm"] if "appointment_confirm" in write_tools else []
+
+        if intent == "request_reschedule":
+            return ["appointment_reschedule"] if "appointment_reschedule" in write_tools else []
+
+        if intent == "request_cancel":
+            return ["appointment_cancel"] if "appointment_cancel" in write_tools else []
+
+        return write_tools
+
     def _has_contact_minimum(self, contact: Any) -> bool:
         if not isinstance(contact, dict):
             return False
@@ -386,82 +179,5 @@ class ToolSelector:
         email = self._read_value(contact, "email")
         return self._is_non_empty_string(phone) or self._is_non_empty_string(email)
 
-    def _has_active_appointment_flow(self, appointment: Any) -> bool:
-        if not isinstance(appointment, dict):
-            return False
-
-        if self._read_value(appointment, "selected_slot") not in (None, {}, []):
-            return True
-        if self._read_value(appointment, "existing_appointment") not in (None, {}, []):
-            return True
-
-        required_next_action = self._read_value(appointment, "required_next_action")
-        if isinstance(required_next_action, str) and required_next_action.strip() != "":
-            return required_next_action.strip() in {
-                "collect_customer_name",
-                "collect_contact_data",
-                "select_offered_slot",
-                "confirm_selected_slot",
-                "appointment_confirm",
-                "appointment_reschedule",
-                "appointment_cancel",
-            }
-
-        return False
-
     def _is_non_empty_string(self, value: Any) -> bool:
         return isinstance(value, str) and value.strip() != ""
-
-    def _clean(self, value: Any) -> str | None:
-        if value is None:
-            return None
-        if isinstance(value, str):
-            cleaned = value.strip()
-            return cleaned or None
-        return None
-
-    def _has_existing_appointment(self, appointment: Any) -> bool:
-        if not isinstance(appointment, dict):
-            return False
-
-        existing_appointment = appointment.get("existing_appointment")
-        return isinstance(existing_appointment, dict) and existing_appointment
-
-    def _has_existing_appointment_candidates(self, appointment: Any) -> bool:
-        if not isinstance(appointment, dict):
-            return False
-
-        existing_appointments = appointment.get("existing_appointments")
-        if isinstance(existing_appointments, list) and existing_appointments:
-            return True
-
-        existing_appointments_count = appointment.get("existing_appointments_count")
-        if isinstance(existing_appointments_count, int) and existing_appointments_count > 0:
-            return True
-
-        return False
-
-    def _existing_appointment_selection_required(self, appointment: Any) -> bool:
-        if not isinstance(appointment, dict):
-            return False
-
-        return (not self._has_existing_appointment(appointment)) and self._has_existing_appointment_candidates(appointment)
-
-    def _requires_existing_appointment_resolution(self, plan: IntentPlan, appointment: Any) -> bool:
-        if plan.intent in {"request_reschedule", "request_cancel", "select_existing_appointment"}:
-            return True
-
-        if not isinstance(appointment, dict):
-            return False
-
-        required_next_action = self._clean(self._read_value(appointment, "required_next_action"))
-        return required_next_action in {"resolve_existing_appointment", "appointment_reschedule", "appointment_cancel"}
-
-    def _should_expose_appointment_events(self, plan: IntentPlan, appointment: Any) -> bool:
-        if plan.intent in {"request_reschedule", "request_cancel", "select_existing_appointment"}:
-            return True
-        if not isinstance(appointment, dict):
-            return False
-
-        required_next_action = self._clean(self._read_value(appointment, "required_next_action"))
-        return required_next_action in {"resolve_existing_appointment", "appointment_reschedule", "appointment_cancel"}
