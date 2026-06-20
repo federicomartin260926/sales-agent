@@ -5,7 +5,26 @@ from zoneinfo import ZoneInfo
 
 from app.config import Settings
 from app.schemas.agent import AgentRequest
-from app.services.agent_orchestration.schemas import IntentPlan, RuntimeContext
+from app.services.agent_orchestration.schemas import (
+    AvailableToolsContext,
+    BackendContactContext,
+    BackendContext,
+    BackendEntrypointContext,
+    BackendPoliciesContext,
+    BackendTenantContext,
+    ConversationContext,
+    CurrentMessage,
+    ConversationTurn,
+    IntentPlan,
+    RuntimeContext,
+    LatestStructuredData,
+    LatestStructuredDataAppointment,
+    LatestStructuredDataCrmContact,
+    LatestStructuredDataGeneral,
+    LatestStructuredDataHandoff,
+    LatestStructuredDataServices,
+    StructuredData,
+)
 from app.services.backend_client import BackendClient, CommercialContext
 from app.services.routing_resolver import RoutingContext
 
@@ -61,7 +80,11 @@ class OrchestrationContextBuilder:
         conversation_messages: list[dict[str, Any]],
     ) -> RuntimeContext:
         timezone, timezone_source = self._resolve_timezone(backend_context)
-        history = self._history(conversation_messages)
+        history = self._history(conversation_messages, limit=12)
+        turns = self._conversation_turns(conversation_messages, limit=12)
+        backend_block = self._backend_context(backend_context, payload, routing)
+        conversation_block = self._conversation_context(payload, turns)
+        current_message = conversation_block.current_message.model_dump(exclude_none=True)
         persisted_contact_name = self._latest_persisted_contact_name(conversation_messages)
         offered_slots = self._latest_offered_slots(conversation_messages)
         offered_slots_source = self._latest_offered_slots_source(conversation_messages)
@@ -95,6 +118,8 @@ class OrchestrationContextBuilder:
         }
 
         return RuntimeContext(
+            backend_context=backend_block,
+            conversation_context=conversation_block,
             tenant=self._tenant_payload(backend_context, routing),
             entry_point=self._entry_point_payload(backend_context),
             product=self._product_payload(backend_context),
@@ -110,7 +135,7 @@ class OrchestrationContextBuilder:
                 "summary": self._clean(payload.conversation.summary),
                 "recent_messages": history,
                 "persisted_contact_name": persisted_contact_name,
-                "current_message": payload.message.text,
+                "current_message": current_message,
             },
             appointment=appointment,
             timezone=timezone,
@@ -187,11 +212,265 @@ class OrchestrationContextBuilder:
 
         return None
 
+    def _backend_context(
+        self,
+        backend_context: CommercialContext | None,
+        payload: AgentRequest,
+        routing: RoutingContext,
+    ) -> BackendContext:
+        if backend_context is None:
+            tenant = BackendTenantContext(id=routing.tenant_id)
+            contact = BackendContactContext(
+                phone=self._clean(payload.contact.phone),
+                name=self._clean(payload.contact.name),
+                email=self._clean(payload.contact.email),
+            )
+            entrypoint = BackendEntrypointContext(
+                ref=self._clean(routing.entrypoint_ref or payload.entrypoint_ref),
+                channel=self._clean(payload.channel_type) or "whatsapp",
+            )
+            return BackendContext(
+                tenant=tenant,
+                contact=contact,
+                entrypoint=entrypoint,
+                available_tools=self._available_tools_context(),
+                policies=BackendPoliciesContext(),
+            )
+
+        tenant = BackendTenantContext(
+            id=backend_context.tenant.id,
+            name=backend_context.tenant.name,
+            timezone=backend_context.timezone or backend_context.tenant.timezone,
+            business_context=backend_context.tenant.business_context,
+            tone=backend_context.tenant.tone,
+            slug=backend_context.tenant.slug,
+            sales_policy=backend_context.tenant.sales_policy,
+            handoff=backend_context.tenant.handoff,
+        )
+        contact = BackendContactContext(
+            phone=self._clean(payload.contact.phone),
+            name=self._clean(payload.contact.name),
+            email=self._clean(payload.contact.email),
+        )
+        entrypoint = BackendEntrypointContext(
+            ref=self._clean(routing.entrypoint_ref or payload.entrypoint_ref),
+            channel=self._clean(payload.channel_type) or "whatsapp",
+            id=getattr(backend_context.entry_point, "id", None),
+            code=getattr(backend_context.entry_point, "code", None),
+            name=getattr(backend_context.entry_point, "name", None),
+            description=getattr(backend_context.entry_point, "description", None),
+        )
+        booking_policy = {
+            "booking_enabled": bool(getattr(backend_context.sales_runtime, "booking_enabled", False)),
+            "handoff_enabled": bool(getattr(backend_context.sales_runtime, "handoff_enabled", False)),
+            "rag_enabled": bool(getattr(backend_context.sales_runtime, "rag_enabled", False)),
+        }
+        return BackendContext(
+            tenant=tenant,
+            contact=contact,
+            entrypoint=entrypoint,
+            available_tools=self._available_tools_context(),
+            policies=BackendPoliciesContext(
+                sales_policy=backend_context.tenant.sales_policy,
+                booking_policy=booking_policy,
+                handoff_policy=backend_context.tenant.handoff,
+            ),
+        )
+
+    def _available_tools_context(self) -> AvailableToolsContext:
+        return AvailableToolsContext(
+            services=["services_search"],
+            appointment=[
+                "appointment_events",
+                "appointment_availability",
+                "appointment_confirm",
+                "appointment_reschedule",
+                "appointment_cancel",
+            ],
+            crm_contact=["contact_context", "crm_contact_submit"],
+            handoff=["handoff_request"],
+        )
+
+    def _conversation_context(self, payload: AgentRequest, turns: list[ConversationTurn]) -> ConversationContext:
+        return ConversationContext(
+            current_message=self._current_message(payload),
+            history=turns,
+            latest_structured_data=self._latest_structured_data(turns),
+        )
+
+    def _current_message(self, payload: AgentRequest) -> CurrentMessage:
+        return CurrentMessage(
+            role="customer",
+            text=payload.message.text or "",
+            received_at=self._clean(payload.message.timestamp),
+            channel=self._clean(payload.channel_type or payload.conversation.channel),
+        )
+
+    def _conversation_turns(self, messages: list[dict[str, Any]], limit: int = 12) -> list[ConversationTurn]:
+        recent = messages[-limit:]
+        turns: list[ConversationTurn] = []
+        for message in recent:
+            if not isinstance(message, dict):
+                continue
+            structured_data = self._structured_data_from_message(message)
+            tool_results = self._tool_results_from_message(message)
+            role = self._normalize_turn_role(message)
+            text = self._clean(message.get("body")) or ""
+            turns.append(
+                ConversationTurn(
+                    role=role,
+                    text=text,
+                    domain=self._clean(message.get("domain")),
+                    intent=self._clean(message.get("intent")),
+                    action=self._clean(message.get("action")),
+                    structured_data=structured_data,
+                    tool_results=tool_results,
+                    created_at=self._clean(message.get("created_at")),
+                )
+            )
+        return turns
+
+    def _latest_structured_data(self, turns: list[ConversationTurn]) -> LatestStructuredData:
+        latest_structured_data = LatestStructuredData()
+        for turn in reversed(turns):
+            appointment = turn.structured_data.appointment
+            if not latest_structured_data.appointment.latest_offered_slots and appointment.offered_slots:
+                latest_structured_data.appointment.latest_offered_slots = [dict(slot) for slot in appointment.offered_slots]
+            if latest_structured_data.appointment.latest_selected_slot is None and isinstance(appointment.selected_slot, dict):
+                latest_structured_data.appointment.latest_selected_slot = dict(appointment.selected_slot)
+            if not latest_structured_data.appointment.latest_existing_appointments and appointment.existing_appointments:
+                latest_structured_data.appointment.latest_existing_appointments = [dict(slot) for slot in appointment.existing_appointments]
+            if latest_structured_data.appointment.latest_existing_appointment is None and isinstance(appointment.existing_appointment, dict):
+                latest_structured_data.appointment.latest_existing_appointment = dict(appointment.existing_appointment)
+
+            services = turn.structured_data.services
+            if not latest_structured_data.services.latest_service_candidates and services.service_candidates:
+                latest_structured_data.services.latest_service_candidates = [dict(item) for item in services.service_candidates]
+            if latest_structured_data.services.latest_selected_service is None and isinstance(services.selected_service, dict):
+                latest_structured_data.services.latest_selected_service = dict(services.selected_service)
+
+            crm_contact = turn.structured_data.crm_contact
+            if latest_structured_data.crm_contact.latest_contact_context is None and isinstance(crm_contact.contact_context, dict):
+                latest_structured_data.crm_contact.latest_contact_context = dict(crm_contact.contact_context)
+
+            handoff = turn.structured_data.handoff
+            if latest_structured_data.handoff.latest_request is None and handoff.requested:
+                latest_structured_data.handoff.latest_request = {
+                    "requested": handoff.requested,
+                    "reason": handoff.reason,
+                    "result": handoff.result,
+                }
+
+            general = turn.structured_data.general
+            if latest_structured_data.general.latest_answer_summary is None:
+                if isinstance(general.last_answer_summary, str) and general.last_answer_summary.strip():
+                    latest_structured_data.general.latest_answer_summary = general.last_answer_summary.strip()
+                elif turn.role == "assistant" and isinstance(turn.text, str) and turn.text.strip():
+                    latest_structured_data.general.latest_answer_summary = turn.text.strip()
+
+        return latest_structured_data
+
+    def _structured_data_from_message(self, message: dict[str, Any]) -> StructuredData:
+        data = self._message_data_to_save(message)
+        structured_data = data.get("structured_data") if isinstance(data.get("structured_data"), dict) else None
+        if isinstance(structured_data, dict):
+            return StructuredData.model_validate(structured_data)
+
+        return StructuredData(
+            appointment=self._appointment_structured_data_from_legacy(data),
+            services=self._services_structured_data_from_legacy(data),
+            crm_contact=self._crm_contact_structured_data_from_legacy(data),
+            handoff=self._handoff_structured_data_from_legacy(data),
+            general=self._general_structured_data_from_legacy(data, message),
+        )
+
+    def _appointment_structured_data_from_legacy(self, data: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "offered_slots": self._dict_list(data.get("new_llm_orchestration_offered_slots") or data.get("offered_slots")),
+            "selected_slot": self._dict_value(data.get("new_llm_orchestration_selected_slot") or data.get("selected_slot")),
+            "existing_appointments": self._dict_list(data.get("existing_appointments")),
+            "existing_appointment": self._dict_value(data.get("existing_appointment")),
+            "booking_result": self._dict_value(data.get("booking_result") or data.get("appointment_confirm_result")),
+            "reschedule_result": self._dict_value(data.get("reschedule_result") or data.get("appointment_reschedule_result")),
+            "cancel_result": self._dict_value(data.get("cancel_result") or data.get("appointment_cancel_result")),
+        }
+
+    def _services_structured_data_from_legacy(self, data: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "service_candidates": self._dict_list(data.get("service_candidates")),
+            "selected_service": self._dict_value(data.get("selected_service")),
+            "last_query": self._clean(data.get("last_query")),
+        }
+
+    def _crm_contact_structured_data_from_legacy(self, data: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "contact_context": self._dict_value(data.get("contact_context")),
+            "lead_data": self._dict_value(data.get("lead_data")),
+            "submit_result": self._dict_value(data.get("crm_contact_submit_result") or data.get("submit_result")),
+        }
+
+    def _handoff_structured_data_from_legacy(self, data: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "requested": self._is_truthy(data.get("handoff_requested")) or self._is_truthy(data.get("requested")),
+            "reason": self._clean(data.get("handoff_reason") or data.get("reason")),
+            "result": self._dict_value(data.get("handoff_result") or data.get("result")),
+        }
+
+    def _general_structured_data_from_legacy(self, data: dict[str, Any], message: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "topic": self._clean(data.get("topic")),
+            "last_answer_summary": self._clean(data.get("last_answer_summary")) or self._clean(message.get("body")),
+        }
+
+    def _tool_results_from_message(self, message: dict[str, Any]) -> list[dict[str, Any]]:
+        data = self._message_data_to_save(message)
+        tool_results = data.get("tool_results")
+        if isinstance(tool_results, list):
+            return [dict(item) for item in tool_results if isinstance(item, dict)]
+
+        mcp_tool_traces = data.get("mcp_tool_traces")
+        if isinstance(mcp_tool_traces, list):
+            return [dict(item) for item in mcp_tool_traces if isinstance(item, dict)]
+
+        return []
+
+    def _message_data_to_save(self, message: dict[str, Any]) -> dict[str, Any]:
+        for data in self._data_to_save_candidates(message):
+            return data
+        return {}
+
+    def _dict_value(self, value: Any) -> dict[str, Any] | None:
+        if isinstance(value, dict):
+            return dict(value)
+        return None
+
+    def _dict_list(self, value: Any) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            return []
+
+        return [dict(item) for item in value if isinstance(item, dict)]
+
+    def _normalize_turn_role(self, message: dict[str, Any]) -> str:
+        role = self._clean(message.get("role"))
+        direction = self._clean(message.get("direction"))
+        if role in {"customer", "user"} or direction == "inbound":
+            return "customer"
+        if role in {"assistant", "agent", "bot"} or direction == "outbound":
+            return "assistant"
+        return role or "customer"
+
     def _latest_offered_slots(self, messages: list[dict[str, Any]], max_slots: int = 60) -> list[dict[str, Any]]:
         for message in reversed(messages):
             for data in self._data_to_save_candidates(message):
                 if self._is_truthy(data.get("existing_appointment_resolution_blocked")):
                     return []
+                structured_data = data.get("structured_data")
+                if isinstance(structured_data, dict):
+                    appointment = structured_data.get("appointment")
+                    if isinstance(appointment, dict):
+                        slots = appointment.get("offered_slots")
+                        if isinstance(slots, list):
+                            return [dict(slot) for slot in slots if isinstance(slot, dict)][:max_slots]
                 if "new_llm_orchestration_offered_slots" in data:
                     slots = data.get("new_llm_orchestration_offered_slots")
                     if isinstance(slots, list):
@@ -208,6 +487,13 @@ class OrchestrationContextBuilder:
             for data in self._data_to_save_candidates(message):
                 if self._is_truthy(data.get("existing_appointment_resolution_blocked")):
                     return None
+                structured_data = data.get("structured_data")
+                if isinstance(structured_data, dict):
+                    appointment = structured_data.get("appointment")
+                    if isinstance(appointment, dict):
+                        slot = appointment.get("selected_slot")
+                        if isinstance(slot, dict) and slot:
+                            return dict(slot)
                 slot = data.get("selected_slot") or data.get("new_llm_orchestration_selected_slot")
                 if isinstance(slot, dict) and slot:
                     return dict(slot)
@@ -224,6 +510,13 @@ class OrchestrationContextBuilder:
     def _latest_existing_appointment(self, messages: list[dict[str, Any]]) -> dict[str, Any] | None:
         for message in reversed(messages):
             for data in self._data_to_save_candidates(message):
+                structured_data = data.get("structured_data")
+                if isinstance(structured_data, dict):
+                    appointment = structured_data.get("appointment")
+                    if isinstance(appointment, dict):
+                        existing_appointment = appointment.get("existing_appointment")
+                        if isinstance(existing_appointment, dict) and existing_appointment:
+                            return dict(existing_appointment)
                 appointment = data.get("existing_appointment")
                 if isinstance(appointment, dict) and appointment:
                     return dict(appointment)
@@ -232,6 +525,13 @@ class OrchestrationContextBuilder:
     def _latest_existing_appointments(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         for message in reversed(messages):
             for data in self._data_to_save_candidates(message):
+                structured_data = data.get("structured_data")
+                if isinstance(structured_data, dict):
+                    appointment = structured_data.get("appointment")
+                    if isinstance(appointment, dict):
+                        appointments = appointment.get("existing_appointments")
+                        if isinstance(appointments, list):
+                            return [dict(appointment) for appointment in appointments if isinstance(appointment, dict)]
                 appointments = data.get("existing_appointments")
                 if isinstance(appointments, list):
                     return [dict(appointment) for appointment in appointments if isinstance(appointment, dict)]

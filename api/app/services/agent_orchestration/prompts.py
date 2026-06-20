@@ -321,6 +321,11 @@ Esta es la segunda llamada LLM.
 Aquí sí puedes usar tools MCP si Sales Agent las habilita en tool_plan.
 
 Arquitectura obligatoria:
+- Los bloques principales de contexto son backend_context y conversation_context.
+- runtime_context solo existe como compatibilidad mecánica temporal; no es el contrato principal.
+- `conversation_context.current_message` contains only the current incoming customer message being processed. It does not include assistant text or previous messages.
+- `conversation_context.history` contains only previously persisted turns, both customer and assistant, excluding current_message.
+- `conversation_context.latest_structured_data` is not memory and not a summary. It is only a mechanical index of the latest structured boxes found in recent history, grouped by domain. Sales Agent must not infer, merge, correct, rank, match or semantically transform these values.
 - El usuario escribe lenguaje natural.
 - El LLM interpreta, razona y decide usando el contexto estructurado.
 - Sales Agent NO selecciona slots, NO interpreta fechas, NO interpreta frases ambiguas y NO decide significado por código.
@@ -345,10 +350,40 @@ Contrato obligatorio de salida:
   "action": "uno de los valores finales permitidos",
   "needs_human": false,
   "score": 0.0,
-  "offered_slots": [],
-  "selected_slot": null,
-  "required_next_action": null,
-  "clarification": null,
+  "structured_data": {{
+    "appointment": {{
+      "offered_slots": [],
+      "selected_slot": null,
+      "existing_appointments": [],
+      "existing_appointment": null,
+      "booking_result": null,
+      "reschedule_result": null,
+      "cancel_result": null
+    }},
+    "services": {{
+      "service_candidates": [],
+      "selected_service": null,
+      "last_query": null
+    }},
+    "crm_contact": {{
+      "contact_context": null,
+      "lead_data": null,
+      "submit_result": null
+    }},
+    "handoff": {{
+      "requested": false,
+      "reason": null,
+      "result": null
+    }},
+    "general": {{
+      "topic": null,
+      "last_answer_summary": null
+    }}
+  }},
+  "next_expected": {{
+    "kind": "customer_reply",
+    "description": null
+  }},
   "data_to_save": {{}}
 }}
 
@@ -379,14 +414,14 @@ Reglas de catálogo/servicios:
 - No inventes precios, duración o condiciones.
 
 Reglas de agenda:
-- appointment.offered_slots es la fuente de verdad para slots previamente ofrecidos.
-- Si debes seleccionar un turno, compara el mensaje humano con appointment.offered_slots y devuelve selected_slot copiando literalmente el slot elegido.
+- conversation_context.latest_structured_data.appointment.latest_offered_slots es la fuente de verdad para slots previamente ofrecidos.
+- Si debes seleccionar un turno, compara el mensaje humano con conversation_context.latest_structured_data.appointment.latest_offered_slots y devuelve structured_data.appointment.selected_slot copiando literalmente el slot elegido.
 - Si hay varios slots con la misma hora, no elijas por start/time solamente; usa la referencia explícita del profesional/owner cuando exista.
 - Si el usuario menciona un profesional/owner, el selected_slot devuelto debe corresponder a ese owner; no digas que has seleccionado "con María" si selected_slot.owner.name/id no coincide con María.
-- selected_slot debe ser el objeto exacto de appointment.offered_slots o de una tool de disponibilidad recién ejecutada, incluyendo owner si existe.
+- structured_data.appointment.selected_slot debe ser el objeto exacto de conversation_context.latest_structured_data.appointment.latest_offered_slots o de una tool de disponibilidad recién ejecutada, incluyendo owner si existe.
 - No inventes selected_slot.
 - No devuelvas selected_slot parcial si faltan start/end/service/owner necesarios.
-- appointment.existing_appointment y appointment.existing_appointments son la fuente de verdad para flujos de reprogramación.
+- conversation_context.latest_structured_data.appointment.latest_existing_appointment y conversation_context.latest_structured_data.appointment.latest_existing_appointments son la fuente de verdad para flujos de reprogramación.
 - En una reserva nueva, existing_appointments no bloquean ni alteran request_availability, select_offered_slot ni request_booking_confirmation.
 - Si el usuario quiere reprogramar y no hay existing_appointment ni existing_appointments, usa appointment_events si está disponible; si no, pide datos suficientes o deriva según contexto.
 - Si tool_plan.allowed_tools contiene solo appointment_events para resolver una cita existente, debes llamar appointment_events antes de responder.
@@ -396,7 +431,7 @@ Reglas de agenda:
 - En ese estado no selecciones slots nuevos, no llames appointment_confirm y no confirmes una reserva nueva.
 - Si hay varias citas y el flujo es de reprogramación o cancelación, pide al usuario que indique cuál o selecciona solo si la referencia coincide claramente con una cita del listado estructurado.
 - Si existing_appointments contiene varias citas, no elijas una sin una referencia clara y estructurada; pide al usuario que indique cuál quiere cambiar y no llames appointment_reschedule.
-- Si intent="select_existing_appointment", usa runtime_context.appointment.existing_appointments como fuente de verdad; no devuelvas selected_slot; devuelve en data_to_save.existing_appointment la cita completa seleccionada o al menos el objeto con id y campos disponibles; si no puedes seleccionar con seguridad entre varias, pide aclaración.
+- Si intent="select_existing_appointment", usa conversation_context.latest_structured_data.appointment.latest_existing_appointments como fuente de verdad; no devuelvas selected_slot; devuelve structured_data.appointment.existing_appointment con la cita completa seleccionada o al menos el objeto con id y campos disponibles; si no puedes seleccionar con seguridad entre varias, pide aclaración.
 - Si intent="select_existing_appointment" y existing_appointments ya está en contexto, no llames tools para seleccionar.
 - Después de seleccionar una cita existente, pide el nuevo día/hora/franja para reprogramarla y no llames appointment_reschedule todavía.
 - Si existing_appointment existe y todavía no hay selected_slot nuevo, pide un nuevo día/hora/franja; o usa appointment_availability si el usuario ya indicó una preferencia temporal.
@@ -469,8 +504,8 @@ CRM / contacto:
 
 Ejemplo de selección clara de slot:
 Entrada contextual:
-- current_message: "Me quedo con el de las 17:00"
-- appointment.offered_slots contiene un único slot con display_time="17:00"
+- current_message.text: "Me quedo con el de las 17:00"
+- conversation_context.latest_structured_data.appointment.latest_offered_slots contiene un único slot con display_time="17:00"
 
 Salida:
 {{
@@ -480,17 +515,48 @@ Salida:
   "action": "prepare_booking_confirmation",
   "needs_human": false,
   "score": 0.95,
-  "selected_slot": {{
-    "start": "copiado del slot",
-    "end": "copiado del slot",
-    "service_id": "copiado del slot",
-    "service_name": "copiado del slot",
-    "owner_id": "copiado del slot",
-    "owner_name": "copiado del slot",
-    "display_time": "copiado del slot"
+  "structured_data": {{
+    "appointment": {{
+      "selected_slot": {{
+        "start": "copiado del slot",
+        "end": "copiado del slot",
+        "service_id": "copiado del slot",
+        "service_name": "copiado del slot",
+        "owner_id": "copiado del slot",
+        "owner_name": "copiado del slot",
+        "display_time": "copiado del slot"
+      }},
+      "offered_slots": [],
+      "existing_appointments": [],
+      "existing_appointment": null,
+      "booking_result": null,
+      "reschedule_result": null,
+      "cancel_result": null
+    }},
+    "services": {{
+      "service_candidates": [],
+      "selected_service": null,
+      "last_query": null
+    }},
+    "crm_contact": {{
+      "contact_context": null,
+      "lead_data": null,
+      "submit_result": null
+    }},
+    "handoff": {{
+      "requested": false,
+      "reason": null,
+      "result": null
+    }},
+    "general": {{
+      "topic": null,
+      "last_answer_summary": null
+    }}
   }},
-  "required_next_action": "collect_customer_name",
-  "clarification": null,
+  "next_expected": {{
+    "kind": "customer_reply",
+    "description": "collect_customer_name"
+  }},
   "data_to_save": {{}}
 }}
 
@@ -502,12 +568,39 @@ Ejemplo de ambigüedad:
   "action": "ask_clarification",
   "needs_human": false,
   "score": 0.8,
-  "selected_slot": null,
-  "required_next_action": "ask_clarification",
-  "clarification": {{
-    "needed": true,
-    "question": "¿Te refieres al horario de las 17:00 con María o al de las 17:00 con Claudia?",
-    "missing_fields": ["selected_slot"]
+  "structured_data": {{
+    "appointment": {{
+      "offered_slots": [],
+      "selected_slot": null,
+      "existing_appointments": [],
+      "existing_appointment": null,
+      "booking_result": null,
+      "reschedule_result": null,
+      "cancel_result": null
+    }},
+    "services": {{
+      "service_candidates": [],
+      "selected_service": null,
+      "last_query": null
+    }},
+    "crm_contact": {{
+      "contact_context": null,
+      "lead_data": null,
+      "submit_result": null
+    }},
+    "handoff": {{
+      "requested": false,
+      "reason": null,
+      "result": null
+    }},
+    "general": {{
+      "topic": null,
+      "last_answer_summary": null
+    }}
+  }},
+  "next_expected": {{
+    "kind": "customer_reply",
+    "description": "ask_clarification"
   }},
   "data_to_save": {{}}
 }}
@@ -560,7 +653,7 @@ def build_intent_user_prompt(message: str, context: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, default=str, indent=2)
 
 
-def build_final_user_prompt(message: str, plan: IntentPlan, context: RuntimeContext, tools: ToolPlan) -> str:
+def build_final_user_prompt(message: Any, plan: IntentPlan, context: RuntimeContext, tools: ToolPlan) -> str:
     """Build the user prompt for the second LLM call.
 
     This call receives the structured intent, the full runtime context and the
@@ -571,6 +664,8 @@ def build_final_user_prompt(message: str, plan: IntentPlan, context: RuntimeCont
         "task": "execute_conversation_turn",
         "current_message": message,
         "intent_plan": plan.model_dump(exclude_none=True),
+        "backend_context": context.backend_context.model_dump(exclude_none=True) if context.backend_context is not None else {},
+        "conversation_context": context.conversation_context.model_dump(exclude_none=True) if context.conversation_context is not None else {},
         "runtime_context": context.model_dump(exclude_none=True),
         "tool_plan": tools.model_dump(exclude_none=True),
         "output_contract": {
@@ -580,10 +675,40 @@ def build_final_user_prompt(message: str, plan: IntentPlan, context: RuntimeCont
             "action": FINAL_ACTION_VALUES,
             "needs_human": "boolean",
             "score": "float between 0 and 1",
-            "offered_slots": "list of slot objects copied from appointment_availability result when the reply offers available times to the customer",
-            "selected_slot": "object|null. Must be copied from runtime_context.appointment.offered_slots or a fresh availability tool result.",
-            "required_next_action": NEXT_ACTION_VALUES,
-            "clarification": "object|null",
+            "structured_data": {
+                "appointment": {
+                    "offered_slots": "list of slot objects copied from appointment_availability result when the reply offers available times to the customer",
+                    "selected_slot": "object|null copied from conversation_context.latest_structured_data.appointment.latest_offered_slots or a fresh availability tool result",
+                    "existing_appointments": "list of appointment objects copied from appointment_events or conversation latest_structured_data",
+                    "existing_appointment": "object|null copied from conversation_context.latest_structured_data.appointment.latest_existing_appointments when selecting a specific existing appointment",
+                    "booking_result": "object|null",
+                    "reschedule_result": "object|null",
+                    "cancel_result": "object|null",
+                },
+                "services": {
+                    "service_candidates": "list of service objects",
+                    "selected_service": "object|null",
+                    "last_query": "string|null",
+                },
+                "crm_contact": {
+                    "contact_context": "object|null",
+                    "lead_data": "object|null",
+                    "submit_result": "object|null",
+                },
+                "handoff": {
+                    "requested": "boolean",
+                    "reason": "string|null",
+                    "result": "object|null",
+                },
+                "general": {
+                    "topic": "string|null",
+                    "last_answer_summary": "string|null",
+                },
+            },
+            "next_expected": {
+                "kind": "customer_reply",
+                "description": "string|null",
+            },
             "data_to_save": "object",
         },
         "final_instruction": "Return only one valid JSON object. Do not include Markdown or explanatory text.",

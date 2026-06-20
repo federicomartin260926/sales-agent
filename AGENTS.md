@@ -104,6 +104,20 @@
 * Reuse a prepared conversation state when validating a specific turn, unless the state is contaminated.
 * Run a clean end-to-end flow only after the focused bug is fixed.
 
+## Sales Agent LLM-led runtime contract
+
+Before changing runtime, prompts, schemas, context builder or tool selection, read:
+`docs/llm-led-runtime-contract.md`
+
+Hard rules:
+
+* The second LLM input contract is `backend_context + conversation_context`.
+* `conversation_context.current_message` contains only the current incoming customer message.
+* `conversation_context.history` contains only previous persisted turns and excludes `current_message`.
+* `conversation_context.latest_structured_data` is derived only from `history` and must never contain values absent from `history`.
+* Sales Agent must not interpret human language, match dates/times/text, reconstruct semantic data, or act as a complex state machine.
+* Domain data must live inside `structured_data.<domain>`.
+
 ## Codex usage policy
 
 * Use Codex mainly for focused audits or very surgical changes.

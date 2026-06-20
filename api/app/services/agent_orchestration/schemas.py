@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 # =============================================================================
@@ -411,6 +411,9 @@ class RuntimeContext(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
+    backend_context: BackendContext | None = None
+    conversation_context: ConversationContext | None = None
+
     tenant: dict[str, Any] = Field(default_factory=dict)
     entry_point: dict[str, Any] | None = None
     product: dict[str, Any] | None = None
@@ -481,6 +484,272 @@ class ToolPlan(BaseModel):
 
         normalized = value.strip()
         return normalized if normalized != "" else None
+
+
+# =============================================================================
+# New LLM context blocks
+# =============================================================================
+
+
+class BackendTenantContext(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    id: str | None = None
+    name: str | None = None
+    timezone: str | None = None
+    business_context: str | None = None
+    tone: str | None = None
+    slug: str | None = None
+    sales_policy: dict[str, Any] = Field(default_factory=dict)
+    handoff: dict[str, Any] = Field(default_factory=dict)
+
+
+class BackendContactContext(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    phone: str | None = None
+    name: str | None = None
+    email: str | None = None
+
+
+class BackendEntrypointContext(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    ref: str | None = None
+    channel: str | None = None
+    id: str | None = None
+    code: str | None = None
+    name: str | None = None
+    description: str | None = None
+
+
+class AvailableToolsContext(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    services: list[str] = Field(default_factory=list)
+    appointment: list[str] = Field(default_factory=list)
+    crm_contact: list[str] = Field(default_factory=list)
+    handoff: list[str] = Field(default_factory=list)
+
+
+class BackendPoliciesContext(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    sales_policy: Any | None = None
+    booking_policy: Any | None = None
+    handoff_policy: Any | None = None
+
+
+class BackendContext(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    tenant: BackendTenantContext = Field(default_factory=BackendTenantContext)
+    contact: BackendContactContext = Field(default_factory=BackendContactContext)
+    entrypoint: BackendEntrypointContext = Field(default_factory=BackendEntrypointContext)
+    available_tools: AvailableToolsContext = Field(default_factory=AvailableToolsContext)
+    policies: BackendPoliciesContext = Field(default_factory=BackendPoliciesContext)
+
+
+class AppointmentStructuredData(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    offered_slots: list[dict[str, Any]] = Field(default_factory=list)
+    selected_slot: dict[str, Any] | None = None
+    existing_appointments: list[dict[str, Any]] = Field(default_factory=list)
+    existing_appointment: dict[str, Any] | None = None
+    booking_result: dict[str, Any] | None = None
+    reschedule_result: dict[str, Any] | None = None
+    cancel_result: dict[str, Any] | None = None
+
+
+class ServicesStructuredData(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    service_candidates: list[dict[str, Any]] = Field(default_factory=list)
+    selected_service: dict[str, Any] | None = None
+    last_query: str | None = None
+
+
+class CrmContactStructuredData(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    contact_context: dict[str, Any] | None = None
+    lead_data: dict[str, Any] | None = None
+    submit_result: dict[str, Any] | None = None
+
+
+class HandoffStructuredData(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    requested: bool = False
+    reason: str | None = None
+    result: dict[str, Any] | None = None
+
+
+class GeneralStructuredData(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    topic: str | None = None
+    last_answer_summary: str | None = None
+
+
+class StructuredData(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    appointment: AppointmentStructuredData = Field(default_factory=AppointmentStructuredData)
+    services: ServicesStructuredData = Field(default_factory=ServicesStructuredData)
+    crm_contact: CrmContactStructuredData = Field(default_factory=CrmContactStructuredData)
+    handoff: HandoffStructuredData = Field(default_factory=HandoffStructuredData)
+    general: GeneralStructuredData = Field(default_factory=GeneralStructuredData)
+
+
+class ConversationTurn(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    role: str = "customer"
+    text: str = ""
+    domain: str | None = None
+    intent: str | None = None
+    action: str | None = None
+    structured_data: StructuredData = Field(default_factory=StructuredData)
+    tool_results: list[dict[str, Any]] = Field(default_factory=list)
+    created_at: str | None = None
+
+
+class CurrentMessage(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    role: str = "customer"
+    text: str = ""
+    received_at: str | None = None
+    channel: str | None = None
+
+    @field_validator("role", mode="before")
+    @classmethod
+    def _normalize_role(cls, value: Any) -> str:
+        if not isinstance(value, str):
+            return "customer"
+
+        normalized = value.strip()
+        return normalized if normalized != "" else "customer"
+
+    @field_validator("text", mode="before")
+    @classmethod
+    def _normalize_text(cls, value: Any) -> str:
+        if not isinstance(value, str):
+            return ""
+
+        return value.strip()
+
+    @field_validator("received_at", "channel", mode="before")
+    @classmethod
+    def _normalize_optional_string(cls, value: Any) -> str | None:
+        if not isinstance(value, str):
+            return None
+
+        normalized = value.strip()
+        return normalized if normalized != "" else None
+
+
+class LatestStructuredDataAppointment(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    latest_offered_slots: list[dict[str, Any]] = Field(default_factory=list)
+    latest_selected_slot: dict[str, Any] | None = None
+    latest_existing_appointments: list[dict[str, Any]] = Field(default_factory=list)
+    latest_existing_appointment: dict[str, Any] | None = None
+
+
+class LatestStructuredDataServices(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    latest_service_candidates: list[dict[str, Any]] = Field(default_factory=list)
+    latest_selected_service: dict[str, Any] | None = None
+
+
+class LatestStructuredDataCrmContact(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    latest_contact_context: dict[str, Any] | None = None
+
+
+class LatestStructuredDataHandoff(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    latest_request: dict[str, Any] | None = None
+
+
+class LatestStructuredDataGeneral(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    latest_answer_summary: str | None = None
+
+
+class LatestStructuredData(BaseModel):
+    """Mechanical index of the latest structured boxes found in history."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    appointment: LatestStructuredDataAppointment = Field(default_factory=LatestStructuredDataAppointment)
+    services: LatestStructuredDataServices = Field(default_factory=LatestStructuredDataServices)
+    crm_contact: LatestStructuredDataCrmContact = Field(default_factory=LatestStructuredDataCrmContact)
+    handoff: LatestStructuredDataHandoff = Field(default_factory=LatestStructuredDataHandoff)
+    general: LatestStructuredDataGeneral = Field(default_factory=LatestStructuredDataGeneral)
+
+
+class ConversationContext(BaseModel):
+    """Current message plus persisted history and a mechanical structured-data index."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    current_message: CurrentMessage = Field(default_factory=CurrentMessage)
+    history: list[ConversationTurn] = Field(default_factory=list)
+    latest_structured_data: LatestStructuredData = Field(default_factory=LatestStructuredData)
+
+    @field_validator("current_message", mode="before")
+    @classmethod
+    def _normalize_current_message(cls, value: Any) -> CurrentMessage:
+        if isinstance(value, CurrentMessage):
+            return value
+        if isinstance(value, dict):
+            return CurrentMessage.model_validate(value)
+        if isinstance(value, str):
+            return CurrentMessage(text=value)
+        return CurrentMessage()
+
+
+class NextExpected(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    kind: str = "customer_reply"
+    description: str | None = None
+    details: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("kind", mode="before")
+    @classmethod
+    def _normalize_kind(cls, value: Any) -> str:
+        if not isinstance(value, str):
+            return "customer_reply"
+
+        normalized = value.strip()
+        return normalized if normalized != "" else "customer_reply"
+
+    @field_validator("description", mode="before")
+    @classmethod
+    def _normalize_description(cls, value: Any) -> str | None:
+        if not isinstance(value, str):
+            return None
+
+        normalized = value.strip()
+        return normalized if normalized != "" else None
+
+    @field_validator("details", mode="before")
+    @classmethod
+    def _normalize_details(cls, value: Any) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return value
+
+        return {}
 
 
 # =============================================================================
@@ -580,6 +849,7 @@ class LLMFinalResponse(BaseModel):
     - return selected_slot copied from the offered slots,
     - ask a clarification question,
     - or call an allowed tool when needed.
+    All domain-specific payloads belong inside structured_data.<domain>.
     """
 
     model_config = ConfigDict(extra="ignore")
@@ -591,9 +861,8 @@ class LLMFinalResponse(BaseModel):
 
     needs_human: bool = False
     score: float = Field(default=0.7, ge=0.0, le=1.0)
-
-    offered_slots: list[dict[str, Any]] = Field(default_factory=list)
-    selected_slot: dict[str, Any] | None = None
+    structured_data: StructuredData = Field(default_factory=StructuredData)
+    next_expected: NextExpected | None = None
     required_next_action: NextAction | None = None
 
     clarification: ClarificationRequest | None = None
@@ -607,27 +876,73 @@ class LLMFinalResponse(BaseModel):
 
         return value.strip()
 
-    @field_validator("selected_slot", mode="before")
+    @field_validator("structured_data", mode="before")
     @classmethod
-    def _normalize_selected_slot(cls, value: Any) -> dict[str, Any] | None:
+    def _normalize_structured_data(cls, value: Any) -> StructuredData:
+        if isinstance(value, StructuredData):
+            return value
+        if isinstance(value, dict):
+            return StructuredData.model_validate(value)
+        return StructuredData()
+
+    @field_validator("next_expected", mode="before")
+    @classmethod
+    def _normalize_next_expected(cls, value: Any) -> NextExpected | None:
         if value is None:
             return None
-        if not isinstance(value, dict):
-            return None
+        if isinstance(value, NextExpected):
+            return value
+        if isinstance(value, dict):
+            return NextExpected.model_validate(value)
+        return None
 
-        # Keep a plain dict for flexibility because MCP/tool payloads may include
-        # both snake_case and camelCase. Runtime validator will enforce that the
-        # slot exists in context.
-        return value
-
-    @field_validator("offered_slots", mode="before")
+    @model_validator(mode="before")
     @classmethod
-    def _normalize_offered_slots(cls, value: Any) -> list[dict[str, Any]]:
-        if not isinstance(value, list):
-            return []
+    def _normalize_legacy_contract(cls, value: Any) -> Any:
+        if not isinstance(value, dict):
+            return value
 
-        normalized: list[dict[str, Any]] = []
-        for item in value:
-            if isinstance(item, dict):
-                normalized.append(item)
-        return normalized
+        if isinstance(value.get("structured_data"), dict):
+            return value
+
+        structured_data: dict[str, Any] = {
+            "appointment": {
+                "offered_slots": value.get("offered_slots") if isinstance(value.get("offered_slots"), list) else [],
+                "selected_slot": value.get("selected_slot") if isinstance(value.get("selected_slot"), dict) else None,
+                "existing_appointments": value.get("existing_appointments") if isinstance(value.get("existing_appointments"), list) else [],
+                "existing_appointment": value.get("existing_appointment") if isinstance(value.get("existing_appointment"), dict) else None,
+                "booking_result": value.get("booking_result") if isinstance(value.get("booking_result"), dict) else None,
+                "reschedule_result": value.get("reschedule_result") if isinstance(value.get("reschedule_result"), dict) else None,
+                "cancel_result": value.get("cancel_result") if isinstance(value.get("cancel_result"), dict) else None,
+            },
+            "services": {
+                "service_candidates": value.get("service_candidates") if isinstance(value.get("service_candidates"), list) else [],
+                "selected_service": value.get("selected_service") if isinstance(value.get("selected_service"), dict) else None,
+                "last_query": value.get("last_query") if isinstance(value.get("last_query"), str) else None,
+            },
+            "crm_contact": {
+                "contact_context": value.get("contact_context") if isinstance(value.get("contact_context"), dict) else None,
+                "lead_data": value.get("lead_data") if isinstance(value.get("lead_data"), dict) else None,
+                "submit_result": value.get("submit_result") if isinstance(value.get("submit_result"), dict) else None,
+            },
+            "handoff": {
+                "requested": bool(value.get("handoff_requested") or value.get("requested")),
+                "reason": value.get("handoff_reason") if isinstance(value.get("handoff_reason"), str) else None,
+                "result": value.get("handoff_result") if isinstance(value.get("handoff_result"), dict) else None,
+            },
+            "general": {
+                "topic": value.get("topic") if isinstance(value.get("topic"), str) else None,
+                "last_answer_summary": value.get("last_answer_summary") if isinstance(value.get("last_answer_summary"), str) else None,
+            },
+        }
+        value["structured_data"] = structured_data
+
+        if value.get("next_expected") is None:
+            required_next_action = value.get("required_next_action")
+            if isinstance(required_next_action, str) and required_next_action.strip():
+                value["next_expected"] = {
+                    "kind": "customer_reply",
+                    "description": required_next_action.strip(),
+                }
+
+        return value
