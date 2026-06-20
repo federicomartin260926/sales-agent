@@ -193,8 +193,7 @@ Reglas para agenda:
 - Si el usuario elige entre slots ya ofrecidos, usa intent="select_offered_slot" y action="prepare_booking_confirmation".
 - Si hay varios slots con la misma hora, no basta con la hora: si el usuario menciona profesional/owner, usa esa referencia para distinguir el slot correcto dentro de appointment.offered_slots.
 - Si el usuario dice "el de las 16:00 con María", sigue siendo select_offered_slot, pero la selección debe resolverse contra el owner del slot ofrecido, no solo contra el start/time.
-- Si el contexto indica que hay existing_appointments y el usuario elige una de esas citas por hora, fecha, profesional, índice o referencia similar, NO uses intent="select_offered_slot"; usa intent="select_existing_appointment" y action="prepare_reschedule".
-- Si el contexto indica que hay existing_appointments y el usuario elige una de esas citas para cancelarla por hora, fecha, profesional, índice o referencia similar, NO uses intent="select_offered_slot"; usa intent="select_existing_appointment" y action="prepare_cancel".
+- Si el contexto indica que hay existing_appointments y el usuario elige una de esas citas por hora, fecha, profesional, índice o referencia similar para reprogramar o cancelar, NO uses intent="select_offered_slot"; usa intent="select_existing_appointment" y action="prepare_reschedule" o action="prepare_cancel" según corresponda.
 - select_offered_slot se reserva para elegir horarios nuevos ofrecidos en appointment.offered_slots.
 - Si el usuario dice "el de las 16:30", devuelve entities.time="16:30" y entities.slot_reference="exact_time".
 - Si el usuario dice "el primero", devuelve entities.selected_slot_index=0 y entities.slot_reference="first".
@@ -382,13 +381,14 @@ Reglas de agenda:
 - No inventes selected_slot.
 - No devuelvas selected_slot parcial si faltan start/end/service/owner necesarios.
 - appointment.existing_appointment y appointment.existing_appointments son la fuente de verdad para flujos de reprogramación.
+- En una reserva nueva, existing_appointments no bloquean ni alteran request_availability, select_offered_slot ni request_booking_confirmation.
 - Si el usuario quiere reprogramar y no hay existing_appointment ni existing_appointments, usa appointment_events si está disponible; si no, pide datos suficientes o deriva según contexto.
 - Si tool_plan.allowed_tools contiene solo appointment_events para resolver una cita existente, debes llamar appointment_events antes de responder.
 - No digas que no hay cita registrada salvo que appointment_events haya devuelto found=false o count=0.
-- Si no hay existing_appointment, no selecciones ni confirmes un nuevo slot aunque existan offered_slots previos; primero resuelve la cita original con appointment_events.
-- Si appointment.required_next_action="resolve_existing_appointment" o hay appointment.existing_appointments sin appointment.existing_appointment, ayuda a identificar cuál cita existente quiere modificar o cancelar.
+- Si el flujo es de reprogramación o cancelación y no hay existing_appointment, no selecciones ni confirmes un nuevo slot aunque existan offered_slots previos; primero resuelve la cita original con appointment_events.
+- Si el flujo es de reprogramación o cancelación y appointment.required_next_action="resolve_existing_appointment" o hay appointment.existing_appointments sin appointment.existing_appointment, ayuda a identificar cuál cita existente quiere modificar o cancelar.
 - En ese estado no selecciones slots nuevos, no llames appointment_confirm y no confirmes una reserva nueva.
-- Si hay varias citas, pide al usuario que indique cuál o selecciona solo si la referencia coincide claramente con una cita del listado estructurado.
+- Si hay varias citas y el flujo es de reprogramación o cancelación, pide al usuario que indique cuál o selecciona solo si la referencia coincide claramente con una cita del listado estructurado.
 - Si existing_appointments contiene varias citas, no elijas una sin una referencia clara y estructurada; pide al usuario que indique cuál quiere cambiar y no llames appointment_reschedule.
 - Si intent="select_existing_appointment", usa runtime_context.appointment.existing_appointments como fuente de verdad; no devuelvas selected_slot; devuelve en data_to_save.existing_appointment la cita completa seleccionada o al menos el objeto con id y campos disponibles; si no puedes seleccionar con seguridad entre varias, pide aclaración.
 - Si intent="select_existing_appointment" y existing_appointments ya está en contexto, no llames tools para seleccionar.
@@ -406,7 +406,7 @@ Reglas de agenda:
 - Si existing_appointment existe y el usuario confirma el cambio, mantén el flujo de reprogramación y no lo conviertas en una nueva reserva: no uses appointment_confirm, no pidas servicio de nuevo y usa required_next_action="appointment_reschedule".
 - Si existing_appointment existe, selected_slot está presente y el usuario confirma el cambio, no preguntes por el servicio ni por datos de una cita nueva: el servicio, duración, owner y timezone ya se heredan de la cita existente o del slot seleccionado.
 - Si existing_appointment existe y el usuario confirma el cambio, la respuesta debe hablar de cambiar o reprogramar la cita, no de confirmar una reserva.
-- Si existing_appointment existe y selected_slot está presente, no uses intent="request_booking_confirmation" para disparar appointment_confirm; ese camino solo aplica a citas nuevas sin existing_appointment.
+- Si existing_appointment existe y selected_slot está presente, no uses intent="request_booking_confirmation" para disparar appointment_confirm cuando el flujo sea de reprogramación o cancelación; ese camino solo aplica a citas nuevas sin existing_appointment.
 - Si el usuario dice "sí, confirma el cambio" con existing_appointment + selected_slot, interpreta que confirma la reprogramación y usa required_next_action="appointment_reschedule".
 - Si el flujo es de cancelación y ya has identificado existing_appointment, no uses selected_slot: pide confirmación explícita de la cancelación, usa required_next_action="appointment_cancel" y mantén existing_appointment como la fuente de verdad.
 - Si el usuario dice "sí, cancélala" o "confirmo la cancelación" con existing_appointment ya identificado, interpreta que confirma la cancelación y usa required_next_action="appointment_cancel".

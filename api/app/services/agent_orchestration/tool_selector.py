@@ -54,7 +54,7 @@ class ToolSelector:
 
         if plan.intent == "select_offered_slot":
             appointment = context.appointment if isinstance(context.appointment, dict) else {}
-            if self._existing_appointment_selection_required(appointment):
+            if self._requires_existing_appointment_resolution(plan, appointment) and self._existing_appointment_selection_required(appointment):
                 return ToolPlan(
                     allowed_tools=[],
                     read_tools=[],
@@ -121,6 +121,7 @@ class ToolSelector:
             required_next_action = appointment.get("required_next_action")
             existing_appointment = appointment.get("existing_appointment")
             selection_required = self._existing_appointment_selection_required(appointment)
+            existing_resolution_required = self._requires_existing_appointment_resolution(plan, appointment)
 
             if (
                 isinstance(selected_slot, dict)
@@ -134,7 +135,7 @@ class ToolSelector:
                     reason=f"domain={plan.domain};intent={plan.intent};appointment_flow_waiting_for_contact_data=true",
                 )
 
-            if self._clean(required_next_action) == "resolve_existing_appointment" and not self._has_existing_appointment(appointment):
+            if existing_resolution_required and self._clean(required_next_action) == "resolve_existing_appointment" and not self._has_existing_appointment(appointment):
                 return ToolPlan(
                     allowed_tools=[],
                     read_tools=[],
@@ -142,7 +143,7 @@ class ToolSelector:
                     reason=f"domain={plan.domain};intent={plan.intent};existing_appointment_resolution_required_blocks_booking_confirmation=true",
                 )
 
-            if selection_required:
+            if existing_resolution_required and selection_required:
                 return ToolPlan(
                     allowed_tools=[],
                     read_tools=[],
@@ -150,7 +151,7 @@ class ToolSelector:
                     reason=f"domain={plan.domain};intent={plan.intent};existing_appointment_selection_required_blocks_booking_confirmation=true",
                 )
 
-            if isinstance(existing_appointment, dict) and existing_appointment:
+            if existing_resolution_required and isinstance(existing_appointment, dict) and existing_appointment:
                 if required_next_action == "appointment_cancel":
                     appointment_cancel_allowed = "appointment_cancel" in configured
                     return ToolPlan(
@@ -289,7 +290,9 @@ class ToolSelector:
             "select_offered_slot",
             "provide_contact_data",
         }:
-            desired_read.extend(READ_TOOLS)
+            desired_read.extend(["contact_context", "services_search", "appointment_availability"])
+            if self._should_expose_appointment_events(plan, context.appointment if isinstance(context.appointment, dict) else {}):
+                desired_read.append("appointment_events")
             desired_write.extend(WRITE_TOOLS_BY_INTENT.get(plan.intent, []))
 
         if plan.domain == "catalog" or plan.intent in {"ask_product_or_service_info", "catalog_search"}:
@@ -391,8 +394,6 @@ class ToolSelector:
             return True
         if self._read_value(appointment, "existing_appointment") not in (None, {}, []):
             return True
-        if self._read_value(appointment, "existing_appointments") not in (None, [], {}):
-            return True
 
         required_next_action = self._read_value(appointment, "required_next_action")
         if isinstance(required_next_action, str) and required_next_action.strip() != "":
@@ -445,3 +446,22 @@ class ToolSelector:
             return False
 
         return (not self._has_existing_appointment(appointment)) and self._has_existing_appointment_candidates(appointment)
+
+    def _requires_existing_appointment_resolution(self, plan: IntentPlan, appointment: Any) -> bool:
+        if plan.intent in {"request_reschedule", "request_cancel", "select_existing_appointment"}:
+            return True
+
+        if not isinstance(appointment, dict):
+            return False
+
+        required_next_action = self._clean(self._read_value(appointment, "required_next_action"))
+        return required_next_action in {"resolve_existing_appointment", "appointment_reschedule", "appointment_cancel"}
+
+    def _should_expose_appointment_events(self, plan: IntentPlan, appointment: Any) -> bool:
+        if plan.intent in {"request_reschedule", "request_cancel", "select_existing_appointment"}:
+            return True
+        if not isinstance(appointment, dict):
+            return False
+
+        required_next_action = self._clean(self._read_value(appointment, "required_next_action"))
+        return required_next_action in {"resolve_existing_appointment", "appointment_reschedule", "appointment_cancel"}

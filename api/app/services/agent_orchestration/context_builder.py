@@ -68,18 +68,12 @@ class OrchestrationContextBuilder:
         existing_appointment = self._latest_existing_appointment(conversation_messages)
         existing_appointments = self._latest_existing_appointments(conversation_messages)
         required_next_action = self._latest_required_next_action(conversation_messages)
-        resolution_required = (
-            required_next_action == "resolve_existing_appointment"
-            or (isinstance(existing_appointments, list) and existing_appointments != [] and not isinstance(existing_appointment, dict))
-            or (
-                len(existing_appointments) > 0
-                and not isinstance(existing_appointment, dict)
-            )
-        )
+        resolution_required = self._requires_existing_appointment_resolution(plan, required_next_action)
 
-        if resolution_required or (
-            isinstance(existing_appointment, dict)
-            and required_next_action not in {"collect_customer_name", "confirm_selected_slot", "appointment_reschedule"}
+        if resolution_required and (
+            not isinstance(existing_appointment, dict)
+            or not existing_appointment
+            or required_next_action not in {"appointment_reschedule", "appointment_cancel"}
         ):
             selected_slot = None
 
@@ -234,6 +228,13 @@ class OrchestrationContextBuilder:
                 if isinstance(action, str) and action.strip():
                     return action.strip()
         return None
+
+    def _requires_existing_appointment_resolution(self, plan: IntentPlan, required_next_action: str | None) -> bool:
+        normalized_required_next_action = required_next_action.strip() if isinstance(required_next_action, str) else None
+        if plan.intent in {"request_reschedule", "request_cancel", "select_existing_appointment"}:
+            return True
+
+        return normalized_required_next_action in {"resolve_existing_appointment", "appointment_reschedule", "appointment_cancel"}
 
     def _latest_persisted_contact_name(self, messages: list[dict[str, Any]]) -> str | None:
         for message in reversed(messages):

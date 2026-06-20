@@ -356,8 +356,9 @@ class AgentRuntime:
             if isinstance(data_to_save.get("existing_appointment"), dict) and "existing_appointments_count" not in data_to_save:
                 data_to_save["existing_appointments_count"] = 1
 
-        appointment_lookup_required = self._appointment_lookup_required(runtime_context)
-        existing_appointment_selection_required = self._existing_appointment_selection_required(runtime_context)
+        existing_appointment_resolution_required = self._existing_appointment_resolution_required(final, runtime_context)
+        appointment_lookup_required = existing_appointment_resolution_required and self._appointment_lookup_required(runtime_context)
+        existing_appointment_selection_required = existing_appointment_resolution_required and self._existing_appointment_selection_required(runtime_context)
         appointment_resolution_blocked = appointment_lookup_required or existing_appointment_selection_required
         appointment_events_trace, _ = self._latest_mcp_call_output(llm_result, "appointment_events")
         appointment_events_required_but_not_called = (
@@ -383,6 +384,8 @@ class AgentRuntime:
             data_to_save["new_llm_orchestration_offered_slots_count"] = 0
             if appointment_events_required_but_not_called:
                 data_to_save["appointment_events_required_but_not_called"] = True
+        elif self._has_existing_appointment_candidates(runtime_context.appointment):
+            data_to_save["ignored_existing_appointments_for_new_booking"] = True
 
         current_selected_slot = data_to_save.get("selected_slot")
         if not isinstance(current_selected_slot, dict) or not current_selected_slot:
@@ -526,6 +529,19 @@ class AgentRuntime:
     def _existing_appointment_selection_required(self, runtime_context: Any) -> bool:
         appointment = runtime_context.appointment if isinstance(runtime_context.appointment, dict) else {}
         return (not self._has_existing_appointment(appointment)) and self._has_existing_appointment_candidates(appointment)
+
+    def _existing_appointment_resolution_required(self, final: Any, runtime_context: Any) -> bool:
+        final_intent = self._clean(getattr(final, "intent", None))
+        if final_intent in {"request_reschedule", "request_cancel", "select_existing_appointment"}:
+            return True
+
+        final_required_next_action = self._clean(getattr(final, "required_next_action", None))
+        if final_required_next_action in {"resolve_existing_appointment", "appointment_reschedule", "appointment_cancel"}:
+            return True
+
+        appointment = runtime_context.appointment if isinstance(runtime_context.appointment, dict) else {}
+        runtime_required_next_action = self._clean(appointment.get("required_next_action"))
+        return runtime_required_next_action in {"resolve_existing_appointment", "appointment_reschedule", "appointment_cancel"}
 
     def _appointment_events_was_allowed(self, tool_plan: ToolPlan) -> bool:
         if self._clean(tool_plan.must_call_tool) == "appointment_events":
