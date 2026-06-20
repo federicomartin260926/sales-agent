@@ -193,6 +193,11 @@ Reglas para agenda:
 - Si el usuario elige entre slots ya ofrecidos, usa intent="select_offered_slot" y action="prepare_booking_confirmation".
 - Si hay varios slots con la misma hora, no basta con la hora: si el usuario menciona profesional/owner, usa esa referencia para distinguir el slot correcto dentro de appointment.offered_slots.
 - Si el usuario dice "el de las 16:00 con María", sigue siendo select_offered_slot, pero la selección debe resolverse contra el owner del slot ofrecido, no solo contra el start/time.
+- Cuando uses appointment_availability y respondas con horarios al cliente, guarda en data_to_save.new_llm_orchestration_offered_slots exactamente los slots que estás mostrando, copiados de la tool result y validados contra ella.
+- Si solo muestras una parte de los resultados, guarda solo esa parte.
+- No guardes slots que no hayas ofrecido al cliente.
+- Si el usuario luego dice "el primero", "el siguiente" o "el de las 17:30", resuélvelo contra runtime_context.appointment.offered_slots, que representa los slots realmente ofrecidos al usuario, no contra todos los slots crudos de availability.
+- Si llamas appointment_availability y tu respuesta muestra horarios al cliente, rellena offered_slots con exactamente esos slots ofrecidos, copiados de la tool result. No incluyas slots que no menciones u ofrezcas. Si no ofreces horarios, deja offered_slots vacío.
 - Si el contexto indica que hay existing_appointments y el usuario elige una de esas citas por hora, fecha, profesional, índice o referencia similar para reprogramar o cancelar, NO uses intent="select_offered_slot"; usa intent="select_existing_appointment" y action="prepare_reschedule" o action="prepare_cancel" según corresponda.
 - select_offered_slot se reserva para elegir horarios nuevos ofrecidos en appointment.offered_slots.
 - Si el usuario dice "el de las 16:30", devuelve entities.time="16:30" y entities.slot_reference="exact_time".
@@ -340,6 +345,7 @@ Contrato obligatorio de salida:
   "action": "uno de los valores finales permitidos",
   "needs_human": false,
   "score": 0.0,
+  "offered_slots": [],
   "selected_slot": null,
   "required_next_action": null,
   "clarification": null,
@@ -428,6 +434,10 @@ Reglas de agenda:
 - Si el usuario pide disponibilidad, usa appointment_availability si está disponible.
 - Si necesitas resolver servicio antes de buscar disponibilidad, usa services_search si está disponible.
 - No llames appointment_confirm con un slot inventado, ambiguo o no validable.
+- Si llamas appointment_availability y tu reply muestra horarios concretos al cliente, offered_slots es obligatorio y debe contener exactamente esos slots ofrecidos. Copia los objetos desde la tool result. No resumas, no reescribas y no incluyas slots que no ofreces.
+- Si no puedes rellenar offered_slots, no muestres horarios concretos en reply.
+- Si decides ofrecer solo algunos horarios, incluye solo esos en offered_slots.
+- Si no ofreces horarios al cliente, usa offered_slots=[].
 - Si falta nombre, teléfono o email requerido, pregunta solo el dato faltante.
 - Si ya hay selected_slot previo y el usuario confirma, puedes confirmar si appointment_confirm está disponible y los datos mínimos están completos.
 - Si appointment_confirm devuelve éxito, responde confirmando la cita con fecha, hora, servicio y profesional si están disponibles.
@@ -570,6 +580,7 @@ def build_final_user_prompt(message: str, plan: IntentPlan, context: RuntimeCont
             "action": FINAL_ACTION_VALUES,
             "needs_human": "boolean",
             "score": "float between 0 and 1",
+            "offered_slots": "list of slot objects copied from appointment_availability result when the reply offers available times to the customer",
             "selected_slot": "object|null. Must be copied from runtime_context.appointment.offered_slots or a fresh availability tool result.",
             "required_next_action": NEXT_ACTION_VALUES,
             "clarification": "object|null",

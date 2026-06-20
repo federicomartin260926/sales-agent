@@ -64,6 +64,7 @@ class OrchestrationContextBuilder:
         history = self._history(conversation_messages)
         persisted_contact_name = self._latest_persisted_contact_name(conversation_messages)
         offered_slots = self._latest_offered_slots(conversation_messages)
+        offered_slots_source = self._latest_offered_slots_source(conversation_messages)
         selected_slot = self._latest_selected_slot(conversation_messages)
         existing_appointment = self._latest_existing_appointment(conversation_messages)
         existing_appointments = self._latest_existing_appointments(conversation_messages)
@@ -79,6 +80,7 @@ class OrchestrationContextBuilder:
 
         appointment: dict[str, Any] = {
             "offered_slots": offered_slots,
+            "offered_slots_source": offered_slots_source,
             "selected_slot": selected_slot,
             "existing_appointment": existing_appointment,
             "existing_appointments": existing_appointments,
@@ -190,9 +192,15 @@ class OrchestrationContextBuilder:
             for data in self._data_to_save_candidates(message):
                 if self._is_truthy(data.get("existing_appointment_resolution_blocked")):
                     return []
-                slots = data.get("new_llm_orchestration_offered_slots") or data.get("offered_slots")
-                if isinstance(slots, list) and slots:
-                    return [dict(slot) for slot in slots if isinstance(slot, dict)][:max_slots]
+                if "new_llm_orchestration_offered_slots" in data:
+                    slots = data.get("new_llm_orchestration_offered_slots")
+                    if isinstance(slots, list):
+                        return [dict(slot) for slot in slots if isinstance(slot, dict)][:max_slots]
+                    return []
+                if "offered_slots" in data:
+                    slots = data.get("offered_slots")
+                    if isinstance(slots, list):
+                        return [dict(slot) for slot in slots if isinstance(slot, dict)][:max_slots]
         return []
 
     def _latest_selected_slot(self, messages: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -203,6 +211,14 @@ class OrchestrationContextBuilder:
                 slot = data.get("selected_slot") or data.get("new_llm_orchestration_selected_slot")
                 if isinstance(slot, dict) and slot:
                     return dict(slot)
+        return None
+
+    def _latest_offered_slots_source(self, messages: list[dict[str, Any]]) -> str | None:
+        for message in reversed(messages):
+            for data in self._data_to_save_candidates(message):
+                source = data.get("offered_slots_source")
+                if isinstance(source, str) and source.strip():
+                    return source.strip()
         return None
 
     def _latest_existing_appointment(self, messages: list[dict[str, Any]]) -> dict[str, Any] | None:

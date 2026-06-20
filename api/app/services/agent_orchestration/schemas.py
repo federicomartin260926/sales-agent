@@ -592,6 +592,7 @@ class LLMFinalResponse(BaseModel):
     needs_human: bool = False
     score: float = Field(default=0.7, ge=0.0, le=1.0)
 
+    offered_slots: list[dict[str, Any]] = Field(default_factory=list)
     selected_slot: dict[str, Any] | None = None
     required_next_action: NextAction | None = None
 
@@ -618,3 +619,15 @@ class LLMFinalResponse(BaseModel):
         # both snake_case and camelCase. Runtime validator will enforce that the
         # slot exists in context.
         return value
+
+    @field_validator("offered_slots", mode="before")
+    @classmethod
+    def _normalize_offered_slots(cls, value: Any) -> list[dict[str, Any]]:
+        if not isinstance(value, list):
+            return []
+
+        normalized: list[dict[str, Any]] = []
+        for item in value:
+            if isinstance(item, dict):
+                normalized.append(item)
+        return normalized

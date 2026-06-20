@@ -416,31 +416,50 @@ class AgentRuntime:
 
         availability_result = self._latest_appointment_availability_result(llm_result)
         if availability_result is not None:
-            # Persist structured availability results so the next LLM turn can select one of the previously offered slots.
+            # Persist only the slots explicitly offered by the LLM. Raw availability
+            # stays as debug context, but it does not become selectable state.
             offered_slots = availability_result.get("offered_slots")
-            if isinstance(offered_slots, list) and offered_slots != []:
-                data_to_save["new_llm_orchestration_offered_slots"] = offered_slots
-                data_to_save["new_llm_orchestration_offered_slots_count"] = len(offered_slots)
+            final_offered_slots = final.offered_slots if isinstance(final.offered_slots, list) else []
+            if final_offered_slots:
+                validated_offered_slots = self._validate_offered_slots_subset(
+                    final_offered_slots,
+                    offered_slots if isinstance(offered_slots, list) else [],
+                )
+                data_to_save["new_llm_orchestration_offered_slots"] = validated_offered_slots
+                data_to_save["new_llm_orchestration_offered_slots_count"] = len(validated_offered_slots)
+                data_to_save["offered_slots_source"] = "llm_structured_offered_slots"
+                if validated_offered_slots == []:
+                    data_to_save["offered_slots_validation_error"] = "llm_offered_slots_not_in_availability_result"
+                    data_to_save["offered_slots_validation_error_count"] = len(final_offered_slots)
+            else:
+                data_to_save["new_llm_orchestration_offered_slots"] = []
+                data_to_save["new_llm_orchestration_offered_slots_count"] = 0
+                data_to_save["availability_slots_not_persisted_missing_llm_offered_slots"] = True
 
-                appointment_tool_timezone = availability_result.get("timezone")
-                if isinstance(appointment_tool_timezone, str) and appointment_tool_timezone.strip() != "":
-                    data_to_save["appointment_tool_timezone"] = appointment_tool_timezone.strip()
+            appointment_tool_timezone = availability_result.get("timezone")
+            if isinstance(appointment_tool_timezone, str) and appointment_tool_timezone.strip() != "":
+                data_to_save["appointment_tool_timezone"] = appointment_tool_timezone.strip()
 
-                appointment_tool_timezone_source = availability_result.get("timezone_source")
-                if isinstance(appointment_tool_timezone_source, str) and appointment_tool_timezone_source.strip() != "":
-                    data_to_save["appointment_tool_timezone_source"] = appointment_tool_timezone_source.strip()
+            appointment_tool_timezone_source = availability_result.get("timezone_source")
+            if isinstance(appointment_tool_timezone_source, str) and appointment_tool_timezone_source.strip() != "":
+                data_to_save["appointment_tool_timezone_source"] = appointment_tool_timezone_source.strip()
 
-                raw_summary = availability_result.get("raw_summary")
-                if isinstance(raw_summary, dict) and raw_summary != {}:
-                    data_to_save["appointment_availability_raw_summary"] = raw_summary
+            raw_summary = availability_result.get("raw_summary")
+            if isinstance(raw_summary, dict) and raw_summary != {}:
+                data_to_save["appointment_availability_raw_summary"] = raw_summary
+            if isinstance(offered_slots, list):
+                data_to_save["appointment_availability_raw_offered_slots_count"] = len(offered_slots)
 
-                owner_resolution = availability_result.get("owner_resolution")
-                if isinstance(owner_resolution, dict) and owner_resolution != {}:
-                    data_to_save["appointment_owner_resolution"] = owner_resolution
+            owner_resolution = availability_result.get("owner_resolution")
+            if isinstance(owner_resolution, dict) and owner_resolution != {}:
+                data_to_save["appointment_owner_resolution"] = owner_resolution
 
-                runtime_context_summary = data_to_save.get("runtime_context_summary")
-                if isinstance(runtime_context_summary, dict):
-                    runtime_context_summary["offered_slots_count"] = len(offered_slots)
+            runtime_context_summary = data_to_save.get("runtime_context_summary")
+            if isinstance(runtime_context_summary, dict):
+                persisted_offered_slots = data_to_save.get("new_llm_orchestration_offered_slots")
+                runtime_context_summary["offered_slots_count"] = (
+                    len(persisted_offered_slots) if isinstance(persisted_offered_slots, list) else 0
+                )
 
         events_result = self._latest_appointment_events_result(llm_result)
         if events_result is not None:
@@ -480,13 +499,18 @@ class AgentRuntime:
             # summary; they are the source of truth the next LLM turn must use.
             data_to_save["new_llm_orchestration_offered_slots"] = offered_slots
             data_to_save["new_llm_orchestration_offered_slots_count"] = len(offered_slots)
+            if "offered_slots_source" not in data_to_save:
+                runtime_offered_slots_source = self._clean(runtime_context.appointment.get("offered_slots_source")) if isinstance(runtime_context.appointment, dict) else None
+                if runtime_offered_slots_source is not None:
+                    data_to_save["offered_slots_source"] = runtime_offered_slots_source
 
         if validated_selected_slot is not None:
             data_to_save["selected_slot"] = validated_selected_slot
             data_to_save["new_llm_orchestration_selected_slot"] = validated_selected_slot
         elif selected_slot_invalid:
-            data_to_save["selected_slot_validation_error"] = "selected_slot_not_in_offered_slots"
-            data_to_save["invalid_selected_slot"] = final.selected_slot
+            if "selected_slot_validation_error" not in data_to_save:
+                data_to_save["selected_slot_validation_error"] = "selected_slot_not_in_offered_slots"
+                data_to_save["invalid_selected_slot"] = final.selected_slot
 
         active_contact_collection = (
             isinstance(runtime_context.appointment, dict)
@@ -542,6 +566,72 @@ class AgentRuntime:
         appointment = runtime_context.appointment if isinstance(runtime_context.appointment, dict) else {}
         runtime_required_next_action = self._clean(appointment.get("required_next_action"))
         return runtime_required_next_action in {"resolve_existing_appointment", "appointment_reschedule", "appointment_cancel"}
+
+    def _validate_offered_slots_subset(
+        self,
+        candidate_slots: list[Any],
+        source_slots: list[Any],
+    ) -> list[dict[str, Any]]:
+        if not isinstance(candidate_slots, list) or not isinstance(source_slots, list) or not candidate_slots or not source_slots:
+            return []
+
+        validated_slots: list[dict[str, Any]] = []
+        used_source_indexes: set[int] = set()
+        for candidate in candidate_slots:
+            if not isinstance(candidate, dict):
+                continue
+            matched_index = self._match_offered_slot_index(candidate, source_slots, used_source_indexes)
+            if matched_index is None:
+                continue
+            used_source_indexes.add(matched_index)
+            source_slot = source_slots[matched_index]
+            if isinstance(source_slot, dict):
+                validated_slots.append(dict(source_slot))
+
+        return validated_slots
+
+    def _match_offered_slot_index(
+        self,
+        candidate: dict[str, Any],
+        source_slots: list[Any],
+        used_source_indexes: set[int],
+    ) -> int | None:
+        candidate_start = self._clean(candidate.get("start") or candidate.get("start_at") or candidate.get("startAt"))
+        candidate_end = self._clean(candidate.get("end") or candidate.get("end_at") or candidate.get("endAt"))
+        candidate_service_id = self._clean(candidate.get("service_id") or candidate.get("serviceId"))
+        candidate_owner_id = self._clean(candidate.get("owner_id") or candidate.get("ownerId"))
+        if candidate_owner_id is None:
+            owner = candidate.get("owner")
+            if isinstance(owner, dict):
+                candidate_owner_id = self._clean(owner.get("id"))
+
+        for index, source_slot in enumerate(source_slots):
+            if index in used_source_indexes or not isinstance(source_slot, dict):
+                continue
+
+            source_start = self._clean(source_slot.get("start") or source_slot.get("start_at") or source_slot.get("startAt"))
+            if candidate_start is None or candidate_start != source_start:
+                continue
+
+            source_end = self._clean(source_slot.get("end") or source_slot.get("end_at") or source_slot.get("endAt"))
+            if candidate_end is not None and source_end is not None and candidate_end != source_end:
+                continue
+
+            source_service_id = self._clean(source_slot.get("service_id") or source_slot.get("serviceId"))
+            if candidate_service_id is not None and source_service_id is not None and candidate_service_id != source_service_id:
+                continue
+
+            source_owner_id = self._clean(source_slot.get("owner_id") or source_slot.get("ownerId"))
+            if source_owner_id is None:
+                owner = source_slot.get("owner")
+                if isinstance(owner, dict):
+                    source_owner_id = self._clean(owner.get("id"))
+            if candidate_owner_id is not None and source_owner_id is not None and candidate_owner_id != source_owner_id:
+                continue
+
+            return index
+
+        return None
 
     def _appointment_events_was_allowed(self, tool_plan: ToolPlan) -> bool:
         if self._clean(tool_plan.must_call_tool) == "appointment_events":
