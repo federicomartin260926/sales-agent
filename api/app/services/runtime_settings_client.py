@@ -78,5 +78,7 @@ class RuntimeSettingsClient:
             "ollama_base_url": self.settings.ollama_base_url,
             "ollama_model": "llama3.1",
             "ollama_timeout_seconds": str(self.settings.ollama_timeout_seconds),
+            "openai_responses_max_attempts": str(self.settings.openai_responses_max_attempts),
+            "openai_responses_retry_delay_seconds": str(self.settings.openai_responses_retry_delay_seconds),
             "audio_timeout_seconds": str(self.settings.audio_timeout_seconds),
         }

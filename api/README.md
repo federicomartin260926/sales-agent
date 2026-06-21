@@ -30,7 +30,7 @@ Este directorio contiene el runtime del agente conversacional.
 4. consulta el backend Symfony para cargar el contexto del negocio, producto y guía comercial
 5. consulta el CRM por teléfono si está disponible
 6. consulta la configuración MCP remota del tenant si existe
-7. ejecuta el `DecisionEngine`
+7. ejecuta el runtime LLM-led activo
 8. devuelve una respuesta estructurada con intención, score y acción sugerida
 
 ## Contrato de dominio
@@ -197,7 +197,7 @@ El runtime no escribe en el CRM. Solo consume ese contexto para enriquecer la de
 Si un tenant tiene `ExternalTool` activo de tipo `mcp_remote`, el runtime lee la configuración interna en Symfony y, cuando el perfil LLM activo es OpenAI compatible con Responses API, puede exponer ese MCP como herramienta nativa para el modelo.
 La API interna prioriza el MCP marcado como principal (`is_runtime_default = true`). Si no existe principal, sólo usa un único MCP activo como fallback conservador; no selecciona uno arbitrario por fecha.
 Si entre las herramientas autorizadas del MCP está `handoff_request`, el sistema de instrucciones del LLM le indica que puede usarla para escalados inferidos por frustración, queja, bloqueo, riesgo o complejidad, pero no para peticiones explícitas de hablar con una persona: ese caso sigue resuelto por el runtime rule-based con `wa.me`.
-El path OpenAI Responses + MCP usa un timeout separado `OPENAI_RESPONSES_TIMEOUT_SECONDS` para no heredar el timeout corto de chat completions cuando la herramienta remota tarda más en terminar.
+El path OpenAI Responses + MCP usa un timeout separado `OPENAI_RESPONSES_TIMEOUT_SECONDS` y reintentos limitados con `OPENAI_RESPONSES_MAX_ATTEMPTS` / `OPENAI_RESPONSES_RETRY_DELAY_SECONDS` para no ocultar fallos transitorios ni caer en Chat Completions.
 Para pruebas técnicas temporales de autorización contra un MCP remoto, el runtime acepta `MCP_TEST_AUTHORIZATION` en el entorno de `sales-agent-api` y lo envía en la propiedad `authorization` del tool MCP de OpenAI. El valor puede venir como token puro o como `Bearer ...`; internamente se normaliza para no exponerlo en prompt, logs ni respuestas.
 En producción, el valor preferente llega desde la config interna de MCP del tenant como `downstream_authorization_token` y se mantiene cifrado en Symfony; `bearer_token` sigue existiendo como compatibilidad interna.
 Si necesitas validar el pasaje extremo a extremo con un gateway temporal, define también `MCP_ENABLE_DEBUG_TOOLS=true` en `mcp-gateway` para exponer la tool `debug_auth_context`.
@@ -249,7 +249,7 @@ La validación end-to-end real contra `https://mcp.tech-investments.net/mcp` que
   - `contact.from`
   - `contact.name`
 
-Internamente se normaliza a la forma que consume `DecisionEngine`.
+Internamente se normaliza a la forma que consume el runtime LLM-led activo.
 
 ## Autenticación
 
@@ -263,6 +263,5 @@ En local y en producción se configura con la variable `SALES_AGENT_BEARER_TOKEN
 ## Extensión futura
 
 - `crm_client.py`: contexto desde el CRM
-- `rag_client.py`: recuperación semántica
 - `llm_client.py`: OpenAI u Ollama
 - `runtime_settings_client.py`: snapshot operativa del backend con fallback a env

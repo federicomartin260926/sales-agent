@@ -40,7 +40,8 @@ Variables de entorno:
   CONTACT_NAME                 Nombre del contacto.
                                Default: Federico Martín Peña
 
-  CONV                         ID externo de conversación. Si no se define, se genera uno.
+  CONV                         ID externo de conversación canónico. Se envía como
+                               external_conversation_id. Si no se define, se genera uno.
                                Default: e2e-agent-YYYYMMDDHHMMSS
 
   OUT_DIR                      Directorio donde guardar respuestas JSON.
@@ -129,7 +130,7 @@ CHANNEL_TYPE="${CHANNEL_TYPE:-whatsapp}"
 EXTERNAL_CHANNEL_ID="${EXTERNAL_CHANNEL_ID:-test-whatsapp-e2e}"
 ENTRYPOINT_REF="${ENTRYPOINT_REF:-mary-main}"
 CONTACT_PHONE="${CONTACT_PHONE:-+34678180164}"
-CONTACT_NAME="${CONTACT_NAME:-Federico Martín Peña}"
+CONTACT_NAME="${CONTACT_NAME-Federico Martín Peña}"
 CONV="${CONV:-e2e-agent-$(date +%Y%m%d%H%M%S)}"
 OUT_DIR="${OUT_DIR:-/tmp}"
 
@@ -147,22 +148,40 @@ run_turn() {
   local step="$1"
   local message="$2"
   local file="${OUT_DIR}/sa-${CONV}-${step}.json"
+  local message_id="${CONV}-${step}-$(date +%s%N)"
+
+  local payload
+  payload="$(python3 - "$TENANT_ID" "$CHANNEL_TYPE" "$EXTERNAL_CHANNEL_ID" "$ENTRYPOINT_REF" "$CONV" "$message_id" "$message" "$CONTACT_PHONE" "$CONTACT_NAME" <<'PY'
+import json
+import sys
+
+tenant_id, channel_type, external_channel_id, entrypoint_ref, external_conversation_id, message_id, message_text, contact_phone, contact_name = sys.argv[1:10]
+
+payload = {
+    "tenant_id": tenant_id,
+    "channel_type": channel_type,
+    "external_channel_id": external_channel_id,
+    "entrypoint_ref": entrypoint_ref,
+    "external_conversation_id": external_conversation_id,
+    "message": {
+        "id": message_id,
+        "type": "text",
+        "text": message_text,
+    },
+    "contact": {
+        "phone": contact_phone,
+        "name": contact_name,
+    },
+}
+
+print(json.dumps(payload, ensure_ascii=False))
+PY
+)"
 
   curl -sS -w "\nHTTP_STATUS:%{http_code}\n" -X POST "http://localhost:${API_PORT}/agent/respond" \
     -H "Authorization: Bearer ${SALES_AGENT_BEARER_TOKEN}" \
     -H "Content-Type: application/json" \
-    -d "{
-      \"tenant_id\": \"$TENANT_ID\",
-      \"channel_type\": \"$CHANNEL_TYPE\",
-      \"external_channel_id\": \"$EXTERNAL_CHANNEL_ID\",
-      \"entrypoint_ref\": \"$ENTRYPOINT_REF\",
-      \"external_id\": \"$CONV\",
-      \"message\": \"$message\",
-      \"contact\": {
-        \"phone\": \"$CONTACT_PHONE\",
-        \"name\": \"$CONTACT_NAME\"
-      }
-    }" > "$file"
+    --data-binary "$payload" > "$file"
 
   python3 - "$file" "$step" <<'PY'
 import json

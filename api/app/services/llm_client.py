@@ -10,10 +10,19 @@ import httpx
 from app.config import Settings
 from app.schemas.llm import LLMResponseResult, LLMToolTrace, LLMUsage, McpRemoteConfig
 from app.services.llm_cost_estimator import LLMCostEstimator
+from app.services.llm_provider_resilience import run_with_llm_provider_retries
 from app.services.runtime_settings_client import RuntimeSettingsClient
 
 
 logger = logging.getLogger(__name__)
+
+APPOINTMENT_TOOL_NAMES = {
+    "appointment_availability",
+    "appointment_events",
+    "appointment_confirm",
+    "appointment_reschedule",
+    "appointment_cancel",
+}
 
 
 class LLMClient:
@@ -22,8 +31,6 @@ class LLMClient:
         self.runtime_settings_client = runtime_settings_client or RuntimeSettingsClient(settings)
         self.transport = transport
         self.cost_estimator = LLMCostEstimator()
-        self.last_mcp_error: str | None = None
-        self.last_previous_response_id_invalid: bool = False
 
     async def resolve_configuration(self) -> dict[str, str]:
         return await self.runtime_settings_client.effective_values()
@@ -35,11 +42,24 @@ class LLMClient:
         user_prompt: str,
         configuration: dict[str, str] | None = None,
     ) -> LLMResponseResult:
-        self.last_previous_response_id_invalid = False
         config = configuration if configuration is not None else await self.resolve_configuration()
         normalized_provider = provider.strip().lower()
         if normalized_provider == "openai":
-            return await self._generate_openai(system_prompt, user_prompt, config)
+            return await run_with_llm_provider_retries(
+                lambda: self._generate_openai_responses(
+                    system_prompt,
+                    user_prompt,
+                    config,
+                    McpRemoteConfig(enabled=False),
+                    single_tool_call=True,
+                    max_tool_rounds=1,
+                ),
+                self._parse_retry_attempts(config.get("openai_responses_max_attempts"), self.settings.openai_responses_max_attempts),
+                self._parse_retry_delay_seconds(
+                    config.get("openai_responses_retry_delay_seconds"),
+                    self.settings.openai_responses_retry_delay_seconds,
+                ),
+            )
         if normalized_provider == "ollama":
             return await self._generate_ollama(system_prompt, user_prompt, config)
 
@@ -58,15 +78,13 @@ class LLMClient:
         single_tool_call: bool = False,
         max_tool_rounds: int | None = None,
     ) -> LLMResponseResult:
-        self.last_mcp_error = None
-        self.last_previous_response_id_invalid = False
         config = configuration if configuration is not None else await self.resolve_configuration()
         normalized_provider = provider.strip().lower()
         if normalized_provider != "openai" or not mcp_config.enabled:
             return await self.generate(provider, system_prompt, user_prompt, config)
 
-        try:
-            return await self._generate_openai_responses(
+        return await run_with_llm_provider_retries(
+            lambda: self._generate_openai_responses(
                 system_prompt,
                 user_prompt,
                 config,
@@ -76,96 +94,20 @@ class LLMClient:
                 parallel_tool_calls=parallel_tool_calls,
                 single_tool_call=single_tool_call,
                 max_tool_rounds=max_tool_rounds,
-            )
-        except Exception as exc:
-            if single_tool_call:
-                self.last_mcp_error = f"responses_mcp_path_failed:{exc.__class__.__name__}"
-                raise
-            if previous_response_id is not None and self._is_previous_response_id_error(exc):
-                try:
-                    result = await self._generate_openai_responses(
-                        system_prompt,
-                        user_prompt,
-                        config,
-                        mcp_config,
-                        previous_response_id=None,
-                        tool_choice=tool_choice,
-                        parallel_tool_calls=parallel_tool_calls,
-                        single_tool_call=single_tool_call,
-                        max_tool_rounds=max_tool_rounds,
-                    )
-                except Exception as retry_exc:
-                    self.last_previous_response_id_invalid = True
-                    self.last_mcp_error = f"responses_mcp_path_failed:{retry_exc.__class__.__name__}"
-                    logger.warning(
-                        "OpenAI Responses MCP path failed after previous_response_id retry, falling back to legacy chat completions: type=%s repr=%r",
-                        retry_exc.__class__.__name__,
-                        retry_exc,
-                        exc_info=True,
-                    )
-                    return await self._generate_openai(system_prompt, user_prompt, config)
-
-                return result
-
-            self.last_mcp_error = f"responses_mcp_path_failed:{exc.__class__.__name__}"
-            logger.warning(
-                "OpenAI Responses MCP path failed, falling back to legacy chat completions: type=%s repr=%r",
-                exc.__class__.__name__,
-                exc,
-                exc_info=True,
-            )
-            return await self._generate_openai(system_prompt, user_prompt, config)
-
-    async def _generate_openai(self, system_prompt: str, user_prompt: str, configuration: dict[str, str]) -> LLMResponseResult:
-        base_url = configuration.get("openai_base_url", "").strip().rstrip("/")
-        model = configuration.get("openai_model", "").strip()
-        api_key = configuration.get("openai_api_key", "").strip()
-        timeout_seconds = self._parse_timeout(configuration.get("openai_timeout_seconds"), self.settings.openai_timeout_seconds)
-
-        if base_url == "" or model == "" or api_key == "":
-            raise ValueError("OpenAI configuration is incomplete")
-
-        payload = {
-            "model": model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "temperature": 0.2,
-            "response_format": {"type": "json_object"},
-        }
-
-        timeout = httpx.Timeout(timeout_seconds, connect=2.0)
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json",
-        }
-
-        try:
-            async with httpx.AsyncClient(base_url=base_url, timeout=timeout, transport=self.transport) as client:
-                response = await client.post("/chat/completions", json=payload, headers=headers)
-                response.raise_for_status()
-                payload_json = response.json()
-        except (httpx.HTTPError, ValueError) as exc:
-            raise RuntimeError(f"OpenAI request failed: {exc}") from exc
-
-        content = self._extract_openai_content(payload_json)
-        if content is None:
-            raise ValueError("OpenAI response did not include message content")
-
-        response_id = self._extract_response_id(payload_json)
-        usage = self._extract_usage("openai", model, payload_json)
-        estimated_cost = self.cost_estimator.estimate("openai", model, usage)
-
-        logger.debug("LLM openai generation completed model=%s", model)
-        return LLMResponseResult(provider="openai", model=model, content=content, response_id=response_id, usage=usage, estimated_cost=estimated_cost, raw_payload=payload_json)
+            ),
+            self._parse_retry_attempts(config.get("openai_responses_max_attempts"), self.settings.openai_responses_max_attempts),
+            self._parse_retry_delay_seconds(
+                config.get("openai_responses_retry_delay_seconds"),
+                self.settings.openai_responses_retry_delay_seconds,
+            ),
+        )
 
     async def _generate_openai_responses(
         self,
         system_prompt: str,
         user_prompt: str,
         configuration: dict[str, str],
-        mcp_config: McpRemoteConfig,
+        mcp_config: McpRemoteConfig | None,
         previous_response_id: str | None = None,
         tool_choice: Any | None = None,
         parallel_tool_calls: bool | None = None,
@@ -183,29 +125,13 @@ class LLMClient:
         if base_url == "" or model == "" or api_key == "":
             raise ValueError("OpenAI configuration is incomplete")
 
-        payload: dict[str, Any] = {
-            "model": model,
-            "instructions": system_prompt,
-            "input": self._build_responses_input(user_prompt),
-            "temperature": 0.2,
-            "text": {"format": {"type": "json_object"}},
-        }
+        effective_mcp_config = mcp_config or McpRemoteConfig()
+
         normalized_previous_response_id = self._normalize_previous_response_id(previous_response_id)
         if single_tool_call or max_tool_rounds == 1:
             normalized_previous_response_id = None
-        if normalized_previous_response_id is not None:
-            payload["previous_response_id"] = normalized_previous_response_id
 
-        tools = self._build_openai_mcp_tools(mcp_config)
-        if tools != []:
-            payload["tools"] = tools
-        if tool_choice is not None:
-            payload["tool_choice"] = tool_choice
-        if parallel_tool_calls is not None:
-            payload["parallel_tool_calls"] = parallel_tool_calls
-        sanitized_payload = self._sanitize_openai_responses_payload(payload)
-        sanitized_payload["single_tool_call"] = single_tool_call
-        self._log_openai_responses_mcp_request(model, tools, mcp_config, sanitized_payload)
+        tools = self._build_openai_mcp_tools(effective_mcp_config)
 
         timeout = httpx.Timeout(timeout_seconds, connect=2.0)
         headers = {
@@ -213,56 +139,146 @@ class LLMClient:
             "Content-Type": "application/json",
         }
 
-        try:
-            async with httpx.AsyncClient(base_url=base_url, timeout=timeout, transport=self.transport) as client:
-                response = await client.post("/responses", json=payload, headers=headers)
-                response.raise_for_status()
-                payload_json = response.json()
-        except httpx.HTTPStatusError as exc:
-            status_code = exc.response.status_code if exc.response is not None else None
-            response_body = self._response_body_text(exc.response)
+        current_input: Any = self._build_responses_input(user_prompt)
+        current_previous_response_id = normalized_previous_response_id
+        payload_json: dict[str, Any] | None = None
+        response_id: str | None = None
 
-            self._log_openai_responses_error(
-                status_code,
-                response_body,
-                self._sanitize_openai_responses_payload(payload),
-                exc,
-            )
+        max_rounds = max_tool_rounds if isinstance(max_tool_rounds, int) and max_tool_rounds > 0 else 4
+        retry_count = 0
+        while True:
+            payload: dict[str, Any] = {
+                "model": model,
+                "instructions": system_prompt,
+                "input": current_input,
+                "temperature": 0.2,
+                "text": {"format": {"type": "json_object"}},
+            }
+            if current_previous_response_id is not None:
+                payload["previous_response_id"] = current_previous_response_id
+            if tools != []:
+                payload["tools"] = tools
+            if tool_choice is not None:
+                payload["tool_choice"] = tool_choice
+            if parallel_tool_calls is not None:
+                payload["parallel_tool_calls"] = parallel_tool_calls
+            sanitized_payload = self._sanitize_openai_responses_payload(payload)
+            sanitized_payload["single_tool_call"] = single_tool_call
+            sanitized_payload["retry_count"] = retry_count
+            self._log_openai_responses_mcp_request(model, tools, mcp_config, sanitized_payload)
 
-            raise RuntimeError(self._format_openai_responses_error(exc, status_code, response_body)) from exc
-        except httpx.TimeoutException as exc:
-            self._log_openai_responses_error(
-                None,
-                None,
-                self._sanitize_openai_responses_payload(payload),
-                exc,
-            )
-            raise RuntimeError(self._format_openai_responses_error(exc)) from exc
-        except (httpx.HTTPError, ValueError) as exc:
-            self._log_openai_responses_error(
-                None,
-                None,
-                self._sanitize_openai_responses_payload(payload),
-                exc,
-            )
-            raise RuntimeError(self._format_openai_responses_error(exc)) from exc
+            try:
+                async with httpx.AsyncClient(base_url=base_url, timeout=timeout, transport=self.transport) as client:
+                    response = await client.post("/responses", json=payload, headers=headers)
+                    response.raise_for_status()
+                    payload_json = response.json()
+            except httpx.HTTPStatusError as exc:
+                status_code = exc.response.status_code if exc.response is not None else None
+                response_body = self._response_body_text(exc.response)
 
-        content = self._extract_responses_content(payload_json)
-        if content is None:
-            response_summary = self._sanitize_openai_responses_response_summary(payload_json)
-            logger.info(
-                "OpenAI Responses payload missing message content response_summary=%s",
-                json.dumps(response_summary, ensure_ascii=False, default=str),
-            )
-            raise ValueError("OpenAI responses payload did not include message content")
+                self._log_openai_responses_error(
+                    status_code,
+                    response_body,
+                    self._sanitize_openai_responses_payload(payload),
+                    exc,
+                )
 
-        tool_traces = self._extract_tool_traces(payload_json)
-        self._log_openai_responses_tool_traces(model, tool_traces)
-        if single_tool_call and len(tool_traces) > 1:
-            raise RuntimeError("Bounded single tool call violated: multiple tool traces returned")
-        response_id = self._extract_response_id(payload_json)
-        usage = self._extract_usage("openai", model, payload_json)
-        estimated_cost = self.cost_estimator.estimate("openai", model, usage)
+                raise
+            except httpx.TimeoutException as exc:
+                self._log_openai_responses_error(
+                    None,
+                    None,
+                    self._sanitize_openai_responses_payload(payload),
+                    exc,
+                )
+                raise
+            except (httpx.HTTPError, ValueError) as exc:
+                self._log_openai_responses_error(
+                    None,
+                    None,
+                    self._sanitize_openai_responses_payload(payload),
+                    exc,
+                )
+                raise
+
+            if payload_json is None:
+                raise ValueError("OpenAI responses payload did not include message content")
+
+            approval_requests = self._extract_mcp_approval_requests(payload_json)
+            if approval_requests != []:
+                approval_responses: list[dict[str, Any]] = []
+                retry_notes: list[str] = []
+                effective_timezone = self._effective_timezone_from_mcp_config(mcp_config)
+                for approval_request in approval_requests:
+                    tool_name = self._approval_request_tool_name(approval_request)
+                    approval_request_id = self._approval_request_id(approval_request)
+                    arguments = self._approval_request_arguments(approval_request)
+                    if tool_name is None or approval_request_id is None:
+                        continue
+
+                    approve = True
+                    if tool_name in APPOINTMENT_TOOL_NAMES:
+                        normalized_arguments, normalization_meta = self._normalize_appointment_tool_arguments(
+                            tool_name,
+                            arguments,
+                            effective_timezone,
+                            self._effective_timezone_source_from_mcp_config(mcp_config),
+                        )
+                        original_timezone = normalization_meta.get("original_timezone")
+                        normalized_timezone = normalization_meta.get("normalized_timezone")
+                        if effective_timezone is not None and original_timezone != normalized_timezone:
+                            approve = False
+                            retry_notes.append(
+                                f"The appointment tool call {tool_name} was rejected because timezone must be {normalized_timezone}. Retry using timezone {normalized_timezone} exactly."
+                            )
+                            logger.info(
+                                "Normalized appointment tool timezone before approval tool=%s original_timezone=%s normalized_timezone=%s timezone_source=%s",
+                                tool_name,
+                                original_timezone,
+                                normalized_timezone,
+                                effective_timezone,
+                            )
+                        else:
+                            arguments = normalized_arguments
+
+                    logger.info(
+                        "MCP approval decision tool=%s approve=%s original_timezone=%s normalized_timezone=%s effective_timezone=%s",
+                        tool_name,
+                        approve,
+                        self._string_or_none(arguments.get("timezone")) if isinstance(arguments, dict) else None,
+                        effective_timezone if tool_name in APPOINTMENT_TOOL_NAMES else None,
+                        effective_timezone,
+                    )
+
+                    approval_responses.append(self._mcp_approval_response_item(approval_request_id, approve))
+
+                if retry_notes:
+                    current_input = approval_responses + self._retry_instruction_items(retry_notes)
+                else:
+                    current_input = approval_responses
+                current_previous_response_id = response_id or self._extract_response_id(payload_json)
+                retry_count += 1
+                if retry_count >= max_rounds:
+                    raise RuntimeError("MCP approval retry limit exceeded")
+                continue
+
+            content = self._extract_responses_content(payload_json)
+            if content is None:
+                response_summary = self._sanitize_openai_responses_response_summary(payload_json)
+                logger.info(
+                    "OpenAI Responses payload missing message content response_summary=%s",
+                    json.dumps(response_summary, ensure_ascii=False, default=str),
+                )
+                raise ValueError("OpenAI responses payload did not include message content")
+
+            tool_traces = self._extract_tool_traces(payload_json)
+            self._log_openai_responses_tool_traces(model, tool_traces)
+            if single_tool_call and len(tool_traces) > 1:
+                raise RuntimeError("Bounded single tool call violated: multiple tool traces returned")
+            response_id = self._extract_response_id(payload_json)
+            usage = self._extract_usage("openai", model, payload_json)
+            estimated_cost = self.cost_estimator.estimate("openai", model, usage)
+            break
 
         logger.debug("LLM openai responses generation completed model=%s tools=%d", model, len(tool_traces))
         return LLMResponseResult(
@@ -418,6 +434,116 @@ class LLMClient:
 
         return traces
 
+    def _extract_mcp_approval_requests(self, payload: Any) -> list[dict[str, Any]]:
+        if not isinstance(payload, dict):
+            return []
+
+        output = payload.get("output")
+        if not isinstance(output, list):
+            return []
+
+        requests: list[dict[str, Any]] = []
+        for item in output:
+            if not isinstance(item, dict):
+                continue
+
+            item_type = str(item.get("type") or "").strip().lower()
+            if item_type == "mcp_approval_request":
+                requests.append(item)
+
+        return requests
+
+    def _approval_request_tool_name(self, approval_request: dict[str, Any]) -> str | None:
+        for key in ("tool_name", "toolName", "name"):
+            value = approval_request.get(key)
+            if isinstance(value, str) and value.strip() != "":
+                return value.strip()
+        return None
+
+    def _approval_request_id(self, approval_request: dict[str, Any]) -> str | None:
+        for key in ("approval_request_id", "approvalRequestId", "id"):
+            value = approval_request.get(key)
+            if isinstance(value, str) and value.strip() != "":
+                return value.strip()
+        return None
+
+    def _approval_request_arguments(self, approval_request: dict[str, Any]) -> dict[str, Any]:
+        arguments = approval_request.get("arguments")
+        if isinstance(arguments, dict):
+            return dict(arguments)
+        if isinstance(arguments, str):
+            try:
+                parsed = json.loads(arguments)
+            except Exception:
+                return {}
+            if isinstance(parsed, dict):
+                return parsed
+        return {}
+
+    def _mcp_approval_response_item(self, approval_request_id: str, approve: bool) -> dict[str, Any]:
+        return {
+            "type": "mcp_approval_response",
+            "approval_request_id": approval_request_id,
+            "approve": approve,
+        }
+
+    def _retry_instruction_items(self, retry_notes: list[str]) -> list[dict[str, Any]]:
+        if retry_notes == []:
+            return []
+
+        note = "\n".join(retry_notes)
+        return [
+            {
+                "type": "message",
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": note,
+                    }
+                ],
+            }
+        ]
+
+    def _effective_timezone_from_mcp_config(self, mcp_config: McpRemoteConfig) -> str | None:
+        if not isinstance(mcp_config.config, dict):
+            return None
+
+        for key in ("effective_timezone", "appointment_timezone", "timezone"):
+            value = mcp_config.config.get(key)
+            if isinstance(value, str) and value.strip() != "":
+                return value.strip()
+        return None
+
+    def _effective_timezone_source_from_mcp_config(self, mcp_config: McpRemoteConfig) -> str | None:
+        if not isinstance(mcp_config.config, dict):
+            return None
+
+        value = mcp_config.config.get("effective_timezone_source")
+        if isinstance(value, str) and value.strip() != "":
+            return value.strip()
+        return None
+
+    def _normalize_appointment_tool_arguments(
+        self,
+        tool_name: str,
+        arguments: dict[str, Any],
+        effective_timezone: str | None,
+        timezone_source: str | None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        normalized_arguments = dict(arguments) if isinstance(arguments, dict) else {}
+        original_timezone = self._string_or_none(normalized_arguments.get("timezone"))
+        normalized_timezone = original_timezone
+        if tool_name in APPOINTMENT_TOOL_NAMES and effective_timezone is not None and effective_timezone.strip() != "":
+            normalized_timezone = effective_timezone.strip()
+            normalized_arguments["timezone"] = normalized_timezone
+
+        return normalized_arguments, {
+            "original_timezone": original_timezone,
+            "normalized_timezone": normalized_timezone,
+            "timezone_source": timezone_source,
+        }
+
     def _iter_tool_trace_candidates(self, value: Any, visited: set[int]) -> list[dict[str, Any]]:
         if isinstance(value, dict):
             object_id = id(value)
@@ -548,9 +674,13 @@ class LLMClient:
         if allowed_tools != []:
             tool["allowed_tools"] = allowed_tools
 
-        approval = self._normalize_approval(mcp_config.require_approval)
-        if approval is not None:
-            tool["require_approval"] = approval
+        appointment_tools = [tool_name for tool_name in allowed_tools if tool_name in APPOINTMENT_TOOL_NAMES]
+        if appointment_tools != []:
+            tool["require_approval"] = "always"
+        else:
+            approval = self._normalize_approval(mcp_config.require_approval)
+            if approval is not None:
+                tool["require_approval"] = approval
 
         authorization = self._mcp_authorization_token(mcp_config)
         if authorization != "":
@@ -750,48 +880,6 @@ class LLMClient:
             return None
 
         return normalized
-
-    def _is_previous_response_id_error(self, exc: Exception) -> bool:
-        normalized = ""
-        status_code = None
-
-        if isinstance(exc, httpx.HTTPStatusError):
-            status_code = exc.response.status_code if exc.response is not None else None
-            body = self._response_body_text(exc.response)
-            if isinstance(body, str):
-                normalized = body.lower()
-        else:
-            cause = exc.__cause__
-            if isinstance(cause, httpx.HTTPStatusError):
-                status_code = cause.response.status_code if cause.response is not None else None
-                body = self._response_body_text(cause.response)
-                if isinstance(body, str):
-                    normalized = body.lower()
-
-            if normalized == "":
-                normalized = f"{exc!r} {exc}".lower()
-                if status_code is None and "status_code=400" in normalized:
-                    status_code = 400
-
-        if status_code != 400 or normalized == "":
-            return False
-
-        if "previous_response_id" not in normalized and "previous response id" not in normalized:
-            return False
-
-        return any(
-            marker in normalized
-            for marker in (
-                "invalid",
-                "expired",
-                "not found",
-                "unknown",
-                "missing",
-                "does not exist",
-                "nonexistent",
-                "stale",
-            )
-        )
 
     def _log_openai_responses_mcp_request(self, model: str, tools: list[dict[str, Any]], mcp_config: McpRemoteConfig, sanitized_payload: dict[str, Any]) -> None:
         if tools == []:
@@ -993,6 +1081,48 @@ class LLMClient:
             return int(value)
 
         return None
+
+    def _parse_retry_attempts(self, value: Any, fallback: int) -> int:
+        if isinstance(value, bool):
+            return max(1, fallback)
+
+        parsed: int | None = None
+        if isinstance(value, int):
+            parsed = value
+        elif isinstance(value, float):
+            parsed = int(value)
+        elif isinstance(value, str):
+            normalized = value.strip()
+            if normalized != "":
+                try:
+                    parsed = int(float(normalized))
+                except ValueError:
+                    parsed = None
+
+        if parsed is None or parsed < 1:
+            return max(1, fallback)
+        return parsed
+
+    def _parse_retry_delay_seconds(self, value: Any, fallback: float) -> float:
+        if isinstance(value, bool):
+            return max(0.0, float(fallback))
+
+        parsed: float | None = None
+        if isinstance(value, int):
+            parsed = float(value)
+        elif isinstance(value, float):
+            parsed = value
+        elif isinstance(value, str):
+            normalized = value.strip()
+            if normalized != "":
+                try:
+                    parsed = float(normalized)
+                except ValueError:
+                    parsed = None
+
+        if parsed is None or parsed < 0.0:
+            return max(0.0, float(fallback))
+        return parsed
 
     def _parse_timeout(self, value: str | None, fallback: int) -> int:
         if value is None:

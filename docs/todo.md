@@ -154,25 +154,6 @@ Principios:
 
 Pendiente:
 
-- [ ] Auditar `ExternalToolClient.fetch_contact_context()`:
-  - confirmar si llama n8n directo o usa MCP real.
-  - si es HTTP directo, dejarlo fuera de la ruta principal MCP o marcarlo como legacy/opcional.
-- [ ] Implementar cache persistente de `contact_context` en SA:
-  - entidad/tabla sugerida: `ContactContextCache` o `ExternalContactContextCache`.
-  - clave por tenant + teléfono/email/conversación.
-  - `context_json`.
-  - `status`.
-  - `source` (`mcp`, `cache`, `fallback`).
-  - `fetched_at`.
-  - `expires_at`.
-- [ ] Añadir TTL configurable:
-  - `CONTACT_CONTEXT_CACHE_TTL_MINUTES`.
-  - default inicial sugerido: 360 minutos.
-- [ ] Implementar `ContactContextResolver`:
-  - buscar contexto válido en cache.
-  - si existe, inyectarlo al prompt principal.
-  - si falta o caducó, obtenerlo vía OpenAI Responses + MCP `contact_context`.
-  - guardar resultado normalizado.
   - devolver fallo controlado si no se puede refrescar.
 - [ ] Implementar refresh vía MCP/LLM restringido:
   - llamada previa sólo cuando no haya cache válido.

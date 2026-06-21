@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 
 
 # =============================================================================
@@ -297,139 +297,18 @@ class ClarificationRequest(BaseModel):
         return list(dict.fromkeys(normalized))
 
 
-class LLMPlanningResult(BaseModel):
-    """Structured result from the first LLM call.
-
-    This is the canonical intent contract.
-
-    SA uses this object to decide:
-    - which context blocks to build,
-    - which read tools to expose,
-    - which write tools, if any, are allowed in the second LLM call.
-
-    The planner must not execute tools and must not invent values outside this
-    schema.
-    """
-
-    model_config = ConfigDict(extra="forbid")
-
-    schema_version: Literal["1.0"] = "1.0"
-    domain: Domain = "general"
-    intent: Intent = "unknown"
-    action_candidate: ActionCandidate = "no_action"
-    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
-
-    entities: PlanningEntities = Field(default_factory=PlanningEntities)
-    context_request: ContextRequest = Field(default_factory=ContextRequest)
-    tool_request: ToolRequest = Field(default_factory=ToolRequest)
-    risk_flags: RiskFlags = Field(default_factory=RiskFlags)
-    clarification: ClarificationRequest = Field(default_factory=ClarificationRequest)
-
-    reason: str = ""
-
-    @field_validator("reason", mode="before")
-    @classmethod
-    def _normalize_reason(cls, value: Any) -> str:
-        if not isinstance(value, str):
-            return ""
-
-        return value.strip()
-
-
-# =============================================================================
-# Backward-compatible refactor alias
-# =============================================================================
-#
-# The new simplified runtime may refer to IntentPlan. Keep this as an alias-like
-# model with an `action` field, while accepting `action_candidate` from planner
-# prompts. Runtime code can use either `plan.action` or `plan.action_candidate`.
-
-
 class IntentPlan(BaseModel):
-    """Compact structured intent used by the simplified runtime.
+    """Compact structured intent used by the simplified runtime."""
 
-    Prefer LLMPlanningResult for the planner contract. IntentPlan exists as a
-    lighter runtime DTO and to keep the refactor code readable.
-    """
-
-    model_config = ConfigDict(extra="ignore", populate_by_name=True)
+    model_config = ConfigDict(extra="ignore")
 
     domain: Domain = "general"
     intent: Intent = "unknown"
-    action: ActionCandidate = Field(
-        default="no_action",
-        validation_alias=AliasChoices("action", "action_candidate"),
-    )
+    action: ActionCandidate = "no_action"
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
     entities: PlanningEntities = Field(default_factory=PlanningEntities)
     needs_tools: bool = False
     reason: str | None = None
-
-    @property
-    def action_candidate(self) -> ActionCandidate:
-        return self.action
-
-    @classmethod
-    def from_planning_result(cls, planning: LLMPlanningResult) -> "IntentPlan":
-        return cls(
-            domain=planning.domain,
-            intent=planning.intent,
-            action=planning.action_candidate,
-            confidence=planning.confidence,
-            entities=planning.entities,
-            needs_tools=(
-                planning.tool_request.lookup_tools != []
-                or planning.tool_request.write_tools != []
-                or planning.context_request.include_appointment_context
-                or planning.context_request.include_catalog_context
-                or planning.context_request.include_inventory_context
-            ),
-            reason=planning.reason,
-        )
-
-
-# =============================================================================
-# Runtime context: SA prepares data, LLM reasons over it
-# =============================================================================
-
-
-class RuntimeContext(BaseModel):
-    """Context prepared by SA for the second LLM call.
-
-    This object is deliberately data-oriented. It should contain facts, state,
-    previous messages, slots and tools. It must not contain ad-hoc
-    interpretations of the human message.
-
-    Example for appointment slot selection:
-    - current human message: "Quiero el turno de las 5"
-    - appointment.offered_slots: structured list from previous availability
-    - tools.allowed_tools: only tools valid for the current phase
-
-    The LLM must select the slot or ask clarification. SA only validates the
-    selected slot against this context.
-    """
-
-    model_config = ConfigDict(extra="ignore")
-
-    backend_context: BackendContext | None = None
-    conversation_context: ConversationContext | None = None
-
-    tenant: dict[str, Any] = Field(default_factory=dict)
-    entry_point: dict[str, Any] | None = None
-    product: dict[str, Any] | None = None
-    playbook: dict[str, Any] | None = None
-
-    contact: dict[str, Any] = Field(default_factory=dict)
-    conversation: dict[str, Any] = Field(default_factory=dict)
-
-    appointment: dict[str, Any] = Field(default_factory=dict)
-    catalog: dict[str, Any] = Field(default_factory=dict)
-    crm: dict[str, Any] = Field(default_factory=dict)
-
-    timezone: str | None = None
-    timezone_source: str | None = None
-
-    tools: dict[str, Any] = Field(default_factory=dict)
 
 
 class ToolPlan(BaseModel):
@@ -544,6 +423,7 @@ class BackendContext(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     tenant: BackendTenantContext = Field(default_factory=BackendTenantContext)
+    contact_context: dict[str, Any] | None = None
     contact: BackendContactContext = Field(default_factory=BackendContactContext)
     entrypoint: BackendEntrypointContext = Field(default_factory=BackendEntrypointContext)
     available_tools: AvailableToolsContext = Field(default_factory=AvailableToolsContext)
@@ -573,7 +453,6 @@ class ServicesStructuredData(BaseModel):
 class CrmContactStructuredData(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    contact_context: dict[str, Any] | None = None
     lead_data: dict[str, Any] | None = None
     submit_result: dict[str, Any] | None = None
 
@@ -746,7 +625,7 @@ NextAction = Literal[
 
 
 class SelectedSlot(BaseModel):
-    """Slot selected by the LLM from RuntimeContext.appointment.offered_slots.
+    """Slot selected by the LLM from conversation history offered slots.
 
     SA must validate that this slot exists in the offered slots or in a fresh
     tool result. The LLM should copy exact identifiers and timestamps instead of
@@ -849,54 +728,3 @@ class LLMFinalResponse(BaseModel):
         if isinstance(value, dict):
             return NextExpected.model_validate(value)
         return None
-
-    @model_validator(mode="before")
-    @classmethod
-    def _normalize_legacy_contract(cls, value: Any) -> Any:
-        if not isinstance(value, dict):
-            return value
-
-        if isinstance(value.get("structured_data"), dict):
-            return value
-
-        structured_data: dict[str, Any] = {
-            "appointment": {
-                "offered_slots": value.get("offered_slots") if isinstance(value.get("offered_slots"), list) else [],
-                "selected_slot": value.get("selected_slot") if isinstance(value.get("selected_slot"), dict) else None,
-                "existing_appointments": value.get("existing_appointments") if isinstance(value.get("existing_appointments"), list) else [],
-                "existing_appointment": value.get("existing_appointment") if isinstance(value.get("existing_appointment"), dict) else None,
-                "booking_result": value.get("booking_result") if isinstance(value.get("booking_result"), dict) else None,
-                "reschedule_result": value.get("reschedule_result") if isinstance(value.get("reschedule_result"), dict) else None,
-                "cancel_result": value.get("cancel_result") if isinstance(value.get("cancel_result"), dict) else None,
-            },
-            "services": {
-                "service_candidates": value.get("service_candidates") if isinstance(value.get("service_candidates"), list) else [],
-                "selected_service": value.get("selected_service") if isinstance(value.get("selected_service"), dict) else None,
-                "last_query": value.get("last_query") if isinstance(value.get("last_query"), str) else None,
-            },
-            "crm_contact": {
-                "contact_context": value.get("contact_context") if isinstance(value.get("contact_context"), dict) else None,
-                "lead_data": value.get("lead_data") if isinstance(value.get("lead_data"), dict) else None,
-                "submit_result": value.get("submit_result") if isinstance(value.get("submit_result"), dict) else None,
-            },
-            "handoff": {
-                "requested": bool(value.get("handoff_requested") or value.get("requested")),
-                "reason": value.get("handoff_reason") if isinstance(value.get("handoff_reason"), str) else None,
-                "result": value.get("handoff_result") if isinstance(value.get("handoff_result"), dict) else None,
-            },
-            "general": {
-                "topic": value.get("topic") if isinstance(value.get("topic"), str) else None,
-                "last_answer_summary": value.get("last_answer_summary") if isinstance(value.get("last_answer_summary"), str) else None,
-            },
-        }
-        value["structured_data"] = structured_data
-
-        if value.get("next_expected") is None:
-            required_next_action = value.get("required_next_action")
-            if isinstance(required_next_action, str) and required_next_action.strip():
-                value["next_expected"] = {
-                    "kind": "customer_reply",
-                    "description": required_next_action.strip(),
-                }
-
-        return value

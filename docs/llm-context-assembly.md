@@ -15,10 +15,10 @@ Flujo alto nivel:
 -> `backend_client.fetch_mcp_config()`
 -> `runtime_settings_client.effective_values()`
 -> posible carga de summaries y `previous_response_id`
--> `LLMPromptBuilder.build()`
--> `LLMDecisionService.propose()`
+-> `build_intent_user_prompt()` / `build_final_user_prompt()`
+-> `ToolSelector.select()`
 -> `LLMClient.generate_with_mcp()` o `LLMClient.generate()`
--> OpenAI Responses API o chat completions
+-> OpenAI Responses API
 -> tool traces MCP en la respuesta
 -> persistencia de conversación/mensajes/uso IA
 -> `data_to_save`
@@ -30,11 +30,7 @@ Flujo alto nivel:
 - [api/app/services/runtime.py](/home/fede/www/sales-agent/api/app/services/runtime.py)
 - [api/app/services/backend_client.py](/home/fede/www/sales-agent/api/app/services/backend_client.py)
 - [api/app/services/routing_resolver.py](/home/fede/www/sales-agent/api/app/services/routing_resolver.py)
-- [api/app/services/decision_engine.py](/home/fede/www/sales-agent/api/app/services/decision_engine.py)
-- [api/app/services/llm_decision_service.py](/home/fede/www/sales-agent/api/app/services/llm_decision_service.py)
 - [api/app/services/llm_client.py](/home/fede/www/sales-agent/api/app/services/llm_client.py)
-- [api/app/services/llm_prompt_builder.py](/home/fede/www/sales-agent/api/app/services/llm_prompt_builder.py)
-- [api/app/services/conversation_summary_service.py](/home/fede/www/sales-agent/api/app/services/conversation_summary_service.py)
 - [api/app/services/runtime_settings_client.py](/home/fede/www/sales-agent/api/app/services/runtime_settings_client.py)
 - [api/app/schemas/agent.py](/home/fede/www/sales-agent/api/app/schemas/agent.py)
 - [api/app/schemas/llm.py](/home/fede/www/sales-agent/api/app/schemas/llm.py)
@@ -47,7 +43,6 @@ Flujo alto nivel:
 - [backend/src/Controller/Api/RoutingController.php](/home/fede/www/sales-agent/backend/src/Controller/Api/RoutingController.php)
 - [backend/src/Controller/Api/InternalConversationSummaryController.php](/home/fede/www/sales-agent/backend/src/Controller/Api/InternalConversationSummaryController.php)
 - [backend/src/Controller/Api/InternalAiUsageController.php](/home/fede/www/sales-agent/backend/src/Controller/Api/InternalAiUsageController.php)
-- [backend/src/Controller/Api/InternalExternalToolController.php](/home/fede/www/sales-agent/backend/src/Controller/Api/InternalExternalToolController.php)
 - [backend/src/Service/ProductContextResolver.php](/home/fede/www/sales-agent/backend/src/Service/ProductContextResolver.php)
 - [backend/src/Entity/Tenant.php](/home/fede/www/sales-agent/backend/src/Entity/Tenant.php)
 - [backend/src/Entity/Product.php](/home/fede/www/sales-agent/backend/src/Entity/Product.php)
@@ -164,7 +159,7 @@ Orden observado:
 
 ### 6. Runtime settings y policy
 
-`LLMDecisionService.propose()` llama a `LLMClient.resolve_configuration()`, que usa `RuntimeSettingsClient.effective_values()`.
+`AgentRuntime.respond()` llama a `LLMClient.resolve_configuration()` a través de `RuntimeSettingsClient.effective_values()`.
 
 `RuntimeSettingsClient` consulta `GET /api/internal/runtime-settings` con `Authorization: Bearer <SALES_AGENT_BEARER_TOKEN>`.
 
@@ -178,6 +173,8 @@ Las keys efectivas incluyen:
 - `openai_model`
 - `openai_timeout_seconds`
 - `openai_responses_timeout_seconds`
+- `openai_responses_max_attempts`
+- `openai_responses_retry_delay_seconds`
 - `ollama_*`
 - audio settings
 
@@ -218,7 +215,7 @@ Las keys efectivas incluyen:
 
 ### 8. Prompt
 
-`LLMPromptBuilder.build()` construye:
+`build_intent_user_prompt()` y `build_final_user_prompt()` construyen:
 
 - `system_prompt`
 - `user_prompt` JSON
@@ -239,11 +236,11 @@ El `user_prompt` incluye:
 
 `conversation.last_messages` viene del request y se sanea en `AgentRequest.Conversation`.
 
-`LLMPromptBuilder` también inserta reglas hardcoded según `mcp_config.allowed_tools`.
+`ToolSelector.select()` también inserta reglas hardcoded según `mcp_config.allowed_tools`.
 
 ### 9. LLM / MCP
 
-`LLMDecisionService.propose()` elige provider:
+`LLMClient.generate_with_mcp()` elige provider:
 
 - `openai`
 - `ollama`
@@ -300,7 +297,6 @@ Cada trace guarda:
 
 - `BackendClient.create_conversation_message()`
 - `BackendClient.create_ai_usage_event()`
-- `ConversationSummaryService.generate_and_persist()` cuando aplica
 
 La decisión de generar summary hoy se activa cuando:
 
@@ -400,26 +396,6 @@ Cuando se resuelve `contact_context`, SA conserva y/o publica:
 - `effective_timezone`
 - `effective_timezone_source`
 - `operational_context`
-
-### Cache de `contact_context`
-
-SA usa `ExternalContactContextCache` para evitar repetir llamadas innecesarias al contexto externo.
-
-Orden operativo observado:
-
-1. `context_messages` recientes, si ya contienen un contexto confiable
-2. cache persistente por tenant/contact_key
-3. ExternalTool directa `contact_context` en n8n
-4. fallback legacy MCP solo si sigue configurado
-5. bloqueo seguro si no hay timezone fiable
-
-### Relación con agenda
-
-Si `contact_context` aporta timezone o `business_context.timezone`, esa timezone se usa para:
-
-- interpretar `hoy`, `mañana`, `pasado mañana`, `esta tarde`, `por la tarde`
-- construir `temporal_context`
-- validar herramientas de agenda
 
 ## 14. Continuidad de conversación
 
@@ -609,7 +585,7 @@ En [backend/src/Entity/ConversationMessage.php](/home/fede/www/sales-agent/backe
 
 ## 5. Qué está hardcodeado en código
 
-La mayor parte de las reglas conversacionales vive en [api/app/services/llm_prompt_builder.py](/home/fede/www/sales-agent/api/app/services/llm_prompt_builder.py).
+La mayor parte de las reglas conversacionales vive en [api/app/services/agent_orchestration/prompts.py](/home/fede/www/sales-agent/api/app/services/agent_orchestration/prompts.py).
 
 ### Reglas generales hardcoded
 
@@ -759,11 +735,7 @@ Se sanea en `api/app/schemas/agent.py`:
 
 ### Summaries
 
-`ConversationSummaryService.generate_and_persist()`:
-
-- pide `BackendClient.get_conversation_summary_context()`
-- llama al LLM para generar un summary compacto
-- persiste con `BackendClient.update_conversation_summary()`
+SA carga contexto de conversación desde `BackendClient.get_conversation_summary_context()` para construir el histórico que ve el LLM.
 
 ### `previous_response_id`
 
@@ -781,7 +753,7 @@ No reemplaza el prompt ni el contexto de backend.
 
 ## 9. `data_to_save`
 
-`data_to_save` sale de `LLMDecisionService.propose()` y se mezcla con telemetría y metadatos del runtime.
+`data_to_save` sale de `AgentRuntime._build_agent_response()` y se mezcla con telemetría y metadatos del runtime.
 
 Suele incluir:
 
@@ -809,7 +781,7 @@ Comportamiento documentado cuando:
 - MCP está deshabilitado: se sigue sin MCP
 - MCP no responde: `BackendClient.fetch_mcp_config()` devuelve MCP deshabilitado
 - `allowed_tools` no contiene una tool: la guía no entra en el prompt y OpenAI no recibe esa tool en el allowlist
-- OpenAI falla: `LLMClient.generate_with_mcp()` cae a chat completions
+- OpenAI falla: `LLMClient.generate_with_mcp()` devuelve un fallo estructurado del proveedor tras reintentos limitados
 - provider no es OpenAI: MCP remoto se omite
 - no hay downstream authorization: el MCP puede seguir sin `authorization` o con token ausente según configuración
 - CRM no está integrado: el flujo sigue con contexto local

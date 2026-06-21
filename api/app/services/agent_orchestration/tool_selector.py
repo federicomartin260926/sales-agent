@@ -3,11 +3,10 @@ from __future__ import annotations
 from typing import Any
 
 from app.schemas.llm import McpRemoteConfig
-from app.services.agent_orchestration.schemas import IntentPlan, RuntimeContext, ToolPlan
+from app.services.agent_orchestration.schemas import BackendContext, ConversationContext, IntentPlan, ToolPlan
 
 
 APPOINTMENT_READ_TOOLS = [
-    "contact_context",
     "services_search",
     "appointment_events",
     "appointment_availability",
@@ -31,7 +30,13 @@ class ToolSelector:
     returned by the LLM planner. It does not manage conversational microstates.
     """
 
-    def select(self, plan: IntentPlan, context: RuntimeContext, mcp_config: McpRemoteConfig | None) -> ToolPlan:
+    def select(
+        self,
+        plan: IntentPlan,
+        backend_context: BackendContext | None,
+        conversation_context: ConversationContext | None,
+        mcp_config: McpRemoteConfig | None,
+    ) -> ToolPlan:
         configured = list(mcp_config.allowed_tools) if mcp_config is not None and mcp_config.enabled else []
         if not configured:
             return ToolPlan(reason="mcp_disabled_or_no_tools")
@@ -45,19 +50,41 @@ class ToolSelector:
             "request_cancel",
             "provide_contact_data",
         }:
+            if self._should_bootstrap_contact_context(backend_context, configured):
+                return ToolPlan(
+                    allowed_tools=["contact_context"],
+                    read_tools=["contact_context"],
+                    write_tools=[],
+                    must_call_tool="contact_context",
+                    reason=f"domain={plan.domain};intent={plan.intent};contact_context_bootstrap=true",
+                )
+
             read_tools = self._intersect(APPOINTMENT_READ_TOOLS, configured)
-            write_tools = self._appointment_write_tools(plan.intent, context, configured)
+            contact_context_tools = self._contact_context_read_tools(backend_context, configured)
+            must_call_tool = "contact_context" if contact_context_tools else None
+            if contact_context_tools:
+                read_tools = list(dict.fromkeys([*contact_context_tools, *read_tools]))
+            write_tools = self._appointment_write_tools(plan.intent, backend_context, configured)
 
             allowed_tools = list(dict.fromkeys([*read_tools, *write_tools]))
             return ToolPlan(
                 allowed_tools=allowed_tools,
                 read_tools=read_tools,
                 write_tools=write_tools,
+                must_call_tool=must_call_tool,
                 reason=f"domain={plan.domain};intent={plan.intent};appointment_tools_exposed=true",
             )
 
         if plan.domain == "crm" or plan.intent == "request_quote":
-            return self._crm_contact_submit_plan(plan, context, configured, allow_followup_read=True)
+            if self._should_bootstrap_contact_context(backend_context, configured):
+                return ToolPlan(
+                    allowed_tools=["contact_context"],
+                    read_tools=["contact_context"],
+                    write_tools=[],
+                    must_call_tool="contact_context",
+                    reason=f"domain={plan.domain};intent={plan.intent};contact_context_bootstrap=true",
+                )
+            return self._crm_contact_submit_plan(plan, backend_context, configured, allow_followup_read=True)
 
         if plan.domain == "catalog" or plan.intent in {"ask_product_or_service_info", "catalog_search"}:
             read_tools = self._intersect(CATALOG_READ_TOOLS, configured)
@@ -69,7 +96,7 @@ class ToolSelector:
             )
 
         if plan.domain == "handoff" or plan.intent == "request_handoff":
-            handoff_enabled, handoff_strategy = self._handoff_settings(context)
+            handoff_enabled, handoff_strategy = self._handoff_settings(backend_context)
             external_handoff_enabled = handoff_enabled and handoff_strategy in {"n8n_webhook", "manual_wa_link_and_n8n"}
             handoff_request_allowed = external_handoff_enabled and "handoff_request" in configured
 
@@ -88,11 +115,22 @@ class ToolSelector:
                 reason=f"domain={plan.domain};intent={plan.intent};handoff_unavailable_or_disabled=true",
             )
 
-        read_tools = self._intersect(["contact_context"], configured)
+        if self._should_bootstrap_contact_context(backend_context, configured):
+            return ToolPlan(
+                allowed_tools=["contact_context"],
+                read_tools=["contact_context"],
+                write_tools=[],
+                must_call_tool="contact_context",
+                reason=f"domain={plan.domain};intent={plan.intent};contact_context_bootstrap=true",
+            )
+
+        read_tools = self._contact_context_read_tools(backend_context, configured)
+        must_call_tool = "contact_context" if read_tools else None
         return ToolPlan(
             allowed_tools=read_tools,
             read_tools=read_tools,
             write_tools=[],
+            must_call_tool=must_call_tool,
             reason=f"domain={plan.domain};intent={plan.intent};default_tools_exposed=true",
         )
 
@@ -100,8 +138,11 @@ class ToolSelector:
         configured_set = set(configured)
         return [tool for tool in dict.fromkeys(desired) if tool in configured_set]
 
-    def _handoff_settings(self, context: RuntimeContext) -> tuple[bool, str]:
-        tenant = self._read_value(context, "tenant", {}) or {}
+    def _handoff_settings(self, backend_context: BackendContext | None) -> tuple[bool, str]:
+        if backend_context is None:
+            return False, "disabled"
+
+        tenant = backend_context.tenant.model_dump(exclude_none=True) if hasattr(backend_context.tenant, "model_dump") else backend_context.tenant
         handoff = self._read_value(tenant, "handoff", {}) or {}
 
         enabled = bool(self._read_value(handoff, "enabled", False))
@@ -120,11 +161,11 @@ class ToolSelector:
     def _crm_contact_submit_plan(
         self,
         plan: IntentPlan,
-        context: RuntimeContext,
+        backend_context: BackendContext | None,
         configured: list[str],
         allow_followup_read: bool,
     ) -> ToolPlan:
-        contact = context.contact if isinstance(context.contact, dict) else {}
+        contact = backend_context.contact.model_dump(exclude_none=True) if backend_context is not None and hasattr(backend_context.contact, "model_dump") else {}
         has_contact_minimum = self._has_contact_minimum(contact)
 
         if not has_contact_minimum:
@@ -140,13 +181,14 @@ class ToolSelector:
 
         read_tools: list[str] = []
         if contact_context_available and allow_followup_read:
-            read_tools.append("contact_context")
+            read_tools = self._contact_context_read_tools(backend_context, configured)
 
         if not crm_submit_available:
             return ToolPlan(
                 allowed_tools=read_tools,
                 read_tools=read_tools,
                 write_tools=[],
+                must_call_tool="contact_context" if read_tools else None,
                 reason=f"domain={plan.domain};intent={plan.intent};crm_contact_submit_not_configured=true",
             )
 
@@ -155,10 +197,11 @@ class ToolSelector:
             allowed_tools=allowed_tools,
             read_tools=read_tools,
             write_tools=["crm_contact_submit"],
+            must_call_tool="contact_context" if read_tools else None,
             reason=f"domain={plan.domain};intent={plan.intent};route_to_crm_contact_submit=true",
         )
 
-    def _appointment_write_tools(self, intent: str, context: RuntimeContext, configured: list[str]) -> list[str]:
+    def _appointment_write_tools(self, intent: str, backend_context: BackendContext | None, configured: list[str]) -> list[str]:
         write_tools = self._intersect(APPOINTMENT_WRITE_TOOLS_BY_INTENT.get(intent, []), configured)
 
         if intent == "request_booking_confirmation":
@@ -178,6 +221,43 @@ class ToolSelector:
         phone = self._read_value(contact, "phone")
         email = self._read_value(contact, "email")
         return self._is_non_empty_string(phone) or self._is_non_empty_string(email)
+
+    def _contact_context_read_tools(self, backend_context: BackendContext | None, configured: list[str]) -> list[str]:
+        if "contact_context" not in configured:
+            return []
+
+        contact = backend_context.contact.model_dump(exclude_none=True) if backend_context is not None and hasattr(backend_context.contact, "model_dump") else {}
+        if not self._has_contact_minimum(contact):
+            return []
+
+        if self._has_sufficient_contact_context(backend_context):
+            return []
+
+        return ["contact_context"]
+
+    def _should_bootstrap_contact_context(self, backend_context: BackendContext | None, configured: list[str]) -> bool:
+        if "contact_context" not in configured:
+            return False
+
+        contact = backend_context.contact.model_dump(exclude_none=True) if backend_context is not None and hasattr(backend_context.contact, "model_dump") else {}
+        if not self._has_contact_minimum(contact):
+            return False
+
+        return not self._has_sufficient_contact_context(backend_context)
+
+    def _has_sufficient_contact_context(self, backend_context: BackendContext | None) -> bool:
+        if backend_context is None:
+            return False
+
+        contact_context = self._read_value(backend_context, "contact_context")
+        return self._is_sufficient_contact_context_payload(contact_context)
+
+    def _is_sufficient_contact_context_payload(self, payload: Any) -> bool:
+        if not isinstance(payload, dict) or not payload:
+            return False
+
+        meaningful_keys = [key for key in payload.keys() if key not in {"status", "error_code", "error_message", "ok"}]
+        return bool(meaningful_keys)
 
     def _is_non_empty_string(self, value: Any) -> bool:
         return isinstance(value, str) and value.strip() != ""

@@ -15,8 +15,6 @@ from app.services.agent_orchestration.schemas import (
     ConversationContext,
     CurrentMessage,
     ConversationTurn,
-    IntentPlan,
-    RuntimeContext,
     StructuredData,
 )
 from app.services.backend_client import BackendClient, CommercialContext
@@ -70,71 +68,14 @@ class OrchestrationContextBuilder:
         payload: AgentRequest,
         routing: RoutingContext,
         backend_context: CommercialContext | None,
-        plan: IntentPlan,
         conversation_messages: list[dict[str, Any]],
-    ) -> RuntimeContext:
-        timezone, timezone_source = self._resolve_timezone(backend_context)
-        recent_messages = self._history(conversation_messages, limit=12)
+    ) -> tuple[BackendContext, ConversationContext]:
         turns = self._conversation_turns(conversation_messages, limit=12)
-        backend_block = self._backend_context(backend_context, payload, routing, timezone)
+        contact_context = self._contact_context_from_messages(conversation_messages)
+        timezone, timezone_source = self._resolve_timezone(backend_context, contact_context)
+        backend_block = self._backend_context(backend_context, payload, routing, timezone, contact_context)
         conversation_block = self._conversation_context(payload, turns)
-        current_message = conversation_block.current_message.model_dump(exclude_none=True)
-        persisted_contact_name = self._latest_persisted_contact_name(conversation_messages)
-        offered_slots = self._offered_slots_from_history(turns)
-        offered_slots_source = self._offered_slots_source_from_history(conversation_messages)
-        selected_slot = self._selected_slot_from_history(turns)
-        existing_appointment = self._existing_appointment_from_history(turns)
-        existing_appointments = self._existing_appointments_from_history(turns)
-        required_next_action = self._required_next_action_from_history(conversation_messages)
-        resolution_required = self._requires_existing_appointment_resolution(plan, required_next_action)
-
-        if resolution_required and (
-            not isinstance(existing_appointment, dict)
-            or not existing_appointment
-            or required_next_action not in {"appointment_reschedule", "appointment_cancel"}
-        ):
-            selected_slot = None
-
-        appointment: dict[str, Any] = {
-            "offered_slots": offered_slots,
-            "offered_slots_source": offered_slots_source,
-            "selected_slot": selected_slot,
-            "existing_appointment": existing_appointment,
-            "existing_appointments": existing_appointments,
-            "required_next_action": required_next_action,
-            "timezone": timezone,
-            "timezone_source": timezone_source,
-            "rules": {
-                "slot_selection_owner": "llm",
-                "sa_role": "validate_selected_slot_only",
-                "do_not_invent_slots": True,
-            },
-        }
-
-        return RuntimeContext(
-            backend_context=backend_block,
-            conversation_context=conversation_block,
-            tenant=self._tenant_payload(backend_context, routing),
-            entry_point=self._entry_point_payload(backend_context),
-            product=self._product_payload(backend_context),
-            playbook=self._playbook_payload(backend_context),
-            contact={
-                "phone": self._clean(payload.contact.phone),
-                "name": self._clean(payload.contact.name),
-                "email": self._clean(payload.contact.email),
-            },
-            conversation={
-                "external_id": self._clean(payload.conversation.external_id),
-                "backend_id": routing.conversation_id,
-                "summary": self._clean(payload.conversation.summary),
-                "recent_messages": recent_messages,
-                "persisted_contact_name": persisted_contact_name,
-                "current_message": current_message,
-            },
-            appointment=appointment,
-            timezone=timezone,
-            timezone_source=timezone_source,
-        )
+        return backend_block, conversation_block
 
     def _backend_context(
         self,
@@ -142,6 +83,7 @@ class OrchestrationContextBuilder:
         payload: AgentRequest,
         routing: RoutingContext,
         effective_timezone: str,
+        contact_context: dict[str, Any] | None,
     ) -> BackendContext:
         if backend_context is None:
             tenant = BackendTenantContext(id=routing.tenant_id)
@@ -156,6 +98,7 @@ class OrchestrationContextBuilder:
             )
             return BackendContext(
                 tenant=BackendTenantContext(id=routing.tenant_id, timezone=effective_timezone),
+                contact_context=contact_context,
                 contact=contact,
                 entrypoint=entrypoint,
                 available_tools=self._available_tools_context(),
@@ -192,6 +135,7 @@ class OrchestrationContextBuilder:
         }
         return BackendContext(
             tenant=tenant,
+            contact_context=contact_context,
             contact=contact,
             entrypoint=entrypoint,
             available_tools=self._available_tools_context(),
@@ -261,17 +205,7 @@ class OrchestrationContextBuilder:
         if isinstance(structured_data, dict):
             return StructuredData.model_validate(self._normalize_structured_data_payload(structured_data))
 
-        return StructuredData.model_validate(
-            self._normalize_structured_data_payload(
-                {
-                    "appointment": self._appointment_structured_data_from_legacy(data),
-                    "services": self._services_structured_data_from_legacy(data),
-                    "crm_contact": self._crm_contact_structured_data_from_legacy(data),
-                    "handoff": self._handoff_structured_data_from_legacy(data),
-                    "general": self._general_structured_data_from_legacy(data, message),
-                }
-            )
-        )
+        return StructuredData()
 
     def _normalize_structured_data_payload(self, value: Any) -> dict[str, Any]:
         if not isinstance(value, dict):
@@ -283,44 +217,6 @@ class OrchestrationContextBuilder:
             if not isinstance(domain_value, dict):
                 normalized[domain] = {}
         return normalized
-
-    def _appointment_structured_data_from_legacy(self, data: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "offered_slots": self._dict_list(data.get("new_llm_orchestration_offered_slots") or data.get("offered_slots")),
-            "selected_slot": self._dict_value(data.get("new_llm_orchestration_selected_slot") or data.get("selected_slot")),
-            "existing_appointments": self._dict_list(data.get("existing_appointments")),
-            "existing_appointment": self._dict_value(data.get("existing_appointment")),
-            "booking_result": self._dict_value(data.get("booking_result") or data.get("appointment_confirm_result")),
-            "reschedule_result": self._dict_value(data.get("reschedule_result") or data.get("appointment_reschedule_result")),
-            "cancel_result": self._dict_value(data.get("cancel_result") or data.get("appointment_cancel_result")),
-        }
-
-    def _services_structured_data_from_legacy(self, data: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "service_candidates": self._dict_list(data.get("service_candidates")),
-            "selected_service": self._dict_value(data.get("selected_service")),
-            "last_query": self._clean(data.get("last_query")),
-        }
-
-    def _crm_contact_structured_data_from_legacy(self, data: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "contact_context": self._dict_value(data.get("contact_context")),
-            "lead_data": self._dict_value(data.get("lead_data")),
-            "submit_result": self._dict_value(data.get("crm_contact_submit_result") or data.get("submit_result")),
-        }
-
-    def _handoff_structured_data_from_legacy(self, data: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "requested": self._is_truthy(data.get("handoff_requested")) or self._is_truthy(data.get("requested")),
-            "reason": self._clean(data.get("handoff_reason") or data.get("reason")),
-            "result": self._dict_value(data.get("handoff_result") or data.get("result")),
-        }
-
-    def _general_structured_data_from_legacy(self, data: dict[str, Any], message: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "topic": self._clean(data.get("topic")),
-            "last_answer_summary": self._clean(data.get("last_answer_summary")) or self._clean(message.get("body")),
-        }
 
     def _tool_results_from_message(self, message: dict[str, Any]) -> list[dict[str, Any]]:
         data = self._message_data_to_save(message)
@@ -339,17 +235,6 @@ class OrchestrationContextBuilder:
             return data
         return {}
 
-    def _dict_value(self, value: Any) -> dict[str, Any] | None:
-        if isinstance(value, dict):
-            return dict(value)
-        return None
-
-    def _dict_list(self, value: Any) -> list[dict[str, Any]]:
-        if not isinstance(value, list):
-            return []
-
-        return [dict(item) for item in value if isinstance(item, dict)]
-
     def _normalize_turn_role(self, message: dict[str, Any]) -> str:
         role = self._clean(message.get("role"))
         direction = self._clean(message.get("direction"))
@@ -358,72 +243,6 @@ class OrchestrationContextBuilder:
         if role in {"assistant", "agent", "bot"} or direction == "outbound":
             return "assistant"
         return role or "customer"
-
-    def _offered_slots_from_history(self, turns: list[ConversationTurn], max_slots: int = 60) -> list[dict[str, Any]]:
-        for turn in reversed(turns):
-            slots = turn.structured_data.appointment.offered_slots
-            if isinstance(slots, list) and slots:
-                return [dict(slot) for slot in slots if isinstance(slot, dict)][:max_slots]
-        return []
-
-    def _selected_slot_from_history(self, turns: list[ConversationTurn]) -> dict[str, Any] | None:
-        for turn in reversed(turns):
-            slot = turn.structured_data.appointment.selected_slot
-            if isinstance(slot, dict) and slot:
-                return dict(slot)
-        return None
-
-    def _offered_slots_source_from_history(self, messages: list[dict[str, Any]]) -> str | None:
-        for message in reversed(messages):
-            for data in self._data_to_save_candidates(message):
-                source = data.get("offered_slots_source")
-                if isinstance(source, str) and source.strip():
-                    return source.strip()
-        return None
-
-    def _existing_appointment_from_history(self, turns: list[ConversationTurn]) -> dict[str, Any] | None:
-        for turn in reversed(turns):
-            existing_appointment = turn.structured_data.appointment.existing_appointment
-            if isinstance(existing_appointment, dict) and existing_appointment:
-                return dict(existing_appointment)
-        return None
-
-    def _existing_appointments_from_history(self, turns: list[ConversationTurn]) -> list[dict[str, Any]]:
-        for turn in reversed(turns):
-            appointments = turn.structured_data.appointment.existing_appointments
-            if isinstance(appointments, list) and appointments:
-                return [dict(appointment) for appointment in appointments if isinstance(appointment, dict)]
-        return []
-
-    def _required_next_action_from_history(self, messages: list[dict[str, Any]]) -> str | None:
-        for message in reversed(messages):
-            for data in self._data_to_save_candidates(message):
-                action = data.get("required_next_action")
-                if isinstance(action, str) and action.strip():
-                    return action.strip()
-        return None
-
-    def _requires_existing_appointment_resolution(self, plan: IntentPlan, required_next_action: str | None) -> bool:
-        normalized_required_next_action = required_next_action.strip() if isinstance(required_next_action, str) else None
-        if plan.intent in {"request_reschedule", "request_cancel", "select_existing_appointment"}:
-            return True
-
-        return normalized_required_next_action in {"resolve_existing_appointment", "appointment_reschedule", "appointment_cancel"}
-
-    def _latest_persisted_contact_name(self, messages: list[dict[str, Any]]) -> str | None:
-        for message in reversed(messages):
-            for data in self._data_to_save_candidates(message):
-                contact_name = self._clean(data.get("contact_name"))
-                if contact_name is not None:
-                    return contact_name
-
-                contact = data.get("contact")
-                if isinstance(contact, dict):
-                    contact_name = self._clean(contact.get("name"))
-                    if contact_name is not None:
-                        return contact_name
-
-        return None
 
     def _data_to_save_candidates(self, message: dict[str, Any]) -> list[dict[str, Any]]:
         candidates: list[dict[str, Any]] = []
@@ -436,30 +255,13 @@ class OrchestrationContextBuilder:
                 candidates.append(data)
         return candidates
 
-    def _history(self, messages: list[dict[str, Any]], limit: int = 10) -> list[dict[str, Any]]:
-        recent = messages[-limit:]
-        history: list[dict[str, Any]] = []
-        for message in recent:
-            if not isinstance(message, dict):
-                continue
-            history.append(
-                {
-                    "direction": message.get("direction"),
-                    "role": message.get("role"),
-                    "body": message.get("body"),
-                    "intent": message.get("intent"),
-                    "action": message.get("action"),
-                    "created_at": message.get("created_at"),
-                }
-            )
-        return history
-
-    def _resolve_timezone(self, backend_context: CommercialContext | None) -> tuple[str, str]:
+    def _resolve_timezone(self, backend_context: CommercialContext | None, contact_context: dict[str, Any] | None) -> tuple[str, str]:
         candidates: list[tuple[str | None, str]] = []
         if backend_context is not None:
             candidates.extend(
                 [
                     (backend_context.timezone, backend_context.timezone_source or "commercial_context"),
+                    (self._clean(contact_context.get("timezone")) if isinstance(contact_context, dict) else None, "backend_context.contact_context"),
                     (getattr(backend_context.tenant, "timezone", None), "tenant"),
                     (getattr(backend_context.entry_point, "timezone", None) if backend_context.entry_point else None, "entry_point"),
                 ]
@@ -477,6 +279,39 @@ class OrchestrationContextBuilder:
                 continue
             return cleaned, source
         return self.settings.SAFE_DEFAULT_BUSINESS_TIMEZONE, "safety_fallback"
+
+    def _contact_context_from_messages(self, messages: list[dict[str, Any]]) -> dict[str, Any] | None:
+        for message in reversed(messages):
+            if not isinstance(message, dict):
+                continue
+
+            for data in self._data_to_save_candidates(message):
+                backend_context = data.get("backend_context")
+                if isinstance(backend_context, dict):
+                    contact_context = self._normalize_contact_context_payload(backend_context.get("contact_context"))
+                    if contact_context is not None:
+                        return contact_context
+
+                structured_data = data.get("structured_data")
+                if isinstance(structured_data, dict):
+                    crm_contact = structured_data.get("crm_contact")
+                    if isinstance(crm_contact, dict):
+                        contact_context = self._normalize_contact_context_payload(crm_contact.get("contact_context"))
+                        if contact_context is not None:
+                            return contact_context
+
+        return None
+
+    def _normalize_contact_context_payload(self, value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict) or value == {}:
+            return None
+
+        payload = dict(value)
+        meaningful_keys = [key for key in payload.keys() if key not in {"status", "error_code", "error_message", "ok"}]
+        if meaningful_keys == []:
+            return None
+
+        return payload
 
     def _tenant_payload(self, backend_context: CommercialContext | None, routing: RoutingContext) -> dict[str, Any]:
         if backend_context is None:
