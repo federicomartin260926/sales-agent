@@ -1,5 +1,6 @@
 services:
   sales-agent-db:
+    restart: unless-stopped
     image: postgres:15
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-sales_agent}
@@ -11,6 +12,7 @@ services:
       - sales-agent-net
 
   sales-agent-backend:
+    restart: unless-stopped
     build:
       context: ./backend
       dockerfile: Dockerfile
@@ -31,6 +33,7 @@ services:
       - sales-agent-net
 
   sales-agent-api:
+    restart: unless-stopped
     build:
       context: ./api
       dockerfile: Dockerfile
@@ -76,6 +79,7 @@ services:
       - sales-agent-net
 
   sales-agent-nginx:
+    restart: unless-stopped
     image: nginx:1.27-alpine
     depends_on:
       - sales-agent-backend
