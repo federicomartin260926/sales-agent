@@ -45,7 +45,7 @@ Variables de entorno:
                                Default: e2e-agent-YYYYMMDDHHMMSS
 
   OUT_DIR                      Directorio donde guardar respuestas JSON.
-                               Default: /tmp
+                               Default: /tmp/sa-llm/probe
 
 Ejemplo 1: crear una cita nueva
 
@@ -106,7 +106,7 @@ Ejemplo 4: usar otro contacto o tenant
 
 Notas:
   - El script guarda cada respuesta en OUT_DIR como:
-    /tmp/sa-<CONV>-<step>.json
+    /tmp/sa-llm/probe/sa-<CONV>-<step>.json
   - No borra ni revierte datos creados en CRM.
   - Si una prueba crea una cita, cancelarla o borrarla manualmente si no debe quedar como dato fixture.
   - Este script es una herramienta de inspección manual, no un test automatizado determinista.
@@ -125,24 +125,42 @@ fi
 
 TENANT_ID="${TENANT_ID:-019e4a9a-c85f-72d4-8748-b756073c324c}"
 API_PORT="${API_PORT:-8000}"
+API_PATH="${API_PATH:-/agent/respond}"
 SALES_AGENT_BEARER_TOKEN="${SALES_AGENT_BEARER_TOKEN:-sales-agent-bearer-token}"
 CHANNEL_TYPE="${CHANNEL_TYPE:-whatsapp}"
 EXTERNAL_CHANNEL_ID="${EXTERNAL_CHANNEL_ID:-test-whatsapp-e2e}"
-ENTRYPOINT_REF="${ENTRYPOINT_REF:-mary-main}"
+ENTRYPOINT_REF="${ENTRYPOINT_REF:-}"
 CONTACT_PHONE="${CONTACT_PHONE:-+34678180164}"
 CONTACT_NAME="${CONTACT_NAME-Federico Martín Peña}"
 CONV="${CONV:-e2e-agent-$(date +%Y%m%d%H%M%S)}"
-OUT_DIR="${OUT_DIR:-/tmp}"
+START_STEP="${START_STEP:-1}"
+OUT_DIR="${OUT_DIR:-./var/sa-llm/probe}"
 
 echo "CONV=$CONV"
 echo "TENANT_ID=$TENANT_ID"
 echo "API_PORT=$API_PORT"
+echo "API_PATH=$API_PATH"
 echo "CHANNEL_TYPE=$CHANNEL_TYPE"
 echo "EXTERNAL_CHANNEL_ID=$EXTERNAL_CHANNEL_ID"
 echo "ENTRYPOINT_REF=$ENTRYPOINT_REF"
 echo "CONTACT_PHONE=$CONTACT_PHONE"
 echo "CONTACT_NAME=$CONTACT_NAME"
 echo "OUT_DIR=$OUT_DIR"
+mkdir -p "$OUT_DIR"
+
+next_free_step() {
+  local candidate="${1:-1}"
+  while true; do
+    local step
+    step="$(printf "%02d" "$candidate")"
+    local file="${OUT_DIR}/sa-${CONV}-${step}.json"
+    if [[ ! -e "$file" ]]; then
+      printf "%s" "$step"
+      return 0
+    fi
+    candidate=$((candidate + 1))
+  done
+}
 
 run_turn() {
   local step="$1"
@@ -161,7 +179,6 @@ payload = {
     "tenant_id": tenant_id,
     "channel_type": channel_type,
     "external_channel_id": external_channel_id,
-    "entrypoint_ref": entrypoint_ref,
     "external_conversation_id": external_conversation_id,
     "message": {
         "id": message_id,
@@ -174,47 +191,41 @@ payload = {
     },
 }
 
+if entrypoint_ref:
+    payload["entrypoint_ref"] = entrypoint_ref
+
 print(json.dumps(payload, ensure_ascii=False))
 PY
 )"
 
-  curl -sS -w "\nHTTP_STATUS:%{http_code}\n" -X POST "http://localhost:${API_PORT}/agent/respond" \
+  local status
+  status="$(curl -sS -o "$file" -w "%{http_code}" -X POST "http://localhost:${API_PORT}${API_PATH}" \
     -H "Authorization: Bearer ${SALES_AGENT_BEARER_TOKEN}" \
     -H "Content-Type: application/json" \
-    --data-binary "$payload" > "$file"
+    --data-binary "$payload")"
 
-  python3 - "$file" "$step" <<'PY'
+  python3 - "$file" "$step" "$status" <<'PY'
 import json
 import sys
+from pathlib import Path
 from pprint import pprint
 
 path = sys.argv[1]
 step = sys.argv[2]
-
-raw = open(path).read()
-status = None
-body = raw
-
-if "\nHTTP_STATUS:" in raw:
-    body, status = raw.rsplit("\nHTTP_STATUS:", 1)
-    status = status.strip()
+status = sys.argv[3]
 
 print("\n" + "=" * 110)
 print("STEP:", step)
 print("FILE:", path)
 print("HTTP_STATUS:", status)
 
-if status != "200":
-    print("RAW BODY:")
-    print(body[:3000])
-    raise SystemExit(0)
-
 try:
+    body = Path(path).read_text(encoding="utf-8")
     data = json.loads(body)
 except Exception as exc:
     print("JSON ERROR:", exc)
     print("RAW BODY:")
-    print(body[:3000])
+    print(Path(path).read_text(encoding="utf-8")[:3000])
     raise SystemExit(0)
 
 d = data.get("data_to_save", {}) or {}
@@ -229,8 +240,19 @@ print("needs_human:", data.get("needs_human"))
 
 print("\nTOOL PLAN:")
 print("allowed_tools:", tool_plan.get("allowed_tools"))
-print("must_call_tool:", tool_plan.get("must_call_tool"))
+print("bootstrap_tool:", tool_plan.get("bootstrap_tool"))
 print("reason:", tool_plan.get("reason"))
+
+print("\nLLM CONTEXT DEBUG:")
+pprint(d.get("llm_context_debug"), width=180)
+
+print("\nCONTACT CONTEXT:")
+backend_contact_context = ((d.get("backend_context") or {}).get("contact_context") or {})
+print("ok:", backend_contact_context.get("ok"))
+print("found:", backend_contact_context.get("found"))
+print("timezone:", backend_contact_context.get("timezone"))
+print("timezone_source:", backend_contact_context.get("timezone_source"))
+print("contact_name:", ((backend_contact_context.get("contact") or {}).get("name")))
 
 print("\nSTATE:")
 for field in [
@@ -259,7 +281,8 @@ if isinstance(appointments, list):
         print(i, a.get("id"), a.get("start"), a.get("end"), a.get("timezone"), a.get("title"))
 
 print("\nSELECTED SLOT:")
-pprint(d.get("selected_slot"), width=180)
+appointment = (d.get("structured_data") or {}).get("appointment") or {}
+pprint(appointment.get("selected_slot"), width=180)
 
 print("\nMCP TRACES:")
 for i, t in enumerate(traces, 1):
@@ -303,8 +326,9 @@ for field in [
 PY
 }
 
-step=1
+step="$START_STEP"
 for message in "$@"; do
-  run_turn "$(printf "%02d" "$step")" "$message"
-  step=$((step + 1))
+  step="$(next_free_step "$step")"
+  run_turn "$step" "$message"
+  step=$((10#$step + 1))
 done

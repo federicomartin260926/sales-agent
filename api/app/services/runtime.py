@@ -4,6 +4,7 @@ import json
 import logging
 import time
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -32,6 +33,21 @@ from app.services.runtime_settings_client import RuntimeSettingsClient
 
 
 logger = logging.getLogger(__name__)
+
+LLM_CONTEXT_DEBUG_SENSITIVE_KEYS = {
+    "authorization",
+    "token",
+    "access_token",
+    "refresh_token",
+    "secret",
+    "api_key",
+    "password",
+    "downstream_auth_token",
+    "downstream_authorization",
+    "downstream_authorization_token",
+    "bearer_token",
+    "auth_token",
+}
 
 
 class AgentRuntime:
@@ -90,6 +106,7 @@ class AgentRuntime:
     # Main API entrypoint: route, normalize, persist, classify, build context, run LLM and persist reply.
     async def respond(self, payload: AgentRequest) -> AgentResponse:
         started_at = time.monotonic()
+        llm_context_debug_files: list[str] = []
         routing = await self.routing_resolver.resolve(payload)
         if routing is None or not self._clean(routing.tenant_id):
             return self._local_response(
@@ -139,15 +156,22 @@ class AgentRuntime:
             await self.audio_preprocessor.report_transcription_event(routing, conversation_result, inbound_result, audio_result, audio_config)
 
         # The context builder is the main place where complexity is allowed. It
-        # loads previous messages, previous offered slots, selected slots and
-        # tenant/timezone/contact state. Runtime itself should stay linear.
+        # The context builder assembles backend_context and conversation_context from
+        # persisted messages and structured data. Runtime itself should stay linear and
+        # avoid deriving conversational agenda state.
         conversation_messages = await self.context_builder.load_conversation_messages(payload, routing, limit=12)
 
         if backend_context is None:
             backend_context = await self._fetch_backend_context(payload, routing)
 
         try:
-            intent_plan = await self._classify_intent(payload, routing, backend_context, conversation_messages)
+            intent_plan = await self._classify_intent(
+                payload,
+                routing,
+                backend_context,
+                conversation_messages,
+                llm_context_debug_files,
+            )
         except LlmProviderUnavailable as exc:
             response = self._build_llm_provider_failure_response(
                 payload=payload,
@@ -158,6 +182,7 @@ class AgentRuntime:
                 provider_failure=exc,
                 intent_plan=None,
             )
+            self._attach_llm_context_debug_reference(response, llm_context_debug_files)
             await self.conversation_message_persistence.persist_outbound(response, routing, None, mcp_config)
             return response
         except Exception as exc:
@@ -187,6 +212,8 @@ class AgentRuntime:
                 conversation_context=llm_conversation_context,
                 tool_plan=tool_plan,
                 mcp_config=mcp_config,
+                routing=routing,
+                llm_context_debug_files=llm_context_debug_files,
             )
         except LlmProviderUnavailable as exc:
             response = self._build_llm_provider_failure_response(
@@ -198,6 +225,7 @@ class AgentRuntime:
                 provider_failure=exc,
                 intent_plan=intent_plan,
             )
+            self._attach_llm_context_debug_reference(response, llm_context_debug_files)
             await self.conversation_message_persistence.persist_outbound(response, routing, None, mcp_config)
             return response
         except Exception as exc:
@@ -220,6 +248,7 @@ class AgentRuntime:
             started_at,
             routing=routing,
         )
+        self._attach_llm_context_debug_reference(response, llm_context_debug_files)
 
         await self.conversation_message_persistence.persist_outbound(response, routing, llm_result, mcp_config)
         return response
@@ -234,7 +263,6 @@ class AgentRuntime:
             entrypoint_ref=routing.entrypoint_ref or payload.entrypoint_ref,
             customer_phone=payload.contact.phone,
             external_channel_id=routing.external_channel_id or payload.external_channel_id,
-            current_message=payload.message.text,
         )
         if backend_context is not None:
             return backend_context
@@ -247,7 +275,6 @@ class AgentRuntime:
             routing.tenant_id,
             customer_phone=payload.contact.phone,
             external_channel_id=routing.external_channel_id or payload.external_channel_id,
-            current_message=payload.message.text,
         )
 
     # First LLM call: classify the message into a closed structured intent contract.
@@ -257,17 +284,56 @@ class AgentRuntime:
         routing: RoutingContext,
         backend_context: CommercialContext | None,
         conversation_messages: list[dict[str, Any]],
+        llm_context_debug_files: list[str] | None = None,
     ) -> IntentPlan:
-        # First LLM call: classify, do not execute. We include compact state so
-        # the planner knows if the user is likely selecting a previous slot, but
-        # it still returns only a small structured contract.
+        # First LLM call: classify, do not execute. We include compact context so
+        # the planner can reason from persisted history without SA keeping agenda state.
         intent_context = self._intent_prompt_context(payload, routing, backend_context, conversation_messages)
         prompt = build_intent_user_prompt(intent_context)
-        result = await self.llm_client.generate(self.settings.llm_provider, INTENT_SYSTEM_PROMPT, prompt)
-        decoded = self._json_dict(result.content)
-        if decoded is None:
-            raise ValueError("Intent planner returned non JSON")
-        return IntentPlan.model_validate(decoded)
+        self._write_llm_context_debug_request(
+            stage="intent",
+            payload=payload,
+            routing=routing,
+            request_context={
+                "backend_context": intent_context.get("backend_context"),
+                "conversation_context": intent_context.get("conversation_context"),
+                "intent_context": intent_context,
+            },
+            system_prompt_exact=INTENT_SYSTEM_PROMPT,
+            user_prompt_exact=prompt,
+            provider=self.settings.llm_provider,
+            llm_context_debug_files=llm_context_debug_files,
+        )
+        result: Any | None = None
+        try:
+            result = await self.llm_client.generate(self.settings.llm_provider, INTENT_SYSTEM_PROMPT, prompt)
+            decoded = self._json_dict(result.content)
+            if decoded is None:
+                raise ValueError("Intent planner returned non JSON")
+            intent_plan = IntentPlan.model_validate(decoded)
+        except Exception as exc:
+            self._write_llm_context_debug_response(
+                stage="intent",
+                payload=payload,
+                routing=routing,
+                provider=self.settings.llm_provider,
+                error=exc,
+                raw_response=getattr(result, "raw_payload", None),
+                llm_context_debug_files=llm_context_debug_files,
+            )
+            raise
+
+        self._write_llm_context_debug_response(
+            stage="intent",
+            payload=payload,
+            routing=routing,
+            provider=result.provider,
+            model=result.model,
+            parsed_response=intent_plan,
+            raw_response=getattr(result, "raw_payload", None),
+            llm_context_debug_files=llm_context_debug_files,
+        )
+        return intent_plan
 
     def _resolve_effective_timezone(
         self,
@@ -371,13 +437,6 @@ class AgentRuntime:
                     "text": payload.message.text or "",
                     "channel": self._clean(payload.channel_type or payload.conversation.channel),
                 },
-                "state": {
-                    "has_offered_slots": bool(self._offered_slots_in_messages(conversation_messages)),
-                    "has_selected_slot": self._selected_slot_in_messages(conversation_messages) is not None,
-                    "has_existing_appointment": self._has_existing_appointment_in_messages(conversation_messages),
-                    "existing_appointments_count": self._existing_appointments_count_in_messages(conversation_messages),
-                    "required_next_action": self._required_next_action_in_messages(conversation_messages),
-                },
                 "temporal_context": {
                     "current_datetime": now.isoformat(),
                     "current_date": now.date().isoformat(),
@@ -411,6 +470,8 @@ class AgentRuntime:
         conversation_context: ConversationContext,
         tool_plan: ToolPlan,
         mcp_config: McpRemoteConfig,
+        routing: RoutingContext,
+        llm_context_debug_files: list[str] | None = None,
     ) -> tuple[LLMFinalResponse, Any | None]:
         # Second LLM call: the LLM receives full context and only the tools that
         # SA has selected for the classified intent. Slot selection happens here.
@@ -423,52 +484,331 @@ class AgentRuntime:
                 mcp_config.config["effective_timezone_source"] = effective_timezone_source
         prompt = build_final_user_prompt(payload.message.text or "", plan, backend_context, conversation_context, tool_plan)
         effective_mcp_config = self._filtered_mcp_config(mcp_config, tool_plan.allowed_tools)
+        tool_choice = None
         if effective_mcp_config.enabled and effective_mcp_config.allowed_tools:
-            tool_choice = self._forced_mcp_tool_choice(tool_plan, effective_mcp_config)
-            result = await self.llm_client.generate_with_mcp(
-                self.settings.llm_provider,
-                FINAL_SYSTEM_PROMPT,
-                prompt,
-                effective_mcp_config,
-                previous_response_id=None,
-                tool_choice=tool_choice,
-                parallel_tool_calls=False,
-                max_tool_rounds=4,
-            )
-        else:
-            result = await self.llm_client.generate(self.settings.llm_provider, FINAL_SYSTEM_PROMPT, prompt)
+            tool_choice = self._contact_context_bootstrap_tool_choice(tool_plan, effective_mcp_config)
+        self._write_llm_context_debug_request(
+            stage="final",
+            payload=payload,
+            routing=routing,
+            request_context={
+                "backend_context": backend_context,
+                "conversation_context": conversation_context,
+                "intent_plan": plan,
+                "tool_plan": tool_plan,
+                "mcp_allowed_tools": effective_mcp_config.allowed_tools,
+                "bootstrap_tool": tool_plan.bootstrap_tool,
+                "tool_choice": tool_choice,
+            },
+            system_prompt_exact=FINAL_SYSTEM_PROMPT,
+            user_prompt_exact=prompt,
+            provider=self.settings.llm_provider,
+            llm_context_debug_files=llm_context_debug_files,
+        )
+        result: Any | None = None
+        try:
+            if effective_mcp_config.enabled and effective_mcp_config.allowed_tools:
+                result = await self.llm_client.generate_with_mcp(
+                    self.settings.llm_provider,
+                    FINAL_SYSTEM_PROMPT,
+                    prompt,
+                    effective_mcp_config,
+                    previous_response_id=None,
+                    tool_choice=tool_choice,
+                    parallel_tool_calls=False,
+                    max_tool_rounds=4,
+                )
+            else:
+                result = await self.llm_client.generate(self.settings.llm_provider, FINAL_SYSTEM_PROMPT, prompt)
 
-        decoded = self._json_dict(result.content)
-        if decoded is None:
-            raise ValueError("Final LLM returned non JSON")
-        final_response = LLMFinalResponse.model_validate(decoded)
+            decoded = self._json_dict(result.content)
+            if decoded is None:
+                raise ValueError("Final LLM returned non JSON")
+            final_response = LLMFinalResponse.model_validate(decoded)
+        except Exception as exc:
+            self._write_llm_context_debug_response(
+                stage="final",
+                payload=payload,
+                routing=routing,
+                provider=self.settings.llm_provider,
+                error=exc,
+                raw_response=getattr(result, "raw_payload", None),
+                tool_traces=getattr(result, "tool_traces", None),
+                llm_context_debug_files=llm_context_debug_files,
+            )
+            raise
+
+        self._write_llm_context_debug_response(
+            stage="final",
+            payload=payload,
+            routing=routing,
+            provider=result.provider,
+            model=result.model,
+            parsed_response=final_response,
+            raw_response=getattr(result, "raw_payload", None),
+            tool_traces=getattr(result, "tool_traces", None),
+            llm_context_debug_files=llm_context_debug_files,
+        )
         return final_response, result
 
-    def _forced_mcp_tool_choice(self, tool_plan: ToolPlan, mcp_config: McpRemoteConfig) -> dict[str, Any] | None:
-        must_call_tool = self._clean(tool_plan.must_call_tool)
+    def _contact_context_bootstrap_tool_choice(self, tool_plan: ToolPlan, mcp_config: McpRemoteConfig) -> dict[str, Any] | None:
+        bootstrap_tool = self._clean(tool_plan.bootstrap_tool)
         server_label = self._clean(mcp_config.server_label)
-        if must_call_tool is None or server_label is None:
+        if bootstrap_tool != "contact_context" or server_label is None:
+            return None
+        if bootstrap_tool not in tool_plan.allowed_tools:
             return None
 
-        if must_call_tool not in tool_plan.allowed_tools:
+        return {"type": "mcp", "server_label": server_label, "name": bootstrap_tool}
+
+    def _attach_llm_context_debug_reference(self, response: AgentResponse, llm_context_debug_files: list[str]) -> None:
+        if not self.settings.llm_context_debug:
+            return
+
+        response.data_to_save["llm_context_debug"] = {
+            "enabled": True,
+            "files": list(dict.fromkeys(llm_context_debug_files)),
+        }
+
+    def _write_llm_context_debug_request(
+        self,
+        *,
+        stage: str,
+        payload: AgentRequest,
+        routing: RoutingContext,
+        request_context: dict[str, Any],
+        system_prompt_exact: str,
+        user_prompt_exact: str,
+        provider: str | None = None,
+        llm_context_debug_files: list[str] | None = None,
+    ) -> str | None:
+        if not self.settings.llm_context_debug:
             return None
 
-        return {"type": "mcp", "server_label": server_label, "name": must_call_tool}
+        snapshot = {
+            "stage": stage,
+            "direction": "request",
+            "tenant_id": routing.tenant_id,
+            "conversation_id": routing.conversation_id,
+            "external_conversation_id": self._clean(payload.conversation.external_id),
+            "message_id": self._clean(payload.message.id),
+            "timestamp": datetime.now(ZoneInfo("UTC")).isoformat(),
+            "provider": provider,
+            "system_prompt_exact": system_prompt_exact,
+            "user_prompt_exact": user_prompt_exact,
+            "request_context": request_context,
+        }
+        request_path = self._write_llm_context_debug_file(
+            payload=payload,
+            routing=routing,
+            stage=stage,
+            direction="request",
+            snapshot=snapshot,
+            llm_context_debug_files=llm_context_debug_files,
+        )
+        if llm_context_debug_files is not None:
+            self._write_llm_context_debug_prompt_files(
+                stage=stage,
+                payload=payload,
+                routing=routing,
+                system_prompt_exact=system_prompt_exact,
+                user_prompt_exact=user_prompt_exact,
+                llm_context_debug_files=llm_context_debug_files,
+            )
+        return request_path
 
-    def _offered_slots_in_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        for message in reversed(messages):
-            for data in self._data_to_save_candidates(message):
-                structured_data = data.get("structured_data")
-                if isinstance(structured_data, dict):
-                    appointment = structured_data.get("appointment")
-                    if isinstance(appointment, dict):
-                        slots = appointment.get("offered_slots")
-                        if isinstance(slots, list):
-                            return [dict(slot) for slot in slots if isinstance(slot, dict)]
-                slots = data.get("new_llm_orchestration_offered_slots") or data.get("offered_slots")
-                if isinstance(slots, list):
-                    return [dict(slot) for slot in slots if isinstance(slot, dict)]
-        return []
+    def _write_llm_context_debug_response(
+        self,
+        *,
+        stage: str,
+        payload: AgentRequest,
+        routing: RoutingContext,
+        provider: str | None = None,
+        model: str | None = None,
+        parsed_response: Any | None = None,
+        raw_response: Any | None = None,
+        tool_traces: list[Any] | None = None,
+        error: Exception | None = None,
+        llm_context_debug_files: list[str] | None = None,
+    ) -> str | None:
+        if not self.settings.llm_context_debug:
+            return None
+
+        snapshot: dict[str, Any] = {
+            "stage": stage,
+            "direction": "response",
+            "tenant_id": routing.tenant_id,
+            "conversation_id": routing.conversation_id,
+            "external_conversation_id": self._clean(payload.conversation.external_id),
+            "message_id": self._clean(payload.message.id),
+            "timestamp": datetime.now(ZoneInfo("UTC")).isoformat(),
+            "provider": provider,
+            "model": model,
+            "raw_response": raw_response,
+            "tool_traces": [trace.model_dump(exclude_none=True) for trace in tool_traces or []],
+        }
+        if stage == "intent":
+            snapshot["intent_plan"] = parsed_response.model_dump(exclude_none=True) if hasattr(parsed_response, "model_dump") else parsed_response
+        if stage == "final":
+            snapshot["final_response"] = parsed_response.model_dump(exclude_none=True) if hasattr(parsed_response, "model_dump") else parsed_response
+        if error is not None:
+            snapshot["error"] = {
+                "type": error.__class__.__name__,
+                "message": str(error),
+            }
+
+        return self._write_llm_context_debug_file(
+            payload=payload,
+            routing=routing,
+            stage=stage,
+            direction="response",
+            snapshot=snapshot,
+            llm_context_debug_files=llm_context_debug_files,
+        )
+
+    def _write_llm_context_debug_prompt_files(
+        self,
+        *,
+        stage: str,
+        payload: AgentRequest,
+        routing: RoutingContext,
+        system_prompt_exact: str,
+        user_prompt_exact: str,
+        llm_context_debug_files: list[str],
+    ) -> None:
+        if not self.settings.llm_context_debug:
+            return
+
+        conversation_id = self._clean(routing.conversation_id) or self._clean(payload.conversation.external_id) or "unknown-conversation"
+        turn_slug = self._clean(payload.message.id) or self._clean(payload.message.timestamp) or "turn"
+        debug_dir = Path(self.settings.llm_context_debug_dir).expanduser() / self._sanitize_llm_context_debug_component(conversation_id) / self._sanitize_llm_context_debug_component(turn_slug)
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        system_filename, user_filename = self._llm_context_debug_prompt_filenames(stage)
+        system_path = debug_dir / system_filename
+        user_path = debug_dir / user_filename
+
+        system_path.write_text(system_prompt_exact, encoding="utf-8")
+        user_path.write_text(user_prompt_exact, encoding="utf-8")
+        self._append_llm_context_debug_file(llm_context_debug_files, str(system_path))
+        self._append_llm_context_debug_file(llm_context_debug_files, str(user_path))
+
+    def _llm_context_debug_prompt_filenames(self, stage: str) -> tuple[str, str]:
+        if stage == "intent":
+            return "01-intent-system-prompt.txt", "01-intent-user-prompt.txt"
+        if stage == "final":
+            return "03-final-system-prompt.txt", "03-final-user-prompt.txt"
+        safe_stage = self._sanitize_llm_context_debug_component(stage)
+        return f"{safe_stage}-system-prompt.txt", f"{safe_stage}-user-prompt.txt"
+
+    def _write_llm_context_debug_file(
+        self,
+        *,
+        payload: AgentRequest,
+        routing: RoutingContext,
+        stage: str,
+        direction: str,
+        snapshot: dict[str, Any],
+        llm_context_debug_files: list[str] | None = None,
+    ) -> str:
+        conversation_id = self._clean(routing.conversation_id) or self._clean(payload.conversation.external_id) or "unknown-conversation"
+        turn_slug = self._clean(payload.message.id) or self._clean(payload.message.timestamp) or "turn"
+        debug_dir = Path(self.settings.llm_context_debug_dir).expanduser() / self._sanitize_llm_context_debug_component(conversation_id) / self._sanitize_llm_context_debug_component(turn_slug)
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        filename = self._llm_context_debug_filename(stage, direction)
+        path = debug_dir / filename
+
+        sanitized = self._redact_llm_context_debug_value(snapshot)
+        path.write_text(json.dumps(sanitized, ensure_ascii=False, indent=2, sort_keys=True, default=str), encoding="utf-8")
+
+        if llm_context_debug_files is not None:
+            self._append_llm_context_debug_file(llm_context_debug_files, str(path))
+
+        return str(path)
+
+    def _append_llm_context_debug_file(self, llm_context_debug_files: list[str], path: str) -> None:
+        if path not in llm_context_debug_files:
+            llm_context_debug_files.append(path)
+
+    def _llm_context_debug_filename(self, stage: str, direction: str) -> str:
+        if stage == "intent" and direction == "request":
+            return "01-intent-request.json"
+        if stage == "intent" and direction == "response":
+            return "02-intent-response.json"
+        if stage == "final" and direction == "request":
+            return "03-final-request.json"
+        if stage == "final" and direction == "response":
+            return "04-final-response.json"
+        return f"{self._sanitize_llm_context_debug_component(stage)}-{self._sanitize_llm_context_debug_component(direction)}.json"
+
+    def _redact_llm_context_debug_value(self, value: Any) -> Any:
+        if hasattr(value, "model_dump"):
+            try:
+                value = value.model_dump()
+            except Exception:
+                value = str(value)
+
+        if isinstance(value, dict):
+            redacted: dict[str, Any] = {}
+            for raw_key, raw_value in value.items():
+                normalized_key = self._normalize_llm_context_debug_key(raw_key)
+                if normalized_key in LLM_CONTEXT_DEBUG_SENSITIVE_KEYS:
+                    redacted[raw_key] = "[REDACTED]"
+                    continue
+                if normalized_key.endswith("_url") or normalized_key in {"url", "uri", "server_url", "webhook_url"}:
+                    redacted[raw_key] = self._redact_llm_context_debug_url(raw_value)
+                    continue
+                redacted[raw_key] = self._redact_llm_context_debug_value(raw_value)
+            return redacted
+
+        if isinstance(value, list):
+            return [self._redact_llm_context_debug_value(item) for item in value]
+
+        if isinstance(value, tuple):
+            return [self._redact_llm_context_debug_value(item) for item in value]
+
+        return value
+
+    def _normalize_llm_context_debug_key(self, value: Any) -> str:
+        if not isinstance(value, str):
+            value = str(value)
+
+        normalized: list[str] = []
+        previous_underscore = False
+        for char in value.strip().lower():
+            if char.isalnum():
+                normalized.append(char)
+                previous_underscore = False
+                continue
+            if not previous_underscore:
+                normalized.append("_")
+                previous_underscore = True
+
+        return "".join(normalized).strip("_")
+
+    def _sanitize_llm_context_debug_component(self, value: str) -> str:
+        cleaned = value.strip()
+        sanitized: list[str] = []
+        for char in cleaned:
+            if char.isalnum() or char in {"-", "_", "."}:
+                sanitized.append(char)
+            else:
+                sanitized.append("_")
+        result = "".join(sanitized).strip("_.")
+        return result or "value"
+
+    def _redact_llm_context_debug_url(self, value: Any) -> Any:
+        if not isinstance(value, str):
+            return self._redact_llm_context_debug_value(value)
+
+        try:
+            parsed = urlsplit(value)
+        except Exception:
+            return value
+
+        if parsed.scheme == "" and parsed.netloc == "":
+            return value
+
+        return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
 
     def _recent_turns_summary(self, messages: list[dict[str, Any]], limit: int = 4) -> list[dict[str, Any]]:
         recent = messages[-limit:]
@@ -620,67 +960,6 @@ class AgentRuntime:
             if isinstance(data, dict):
                 candidates.append(data)
         return candidates
-
-    def _selected_slot_in_messages(self, messages: list[dict[str, Any]]) -> dict[str, Any] | None:
-        for message in reversed(messages):
-            for data in self._data_to_save_candidates(message):
-                structured_data = data.get("structured_data")
-                if isinstance(structured_data, dict):
-                    appointment = structured_data.get("appointment")
-                    if isinstance(appointment, dict):
-                        slot = appointment.get("selected_slot")
-                        if isinstance(slot, dict) and slot:
-                            return dict(slot)
-                slot = data.get("selected_slot") or data.get("new_llm_orchestration_selected_slot")
-                if isinstance(slot, dict) and slot:
-                    return dict(slot)
-        return None
-
-    def _has_existing_appointment_in_messages(self, messages: list[dict[str, Any]]) -> bool:
-        return self._existing_appointment_in_messages(messages) is not None
-
-    def _existing_appointments_count_in_messages(self, messages: list[dict[str, Any]]) -> int:
-        for message in reversed(messages):
-            for data in self._data_to_save_candidates(message):
-                count = data.get("existing_appointments_count")
-                if isinstance(count, int) and count >= 0:
-                    return count
-
-                structured_data = data.get("structured_data")
-                if isinstance(structured_data, dict):
-                    appointment = structured_data.get("appointment")
-                    if isinstance(appointment, dict):
-                        existing_appointments = appointment.get("existing_appointments")
-                        if isinstance(existing_appointments, list):
-                            return len(existing_appointments)
-                        existing_appointment = appointment.get("existing_appointment")
-                        if isinstance(existing_appointment, dict) and existing_appointment:
-                            return 1
-        return 0
-
-    def _existing_appointment_in_messages(self, messages: list[dict[str, Any]]) -> dict[str, Any] | None:
-        for message in reversed(messages):
-            for data in self._data_to_save_candidates(message):
-                structured_data = data.get("structured_data")
-                if isinstance(structured_data, dict):
-                    appointment = structured_data.get("appointment")
-                    if isinstance(appointment, dict):
-                        existing_appointment = appointment.get("existing_appointment")
-                        if isinstance(existing_appointment, dict) and existing_appointment:
-                            return dict(existing_appointment)
-
-                existing_appointment = data.get("existing_appointment")
-                if isinstance(existing_appointment, dict) and existing_appointment:
-                    return dict(existing_appointment)
-        return None
-
-    def _required_next_action_in_messages(self, messages: list[dict[str, Any]]) -> str | None:
-        for message in reversed(messages):
-            for data in self._data_to_save_candidates(message):
-                action = data.get("required_next_action")
-                if isinstance(action, str) and action.strip():
-                    return action.strip()
-        return None
 
     def _short_summary(self, value: str | None, limit: int = 120) -> str | None:
         if value is None:

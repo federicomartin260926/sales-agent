@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import json
 import time
 from typing import Any
 
 from app.schemas.agent import AgentResponse
 from app.services.agent_orchestration.schemas import IntentPlan, LLMFinalResponse, ToolPlan
+from app.services.agent_orchestration.write_integrity_guard import WriteIntegrityGuard
 from app.services.llm_provider_resilience import LlmProviderUnavailable
 from app.services.routing_resolver import RoutingContext
 
 
 class AgentTurnResponseBuilder:
+    def __init__(self) -> None:
+        self.write_integrity_guard = WriteIntegrityGuard()
+
     def build_response(
         self,
         final: LLMFinalResponse,
@@ -20,6 +25,7 @@ class AgentTurnResponseBuilder:
         routing: RoutingContext | None = None,
         provider_failure: LlmProviderUnavailable | None = None,
     ) -> AgentResponse:
+        final = self.write_integrity_guard.apply(final, plan, llm_result)
         structured_data = final.structured_data.model_dump(exclude_none=True) if hasattr(final, "structured_data") else {}
         tool_results = [trace.model_dump(exclude_none=True) for trace in getattr(llm_result, "tool_traces", [])] if llm_result is not None else []
         technical_metadata = self.build_technical_metadata(provider_failure)
@@ -127,14 +133,22 @@ class AgentTurnResponseBuilder:
             return output
         if isinstance(output, str):
             try:
-                import json
-
                 parsed_output = json.loads(output)
             except Exception:
                 return None
             if isinstance(parsed_output, dict):
                 return parsed_output
         return None
+
+    def _is_truthy(self, value: Any) -> bool:
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            return normalized in {"1", "true", "yes", "ok", "confirmed", "success", "completed"}
+        if isinstance(value, (int, float)):
+            return value != 0
+        return bool(value)
 
     def _clean(self, value: Any) -> str | None:
         if not isinstance(value, str):

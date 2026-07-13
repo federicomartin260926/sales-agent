@@ -47,6 +47,8 @@ class Settings(BaseSettings):
     audio_gateway_base_url: str = Field(default="", alias="AUDIO_GATEWAY_BASE_URL")
     audio_gateway_bearer_token: str = Field(default="", alias="AUDIO_GATEWAY_BEARER_TOKEN")
     audio_max_bytes: int = Field(default=25 * 1024 * 1024, alias="AUDIO_MAX_BYTES")
+    llm_context_debug: bool = Field(default=False, alias="SA_LLM_CONTEXT_DEBUG")
+    llm_context_debug_dir: str = Field(default="/tmp/sa-llm/context", alias="SA_LLM_CONTEXT_DEBUG_DIR")
     backend_base_url: str = Field(default="http://sales-agent-nginx", alias="BACKEND_BASE_URL")
     rag_api_url: str = Field(default="", alias="RAG_API_URL")
     sales_agent_bearer_token: str = Field(default="", alias="SALES_AGENT_BEARER_TOKEN")

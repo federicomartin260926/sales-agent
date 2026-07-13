@@ -288,14 +288,11 @@ class CommercialContext(BaseModel):
     timezone: str | None = Field(default=None, validation_alias=AliasChoices("timezone", "business_timezone"))
     timezone_source: str | None = Field(default=None, validation_alias=AliasChoices("timezoneSource", "timezone_source"))
     products: list[BackendProduct] = Field(default_factory=list)
-    product_selection: dict[str, Any] = Field(default_factory=dict)
     playbooks: list[BackendPlaybook] = Field(default_factory=list)
     entry_point: BackendEntryPoint | None = None
     sales_runtime: BackendSalesRuntime = Field(default_factory=BackendSalesRuntime)
     selected_product: BackendProduct | None = None
     selected_playbook: BackendPlaybook | None = None
-    selected_product_is_fallback: bool = False
-    selected_playbook_is_fallback: bool = False
 
     def context_summary(self) -> str:
         parts = [self.tenant.name]
@@ -342,7 +339,6 @@ class BackendClient:
         entrypoint_ref: str | None = None,
         customer_phone: str | None = None,
         external_channel_id: str | None = None,
-        current_message: str | None = None,
     ) -> CommercialContext | None:
         payload = await self.get_commercial_context(
             tenant_id=tenant_id,
@@ -352,7 +348,6 @@ class BackendClient:
             entrypoint_ref=entrypoint_ref,
             customer_phone=customer_phone,
             external_channel_id=external_channel_id,
-            current_message=current_message,
         )
         if payload is None:
             return None
@@ -364,7 +359,6 @@ class BackendClient:
         tenant_model = BackendTenant.model_validate(tenant_payload)
         product_payload = payload.get("product") if isinstance(payload.get("product"), dict) else None
         products_payload = payload.get("products") if isinstance(payload.get("products"), list) else []
-        product_selection_payload = payload.get("product_selection") if isinstance(payload.get("product_selection"), dict) else {}
         crm_context_payload = payload.get("crm_context") if isinstance(payload.get("crm_context"), dict) else None
         timezone = payload.get("timezone") if isinstance(payload.get("timezone"), str) else None
         timezone_source = payload.get("timezone_source") if isinstance(payload.get("timezone_source"), str) else None
@@ -373,16 +367,7 @@ class BackendClient:
         sales_runtime_payload = payload.get("sales_runtime") if isinstance(payload.get("sales_runtime"), dict) else None
 
         selected_product = BackendProduct.model_validate(product_payload) if product_payload is not None else None
-        product_candidates = [BackendProduct.model_validate(item) for item in products_payload if isinstance(item, dict)]
-        product_selection = self._normalize_product_selection(product_selection_payload)
-        if (
-            selected_product is None
-            and product_candidates
-            and not product_selection.get("needs_service_clarification", False)
-            and not product_selection.get("fallback_to_mcp_allowed", False)
-        ):
-            selected_product = product_candidates[0]
-            product_candidates = []
+        products = [BackendProduct.model_validate(item) for item in products_payload if isinstance(item, dict)]
 
         selected_playbook = BackendPlaybook.model_validate(playbook_payload) if playbook_payload is not None else None
         entry_point = BackendEntryPoint.model_validate(entry_point_payload) if entry_point_payload is not None else None
@@ -400,7 +385,6 @@ class BackendClient:
             timezone_source,
         )
 
-        products = product_candidates
         playbooks = [selected_playbook] if selected_playbook is not None else []
 
         return CommercialContext(
@@ -411,14 +395,11 @@ class BackendClient:
             timezone=timezone,
             timezone_source=timezone_source,
             products=products,
-            product_selection=product_selection,
             playbooks=playbooks,
             entry_point=entry_point,
             sales_runtime=sales_runtime,
             selected_product=selected_product,
             selected_playbook=selected_playbook,
-            selected_product_is_fallback=selected_product is not None and product_selection.get("selection_source") == "sa_search",
-            selected_playbook_is_fallback=selected_playbook is not None and (selected_playbook_id is None or selected_playbook_id.strip() == ""),
         )
 
     async def get_commercial_context(
@@ -430,7 +411,6 @@ class BackendClient:
         entrypoint_ref: str | None = None,
         customer_phone: str | None = None,
         external_channel_id: str | None = None,
-        current_message: str | None = None,
     ) -> dict[str, Any] | None:
         base_url = self.settings.backend_base_url.strip().rstrip("/")
         if base_url == "" or tenant_id.strip() == "":
@@ -450,8 +430,6 @@ class BackendClient:
             params["customer_phone"] = customer_phone.strip()
         if external_channel_id is not None and external_channel_id.strip() != "":
             params["external_channel_id"] = external_channel_id.strip()
-        if current_message is not None and current_message.strip() != "":
-            params["current_message"] = current_message.strip()
 
         try:
             async with httpx.AsyncClient(base_url=base_url, timeout=timeout, transport=self.transport) as client:
@@ -856,38 +834,6 @@ class BackendClient:
             error_message=error_message,
         )
 
-    def _normalize_product_selection(self, value: Any) -> dict[str, Any]:
-        if not isinstance(value, dict):
-            return {}
-
-        normalized: dict[str, Any] = {}
-
-        selection_source = value.get("selection_source")
-        if isinstance(selection_source, str) and selection_source.strip() != "":
-            normalized["selection_source"] = selection_source.strip()
-
-        search_query_used = value.get("search_query_used")
-        if isinstance(search_query_used, str) and search_query_used.strip() != "":
-            normalized["search_query_used"] = search_query_used.strip()
-
-        candidate_count = value.get("candidate_count")
-        if isinstance(candidate_count, int):
-            normalized["candidate_count"] = candidate_count
-
-        needs_service_clarification = value.get("needs_service_clarification")
-        if isinstance(needs_service_clarification, bool):
-            normalized["needs_service_clarification"] = needs_service_clarification
-
-        fallback_to_mcp_allowed = value.get("fallback_to_mcp_allowed")
-        if isinstance(fallback_to_mcp_allowed, bool):
-            normalized["fallback_to_mcp_allowed"] = fallback_to_mcp_allowed
-
-        reason = value.get("reason")
-        if isinstance(reason, str) and reason.strip() != "":
-            normalized["reason"] = reason.strip()
-
-        return normalized
-
     def _is_non_empty_string(self, value: Any) -> bool:
         return isinstance(value, str) and value.strip() != ""
 
@@ -969,23 +915,6 @@ class BackendClient:
             models.append(BackendPlaybook.model_validate(item))
 
         return models
-
-    def _select_product(
-        self,
-        products: list[BackendProduct],
-        selected_product_id: str | None,
-    ) -> tuple[BackendProduct | None, bool]:
-        if selected_product_id is not None:
-            for product in products:
-                if product.id == selected_product_id:
-                    return product, False
-
-            return None, False
-
-        if len(products) == 1:
-            return products[0], True
-
-        return None, False
 
     def _select_playbook(
         self,

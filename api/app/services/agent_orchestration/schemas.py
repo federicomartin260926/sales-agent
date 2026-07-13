@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 # =============================================================================
@@ -21,7 +21,6 @@ Domain = Literal[
     "general",
     "sales",
     "catalog",
-    "inventory",
     "appointment",
     "crm",
     "support",
@@ -34,12 +33,11 @@ Intent = Literal[
     "ask_business_question",
     "ask_product_or_service_info",
     "catalog_search",
-    "inventory_search",
-    "inventory_similarity_search",
     "request_availability",
     "select_offered_slot",
     "select_existing_appointment",
     "request_booking_confirmation",
+    "request_booking_invitation",
     "request_reschedule",
     "request_cancel",
     "provide_contact_data",
@@ -53,10 +51,9 @@ ActionCandidate = Literal[
     "no_action",
     "answer_directly",
     "search_catalog",
-    "search_inventory",
-    "search_similar_items",
     "get_availability",
     "prepare_booking_confirmation",
+    "create_booking_invitation",
     "prepare_reschedule",
     "prepare_cancel",
     "collect_missing_data",
@@ -78,18 +75,14 @@ LookupToolName = Literal[
     "services_search",
     "appointment_availability",
     "appointment_events",
-    "catalog_search",
-    "inventory_search",
-    "inventory_similarity_search",
-    "knowledge_search",
 ]
 
 WriteToolName = Literal[
     "appointment_confirm",
     "appointment_reschedule",
     "appointment_cancel",
+    "appointment_booking_invitation",
     "crm_contact_submit",
-    "lead_create",
     "handoff_request",
 ]
 
@@ -98,18 +91,14 @@ LOOKUP_TOOL_NAMES: set[str] = {
     "services_search",
     "appointment_availability",
     "appointment_events",
-    "catalog_search",
-    "inventory_search",
-    "inventory_similarity_search",
-    "knowledge_search",
 }
 
 WRITE_TOOL_NAMES: set[str] = {
     "appointment_confirm",
     "appointment_reschedule",
     "appointment_cancel",
+    "appointment_booking_invitation",
     "crm_contact_submit",
-    "lead_create",
     "handoff_request",
 }
 
@@ -323,7 +312,7 @@ class ToolPlan(BaseModel):
     allowed_tools: list[str] = Field(default_factory=list)
     read_tools: list[str] = Field(default_factory=list)
     write_tools: list[str] = Field(default_factory=list)
-    must_call_tool: str | None = None
+    bootstrap_tool: str | None = None
     reason: str | None = None
 
     @field_validator("allowed_tools", "read_tools", "write_tools", mode="before")
@@ -342,19 +331,6 @@ class ToolPlan(BaseModel):
 
         return list(dict.fromkeys(normalized))
 
-    @field_validator("must_call_tool", mode="before")
-    @classmethod
-    def _normalize_must_call_tool(cls, value: Any) -> str | None:
-        if not isinstance(value, str):
-            return None
-
-        candidate = value.strip()
-        if candidate == "":
-            return None
-
-        known_tools = LOOKUP_TOOL_NAMES | WRITE_TOOL_NAMES
-        return candidate if candidate in known_tools else None
-
     @field_validator("reason", mode="before")
     @classmethod
     def _normalize_reason(cls, value: Any) -> str | None:
@@ -363,6 +339,18 @@ class ToolPlan(BaseModel):
 
         normalized = value.strip()
         return normalized if normalized != "" else None
+
+    @field_validator("bootstrap_tool", mode="before")
+    @classmethod
+    def _normalize_bootstrap_tool(cls, value: Any) -> str | None:
+        if not isinstance(value, str):
+            return None
+
+        candidate = value.strip()
+        if candidate == "":
+            return None
+
+        return candidate if candidate in LOOKUP_TOOL_NAMES else None
 
 
 # =============================================================================
@@ -430,6 +418,14 @@ class BackendContext(BaseModel):
     policies: BackendPoliciesContext = Field(default_factory=BackendPoliciesContext)
 
 
+class ConversationTemporalContext(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    current_datetime: str | None = None
+    current_date: str | None = None
+    rules: dict[str, Any] = Field(default_factory=dict)
+
+
 class AppointmentStructuredData(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -437,6 +433,7 @@ class AppointmentStructuredData(BaseModel):
     selected_slot: dict[str, Any] | None = None
     existing_appointments: list[dict[str, Any]] = Field(default_factory=list)
     existing_appointment: dict[str, Any] | None = None
+    booking_invitation: dict[str, Any] | None = None
     booking_result: dict[str, Any] | None = None
     reschedule_result: dict[str, Any] | None = None
     cancel_result: dict[str, Any] | None = None
@@ -486,7 +483,7 @@ class ConversationTurn(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     turn_index: int | None = None
-    role: str = "customer"
+    role: str | None = None
     text: str = ""
     domain: str | None = None
     intent: str | None = None
@@ -495,14 +492,26 @@ class ConversationTurn(BaseModel):
     tool_results: list[dict[str, Any]] = Field(default_factory=list)
     created_at: str | None = None
 
+    @model_validator(mode="after")
+    def _normalize_role(self) -> "ConversationTurn":
+        role = self.role.strip() if isinstance(self.role, str) else ""
+        self.role = role if role != "" else "customer"
+        return self
+
 
 class CurrentMessage(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    role: str = "customer"
+    role: str | None = None
     text: str = ""
     received_at: str | None = None
     channel: str | None = None
+
+    @model_validator(mode="after")
+    def _normalize_role(self) -> "CurrentMessage":
+        role = self.role.strip() if isinstance(self.role, str) else ""
+        self.role = role if role != "" else "customer"
+        return self
 
     @field_validator("role", mode="before")
     @classmethod
@@ -536,8 +545,9 @@ class ConversationContext(BaseModel):
 
     model_config = ConfigDict(extra="ignore")
 
-    current_message: CurrentMessage = Field(default_factory=CurrentMessage)
+    current_message: CurrentMessage = Field(default_factory=lambda: CurrentMessage(role="customer"))
     history: list[ConversationTurn] = Field(default_factory=list)
+    temporal_context: ConversationTemporalContext = Field(default_factory=ConversationTemporalContext)
 
     @field_validator("current_message", mode="before")
     @classmethod
@@ -547,9 +557,8 @@ class ConversationContext(BaseModel):
         if isinstance(value, dict):
             return CurrentMessage.model_validate(value)
         if isinstance(value, str):
-            return CurrentMessage(text=value)
-        return CurrentMessage()
-
+            return CurrentMessage(role="customer", text=value)
+        return CurrentMessage(role="customer")
 
 class NextExpected(BaseModel):
     model_config = ConfigDict(extra="ignore")

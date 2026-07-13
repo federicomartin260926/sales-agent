@@ -1,18 +1,19 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from app.config import Settings
 from app.schemas.agent import AgentRequest
 from app.services.agent_orchestration.schemas import (
-    AvailableToolsContext,
     BackendContactContext,
     BackendContext,
     BackendEntrypointContext,
     BackendPoliciesContext,
     BackendTenantContext,
     ConversationContext,
+    ConversationTemporalContext,
     CurrentMessage,
     ConversationTurn,
     StructuredData,
@@ -70,11 +71,14 @@ class OrchestrationContextBuilder:
         backend_context: CommercialContext | None,
         conversation_messages: list[dict[str, Any]],
     ) -> tuple[BackendContext, ConversationContext]:
-        turns = self._conversation_turns(conversation_messages, limit=12)
-        contact_context = self._contact_context_from_messages(conversation_messages)
-        timezone, timezone_source = self._resolve_timezone(backend_context, contact_context)
+        current_message_id = self._clean(payload.message.id)
+        history_messages = self._previous_messages(conversation_messages, current_message_id)
+        turns = self._conversation_turns(history_messages, limit=12)
+        contact_context = self._project_contact_context_for_prompt(self._contact_context_from_messages(history_messages))
+        timezone, _timezone_source = self._resolve_timezone(backend_context, contact_context)
+        temporal_context = self._conversation_temporal_context(timezone)
         backend_block = self._backend_context(backend_context, payload, routing, timezone, contact_context)
-        conversation_block = self._conversation_context(payload, turns)
+        conversation_block = self._conversation_context(payload, turns, temporal_context)
         return backend_block, conversation_block
 
     def _backend_context(
@@ -86,7 +90,7 @@ class OrchestrationContextBuilder:
         contact_context: dict[str, Any] | None,
     ) -> BackendContext:
         if backend_context is None:
-            tenant = BackendTenantContext(id=routing.tenant_id)
+            tenant = BackendTenantContext(id=routing.tenant_id, timezone=effective_timezone)
             contact = BackendContactContext(
                 phone=self._clean(payload.contact.phone),
                 name=self._clean(payload.contact.name),
@@ -97,11 +101,10 @@ class OrchestrationContextBuilder:
                 channel=self._clean(payload.channel_type) or "whatsapp",
             )
             return BackendContext(
-                tenant=BackendTenantContext(id=routing.tenant_id, timezone=effective_timezone),
+                tenant=tenant,
                 contact_context=contact_context,
                 contact=contact,
                 entrypoint=entrypoint,
-                available_tools=self._available_tools_context(),
                 policies=BackendPoliciesContext(),
             )
 
@@ -112,8 +115,6 @@ class OrchestrationContextBuilder:
             business_context=backend_context.tenant.business_context,
             tone=backend_context.tenant.tone,
             slug=backend_context.tenant.slug,
-            sales_policy=backend_context.tenant.sales_policy,
-            handoff=backend_context.tenant.handoff,
         )
         contact = BackendContactContext(
             phone=self._clean(payload.contact.phone),
@@ -128,42 +129,27 @@ class OrchestrationContextBuilder:
             name=getattr(backend_context.entry_point, "name", None),
             description=getattr(backend_context.entry_point, "description", None),
         )
-        booking_policy = {
-            "booking_enabled": bool(getattr(backend_context.sales_runtime, "booking_enabled", False)),
-            "handoff_enabled": bool(getattr(backend_context.sales_runtime, "handoff_enabled", False)),
-            "rag_enabled": bool(getattr(backend_context.sales_runtime, "rag_enabled", False)),
-        }
         return BackendContext(
             tenant=tenant,
             contact_context=contact_context,
             contact=contact,
             entrypoint=entrypoint,
-            available_tools=self._available_tools_context(),
             policies=BackendPoliciesContext(
                 sales_policy=backend_context.tenant.sales_policy,
-                booking_policy=booking_policy,
                 handoff_policy=backend_context.tenant.handoff,
             ),
         )
 
-    def _available_tools_context(self) -> AvailableToolsContext:
-        return AvailableToolsContext(
-            services=["services_search"],
-            appointment=[
-                "appointment_events",
-                "appointment_availability",
-                "appointment_confirm",
-                "appointment_reschedule",
-                "appointment_cancel",
-            ],
-            crm_contact=["contact_context", "crm_contact_submit"],
-            handoff=["handoff_request"],
-        )
-
-    def _conversation_context(self, payload: AgentRequest, turns: list[ConversationTurn]) -> ConversationContext:
+    def _conversation_context(
+        self,
+        payload: AgentRequest,
+        turns: list[ConversationTurn],
+        temporal_context: ConversationTemporalContext,
+    ) -> ConversationContext:
         return ConversationContext(
             current_message=self._current_message(payload),
             history=turns,
+            temporal_context=temporal_context,
         )
 
     def _current_message(self, payload: AgentRequest) -> CurrentMessage:
@@ -181,7 +167,6 @@ class OrchestrationContextBuilder:
             if not isinstance(message, dict):
                 continue
             structured_data = self._structured_data_from_message(message)
-            tool_results = self._tool_results_from_message(message)
             role = self._normalize_turn_role(message)
             text = self._clean(message.get("body")) or ""
             turns.append(
@@ -193,7 +178,6 @@ class OrchestrationContextBuilder:
                     intent=self._clean(message.get("intent")),
                     action=self._clean(message.get("action")),
                     structured_data=structured_data,
-                    tool_results=tool_results,
                     created_at=self._clean(message.get("created_at")),
                 )
             )
@@ -218,22 +202,36 @@ class OrchestrationContextBuilder:
                 normalized[domain] = {}
         return normalized
 
-    def _tool_results_from_message(self, message: dict[str, Any]) -> list[dict[str, Any]]:
-        data = self._message_data_to_save(message)
-        tool_results = data.get("tool_results")
-        if isinstance(tool_results, list):
-            return [dict(item) for item in tool_results if isinstance(item, dict)]
-
-        mcp_tool_traces = data.get("mcp_tool_traces")
-        if isinstance(mcp_tool_traces, list):
-            return [dict(item) for item in mcp_tool_traces if isinstance(item, dict)]
-
-        return []
-
     def _message_data_to_save(self, message: dict[str, Any]) -> dict[str, Any]:
         for data in self._data_to_save_candidates(message):
             return data
         return {}
+
+    def _previous_messages(self, messages: list[dict[str, Any]], current_message_id: str | None) -> list[dict[str, Any]]:
+        if current_message_id is None:
+            return list(messages)
+
+        filtered: list[dict[str, Any]] = []
+        for message in messages:
+            if self._is_current_inbound_message(message, current_message_id):
+                continue
+            filtered.append(message)
+
+        return filtered
+
+    def _is_current_inbound_message(self, message: dict[str, Any], current_message_id: str) -> bool:
+        if not isinstance(message, dict):
+            return False
+
+        raw_payload = message.get("raw_payload")
+        if not isinstance(raw_payload, dict):
+            return False
+
+        raw_message = raw_payload.get("message")
+        if not isinstance(raw_message, dict):
+            return False
+
+        return self._clean(raw_message.get("id")) == current_message_id
 
     def _normalize_turn_role(self, message: dict[str, Any]) -> str:
         role = self._clean(message.get("role"))
@@ -254,6 +252,18 @@ class OrchestrationContextBuilder:
             if isinstance(data, dict):
                 candidates.append(data)
         return candidates
+
+    def _conversation_temporal_context(self, timezone: str) -> ConversationTemporalContext:
+        now = datetime.now(ZoneInfo(timezone))
+        return ConversationTemporalContext(
+            current_datetime=now.isoformat(),
+            current_date=now.date().isoformat(),
+            rules={
+                "today": "current_date",
+                "tomorrow": "current_date + 1 day",
+                "day_after_tomorrow": "current_date + 2 days",
+            },
+        )
 
     def _resolve_timezone(self, backend_context: CommercialContext | None, contact_context: dict[str, Any] | None) -> tuple[str, str]:
         candidates: list[tuple[str | None, str]] = []
@@ -313,6 +323,89 @@ class OrchestrationContextBuilder:
 
         return payload
 
+    def _project_contact_context_for_prompt(self, value: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not isinstance(value, dict) or value == {}:
+            return None
+
+        projected: dict[str, Any] = {}
+        self._copy_if_present(projected, value, "found")
+        self._copy_if_present(projected, value, "status")
+        self._copy_if_present(projected, value, "error_code")
+        self._copy_if_present(projected, value, "error_message")
+        self._copy_any_present(projected, value, "timezone", "timezone")
+        self._copy_any_present(projected, value, "timezone_source", "timezone_source", "timezoneSource")
+
+        contact = self._project_contact_block(value.get("contact"))
+        if contact is not None:
+            projected["contact"] = contact
+
+        self._copy_any_present(projected, value, "branch", "branch")
+        self._copy_any_present(projected, value, "needs_branch_selection", "needs_branch_selection", "needsBranchSelection")
+
+        if self._is_truthy(projected.get("needs_branch_selection")):
+            branches = value.get("branches")
+            if isinstance(branches, list) and branches != []:
+                projected["branches"] = branches
+
+        appointments = self._project_appointments_block(value.get("appointments"))
+        if appointments is not None:
+            projected["appointments"] = appointments
+
+        flags = self._project_flags_block(value.get("flags"))
+        if flags is not None:
+            projected["flags"] = flags
+
+        self._copy_if_present(projected, value, "summary")
+
+        return projected or None
+
+    def _project_contact_block(self, value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict) or value == {}:
+            return None
+
+        projected: dict[str, Any] = {}
+        self._copy_any_present(projected, value, "found", "found")
+        self._copy_any_present(projected, value, "id", "id")
+        self._copy_any_present(projected, value, "name", "name")
+        self._copy_any_present(projected, value, "email", "email")
+        self._copy_any_present(projected, value, "phone", "phone")
+        self._copy_any_present(projected, value, "type", "type")
+
+        return projected or None
+
+    def _project_appointments_block(self, value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict) or value == {}:
+            return None
+
+        projected: dict[str, Any] = {}
+        next_item = value.get("next")
+        if next_item not in (None, {}, []):
+            projected["next"] = next_item
+        items = value.get("items")
+        if isinstance(items, list) and items != []:
+            projected["items"] = items
+
+        return projected or None
+
+    def _project_flags_block(self, value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, dict) or value == {}:
+            return None
+
+        projected: dict[str, Any] = {}
+        self._copy_any_present(projected, value, "needs_human", "needs_human", "needsHuman")
+        self._copy_any_present(projected, value, "do_not_contact", "do_not_contact", "doNotContact")
+        return projected or None
+
+    def _copy_if_present(self, target: dict[str, Any], source: dict[str, Any], key: str) -> None:
+        if key in source:
+            target[key] = source[key]
+
+    def _copy_any_present(self, target: dict[str, Any], source: dict[str, Any], target_key: str, *source_keys: str) -> None:
+        for key in source_keys:
+            if key in source:
+                target[target_key] = source[key]
+                return
+
     def _tenant_payload(self, backend_context: CommercialContext | None, routing: RoutingContext) -> dict[str, Any]:
         if backend_context is None:
             return {"id": routing.tenant_id}
@@ -322,8 +415,6 @@ class OrchestrationContextBuilder:
             "slug": backend_context.tenant.slug,
             "business_context": backend_context.tenant.business_context,
             "tone": backend_context.tenant.tone,
-            "sales_policy": backend_context.tenant.sales_policy,
-            "handoff": backend_context.tenant.handoff,
         }
 
     def _entry_point_payload(self, backend_context: CommercialContext | None) -> dict[str, Any] | None:

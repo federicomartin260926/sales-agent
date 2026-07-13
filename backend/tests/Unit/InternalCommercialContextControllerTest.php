@@ -5,18 +5,15 @@ namespace App\Tests\Unit;
 use App\Controller\Api\InternalCommercialContextController;
 use App\Entity\EntryPoint;
 use App\Entity\EntryPointUtm;
-use App\Entity\ExternalTool;
 use App\Entity\Playbook;
 use App\Entity\Product;
 use App\Entity\Tenant;
 use App\Repository\EntryPointRepository;
 use App\Repository\EntryPointUtmRepository;
-use App\Repository\ExternalToolRepository;
 use App\Repository\PlaybookRepository;
 use App\Repository\ProductRepository;
 use App\Repository\TenantRepository;
 use App\Security\InternalBearerTokenValidator;
-use App\Service\ProductContextResolver;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\DependencyInjection\Container;
 use Symfony\Component\HttpFoundation\Request;
@@ -25,10 +22,17 @@ final class InternalCommercialContextControllerTest extends TestCase
 {
     private const TOKEN = 'test-internal-token';
 
-    public function testTenantOnlyContextReturnsLegacyBlocksOnly(): void
+    public function testTenantOnlyContextReturnsStableConfigAndActiveCatalog(): void
     {
         $tenant = $this->tenant();
-        $controller = $this->createController([$tenant->getId()->toRfc4122() => $tenant], [], [], [], []);
+        $activeProduct = $this->product($tenant, 'Depilación láser', 'depilacion-laser');
+        $inactiveProduct = $this->product($tenant, 'Masajes', 'masajes');
+        $inactiveProduct->setActive(false);
+
+        $controller = $this->createController([$tenant->getId()->toRfc4122() => $tenant], [
+            $activeProduct->getId()->toRfc4122() => $activeProduct,
+            $inactiveProduct->getId()->toRfc4122() => $inactiveProduct,
+        ], [], [], []);
 
         $response = $controller(Request::create('/api/internal/commercial-context?tenant_id='.$tenant->getId()->toRfc4122(), 'GET', server: [
             'HTTP_AUTHORIZATION' => 'Bearer '.self::TOKEN,
@@ -37,12 +41,12 @@ final class InternalCommercialContextControllerTest extends TestCase
         self::assertSame(200, $response->getStatusCode());
         $payload = json_decode((string) $response->getContent(), true);
         self::assertArrayNotHasKey('effective_context', $payload);
+        self::assertArrayNotHasKey('product_selection', $payload);
         self::assertSame('consultivo', $payload['tenant']['tone']);
         self::assertSame('Responder con claridad y foco comercial.', $payload['tenant']['sales_policy']['positioning']);
         self::assertNull($payload['product']);
-        self::assertSame([], $payload['products']);
-        self::assertSame('none', $payload['product_selection']['selection_source']);
-        self::assertTrue($payload['product_selection']['needs_service_clarification']);
+        self::assertCount(1, $payload['products']);
+        self::assertSame('Depilación láser', $payload['products'][0]['name']);
         self::assertNull($payload['playbook']);
         self::assertNull($payload['entry_point']);
         self::assertSame([
@@ -53,36 +57,14 @@ final class InternalCommercialContextControllerTest extends TestCase
         ], $payload['tenant']['handoff']);
     }
 
-    public function testTenantContextIncludesHandoffBlock(): void
+    public function testEntryPointSelectsConfiguredProductAndPlaybook(): void
     {
         $tenant = $this->tenant();
-        $tenant->setHumanHandoffEnabled(true);
-        $tenant->setHumanHandoffWhatsappPublic('+34 612 345 678');
-        $tenant->setHumanHandoffMessage('Prefiero que esto lo revise una persona del equipo.');
-        $tenant->setHumanHandoffStrategy('manual_wa_link_and_n8n');
-
-        $controller = $this->createController([$tenant->getId()->toRfc4122() => $tenant], [], [], [], []);
-
-        $response = $controller(Request::create('/api/internal/commercial-context?tenant_id='.$tenant->getId()->toRfc4122(), 'GET', server: [
-            'HTTP_AUTHORIZATION' => 'Bearer '.self::TOKEN,
-        ]));
-
-        self::assertSame(200, $response->getStatusCode());
-        $payload = json_decode((string) $response->getContent(), true);
-        self::assertSame([
-            'enabled' => true,
-            'strategy' => 'manual_wa_link_and_n8n',
-            'whatsapp_public' => '+34 612 345 678',
-            'message' => 'Prefiero que esto lo revise una persona del equipo.',
-        ], $payload['tenant']['handoff']);
-    }
-
-    public function testProductPlaybookAndEntryPointAreReturnedAsLegacyBlocks(): void
-    {
-        $tenant = $this->tenant();
-        $product = $this->product($tenant);
-        $playbook = $this->playbook($tenant, $product);
-        $entryPoint = $this->entryPoint($product, $playbook);
+        $entryPointProduct = $this->product($tenant, 'Depilación láser', 'depilacion-laser');
+        $explicitProduct = $this->product($tenant, 'Masajes', 'masajes');
+        $entryPointPlaybook = $this->playbook($tenant, $entryPointProduct, 'Guía campañas láser');
+        $explicitPlaybook = $this->playbook($tenant, $explicitProduct, 'Guía masajes');
+        $entryPoint = $this->entryPoint($entryPointProduct, $entryPointPlaybook);
         $entryPointUtm = new EntryPointUtm($entryPoint, 'abc123');
         $entryPointUtm->setUtmSource('google');
         $entryPointUtm->setUtmMedium('cpc');
@@ -90,161 +72,66 @@ final class InternalCommercialContextControllerTest extends TestCase
 
         $controller = $this->createController(
             [$tenant->getId()->toRfc4122() => $tenant],
-            [$product->getId()->toRfc4122() => $product],
-            [$playbook->getId()->toRfc4122() => $playbook],
+            [
+                $entryPointProduct->getId()->toRfc4122() => $entryPointProduct,
+                $explicitProduct->getId()->toRfc4122() => $explicitProduct,
+            ],
+            [
+                $entryPointPlaybook->getId()->toRfc4122() => $entryPointPlaybook,
+                $explicitPlaybook->getId()->toRfc4122() => $explicitPlaybook,
+            ],
             [$entryPoint->getId()->toRfc4122() => $entryPoint],
             ['abc123' => $entryPointUtm],
         );
 
-        $response = $controller(Request::create('/api/internal/commercial-context?tenant_id='.$tenant->getId()->toRfc4122().'&entrypoint_ref=abc123&product_id='.$product->getId()->toRfc4122().'&playbook_id='.$playbook->getId()->toRfc4122(), 'GET', server: [
+        $response = $controller(Request::create('/api/internal/commercial-context?tenant_id='.$tenant->getId()->toRfc4122().'&entrypoint_ref=abc123&product_id='.$explicitProduct->getId()->toRfc4122().'&playbook_id='.$explicitPlaybook->getId()->toRfc4122(), 'GET', server: [
             'HTTP_AUTHORIZATION' => 'Bearer '.self::TOKEN,
         ]));
 
         self::assertSame(200, $response->getStatusCode());
         $payload = json_decode((string) $response->getContent(), true);
-        self::assertArrayNotHasKey('effective_context', $payload);
+        self::assertArrayNotHasKey('product_selection', $payload);
         self::assertSame('crm-demo', $payload['entry_point']['code']);
-        self::assertSame('Guía campañas láser', $payload['playbook']['name']);
         self::assertSame('Depilación láser', $payload['product']['name']);
-        self::assertSame('entry_point', $payload['product_selection']['selection_source']);
-        self::assertSame([], $payload['products']);
-        self::assertSame('Cerrar cita', $payload['playbook']['config']['objective']);
-        self::assertSame(['¿Qué horario le encaja?'], $payload['playbook']['config']['qualificationQuestions']);
-    }
-
-    public function testProductSearchReturnsCandidatesAndClarification(): void
-    {
-        $tenant = $this->tenant();
-        $productA = $this->product($tenant, 'Depilación láser', 'depilacion-laser');
-        $productB = $this->product($tenant, 'Depilación con cera', 'depilacion-cera');
-        $controller = $this->createController(
-            [$tenant->getId()->toRfc4122() => $tenant],
-            [
-                $productA->getId()->toRfc4122() => $productA,
-                $productB->getId()->toRfc4122() => $productB,
-            ],
-            [],
-            [],
-            [],
-        );
-
-        $response = $controller(Request::create('/api/internal/commercial-context?tenant_id='.$tenant->getId()->toRfc4122().'&current_message=Busco depilación', 'GET', server: [
-            'HTTP_AUTHORIZATION' => 'Bearer '.self::TOKEN,
-        ]));
-
-        self::assertSame(200, $response->getStatusCode());
-        $payload = json_decode((string) $response->getContent(), true);
-        self::assertNull($payload['product']);
+        self::assertSame('Guía campañas láser', $payload['playbook']['name']);
         self::assertCount(2, $payload['products']);
-        self::assertSame('sa_search', $payload['product_selection']['selection_source']);
-        self::assertTrue($payload['product_selection']['needs_service_clarification']);
     }
 
-    public function testCrossTenantProductIsRejected(): void
-    {
-        $tenantA = $this->tenant('tenant-a', 'Tenant A');
-        $tenantB = $this->tenant('tenant-b', 'Tenant B');
-        $productB = $this->product($tenantB, 'Product B');
-
-        $controller = $this->createController(
-            [
-                $tenantA->getId()->toRfc4122() => $tenantA,
-                $tenantB->getId()->toRfc4122() => $tenantB,
-            ],
-            [$productB->getId()->toRfc4122() => $productB],
-            [],
-            [],
-            [],
-        );
-
-        $response = $controller(Request::create('/api/internal/commercial-context?tenant_id='.$tenantA->getId()->toRfc4122().'&product_id='.$productB->getId()->toRfc4122(), 'GET', server: [
-            'HTTP_AUTHORIZATION' => 'Bearer '.self::TOKEN,
-        ]));
-
-        self::assertSame(404, $response->getStatusCode());
-        self::assertSame('Product not found', json_decode((string) $response->getContent(), true)['message']);
-    }
-
-    public function testProductSearchAllowsMcpFallbackWhenNoLocalMatchExists(): void
+    public function testExplicitProductAndPlaybookAreUsedWithoutEntryPoint(): void
     {
         $tenant = $this->tenant();
-        $externalTool = new ExternalTool($tenant, 'MCP principal', 'mcp_remote', 'openai_remote_mcp');
-        $externalTool->setRuntimeDefault(true);
-        $externalTool->setConfig([
-            'enabled_for_llm' => true,
-            'allowed_tools' => ['services_search'],
-        ]);
-
-        $controller = $this->createController(
-            [$tenant->getId()->toRfc4122() => $tenant],
-            [],
-            [],
-            [],
-            [],
-            $this->externalToolRepository([$externalTool]),
-        );
-
-        $response = $controller(Request::create('/api/internal/commercial-context?tenant_id='.$tenant->getId()->toRfc4122().'&current_message=Busco servicio que no existe', 'GET', server: [
-            'HTTP_AUTHORIZATION' => 'Bearer '.self::TOKEN,
-        ]));
-
-        self::assertSame(200, $response->getStatusCode());
-        $payload = json_decode((string) $response->getContent(), true);
-        self::assertNull($payload['product']);
-        self::assertSame([], $payload['products']);
-        self::assertTrue($payload['product_selection']['fallback_to_mcp_allowed']);
-        self::assertFalse($payload['product_selection']['needs_service_clarification']);
-    }
-
-    public function testWeakSingleSearchAllowsMcpFallbackWhenRuntimeDefaultExists(): void
-    {
-        $tenant = $this->tenant();
-        $product = $this->product($tenant, 'Integración de APIs y sistemas', 'integracion-api-sistemas');
-        $externalTool = new ExternalTool($tenant, 'MCP principal', 'mcp_remote', 'openai_remote_mcp');
-        $externalTool->setRuntimeDefault(true);
-        $externalTool->setConfig([
-            'enabled_for_llm' => true,
-            'allowed_tools' => ['services_search'],
-        ]);
+        $product = $this->product($tenant, 'Masajes', 'masajes');
+        $playbook = $this->playbook($tenant, $product, 'Guía masajes');
 
         $controller = $this->createController(
             [$tenant->getId()->toRfc4122() => $tenant],
             [$product->getId()->toRfc4122() => $product],
+            [$playbook->getId()->toRfc4122() => $playbook],
             [],
             [],
-            [],
-            $this->externalToolRepository([$externalTool]),
         );
 
-        $response = $controller(Request::create('/api/internal/commercial-context?tenant_id='.$tenant->getId()->toRfc4122().'&current_message=Busco integración con Holded o FacturaScripts', 'GET', server: [
+        $response = $controller(Request::create('/api/internal/commercial-context?tenant_id='.$tenant->getId()->toRfc4122().'&product_id='.$product->getId()->toRfc4122().'&playbook_id='.$playbook->getId()->toRfc4122(), 'GET', server: [
             'HTTP_AUTHORIZATION' => 'Bearer '.self::TOKEN,
         ]));
 
         self::assertSame(200, $response->getStatusCode());
         $payload = json_decode((string) $response->getContent(), true);
-        self::assertNull($payload['product']);
+        self::assertArrayNotHasKey('product_selection', $payload);
+        self::assertSame('Masajes', $payload['product']['name']);
+        self::assertSame('Guía masajes', $payload['playbook']['name']);
         self::assertCount(1, $payload['products']);
-        self::assertTrue($payload['product_selection']['fallback_to_mcp_allowed']);
-        self::assertFalse($payload['product_selection']['needs_service_clarification']);
-        self::assertSame('single weak local product candidate; MCP fallback available', $payload['product_selection']['reason']);
+        self::assertNull($payload['entry_point']);
     }
 
-    private function createController(array $tenants, array $products, array $playbooks, array $entryPoints, array $entryPointUtms, ?ExternalToolRepository $externalTools = null): InternalCommercialContextController
+    private function createController(array $tenants, array $products, array $playbooks, array $entryPoints, array $entryPointUtms): InternalCommercialContextController
     {
-        $tenantRepository = $this->tenantRepository($tenants);
-        $productRepository = $this->productRepository($products);
-        $playbookRepository = $this->playbookRepository($playbooks);
-        $entryPointRepository = $this->entryPointRepository($entryPoints);
-        $entryPointUtmRepository = $this->entryPointUtmRepository($entryPointUtms);
-        $externalTools ??= $this->externalToolRepository([]);
-
         $controller = new InternalCommercialContextController(
-            $tenantRepository,
-            $productRepository,
-            $playbookRepository,
-            $entryPointRepository,
-            $entryPointUtmRepository,
-            new ProductContextResolver($productRepository, $externalTools),
+            $this->tenantRepository($tenants),
+            $this->productRepository($products),
+            $this->playbookRepository($playbooks),
+            $this->entryPointRepository($entryPoints),
+            $this->entryPointUtmRepository($entryPointUtms),
             new InternalBearerTokenValidator(self::TOKEN),
         );
         $controller->setContainer(new Container());
@@ -268,9 +155,9 @@ final class InternalCommercialContextControllerTest extends TestCase
         return $tenant;
     }
 
-    private function product(Tenant $tenant, string $name = 'Depilación láser'): Product
+    private function product(Tenant $tenant, string $name = 'Depilación láser', ?string $slug = null): Product
     {
-        $product = new Product($tenant, $name, 'depilacion-laser');
+        $product = new Product($tenant, $name, $slug);
         $product->setDescription('Tratamiento de depilación permanente.');
         $product->setValueProposition('Eliminar el vello de forma progresiva.');
         $product->setSalesPolicy([
@@ -347,7 +234,7 @@ final class InternalCommercialContextControllerTest extends TestCase
                 return $this->products[(string) $id] ?? null;
             }
 
-            public function searchActiveByTenantAndText(Tenant $tenant, string $query, int $limit = 20): array
+            public function findActiveByTenantOrdered(Tenant $tenant): array
             {
                 return array_values(array_filter(
                     $this->products,
@@ -367,11 +254,6 @@ final class InternalCommercialContextControllerTest extends TestCase
             public function find($id, $lockMode = null, $lockVersion = null): ?object
             {
                 return $this->playbooks[(string) $id] ?? null;
-            }
-
-            public function findActiveGeneralByTenant(Tenant $tenant): ?Playbook
-            {
-                return null;
             }
         };
     }
@@ -400,26 +282,6 @@ final class InternalCommercialContextControllerTest extends TestCase
             public function findByRef(string $ref): ?EntryPointUtm
             {
                 return $this->entryPointUtms[$ref] ?? null;
-            }
-        };
-    }
-
-    private function externalToolRepository(array $tools): ExternalToolRepository
-    {
-        return new class($tools) extends ExternalToolRepository {
-            public function __construct(private array $tools)
-            {
-            }
-
-            public function findRuntimeDefaultMcpByTenant(Tenant $tenant): ?ExternalTool
-            {
-                foreach ($this->tools as $tool) {
-                    if ($tool instanceof ExternalTool && $tool->getTenant()->getId()->toRfc4122() === $tenant->getId()->toRfc4122() && $tool->isActive() && $tool->isRuntimeDefault()) {
-                        return $tool;
-                    }
-                }
-
-                return null;
             }
         };
     }

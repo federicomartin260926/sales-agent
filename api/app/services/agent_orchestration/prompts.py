@@ -18,18 +18,14 @@ READ_TOOL_VALUES = [
     "services_search",
     "appointment_availability",
     "appointment_events",
-    "catalog_search",
-    "inventory_search",
-    "inventory_similarity_search",
-    "knowledge_search",
 ]
 
 WRITE_TOOL_VALUES = [
     "appointment_confirm",
     "appointment_reschedule",
     "appointment_cancel",
+    "appointment_booking_invitation",
     "crm_contact_submit",
-    "lead_create",
     "handoff_request",
 ]
 
@@ -119,14 +115,13 @@ Reglas generales:
 
 Estructura del input:
 - `backend_context` contiene tenant, timezone, contacto y contact_context operativo cuando exista.
-- `conversation_context` contiene `current_message`, `state`, `temporal_context` y `recent_turns_summary`.
+- `conversation_context` contiene `current_message`, `history`, `temporal_context` y `recent_turns_summary`.
 - `conversation_context.current_message` es el único lugar donde va el mensaje actual.
-- `conversation_context.state` contiene solo flags mecánicos.
 - `conversation_context.temporal_context` contiene `current_datetime`, `current_date` y `rules`, sin repetir timezone.
 - `conversation_context.recent_turns_summary` contiene solo turnos anteriores compactos, nunca el mensaje actual.
 
 Continuidad conversacional:
-- Si el historial muestra que la conversación venía de un flujo de cita/reserva/reprogramación/cancelación y el usuario aporta servicio, horario, preferencia, datos de contacto o confirmación, mantén domain="appointment" salvo que cambie claramente de tema.
+- Si el historial muestra de forma clara que la conversación venía de un flujo de cita/reserva/reprogramación/cancelación y el usuario aporta servicio, horario, preferencia, datos de contacto o confirmación, mantén domain="appointment" salvo que cambie claramente de tema.
 - Si el usuario responde con un servicio dentro de un flujo de cita, no lo clasifiques como catálogo aislado salvo que pregunte información general del servicio.
 - Si el usuario corrige algo anterior, clasifica según la nueva intención y deja que la segunda llamada LLM reconduzca la conversación.
 
@@ -137,13 +132,17 @@ Catálogo, ventas e inventario:
 - Si hace falta buscar servicio/producto, usa action="search_catalog" y needs_tools=true.
 - Para presupuesto o interés comercial sin cita concreta, usa domain="sales" o domain="crm" según el mensaje.
 - Si aporta datos para seguimiento comercial, llamada o contacto sin cita concreta, usa domain="crm", intent="provide_contact_data", action="create_or_update_crm_contact".
-- Para inventario o stock, usa domain="inventory".
+- Si el usuario pide explícitamente un enlace o invitación de reserva, usa domain="appointment", intent="request_booking_invitation", action="create_booking_invitation".
 
 Agenda:
-- Usa domain="appointment" si el usuario habla de cita, reserva, disponibilidad, horario, turno, cambiar/cancelar cita o confirmar cita.
-- Si pide disponibilidad, huecos, horarios o quiere una cita sin elegir slot concreto, usa intent="request_availability" y action="get_availability".
+- Usa domain="appointment" si el usuario habla de cita, reserva, disponibilidad, huecos, turnos o de un horario para reservar, cambiar o cancelar una cita.
+- Si pregunta por el horario general del negocio, clasifica como domain="general" o domain="sales" según corresponda y usa intent="ask_business_question" si aplica.
+- Si el usuario solo expresa interés o menciona un servicio/zona/producto sin pedir disponibilidad, cita, horario, hueco o reserva, NO uses intent="request_availability" ni action="get_availability".
+- En ese caso usa preferentemente intent="ask_product_or_service_info" y action="answer_directly"; si hace falta resolver el servicio usa intent="catalog_search" y action="search_catalog".
+- Solo usa intent="request_availability" y action="get_availability" cuando el usuario pida explícitamente disponibilidad/cita/horario/hueco/reserva, o cuando aporte una fecha, día, hora o franja suficiente para buscar disponibilidad con un servicio claro.
 - Si el usuario pide una categoría amplia como "depilación", "láser", "masaje" o "tratamiento facial", no asumas servicio concreto en la clasificación. Conserva esa categoría en entities.query o entities.service_name y deja que la segunda llamada use tools o pregunte.
-- Si el usuario aporta un servicio concreto dentro de un flujo de cita, usa normalmente intent="request_availability".
+- No asumas "hoy", "mañana" ni ninguna fecha implícita en el intent planner cuando el usuario solo eligió servicio.
+- Si el usuario pide explícitamente un enlace de reserva y la tool está disponible, usa intent="request_booking_invitation" y action="create_booking_invitation" sin exigir selected_slot.
 - Para fechas relativas o sin año, usa el contexto temporal disponible. Si no hay seguridad, conserva la expresión original y explica la ambigüedad en reason.
 - Para "mañana", usa entities.date="tomorrow".
 - Para "pasado mañana", usa entities.date="day_after_tomorrow".
@@ -217,9 +216,10 @@ Arquitectura:
 - conversation_context.current_message contiene solo el mensaje actual del cliente.
 - conversation_context.history contiene solo turnos anteriores persistidos y excluye current_message.
 - conversation_context.history está ordenado cronológicamente: primer elemento = turno más antiguo incluido; último elemento = turno persistido más reciente.
-- Los datos estructurados viven dentro de structured_data del turno donde se produjeron.
-- Los resultados de tools viven dentro de tool_results del turno donde se produjeron.
-- No existe latest_structured_data ni un estado conversacional derivado.
+- conversation_context.temporal_context contiene current_datetime, current_date y rules para today/tomorrow/day_after_tomorrow.
+- Los datos estructurados viven dentro de structured_data del turno donde se produjeron y son la memoria conversacional de tools.
+- tool_results no se reinyecta en este prompt.
+- No existe latest_structured_data ni un estado conversacional derivado por heurística.
 
 Responsabilidades:
 - El LLM interpreta el lenguaje natural, lee el historial, decide el siguiente paso, usa tools si hace falta y redacta la respuesta final.
@@ -232,6 +232,8 @@ Responsabilidades:
 - Si una tool devuelve éxito, responde según ese éxito.
 - Si una tool devuelve error, informa con claridad y ofrece alternativa razonable.
 - Responde siempre en el idioma natural del cliente, salvo que el contexto del negocio indique otra cosa.
+- `conversation_context.history` contiene solo turnos previos persistidos y excluye el mensaje actual.
+- `structured_data` es la memoria conversacional de tools; `tool_results` no se reinyecta en este prompt.
 
 Valores finales permitidos para action:
 {", ".join(FINAL_ACTION_VALUES)}
@@ -242,7 +244,7 @@ Valores permitidos para required_next_action:
 Contrato obligatorio de salida:
 {{
   "reply": "mensaje para el cliente",
-  "domain": "general|sales|catalog|inventory|appointment|crm|support|handoff",
+  "domain": "general|sales|catalog|appointment|crm|support|handoff",
   "intent": "uno de los valores permitidos",
   "action": "uno de los valores finales permitidos de ResponseAction; nunca get_availability ni otro valor del planner",
   "needs_human": false,
@@ -253,6 +255,7 @@ Contrato obligatorio de salida:
       "selected_slot": null,
       "existing_appointments": [],
       "existing_appointment": null,
+      "booking_invitation": null,
       "booking_result": null,
       "reschedule_result": null,
       "cancel_result": null
@@ -316,18 +319,33 @@ Catálogo y servicios:
 
 Agenda:
 - CRM/tool es la fuente de verdad para disponibilidad, reservas, reprogramaciones y cancelaciones.
+- Antes de usar tools de agenda, asegúrate de tener contexto suficiente del cliente con `contact_context` cuando exista teléfono/email/identificador disponible.
 - Para tools appointment_* usa siempre la timezone efectiva del contexto.
-- Si existe timezone, appointment_timezone, effective_timezone, backend_context.contact_context.timezone o backend_context.tenant.timezone, úsala como autoridad.
-- No uses Europe/Madrid como default si el contexto operativo indica otra timezone.
+- Si `backend_context.contact_context` devuelve timezone, úsala como autoridad para tools de agenda.
+- No uses Europe/Madrid como default si `backend_context.contact_context` puede resolver la timezone CRM.
 - Si la timezone efectiva es Atlantic/Canary, usa exactamente Atlantic/Canary en los argumentos de appointment_* tools.
 - Para "por la mañana", usa aproximadamente 09:00-14:00.
 - Para "por la tarde", usa aproximadamente 15:00-20:59.
 - Para "al mediodía", usa aproximadamente 13:00-15:00.
 - Conserva fecha, franja horaria, servicio y profesional mencionados en turnos anteriores hasta que el usuario los cambie explícitamente.
+- No llames appointment_availability si el usuario solo eligió servicio y no indicó fecha o franja; en ese caso pregunta solo fecha/franja.
+- No asumas "hoy" salvo que el usuario lo haya pedido explícitamente.
 - Si el usuario pide una categoría amplia de servicio y no hay un único servicio claro, usa búsqueda de servicios o pide aclaración antes de consultar disponibilidad.
 - Si hay un único candidato claro o el usuario ya eligió un servicio concreto, puedes consultar disponibilidad.
+- No llames appointment_availability sin date_from y date_to fiables.
+- Si falta fecha o rango, pregunta al cliente antes de usar appointment_availability.
+- Para un único día concreto, usa el mismo día en date_from y date_to.
+- Usa temporal_context e intent_plan para resolver expresiones relativas antes de llamar appointment_availability.
+- Si selected_service contiene un id UUID canónico, pásalo como service_id; no como service_ref.
+- Reutiliza duration_minutes real del servicio seleccionado cuando exista.
+- service_ref queda solo para referencias externas que no sean UUID.
 - Si llamas appointment_availability y ofreces horarios concretos al cliente, guarda en structured_data.appointment.offered_slots exactamente los slots que estás ofreciendo.
 - Si no ofreces horarios concretos, deja offered_slots vacío.
+- Si el usuario pide un enlace de reserva y appointment_booking_invitation está disponible, puedes llamarla sin exigir selected_slot.
+- Si services_search ya devolvió service_id o duration_minutes reales para el servicio, reutiliza esos valores al preparar appointment_booking_invitation.
+- Usa la timezone fiable del contexto de contacto o del tenant al llamar appointment_booking_invitation.
+- Copia el resultado normalizado de appointment_booking_invitation en structured_data.appointment.booking_invitation.
+- Responde con booking_url solo si el resultado normalizado indica created/ok verdadero.
 - Si el usuario selecciona un horario, devuelve selected_slot con el objeto del slot elegido desde history o desde una disponibilidad recién consultada.
 - La selección de slot no confirma la cita todavía: pide confirmación explícita.
 - Si el usuario confirma una cita seleccionada y appointment_confirm está disponible, puedes llamar appointment_confirm.
@@ -342,12 +360,15 @@ Agenda:
 - No inventes appointment_id, serviceId, owner, timezone, fechas ni horas.
 
 Contacto / CRM:
-- Si `contact_context` está disponible, existe teléfono o email en backend_context y `backend_context.contact_context` todavía está vacío o es insuficiente, llámala antes de responder turnos relevantes de appointment, sales, catalog, crm, support o handoff.
-- Cuando esa condición se cumpla, haz de `contact_context` tu primera tool call antes de cualquier otra tool o de responder al cliente.
-- No cierres la respuesta sin haber intentado esa consulta cuando el contexto del contacto todavía no está resuelto.
-- Usa el resultado para personalizar la respuesta, continuar contexto y evitar pedir datos ya conocidos.
-- Persiste el resultado en `backend_context.contact_context`.
-- No la repitas si `backend_context.contact_context` ya contiene un `contact_context` suficiente, salvo que el usuario aporte o corrija datos de contacto o el contexto anterior sea insuficiente.
+- El contexto del cliente es obligatorio para cualificar y personalizar.
+- Si `backend_context.contact_context` no está presente o no contiene datos suficientes del cliente y existe teléfono/email/identificador disponible, llama `contact_context` antes de cerrar la respuesta final.
+- Esto aplica especialmente en el primer turno de conversación.
+- Esto aplica siempre antes de usar tools de agenda.
+- Si `contact_context` devuelve nombre, úsalo.
+- Si después de llamar `contact_context` sigue faltando el nombre, pide solo el nombre del cliente.
+- No pidas datos que ya estén en `backend_context.contact_context`.
+- No inventes nombre, email, timezone, sucursal, owner ni citas existentes.
+- Si `backend_context.contact_context` ya contiene un `contact_context` suficiente, reutilízalo y no lo repitas salvo que el usuario aporte o corrija datos de contacto.
 - Si el usuario quiere que le contacten, le llamen, dejar datos o pedir seguimiento comercial, usa crm_contact_submit cuando esté disponible y haya teléfono o email suficiente.
 - Si faltan datos necesarios, pregunta solo el dato faltante.
 - No uses crm_contact_submit para sustituir appointment_confirm, appointment_reschedule o appointment_cancel.
@@ -378,35 +399,6 @@ def build_intent_user_prompt(context: dict[str, Any]) -> str:
         "task": "classify_current_user_message",
         "backend_context": context.get("backend_context", {}) if isinstance(context, dict) else {},
         "conversation_context": context.get("conversation_context", {}) if isinstance(context, dict) else {},
-        "output_contract": {
-            "domain": DOMAIN_VALUES,
-            "intent": INTENT_VALUES,
-            "action": ACTION_VALUES,
-            "confidence": "float between 0 and 1",
-            "entities": {
-                "service_id": "string|null",
-                "service_name": "string|null",
-                "service_ref": "string|null",
-                "owner_id": "string|null",
-                "owner_name": "string|null",
-                "owner_ref": "string|null",
-                "appointment_id": "string|null",
-                "contact_name": "string|null",
-                "contact_phone": "string|null",
-                "contact_email": "string|null",
-                "date": "string|null",
-                "time": "string|null",
-                "time_of_day": "morning|afternoon|evening|night|any|null",
-                "date_from": "string|null",
-                "date_to": "string|null",
-                "selected_slot_index": "integer|null",
-                "slot_reference": "first|last|exact_time|relative_time|other|null",
-                "query": "string|null",
-                "notes": "string|null",
-            },
-            "needs_tools": "boolean",
-            "reason": "short internal reason for Sales Agent",
-        },
         "final_instruction": "Return only one valid JSON object. Do not include Markdown or explanatory text.",
     }
 
@@ -429,9 +421,9 @@ def build_final_user_prompt(
     payload = {
         "task": "execute_conversation_turn",
         "intent_plan": plan.model_dump(exclude_none=True),
-        "backend_context": backend_context.model_dump(exclude_none=True) if backend_context is not None else {},
-        "conversation_context": conversation_context.model_dump(exclude_none=True) if conversation_context is not None else {},
-        "tool_plan": tools.model_dump(exclude_none=True),
+        "backend_context": backend_context.model_dump(exclude_none=True, exclude_defaults=True) if backend_context is not None else {},
+        "conversation_context": conversation_context.model_dump(exclude_none=True, exclude_defaults=True) if conversation_context is not None else {},
+        "tool_plan": tools.model_dump(exclude_none=True, exclude_defaults=True),
         "output_contract": {
             "reply": "customer-facing text",
             "domain": DOMAIN_VALUES,
@@ -445,6 +437,7 @@ def build_final_user_prompt(
                     "selected_slot": "object|null selected by the LLM from history or a fresh availability tool result",
                     "existing_appointments": "list of appointment objects copied from appointment_events or conversation history",
                     "existing_appointment": "object|null selected by the LLM from history or appointment_events when needed",
+                    "booking_invitation": "object|null",
                     "booking_result": "object|null",
                     "reschedule_result": "object|null",
                     "cancel_result": "object|null",

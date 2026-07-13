@@ -22,6 +22,7 @@ APPOINTMENT_TOOL_NAMES = {
     "appointment_confirm",
     "appointment_reschedule",
     "appointment_cancel",
+    "appointment_booking_invitation",
 }
 
 
@@ -141,6 +142,7 @@ class LLMClient:
 
         current_input: Any = self._build_responses_input(user_prompt)
         current_previous_response_id = normalized_previous_response_id
+        current_tool_choice = tool_choice
         payload_json: dict[str, Any] | None = None
         response_id: str | None = None
 
@@ -158,8 +160,8 @@ class LLMClient:
                 payload["previous_response_id"] = current_previous_response_id
             if tools != []:
                 payload["tools"] = tools
-            if tool_choice is not None:
-                payload["tool_choice"] = tool_choice
+            if current_tool_choice is not None:
+                payload["tool_choice"] = current_tool_choice
             if parallel_tool_calls is not None:
                 payload["parallel_tool_calls"] = parallel_tool_calls
             sanitized_payload = self._sanitize_openai_responses_payload(payload)
@@ -257,6 +259,7 @@ class LLMClient:
                 else:
                     current_input = approval_responses
                 current_previous_response_id = response_id or self._extract_response_id(payload_json)
+                current_tool_choice = None
                 retry_count += 1
                 if retry_count >= max_rounds:
                     raise RuntimeError("MCP approval retry limit exceeded")
@@ -674,32 +677,24 @@ class LLMClient:
         if allowed_tools != []:
             tool["allowed_tools"] = allowed_tools
 
-        appointment_tools = [tool_name for tool_name in allowed_tools if tool_name in APPOINTMENT_TOOL_NAMES]
-        if appointment_tools != []:
-            tool["require_approval"] = "always"
-        else:
-            approval = self._normalize_approval(mcp_config.require_approval)
-            if approval is not None:
-                tool["require_approval"] = approval
+        read_tools = [tool_name for tool_name in allowed_tools if tool_name in {
+            "contact_context",
+            "services_search",
+            "appointment_events",
+            "appointment_availability",
+        }]
+        if read_tools != []:
+            tool["require_approval"] = {
+                "never": {
+                    "tool_names": read_tools,
+                }
+            }
 
         authorization = self._mcp_authorization_token(mcp_config)
         if authorization != "":
             tool["authorization"] = authorization
 
         return [tool]
-
-    def _normalize_approval(self, value: str | None) -> str | None:
-        if value is None:
-            return "never"
-
-        normalized = value.strip().lower()
-        if normalized in {"never", "always"}:
-            return normalized
-
-        if normalized in {"", "auto"}:
-            return "never"
-
-        return None
 
     def _mcp_authorization_token(self, mcp_config: McpRemoteConfig) -> str:
         override = self._normalize_mcp_authorization(self.settings.mcp_test_authorization)
