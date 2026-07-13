@@ -422,49 +422,6 @@ def build_final_user_prompt(
         "backend_context": backend_context.model_dump(exclude_none=True, exclude_defaults=True) if backend_context is not None else {},
         "conversation_context": conversation_context.model_dump(exclude_none=True, exclude_defaults=True) if conversation_context is not None else {},
         "tool_plan": tools.model_dump(exclude_none=True, exclude_defaults=True),
-        "output_contract": {
-            "reply": "customer-facing text",
-            "domain": DOMAIN_VALUES,
-            "intent": INTENT_VALUES,
-            "action": FINAL_ACTION_VALUES,
-            "needs_human": "boolean",
-            "score": "float between 0 and 1",
-            "structured_data": {
-                "appointment": {
-                    "offered_slots": "list of slot objects copied from appointment_availability result when the reply offers available times to the customer",
-                    "selected_slot": "object|null selected by the LLM from history or a fresh availability tool result",
-                    "existing_appointments": "list of appointment objects copied from appointment_events or conversation history",
-                    "existing_appointment": "object|null selected by the LLM from history or appointment_events when needed",
-                    "booking_invitation": "object|null",
-                    "booking_result": "object|null",
-                    "reschedule_result": "object|null",
-                    "cancel_result": "object|null",
-                },
-                "services": {
-                    "service_candidates": "list of service objects",
-                    "selected_service": "object|null",
-                    "last_query": "string|null",
-                },
-                "crm_contact": {
-                    "lead_data": "object|null",
-                    "submit_result": "object|null",
-                },
-                "handoff": {
-                    "requested": "boolean",
-                    "reason": "string|null",
-                    "result": "object|null",
-                },
-                "general": {
-                    "topic": "string|null",
-                    "last_answer_summary": "string|null",
-                },
-            },
-            "next_expected": {
-                "kind": "customer_reply",
-                "description": "string|null",
-            },
-            "data_to_save": "object",
-        },
         "final_instruction": "Return only one valid JSON object. Do not include Markdown or explanatory text.",
     }
 
