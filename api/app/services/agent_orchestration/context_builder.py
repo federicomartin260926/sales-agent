@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -12,6 +13,7 @@ from app.services.agent_orchestration.schemas import (
     BackendEntrypointContext,
     BackendPoliciesContext,
     BackendTenantContext,
+    AppointmentStructuredData,
     ConversationContext,
     ConversationTemporalContext,
     CurrentMessage,
@@ -166,22 +168,51 @@ class OrchestrationContextBuilder:
         for message in recent:
             if not isinstance(message, dict):
                 continue
-            structured_data = self._structured_data_from_message(message)
+            structured_data = self._project_structured_data_for_history(self._structured_data_from_message(message))
             role = self._normalize_turn_role(message)
             text = self._clean(message.get("body")) or ""
-            turns.append(
-                ConversationTurn(
-                    turn_index=len(turns) + 1,
-                    role=role,
-                    text=text,
-                    domain=self._clean(message.get("domain")),
-                    intent=self._clean(message.get("intent")),
-                    action=self._clean(message.get("action")),
-                    structured_data=structured_data,
-                    created_at=self._clean(message.get("created_at")),
-                )
-            )
+            turn_kwargs: dict[str, Any] = {
+                "turn_index": len(turns) + 1,
+                "role": role,
+                "text": text,
+                "domain": self._clean(message.get("domain")),
+                "intent": self._clean(message.get("intent")),
+                "action": self._clean(message.get("action")),
+                "created_at": self._clean(message.get("created_at")),
+            }
+            if self._has_useful_history_structured_data(structured_data):
+                turn_kwargs["structured_data"] = structured_data
+            turns.append(ConversationTurn(**turn_kwargs))
         return turns
+
+    def _project_structured_data_for_history(self, structured_data: StructuredData) -> StructuredData:
+        if not isinstance(structured_data, StructuredData):
+            return StructuredData()
+
+        appointment = structured_data.appointment
+        offered_slots = deepcopy(appointment.offered_slots) if isinstance(appointment.offered_slots, list) and appointment.offered_slots != [] else []
+        selected_slot = deepcopy(appointment.selected_slot) if isinstance(appointment.selected_slot, dict) and appointment.selected_slot != {} else None
+
+        if offered_slots == [] and selected_slot is None:
+            return StructuredData()
+
+        return StructuredData(
+            appointment=AppointmentStructuredData(
+                offered_slots=offered_slots,
+                selected_slot=selected_slot,
+            )
+        )
+
+    def _has_useful_history_structured_data(self, structured_data: StructuredData) -> bool:
+        if not isinstance(structured_data, StructuredData):
+            return False
+
+        appointment = structured_data.appointment
+        return (
+            isinstance(appointment.offered_slots, list) and appointment.offered_slots != []
+        ) or (
+            isinstance(appointment.selected_slot, dict) and appointment.selected_slot != {}
+        )
 
     def _structured_data_from_message(self, message: dict[str, Any]) -> StructuredData:
         data = self._message_data_to_save(message)

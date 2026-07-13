@@ -217,7 +217,7 @@ Arquitectura:
 - conversation_context.history contiene solo turnos anteriores persistidos y excluye current_message.
 - conversation_context.history está ordenado cronológicamente: primer elemento = turno más antiguo incluido; último elemento = turno persistido más reciente.
 - conversation_context.temporal_context contiene current_datetime, current_date y rules para today/tomorrow/day_after_tomorrow.
-- Los datos estructurados viven dentro de structured_data del turno donde se produjeron y son la memoria conversacional de tools.
+- Los datos estructurados del history solo incluyen continuidad mínima, especialmente slots ofrecidos/seleccionados.
 - tool_results no se reinyecta en este prompt.
 - No existe latest_structured_data ni un estado conversacional derivado por heurística.
 
@@ -231,7 +231,7 @@ Responsabilidades:
 - Si una tool devuelve éxito, responde según ese éxito.
 - Si una tool devuelve error, informa con claridad y ofrece alternativa razonable.
 - Responde siempre en el idioma natural del cliente, salvo que el contexto del negocio indique otra cosa.
-- `structured_data` es la memoria conversacional de tools; `tool_results` no se reinyecta en este prompt.
+- `structured_data` en history solo aporta continuidad mínima; `tool_results` no se reinyecta en este prompt.
 
 Valores finales permitidos para action:
 {", ".join(FINAL_ACTION_VALUES)}
@@ -239,50 +239,9 @@ Valores finales permitidos para action:
 Valores permitidos para required_next_action:
 {", ".join(NEXT_ACTION_VALUES)}
 
-Contrato obligatorio de salida:
-{{
-  "reply": "mensaje para el cliente",
-  "domain": "general|sales|catalog|appointment|crm|support|handoff",
-  "intent": "uno de los valores permitidos",
-  "action": "uno de los valores finales permitidos de ResponseAction; nunca get_availability ni otro valor del planner",
-  "needs_human": false,
-  "score": 0.0,
-  "structured_data": {{
-    "appointment": {{
-      "offered_slots": [],
-      "selected_slot": null,
-      "existing_appointments": [],
-      "existing_appointment": null,
-      "booking_invitation": null,
-      "booking_result": null,
-      "reschedule_result": null,
-      "cancel_result": null
-    }},
-    "services": {{
-      "service_candidates": [],
-      "selected_service": null,
-      "last_query": null
-    }},
-    "crm_contact": {{
-      "lead_data": null,
-      "submit_result": null
-    }},
-    "handoff": {{
-      "requested": false,
-      "reason": null,
-      "result": null
-    }},
-    "general": {{
-      "topic": null,
-      "last_answer_summary": null
-    }}
-  }},
-  "next_expected": {{
-    "kind": "customer_reply",
-    "description": null
-  }},
-  "data_to_save": {{}}
-}}
+Devuelve siempre un único JSON válido respetando el output_contract incluido en el user prompt.
+No pongas un valor de action dentro de intent.
+intent debe ser uno de los valores permitidos y action debe ser uno de los valores permitidos para la respuesta final.
 
 Formato:
 - Devuelve solo JSON válido.
@@ -314,7 +273,7 @@ Catálogo y servicios:
 - Si una búsqueda devuelve varias opciones, pide aclaración o muestra candidatos relevantes.
 - Si una búsqueda no devuelve resultados, dilo claramente y ofrece alternativa razonable.
 - Si el usuario está dentro de un flujo de cita y responde con un servicio, conserva el flujo de appointment salvo cambio claro de tema.
-- Si el usuario elige o muestra interés por un servicio concreto que ya aparece en la memoria estructurada de servicios, selecciona ese servicio en structured_data.services.selected_service sin llamar services_search de nuevo.
+- Si el usuario elige o muestra interés por un servicio concreto y necesitas id, duración, precio o datos exactos que no estén disponibles en backend_context o conversation_context, usa services_search antes de usar tools que requieran service_id o duration.
 - Si el usuario expresa interés por un servicio concreto después de una respuesta de catálogo, responde brevemente con la información disponible y orienta al siguiente paso práctico. Si el negocio está orientado a citas, pide fecha/franja de forma natural sin consultar disponibilidad hasta tener fecha o franja.
 
 Agenda:
@@ -422,6 +381,54 @@ def build_final_user_prompt(
         "backend_context": backend_context.model_dump(exclude_none=True, exclude_defaults=True) if backend_context is not None else {},
         "conversation_context": conversation_context.model_dump(exclude_none=True, exclude_defaults=True) if conversation_context is not None else {},
         "tool_plan": tools.model_dump(exclude_none=True, exclude_defaults=True),
+        "output_contract": {
+            "reply": "mensaje para el cliente",
+            "domain": "single string from allowed_values.domain",
+            "intent": "single string from allowed_values.intent",
+            "action": "single string from allowed_values.action",
+            "needs_human": False,
+            "score": 0.0,
+            "allowed_values": {
+                "domain": DOMAIN_VALUES,
+                "intent": INTENT_VALUES,
+                "action": FINAL_ACTION_VALUES,
+            },
+            "structured_data": {
+                "appointment": {
+                    "offered_slots": [],
+                    "selected_slot": None,
+                    "existing_appointments": [],
+                    "existing_appointment": None,
+                    "booking_invitation": None,
+                    "booking_result": None,
+                    "reschedule_result": None,
+                    "cancel_result": None,
+                },
+                "services": {
+                    "service_candidates": [],
+                    "selected_service": None,
+                    "last_query": None,
+                },
+                "crm_contact": {
+                    "lead_data": None,
+                    "submit_result": None,
+                },
+                "handoff": {
+                    "requested": False,
+                    "reason": None,
+                    "result": None,
+                },
+                "general": {
+                    "topic": None,
+                    "last_answer_summary": None,
+                },
+            },
+            "next_expected": {
+                "kind": "customer_reply",
+                "description": None,
+            },
+            "data_to_save": {},
+        },
         "final_instruction": "Return only one valid JSON object. Do not include Markdown or explanatory text.",
     }
 
