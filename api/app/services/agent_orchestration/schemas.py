@@ -630,6 +630,7 @@ NextAction = Literal[
     "appointment_confirm",
     "appointment_reschedule",
     "appointment_cancel",
+    "confirm_cancel",
     "handoff_to_human",
 ]
 

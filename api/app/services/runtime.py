@@ -27,6 +27,7 @@ from app.services.agent_turn_response_builder import AgentTurnResponseBuilder
 from app.services.backend_client import BackendClient, CommercialContext
 from app.services.conversation_message_persistence import ConversationMessagePersistence
 from app.services.agent_orchestration.response_formats import (
+    build_request_cancel_response_format,
     build_request_availability_response_format,
     build_select_offered_slot_response_format,
 )
@@ -489,6 +490,8 @@ class AgentRuntime:
             response_format = build_request_availability_response_format()
         elif plan.intent == "select_offered_slot":
             response_format = build_select_offered_slot_response_format()
+        elif plan.intent == "request_cancel":
+            response_format = build_request_cancel_response_format()
         else:
             response_format = None
         effective_mcp_config = self._filtered_mcp_config(mcp_config, tool_plan.allowed_tools)
