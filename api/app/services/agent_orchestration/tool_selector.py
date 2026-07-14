@@ -14,10 +14,10 @@ SUPPORTED_READ_TOOLS = [
 ]
 
 WRITE_TOOL_BY_PLAN = {
-    ("request_booking_confirmation", "prepare_booking_confirmation"): "appointment_confirm",
+    ("request_booking_confirmation", "confirm_booking"): "appointment_confirm",
     ("request_booking_invitation", "create_booking_invitation"): "appointment_booking_invitation",
-    ("request_reschedule", "prepare_reschedule"): "appointment_reschedule",
-    ("request_cancel", "prepare_cancel"): "appointment_cancel",
+    ("request_reschedule", "confirm_reschedule"): "appointment_reschedule",
+    ("request_cancel", "confirm_cancel"): "appointment_cancel",
     ("provide_contact_data", "create_or_update_crm_contact"): "crm_contact_submit",
     ("request_quote", "create_or_update_crm_contact"): "crm_contact_submit",
     ("request_handoff", "handoff_to_human"): "handoff_request",

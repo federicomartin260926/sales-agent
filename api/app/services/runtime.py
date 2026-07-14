@@ -26,11 +26,6 @@ from app.services.audio_preprocessor import AudioMessagePreprocessor
 from app.services.agent_turn_response_builder import AgentTurnResponseBuilder
 from app.services.backend_client import BackendClient, CommercialContext
 from app.services.conversation_message_persistence import ConversationMessagePersistence
-from app.services.agent_orchestration.response_formats import (
-    build_request_cancel_response_format,
-    build_request_availability_response_format,
-    build_select_offered_slot_response_format,
-)
 from app.services.llm_client import LLMClient
 from app.services.llm_provider_resilience import LlmProviderUnavailable
 from app.services.routing_resolver import RoutingContext, RuntimeRoutingResolver
@@ -486,14 +481,7 @@ class AgentRuntime:
             if effective_timezone_source is not None:
                 mcp_config.config["effective_timezone_source"] = effective_timezone_source
         prompt = build_final_user_prompt(payload.message.text or "", plan, backend_context, conversation_context, tool_plan)
-        if plan.intent == "request_availability":
-            response_format = build_request_availability_response_format()
-        elif plan.intent == "select_offered_slot":
-            response_format = build_select_offered_slot_response_format()
-        elif plan.intent == "request_cancel":
-            response_format = build_request_cancel_response_format()
-        else:
-            response_format = None
+        response_format = None
         effective_mcp_config = self._filtered_mcp_config(mcp_config, tool_plan.allowed_tools)
         tool_choice = None
         if effective_mcp_config.enabled and effective_mcp_config.allowed_tools:

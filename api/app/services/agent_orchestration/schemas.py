@@ -53,9 +53,12 @@ ActionCandidate = Literal[
     "search_catalog",
     "get_availability",
     "prepare_booking_confirmation",
+    "confirm_booking",
     "create_booking_invitation",
     "prepare_reschedule",
+    "confirm_reschedule",
     "prepare_cancel",
+    "confirm_cancel",
     "collect_missing_data",
     "ask_clarification",
     "handoff_to_human",
@@ -614,6 +617,8 @@ ResponseAction = Literal[
     "create_or_update_crm_contact",
     "prepare_booking_confirmation",
     "prepare_cancel",
+    "prepare_reschedule",
+    "appointment_rescheduled",
     "appointment_cancelled",
     "appointment_confirmed",
     "appointment_failed",
@@ -632,6 +637,7 @@ NextAction = Literal[
     "appointment_reschedule",
     "appointment_cancel",
     "confirm_cancel",
+    "confirm_reschedule",
     "handoff_to_human",
 ]
 
@@ -702,13 +708,13 @@ class LLMFinalResponse(BaseModel):
     reply: str = ""
     domain: Domain = "general"
     intent: Intent = "unknown"
-    action: ResponseAction = "answer_question"
+    action: str = "answer_question"
 
     needs_human: bool = False
     score: float = Field(default=0.7, ge=0.0, le=1.0)
     structured_data: StructuredData = Field(default_factory=StructuredData)
     next_expected: NextExpected | None = None
-    required_next_action: NextAction | None = None
+    required_next_action: str | None = None
 
     clarification: ClarificationRequest | None = None
     data_to_save: dict[str, Any] = Field(default_factory=dict)
