@@ -42,6 +42,7 @@ class LLMClient:
         system_prompt: str,
         user_prompt: str,
         configuration: dict[str, str] | None = None,
+        response_format: dict[str, Any] | None = None,
     ) -> LLMResponseResult:
         config = configuration if configuration is not None else await self.resolve_configuration()
         normalized_provider = provider.strip().lower()
@@ -54,6 +55,7 @@ class LLMClient:
                     McpRemoteConfig(enabled=False),
                     single_tool_call=True,
                     max_tool_rounds=1,
+                    response_format=response_format,
                 ),
                 self._parse_retry_attempts(config.get("openai_responses_max_attempts"), self.settings.openai_responses_max_attempts),
                 self._parse_retry_delay_seconds(
@@ -78,11 +80,12 @@ class LLMClient:
         parallel_tool_calls: bool | None = None,
         single_tool_call: bool = False,
         max_tool_rounds: int | None = None,
+        response_format: dict[str, Any] | None = None,
     ) -> LLMResponseResult:
         config = configuration if configuration is not None else await self.resolve_configuration()
         normalized_provider = provider.strip().lower()
         if normalized_provider != "openai" or not mcp_config.enabled:
-            return await self.generate(provider, system_prompt, user_prompt, config)
+            return await self.generate(provider, system_prompt, user_prompt, config, response_format=response_format)
 
         return await run_with_llm_provider_retries(
             lambda: self._generate_openai_responses(
@@ -95,6 +98,7 @@ class LLMClient:
                 parallel_tool_calls=parallel_tool_calls,
                 single_tool_call=single_tool_call,
                 max_tool_rounds=max_tool_rounds,
+                response_format=response_format,
             ),
             self._parse_retry_attempts(config.get("openai_responses_max_attempts"), self.settings.openai_responses_max_attempts),
             self._parse_retry_delay_seconds(
@@ -114,6 +118,7 @@ class LLMClient:
         parallel_tool_calls: bool | None = None,
         single_tool_call: bool = False,
         max_tool_rounds: int | None = None,
+        response_format: dict[str, Any] | None = None,
     ) -> LLMResponseResult:
         base_url = configuration.get("openai_base_url", "").strip().rstrip("/")
         model = configuration.get("openai_model", "").strip()
@@ -154,7 +159,9 @@ class LLMClient:
                 "instructions": system_prompt,
                 "input": current_input,
                 "temperature": 0.2,
-                "text": {"format": {"type": "json_object"}},
+                "text": {
+                    "format": response_format if isinstance(response_format, dict) else {"type": "json_object"},
+                },
             }
             if current_previous_response_id is not None:
                 payload["previous_response_id"] = current_previous_response_id

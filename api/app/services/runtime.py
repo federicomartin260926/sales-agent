@@ -26,6 +26,10 @@ from app.services.audio_preprocessor import AudioMessagePreprocessor
 from app.services.agent_turn_response_builder import AgentTurnResponseBuilder
 from app.services.backend_client import BackendClient, CommercialContext
 from app.services.conversation_message_persistence import ConversationMessagePersistence
+from app.services.agent_orchestration.response_formats import (
+    build_request_availability_response_format,
+    build_select_offered_slot_response_format,
+)
 from app.services.llm_client import LLMClient
 from app.services.llm_provider_resilience import LlmProviderUnavailable
 from app.services.routing_resolver import RoutingContext, RuntimeRoutingResolver
@@ -48,8 +52,6 @@ LLM_CONTEXT_DEBUG_SENSITIVE_KEYS = {
     "bearer_token",
     "auth_token",
 }
-
-
 class AgentRuntime:
     """Minimal runtime for the new LLM-led Sales Agent architecture.
 
@@ -483,6 +485,12 @@ class AgentRuntime:
             if effective_timezone_source is not None:
                 mcp_config.config["effective_timezone_source"] = effective_timezone_source
         prompt = build_final_user_prompt(payload.message.text or "", plan, backend_context, conversation_context, tool_plan)
+        if plan.intent == "request_availability":
+            response_format = build_request_availability_response_format()
+        elif plan.intent == "select_offered_slot":
+            response_format = build_select_offered_slot_response_format()
+        else:
+            response_format = None
         effective_mcp_config = self._filtered_mcp_config(mcp_config, tool_plan.allowed_tools)
         tool_choice = None
         if effective_mcp_config.enabled and effective_mcp_config.allowed_tools:
@@ -517,9 +525,15 @@ class AgentRuntime:
                     tool_choice=tool_choice,
                     parallel_tool_calls=False,
                     max_tool_rounds=4,
+                    response_format=response_format,
                 )
             else:
-                result = await self.llm_client.generate(self.settings.llm_provider, FINAL_SYSTEM_PROMPT, prompt)
+                result = await self.llm_client.generate(
+                    self.settings.llm_provider,
+                    FINAL_SYSTEM_PROMPT,
+                    prompt,
+                    response_format=response_format,
+                )
 
             decoded = self._json_dict(result.content)
             if decoded is None:

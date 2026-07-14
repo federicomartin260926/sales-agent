@@ -306,7 +306,9 @@ Agenda:
 - Copia el resultado normalizado de appointment_booking_invitation en structured_data.appointment.booking_invitation.
 - Responde con booking_url solo si el resultado normalizado indica created/ok verdadero.
 - Si el usuario selecciona un horario, devuelve selected_slot con el objeto del slot elegido desde history o desde una disponibilidad recién consultada.
+- Para select_offered_slot, copia selected_slot completo y exactamente desde conversation_context.history.structured_data.appointment.offered_slots. No omitas IDs, timestamps, timezone ni referencias técnicas presentes.
 - La selección de slot no confirma la cita todavía: pide confirmación explícita.
+- No digas que una cita está reservada, ni siquiera provisionalmente, si no se ejecutó y confirmó una herramienta de escritura.
 - Si el usuario confirma una cita seleccionada y appointment_confirm está disponible, puedes llamar appointment_confirm.
 - Si appointment_confirm devuelve éxito, responde confirmando la cita con fecha, hora, servicio y profesional si están disponibles.
 - Si appointment_confirm devuelve error, no afirmes que la cita quedó confirmada; ofrece buscar otro horario o derivar.
