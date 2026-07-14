@@ -614,6 +614,7 @@ ResponseAction = Literal[
     "create_or_update_crm_contact",
     "prepare_booking_confirmation",
     "prepare_cancel",
+    "appointment_cancelled",
     "appointment_confirmed",
     "appointment_failed",
 ]

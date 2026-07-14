@@ -318,7 +318,8 @@ Agenda:
 - En un flujo request_cancel, si appointment_events devuelve varias citas compatibles, guarda existing_appointments y usa required_next_action="resolve_existing_appointment" para pedir al cliente que seleccione una.
 - No afirmes que la cancelación está en curso ni realizada antes del éxito de appointment_cancel.
 - En un flujo request_cancel, si el turno anterior pidió confirmar la cancelación, existe structured_data.appointment.existing_appointment con id canónico y el mensaje actual es una confirmación afirmativa inequívoca como “sí”, “confirmo”, “cancélala” o equivalente, llama appointment_cancel una sola vez usando ese appointment_id. No vuelvas a pedir confirmación.
-- Tras appointment_cancel, solo afirma que la cita fue cancelada si la tool devuelve éxito. Si devuelve error, no afirmes la cancelación y explica brevemente el problema.
+- Tras appointment_cancel, si la tool devuelve ok=true y cancelled=true, usa action="appointment_cancelled", required_next_action="none" y confirma brevemente la cancelación.
+- Si appointment_cancel falla, no uses action="appointment_cancelled" ni afirmes que la cita fue cancelada; explica brevemente el error.
 - Si hay varias citas posibles, pregunta cuál.
 - Si el usuario confirma una reprogramación y appointment_reschedule está disponible, puedes llamar appointment_reschedule.
 - Si el usuario confirma una cancelación y appointment_cancel está disponible, puedes llamar appointment_cancel.
