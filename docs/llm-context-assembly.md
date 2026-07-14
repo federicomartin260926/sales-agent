@@ -1,12 +1,10 @@
 # Ensamblado de contexto LLM
 
-Este documento describe cómo `sales-agent` construye el contexto que termina en el LLM hoy, con la implementación actual de FastAPI + backend Symfony + MCP remoto.
+Este documento describe el contrato real actual de `sales-agent` para construir contexto, seleccionar tools y ejecutar el flujo LLM-led.
 
-No es una propuesta futura. Es una auditoría del comportamiento real del código actual.
+No es una propuesta futura. Es una referencia operativa del comportamiento vigente.
 
-## 1. Visión general
-
-Flujo alto nivel:
+## 1. Flujo general
 
 `POST /agent/respond`
 -> `runtime.respond()`
@@ -14,14 +12,14 @@ Flujo alto nivel:
 -> `backend_client.fetch_tenant_context()`
 -> `backend_client.fetch_mcp_config()`
 -> `runtime_settings_client.effective_values()`
--> posible carga de summaries y `previous_response_id`
--> `build_intent_user_prompt()` / `build_final_user_prompt()`
--> `ToolSelector.select()`
--> `LLMClient.generate_with_mcp()` o `LLMClient.generate()`
--> OpenAI Responses API
--> tool traces MCP en la respuesta
--> persistencia de conversación/mensajes/uso IA
--> `data_to_save`
+-> persistencia de inbound
+-> carga de conversación y contexto
+-> primera llamada LLM para clasificar intención
+-> construcción del `tool_plan`
+-> segunda llamada LLM con contexto y tools permitidas
+-> ejecución MCP si aplica
+-> validación estructural mínima
+-> persistencia outbound y `data_to_save`
 
 ## 2. Archivos principales
 
@@ -34,6 +32,13 @@ Flujo alto nivel:
 - [api/app/services/runtime_settings_client.py](/home/fede/www/sales-agent/api/app/services/runtime_settings_client.py)
 - [api/app/schemas/agent.py](/home/fede/www/sales-agent/api/app/schemas/agent.py)
 - [api/app/schemas/llm.py](/home/fede/www/sales-agent/api/app/schemas/llm.py)
+
+### Orquestación LLM
+
+- [api/app/services/agent_orchestration/prompts.py](/home/fede/www/sales-agent/api/app/services/agent_orchestration/prompts.py)
+- [api/app/services/agent_orchestration/schemas.py](/home/fede/www/sales-agent/api/app/services/agent_orchestration/schemas.py)
+- [api/app/services/agent_orchestration/tool_selector.py](/home/fede/www/sales-agent/api/app/services/agent_orchestration/tool_selector.py)
+- [api/app/services/agent_orchestration/context_builder.py](/home/fede/www/sales-agent/api/app/services/agent_orchestration/context_builder.py)
 
 ### Symfony backend
 
@@ -52,769 +57,404 @@ Flujo alto nivel:
 - [backend/src/Entity/ConversationMessage.php](/home/fede/www/sales-agent/backend/src/Entity/ConversationMessage.php)
 - [backend/src/Entity/ExternalTool.php](/home/fede/www/sales-agent/backend/src/Entity/ExternalTool.php)
 
-### Tests útiles
+## 3. Contexto canónico
 
-- [api/tests/test_llm_context_hardening.py](/home/fede/www/sales-agent/api/tests/test_llm_context_hardening.py)
-- [api/tests/test_llm_client_mcp.py](/home/fede/www/sales-agent/api/tests/test_llm_client_mcp.py)
-- [api/tests/test_routing_runtime.py](/home/fede/www/sales-agent/api/tests/test_routing_runtime.py)
-- [api/tests/test_agent_llm_telemetry_e2e.py](/home/fede/www/sales-agent/api/tests/test_agent_llm_telemetry_e2e.py)
-- [backend/tests/Unit/InternalMcpConfigControllerTest.php](/home/fede/www/sales-agent/backend/tests/Unit/InternalMcpConfigControllerTest.php)
-- [backend/tests/Unit/InternalCommercialContextControllerTest.php](/home/fede/www/sales-agent/backend/tests/Unit/InternalCommercialContextControllerTest.php)
+Los bloques semánticos canónicos son:
 
-## 3. Orden real de carga
+- `backend_context`
+- `conversation_context`
 
-### 1. Entrada
+El prompt final también incorpora:
 
-La entrada operativa llega como `AgentRequest` en [api/app/schemas/agent.py](/home/fede/www/sales-agent/api/app/schemas/agent.py) y entra por `AgentRuntime.respond()` en [api/app/services/runtime.py](/home/fede/www/sales-agent/api/app/services/runtime.py).
+- `intent_plan`
+- `tool_plan`
 
-`AgentRequest` contiene, entre otros:
+El prompt de clasificación usa los mismos nombres canónicos con menos carga.
 
-- `tenant_id`
-- `channel_type`
-- `external_channel_id`
-- `entrypoint_ref`
-- `message`
-- `contact`
-- `conversation`
-- `raw_event`
+### Reglas de composición
 
-`Conversation` en el request lleva:
+- `current_message` aparece una sola vez.
+- `current_message` no debe duplicarse dentro de `history` ni dentro de resúmenes.
+- `history` y resúmenes deben ser cronológicos.
+- `history` solo contiene turnos previos a `current_message`.
+- `structured_data` y `tool_results` van pegados al turno en el que se produjeron.
+- `conversation_context.history` es la base de continuidad; no existe `runtime_context` ni `latest_structured_data` como tercera fuente de verdad.
 
-- `external_id`
-- `summary`
-- `last_messages` como `list[str]`
+### Ventana actual
 
-### 2. Routing
+La implementación actual carga hasta 12 mensajes previos al construir el contexto conversacional.
 
-`RuntimeRoutingResolver.resolve()` en [api/app/services/routing_resolver.py](/home/fede/www/sales-agent/api/app/services/routing_resolver.py) decide el tenant con este orden:
+## 4. Prioridad de contexto
 
-- `entrypoint_ref`
-- `external_channel_id` / `phone_number_id`
-- `tenant_id` explícito como fallback controlado
+La prioridad de razonamiento es guía semántica, no una máquina rígida:
 
-Si `entrypoint_ref` y canal apuntan a tenants distintos, devuelve `status="misconfigured_routing"`.
+1. `current_message` interpretado con `history` cronológico.
+2. `structured_data` y `tool_results` unidos al turno donde nacieron.
+3. Resultados recientes de tools de escritura y los turnos que reflejan ese cambio.
+4. `backend_context` como snapshot operativo del turno.
+5. Una nueva lectura MCP cuando el dato falta, contradice el historial o puede estar obsoleto.
 
-### 3. Contexto comercial
+Reglas prácticas:
 
-`AgentRuntime.respond()` llama a `BackendClient.fetch_tenant_context()` en [api/app/services/backend_client.py](/home/fede/www/sales-agent/api/app/services/backend_client.py).
+- La información más reciente, explícita y fiable vence sobre contexto viejo.
+- `backend_context` puede quedar temporalmente obsoleto después de una escritura exitosa.
+- Un dato recuperable ausente no es un error terminal.
+- Si hay duda relevante, el LLM debe preguntar o volver a consultar una tool de lectura.
+- No se deriva a una persona solo porque falte un dato recuperable o porque haga falta aclaración.
 
-Ese cliente consulta `GET /api/internal/commercial-context` en el backend Symfony con:
+## 5. Tools de lectura
 
-- `tenant_id`
-- `product_id`
-- `playbook_id`
-- `entry_point_id`
-- `entrypoint_ref`
-- `customer_phone`
-- `external_channel_id`
-- `current_message`
+Las tools de lectura configuradas y autorizadas están disponibles para el LLM en todos los turnos. El LLM decide si necesita utilizarlas.
 
-El backend responde con `CommercialContext`, que incluye:
+Puede consultarlas cuando falte información, exista ambigüedad, haya contradicción, el contexto previo pueda estar incompleto o desactualizado, o el usuario solicite verificar información externa.
 
-- `tenant`
-- `products`
-- `product_selection`
-- `playbooks`
-- `entry_point`
-- `sales_runtime`
-- `selected_product`
-- `selected_playbook`
-- flags de fallback
+Las read tools habituales son:
 
-### 4. Selección de producto
+- `contact_context`
+- `services_search`
+- `appointment_events`
+- `appointment_availability`
 
-La selección real se hace en `ProductContextResolver.resolve()` en [backend/src/Service/ProductContextResolver.php](/home/fede/www/sales-agent/backend/src/Service/ProductContextResolver.php).
+Reglas:
 
-Orden observado:
+- La ausencia temporal de un dato recuperable no bloquea la conversación.
+- El LLM puede volver a consultar una read tool en turnos posteriores si el usuario aporta nuevos datos o si necesita verificar el estado actual.
+- Una petición explícita de verificar o comprobar algo en un sistema externo prevalece sobre la regla general de no repetir consultas.
+- Para verificar una cita existente, prioriza `contact_context` o `appointment_events`.
+- No uses `appointment_availability` para comprobar una cita ya registrada.
+- `appointment_availability` y `appointment_events` pueden reconsultarse.
+- Cero resultados no es terminal; el LLM puede volver a preguntar o pedir datos.
+- `offered_slots` no es una lista cerrada de verdad absoluta; es contexto útil para seguir conversando.
 
-- si hay `EntryPoint` con `Product` activo del mismo tenant, se prioriza
-- si hay `product_id` explícito, se usa
-- si el mensaje permite extraer una query, se hace búsqueda en catálogo local
-- si no hay match local y existe MCP `services_search`, se marca `fallback_to_mcp_allowed`
-- si hay varios candidatos, el contexto devuelve `needs_service_clarification=true`
+## 6. Tools de escritura
 
-### 5. MCP config
+Las tools de escritura se exponen solo cuando el plan estructurado lo permite.
 
-`AgentRuntime.respond()` llama a `BackendClient.fetch_mcp_config()` para obtener la configuración MCP del tenant desde `GET /api/internal/mcp/{tenantId}/config`.
+Combinaciones actuales:
 
-`InternalMcpConfigController` devuelve:
+- `request_booking_confirmation` + `confirm_booking` -> `appointment_confirm`
+- `request_reschedule` + `confirm_reschedule` -> `appointment_reschedule`
+- `request_cancel` + `confirm_cancel` -> `appointment_cancel`
 
-- `enabled`
-- `tool_id`
-- `tenant_id`
-- `provider`
-- `type`
-- `server_label`
-- `server_url`
-- `auth_type`
-- `bearer_token`
-- `downstream_authorization_token`
-- `downstream_authorization_configured`
-- `allowed_tools`
-- `require_approval`
-- `timeout_seconds`
-- `config`
+Reglas:
 
-`bearer_token` / `downstream_authorization_token` son secretos internos. No se mandan al prompt.
+- `prepare_*` no autoriza escrituras.
+- Seleccionar un slot, identificar una cita o pedir confirmación no ejecuta la escritura.
+- La escritura solo puede ejecutarse cuando el turno actual contiene una confirmación inequívoca y la tool está disponible.
+- Si una tool de escritura falla, la respuesta no debe afirmar éxito.
+- La selección de un horario de reprogramación no es una reserva nueva.
+- La selección válida prepara la propuesta; la confirmación posterior autoriza la escritura.
 
-### 6. Runtime settings y policy
+## 7. Response contract
 
-`AgentRuntime.respond()` llama a `LLMClient.resolve_configuration()` a través de `RuntimeSettingsClient.effective_values()`.
+La respuesta final sigue un contrato abierto por defecto.
 
-`RuntimeSettingsClient` consulta `GET /api/internal/runtime-settings` con `Authorization: Bearer <SALES_AGENT_BEARER_TOKEN>`.
+Reglas:
 
-Si no hay backend disponible o el token no está configurado, usa fallback local.
+- No se usan response formats estrictos por intent para todo el flujo.
+- El formato efectivo final suele ser `json_object`.
+- La ausencia de `selected_slot`, `offered_slots`, `existing_appointment` u otros campos no se inventa ni se completa por postprocesado.
+- Si faltan datos, el LLM debe preguntar o usar una lectura MCP.
+- No se fuerza `structured_data` a contener campos cerrados cuando el estado aún no está resuelto.
+- `response_format` no debe convertirse en una máquina de estados por intent.
 
-Las keys efectivas incluyen:
+## 8. Agendas y citas
 
-- `llm_default_profile`
-- `openai_api_key`
-- `openai_base_url`
-- `openai_model`
-- `openai_timeout_seconds`
-- `openai_responses_timeout_seconds`
-- `openai_responses_max_attempts`
-- `openai_responses_retry_delay_seconds`
-- `ollama_*`
-- audio settings
+### Disponibilidad
 
-### 7. Conversación previa y summaries
+- Si el usuario pide reservar, agendar o consultar disponibilidad, puede usarse `appointment_availability` si está autorizada.
+- `appointment_availability` devuelve contexto útil para conversación y seguimiento.
+- El hecho de tener slots ofrecidos no obliga a confirmar una escritura.
 
-`AgentRuntime.respond()` persiste la conversación con:
+### Citas existentes
 
-- `BackendClient.upsert_conversation()`
-- `BackendClient.create_conversation_message()` para inbound
+- Para consultar una cita ya registrada, usa `contact_context` o `appointment_events`.
+- Si el usuario pide comprobar el estado o la fecha de una cita existente, consulta la fuente externa relevante aunque el historial ya tenga una pista fiable.
+- Si la lectura externa contradice el historial, prevalece el resultado actual de la tool.
 
-`BackendConversationUpsertPayload` usa:
+### Reprogramación
 
-- `tenant_id`
-- `product_id`
-- `entry_point_id`
-- `entry_point_utm_id`
-- `customer_phone`
-- `customer_name`
-- `first_message`
-- UTMs y `crm_branch_ref`
+- Seleccionar un nuevo horario no confirma la reprogramación.
+- La selección válida debe presentarse como propuesta pendiente de confirmación explícita.
+- Solo una respuesta posterior e inequívoca del usuario puede autorizar `appointment_reschedule`.
 
-`Conversation` en backend conserva:
+### Cancelación
 
-- `summary`
-- `lastOpenAiResponseId`
-- `lastOpenAiResponseAt`
-- `status`
-- `customerPhone`
-- `customerName`
-- `entryPoint`, `product`, `tenant`
+- Antes de cancelar, identifica la cita mediante historial o `appointment_events`.
+- Si existe una sola cita compatible, la conversación debe pedir confirmación explícita antes de ejecutar la escritura.
+- Si hay varias, el LLM debe pedir aclaración.
+- Si no hay cita, no se inventa `appointment_id`.
 
-`previous_response_id` se calcula en `AgentRuntime._previous_response_id_from_conversation_result()` solo si:
+## 9. Llamadas LLM
 
-- `openai_conversation_state_enabled` está activo
-- la conversación está `active`
-- el id anterior tiene prefijo `resp_`
-- la marca temporal está dentro del TTL configurado
+### Clasificación
 
-### 8. Prompt
+`AgentRuntime._classify_intent()` prepara el prompt de intención con:
 
-`build_intent_user_prompt()` y `build_final_user_prompt()` construyen:
+- contexto de backend;
+- contexto conversacional;
+- resumen temporal;
+- historial previo;
+- mensaje actual.
 
-- `system_prompt`
-- `user_prompt` JSON
+### Ejecución final
 
-El `user_prompt` incluye:
+`AgentRuntime._execute_llm_turn()` construye:
 
-- `tenant`
-- `product`
-- `products`
-- `product_selection`
-- `playbook`
-- `entry_point`
-- `sales_runtime`
-- `routing`
-- `contact`
-- `conversation`
-- `current_message`
+- `backend_context`
+- `conversation_context`
+- `intent_plan`
+- `tool_plan`
+- `mcp_config` filtrada por tools permitidas
 
-`conversation.last_messages` viene del request y se sanea en `AgentRequest.Conversation`.
+La segunda llamada puede usar `previous_response_id` cuando el flujo de OpenAI Responses lo permite.
 
-`ToolSelector.select()` también inserta reglas hardcoded según `mcp_config.allowed_tools`.
+### OpenAI Responses y MCP
 
-### 9. LLM / MCP
+`LLMClient.generate_with_mcp()` y `LLMClient.generate()` aceptan `response_format`, pero el runtime actual no impone schemas estrictos por intent.
 
-`LLMClient.generate_with_mcp()` elige provider:
+`LLMClient._build_openai_mcp_tools()` arma el bloque MCP remoto con:
 
-- `openai`
-- `ollama`
-- `heuristic`
-
-Si `mcp_config.enabled` y el provider es `openai`, llama a `LLMClient.generate_with_mcp()`.
-
-`LLMClient._generate_openai_responses()` envía a OpenAI Responses API:
-
-- `model`
-- `instructions`
-- `input`
-- `temperature`
-- `text.format`
-- `previous_response_id` si aplica
-- `tools` si hay MCP remoto
-
-La tool MCP remota que se manda a OpenAI se construye en `_build_openai_mcp_tools()` con:
-
-- `type: mcp`
 - `server_label`
 - `server_url`
 - `allowed_tools`
 - `require_approval`
 - `authorization`
 
-`authorization` sale de:
+El token downstream no va al prompt ni a `data_to_save`.
 
-- `settings.mcp_test_authorization`
-- `mcp_config.downstream_authorization_token`
-- fallback a `mcp_config.bearer_token`
+## 10. Persistencia
 
-### 10. Respuesta y tool traces
+`AgentRuntime.respond()` persiste:
 
-`LLMClient._extract_tool_traces()` lee `output` de OpenAI Responses y captura entradas tipo:
+- inbound
+- outbound
+- `structured_data`
+- `tool_results`
+- intent
+- action
+- metadatos de uso de IA
 
-- `mcp_*`
-- `tool_call`
-- `function_call`
+`data_to_save` es trazabilidad interna, no una fuente semántica independiente.
 
-Cada trace guarda:
+## 11. Debug y artefactos
 
-- `type`
-- `server_label`
-- `tool_name`
-- `arguments`
-- `output`
-- `status`
-- `raw`
+El sistema de debug existente se activa con `SA_LLM_CONTEXT_DEBUG`.
 
-### 11. Persistencia final
+- Valor por defecto del setting: `false` en [api/app/config.py](/home/fede/www/sales-agent/api/app/config.py).
+- Sobrescritura local y Docker: `SA_LLM_CONTEXT_DEBUG=true` en [.env](/home/fede/www/sales-agent/.env) y en `docker-compose.yml`.
+- Ruta base del runtime: `SA_LLM_CONTEXT_DEBUG_DIR`.
+- Valor por defecto del path: `/tmp/sa-llm/context` en [api/app/config.py](/home/fede/www/sales-agent/api/app/config.py).
+- Valor Docker/local habitual: `/app/var/sa-llm/context` en [.env](/home/fede/www/sales-agent/.env) y `docker-compose.yml`.
+- Si el directorio no existe, el runtime lo crea con `mkdir(parents=True, exist_ok=True)`.
+- La nomenclatura por conversación y turno usa `conversation_id` o `external_conversation_id` y un `turn_slug` derivado de `message.id` o `message.timestamp`.
 
-`AgentRuntime.respond()` persiste el outbound con:
+Cuando el debug está habilitado, se guardan artefactos por turno en la ruta base configurada. Los nombres existentes son:
 
-- `BackendClient.create_conversation_message()`
-- `BackendClient.create_ai_usage_event()`
+- `01-intent-request.json`
+- `01-intent-system-prompt.txt`
+- `01-intent-user-prompt.txt`
+- `02-intent-response.json`
+- `03-final-request.json`
+- `03-final-system-prompt.txt`
+- `03-final-user-prompt.txt`
+- `04-final-response.json`
 
-La decisión de generar summary hoy se activa cuando:
+Cómo inspeccionarlo:
 
-- `response.needs_human` es `true`
-- o `response.action == "handoff_to_human"`
+- `01-intent-request.json`: contexto exacto enviado a la clasificación.
+- `02-intent-response.json`: intención y acción devueltas.
+- `03-final-request.json`: contexto final, tools permitidas y `response_format`.
+- `04-final-response.json`: respuesta final y `tool_traces`.
+- Los archivos `.txt` contienen los prompts exactos enviados a OpenAI.
+- El campo `llm_context_debug` en `data_to_save` referencia los archivos generados para ese turno.
 
-## 12. Contexto operativo que SA entrega al LLM
+El probe manual usa otro directorio distinto:
 
-Sales Agent no pasa únicamente texto al modelo. Construye un contexto operativo estructurado que mezcla:
+- `var/sa-llm/probe/`
+- `OUT_DIR` por defecto en `scripts/e2e/agent_conversation_probe.sh`: `./var/sa-llm/probe`
+- Cada turno se guarda como `sa-<CONV>-<step>.json`
+- El probe imprime la respuesta, el tool plan, el estado de agenda y las trazas MCP del turno
 
-- contexto de tenant y negocio
-- contexto de producto / servicio
-- contexto de contacto externo
-- contexto de agenda y timezone
-- continuidad conversacional
-- estado operativo del turno
+### Available tools vs executed MCP calls
 
-El bloque clave es `operational_context`, que resume la verdad operativa del turno y se inyecta en el prompt junto con `temporal_context`.
+- Una tool incluida en `tool_plan.allowed_tools` está disponible para el modelo.
+- Estar en `allowed_tools` no significa que se haya ejecutado.
+- Un catálogo o metadato con `status: null` o equivalente no demuestra una llamada MCP real.
+- Una llamada MCP real debe verse como una traza real con nombre de tool, tipo de llamada como `mcp_call` o equivalente real, argumentos, status final y output o error.
+- `04-final-response.json` y `tool_traces` son la referencia principal para confirmar ejecución real.
+- No asumir ejecución solo porque la tool aparezca anunciada en la request o en el catálogo.
 
-Ejemplo simplificado:
+### Verifying an appointment write
 
-```json
-{
-  "tenant_id": "019e4a9a-c85f-72d4-8748-b756073c324c",
-  "channel": "whatsapp",
-  "contact": {
-    "phone": "+34...",
-    "email": null,
-    "name": "Cliente"
-  },
-  "effective_timezone": "Atlantic/Canary",
-  "appointment_tool_timezone": "Atlantic/Canary",
-  "contact_context_available": true,
-  "effective_timezone_source": "crm_tenant",
-  "contact_context_source": "external_tool:n8n"
-}
+Para verificar una escritura real de agenda:
+
+1. Revisar `02-intent-response.json`.
+2. Confirmar que `intent` y `action` corresponden a una confirmación explícita: `confirm_booking`, `confirm_reschedule` o `confirm_cancel`.
+3. Revisar `03-final-request.json`.
+4. Confirmar que la write tool correspondiente aparece en `tool_plan.allowed_tools`.
+5. Revisar `04-final-response.json`.
+6. Confirmar que existe una llamada MCP real para `appointment_confirm`, `appointment_reschedule` o `appointment_cancel`.
+7. Revisar los argumentos exactos enviados.
+8. Revisar el status real de la llamada.
+9. Revisar el output real del MCP.
+10. Confirmar el flag de éxito correspondiente cuando exista: `confirmed=true`, `rescheduled=true` o `cancelled=true`.
+11. Confirmar que la respuesta final del LLM refleja el resultado real.
+12. Confirmar que el resultado queda disponible en `structured_data`, `tool_results` o `tool_traces`, según la forma real existente.
+
+No repetir una escritura porque el probe no muestre `NORMALIZED RESULTS`.
+No repetir `appointment_confirm`, `appointment_reschedule` ni `appointment_cancel` solo porque un resumen esté vacío.
+Revisar siempre `04-final-response.json` y la trace MCP real antes de concluir que una escritura no ocurrió.
+Durante debug, una escritura exitosa no debe repetirse.
+
+### Practical debug commands
+
+Listar todos los artefactos de contexto:
+
+```bash
+find var/sa-llm/context -type f | sort
 ```
 
-### Qué significa cada campo
+Localizar los artefactos de una conversación:
 
-- `effective_timezone`: timezone operativa real del turno
-- `effective_timezone_source`: fuente de esa timezone
-- `appointment_tool_timezone`: timezone que debe usar `appointment_availability` / `appointment_confirm`
-- `technical_fallback_timezone`: fallback técnico de seguridad cuando no hay timezone fiable
-- `technical_fallback_timezone_source`: origen del fallback técnico
-- `timezone_guardrail_blocked`: indica si se bloqueó una tool por inconsistencia temporal
-- `timezone_guardrail_reason`: motivo del bloqueo
-- `timezone_mismatch_detected`: diferencia entre timezone esperada y la usada por la tool
-- `expected_timezone`: timezone que SA esperaba que usara la tool
-- `actual_timezone`: timezone realmente observada en la tool trace
-- `mismatched_tool`: nombre de la tool conflictiva cuando el guardrail bloquea
-
-Regla crítica:
-
-- el fallback técnico, por ejemplo `Europe/Madrid`, solo se usa si no hay una timezone operativa fiable
-- si el CRM o el contexto del negocio aporta `Atlantic/Canary` u otro timezone válido, ese valor gana
-- las tools de agenda deben seguir `appointment_tool_timezone`, no el fallback técnico
-
-## 13. `contact_context` vía ExternalTool n8n
-
-El contexto externo del contacto se obtiene a través de una `ExternalTool` por tenant con:
-
-- `type = contact_context`
-- `provider = n8n_webhook`
-
-La llamada operacional es:
-
-`SA -> ExternalTool contact_context -> n8n -> CRM`
-
-### Separación de tokens
-
-Hay dos credenciales distintas:
-
-- `Authorization: Bearer <N8N_WEBHOOK_TOKEN>` para proteger el webhook de n8n
-- `X-Downstream-Authorization: Bearer <CRM_DOWNSTREAM_TOKEN>` para que n8n consulte CRM u otra fuente aguas abajo
-
-No se deben mezclar:
-
-- webhook auth ≠ downstream auth
-- el token downstream no va al prompt
-- el token downstream no va en `data_to_save`
-- el token downstream no debe aparecer en logs ni respuestas
-
-### Flags que SA conserva
-
-Cuando se resuelve `contact_context`, SA conserva y/o publica:
-
-- `contact_context_resolver_called`
-- `contact_context_available`
-- `contact_context_source`
-- `contact_context_external_tool_called`
-- `contact_context_external_tool_available`
-- `contact_context_cache_lookup`
-- `contact_context_cache_hit`
-- `contact_context_error_code`
-- `contact_context_error_message`
-- `effective_timezone`
-- `effective_timezone_source`
-- `operational_context`
-
-## 14. Continuidad de conversación
-
-Hay dos niveles de continuidad:
-
-### A. Continuidad interna de SA
-
-SA conserva:
-
-- `conversation_id`
-- `messages`
-- `context_messages`
-- `summary`
-- `traces`
-- `data_to_save`
-- `llm_response_id`
-
-Ese estado sirve para:
-
-- recuperar el hilo
-- conservar slots ofrecidos
-- guardar contexto externo
-- postprocesar resultados de tool calls
-
-### B. Continuidad de OpenAI
-
-Cuando el runtime usa OpenAI Responses API, también puede reutilizar:
-
-- `previous_response_id`
-- `lastOpenAiResponseId` / `last_openai_response_id`
-
-Eso ayuda a mantener continuidad del hilo LLM, pero no sustituye al estado estructurado del runtime.
-
-### Regla práctica
-
-- `previous_response_id` ayuda a continuar una conversación
-- `context_messages`, `operational_context` y `appointment_context` son la verdad operativa
-- si el modelo se desvía, SA sigue postprocesando y corrigiendo el resultado final
-
-## 15. Offered slots y `selected_slot`
-
-Cuando `appointment_availability` devuelve slots, SA conserva ese resultado como contexto estructurado en `context_messages` y en `conversation.appointment_context`.
-
-Un slot típico puede verse así:
-
-```json
-{
-  "start": "2026-06-16T19:30:00+01:00",
-  "end": "2026-06-16T21:00:00+01:00",
-  "owner": {
-    "id": "019eb05e-5bab-7038-877b-3c73f988ab68",
-    "name": "María Gutiérrez"
-  }
-}
+```bash
+find var/sa-llm/context \
+  -path '*<conversation-id>*' \
+  -type f \
+  | sort
 ```
 
-Con ese bloque, SA puede resolver follow-ups como:
+Buscar una conversación en context y probe:
+
+```bash
+grep -Rni '<conversation-id>' \
+  var/sa-llm/context \
+  var/sa-llm/probe
+```
 
-- `Prefiero el de las 19:30 con María Gutiérrez.`
+Inspeccionar los JSON principales:
+
+```bash
+jq . <turn-dir>/01-intent-request.json
+jq . <turn-dir>/02-intent-response.json
+jq . <turn-dir>/03-final-request.json
+jq . <turn-dir>/04-final-response.json
+```
 
-### Selección determinista
+Inspeccionar los prompts exactos:
+
+```bash
+sed -n '1,240p' <turn-dir>/01-intent-system-prompt.txt
+sed -n '1,240p' <turn-dir>/01-intent-user-prompt.txt
+sed -n '1,260p' <turn-dir>/03-final-system-prompt.txt
+sed -n '1,260p' <turn-dir>/03-final-user-prompt.txt
+```
+
+Ejecutar el probe actual:
+
+```bash
+scripts/e2e/agent_conversation_probe.sh "mensaje"
+```
 
-SA resuelve `selected_slot` de forma determinista cuando el mensaje es inequívoco:
-
-- hora + owner correcto -> `selected_slot`
-- hora única sin owner -> `selected_slot`
-- hora ambigua sin owner -> no `selected_slot`
-- owner incorrecto -> no `selected_slot`
-
-### Campo de acción obligatoria
-
-Cuando el slot es confirmable, SA añade `required_next_action` para reforzar al LLM que debe llamar `appointment_confirm` inmediatamente con el slot seleccionado.
-
-## 16. Confirmación de cita
-
-La confirmación de cita sigue un patrón seguro:
-
-1. el usuario elige un slot inequívoco
-2. SA prepara `selected_slot` y `required_next_action`
-3. el LLM llama `appointment_confirm`
-4. SA inspecciona `mcp_tool_traces`
-5. si `ok=true` y `confirmed=true`, SA reescribe la reply final a una confirmación clara
-6. si falla, SA no afirma que la cita quedó cerrada
-
-Regla de postproceso:
-
-- si la tool confirma con éxito, la respuesta final debe ser explícita, breve y sin duplicar mensajes del tool
-- si la tool devuelve error o `confirmed=false`, SA no debe decir que la cita está reservada
-
-## 4. Qué contexto viene de BD/backend
-
-### Tenant
-
-En [backend/src/Entity/Tenant.php](/home/fede/www/sales-agent/backend/src/Entity/Tenant.php) y en `InternalCommercialContextController` se usa:
-
-- `business_context`
-- `tone`
-- `sales_policy`
-- `whatsapp_phone_number_id`
-- `whatsapp_public_phone`
-- `handoff`
-
-### Product
-
-En [backend/src/Entity/Product.php](/home/fede/www/sales-agent/backend/src/Entity/Product.php):
-
-- `name`
-- `slug`
-- `description`
-- `value_proposition`
-- `base_price_cents`
-- `currency`
-- `external_source`
-- `external_reference`
-- `sales_policy`
-
-### Playbook
-
-En [backend/src/Entity/Playbook.php](/home/fede/www/sales-agent/backend/src/Entity/Playbook.php):
-
-- `name`
-- `config`
-- `product_id`
-
-### Entry point
-
-En [backend/src/Entity/EntryPoint.php](/home/fede/www/sales-agent/backend/src/Entity/EntryPoint.php):
-
-- `code`
-- `name`
-- `description`
-- `initial_message`
-- `crm_branch_ref`
-- relación con `Product`
-
-### ExternalTool / MCP
-
-En [backend/src/Entity/ExternalTool.php](/home/fede/www/sales-agent/backend/src/Entity/ExternalTool.php):
-
-- `server_label`
-- `server_url`
-- `allowed_tools`
-- `require_approval`
-- `enabled_for_llm`
-- `timeout_seconds`
-- `is_runtime_default`
-- `bearer_token` cifrado
-
-### Runtime settings / AI policy
-
-En [backend/src/Controller/Api/InternalRuntimeSettingsController.php](/home/fede/www/sales-agent/backend/src/Controller/Api/InternalRuntimeSettingsController.php) y [backend/src/Controller/Api/InternalAiUsageController.php](/home/fede/www/sales-agent/backend/src/Controller/Api/InternalAiUsageController.php):
-
-- modelos
-- límites
-- provider profile
-- audio
-- policy por tenant
-
-### Conversation
-
-En [backend/src/Entity/Conversation.php](/home/fede/www/sales-agent/backend/src/Entity/Conversation.php):
-
-- `summary`
-- `lastOpenAiResponseId`
-- `lastOpenAiResponseAt`
-- `status`
-- `customerPhone`
-- `customerName`
-- `entryPoint`
-- `product`
-
-En [backend/src/Entity/ConversationMessage.php](/home/fede/www/sales-agent/backend/src/Entity/ConversationMessage.php):
-
-- `direction`
-- `role`
-- `messageType`
-- `body`
-- `provider`
-- `model`
-- `latencyMs`
-- `intent`
-- `score`
-- `action`
-- `needsHuman`
-- `rawPayload`
-- `metadata`
-
-## 5. Qué está hardcodeado en código
-
-La mayor parte de las reglas conversacionales vive en [api/app/services/agent_orchestration/prompts.py](/home/fede/www/sales-agent/api/app/services/agent_orchestration/prompts.py).
-
-### Reglas generales hardcoded
-
-- responder en español
-- devolver solo JSON válido
-- no inventar precios, plazos ni funcionalidades
-- pedir 1-2 datos si el precio no está claro
-- marcar `needs_human=true` cuando se pide humano/persona/asesor/comercial
-- mantener continuidad usando contexto previo relevante
-- no arrastrar detalles irrelevantes
-
-### Reglas condicionales por MCP
-
-Se activan solo si `mcp_config.enabled` y la tool está en `allowed_tools`.
-
-- `contact_context`
-- `services_search`
-- `appointment_availability`
-- `appointment_events`
-- `appointment_confirm`
-- `appointment_booking_invitation`
-- `handoff_request`
-- `crm_contact_submit`
-
-### `contact_context`
-
-Solo se guía si la tool está autorizada.
-
-Regla actual:
-
-- si hay teléfono o email, usarlo primero para detectar lead/customer existente
-- si no devuelve contexto suficiente, seguir cualificando de forma natural
-
-### `crm_contact_submit`
-
-Solo se guía si la tool está autorizada.
-
-Regla actual:
-
-- usarla cuando haya información comercial útil, cualificación, cita, handoff, waitlist, resumen o datos nuevos relevantes
-- `source` y `channel` son el canal/origen comercial, no el tenant
-- nunca usar `tenant_id` como `source`
-- en WhatsApp usar `source="whatsapp"` y `channel="whatsapp"`
-- si no se conoce el canal, usar el canal del contacto o conversación si existe, o omitirlo antes que inventar `tenant_id`
-- `tenant_id` solo si la tool lo pide como argumento separado
-- CRM decide si el resultado termina como lead/customer/note
-
-### `services_search`
-
-Reglas actuales:
-
-- usar queries cortas y amplias
-- `bookable=null` por defecto
-- `bookable=true` solo si hay intención clara de reserva
-- usar `item.id` como `service_id` canónico cuando exista
-- `service_ref` solo como fallback
-
-### `appointment_*`
-
-Reglas actuales:
-
-- si `appointment_availability` está disponible y el usuario pide reservar/agendar/consultar disponibilidad, usarla
-- si `appointment_events` está disponible y el usuario pregunta por citas registradas, usarla
-- no decir que no se puede consultar agenda cuando esas tools existen
-
-### `handoff_request`
-
-Reglas actuales:
-
-- disponible cuando la estrategia de handoff del tenant es `n8n_webhook` o `manual_wa_link_and_n8n`
-- incluir contexto útil sin mandar el historial completo
-- no afirmar que se avisó nada si falla
-
-## 6. MCP/tools
-
-### Cómo se obtiene MCP config
-
-`BackendClient.fetch_mcp_config()` llama a:
-
-`GET /api/internal/mcp/{tenantId}/config`
-
-### Cómo `allowed_tools` limita tools
-
-`allowed_tools` vive en `ExternalTool.config` y llega a `McpRemoteConfig.allowed_tools`.
-
-En el prompt, la lógica condicional solo añade guías si la tool aparece en `allowed_tools_list`.
-
-En OpenAI Responses API, `allowed_tools` también se envía dentro del bloque MCP remoto.
-
-### Cómo OpenAI recibe remote MCP
-
-`LLMClient._build_openai_mcp_tools()` arma el bloque `tools` para `/responses`.
-
-### Cómo se pasa downstream authorization
-
-`LLMClient._mcp_authorization_token()` elige el token downstream y lo serializa como `authorization` para OpenAI Responses.
-
-Ese token:
-
-- no se manda al prompt
-- no se manda como argumento de tool
-- no se registra en traces visibles
-
-### Qué se guarda en `mcp_tool_traces`
-
-`mcp_tool_traces` entra en `data_to_save` cuando OpenAI devuelve `output` con traces MCP.
-
-### Ejemplo de tools
-
-- `contact_context`
-- `services_search`
-- `appointment_availability`
-- `appointment_events`
-- `appointment_confirm`
-- `appointment_reschedule`
-- `appointment_cancel`
-- `appointment_booking_invitation`
-- `handoff_request`
-- `crm_contact_submit`
-
-## 7. CRM context/sync
-
-Regla actual:
-
-- SA no crea lead/customer directamente
-- SA puede consultar contexto con `contact_context` si la tool está disponible
-- SA puede enviar contexto con `crm_contact_submit` si la tool está disponible
-- CRM decide lead/customer/note según su configuración
-- `source/channel` son canal/origen comercial
-- WhatsApp usa `source=whatsapp`, `channel=whatsapp`
-- `tenant_id` no debe usarse como source
-- requiere downstream CRM token con scope `contacts:write`
-
-La documentación contractual relacionada vive en [docs/crm-contract.md](/home/fede/www/sales-agent/docs/crm-contract.md).
-
-## 8. Conversación, memoria y summaries
-
-### `conversation.last_messages`
-
-En el request del runtime es `list[str]`.
-
-Se sanea en `api/app/schemas/agent.py`:
-
-- se eliminan strings vacíos
-- se recortan espacios
-- el prompt usa el helper de contexto para limitar cantidad y tamaño
-
-### Summaries
-
-SA carga contexto de conversación desde `BackendClient.get_conversation_summary_context()` para construir el histórico que ve el LLM.
-
-### `previous_response_id`
-
-Se usa solo cuando:
-
-- `openai_conversation_state_enabled` está activo
-- la conversación está `active`
-- el id anterior empieza por `resp_`
-- no expiró el TTL
-
-### Impacto en el contexto
-
-`previous_response_id` se pasa a OpenAI Responses API.
-No reemplaza el prompt ni el contexto de backend.
-
-## 9. `data_to_save`
-
-`data_to_save` sale de `AgentRuntime._build_agent_response()` y se mezcla con telemetría y metadatos del runtime.
-
-Suele incluir:
-
-- payload de la decisión del LLM
-- telemetry (`provider`, `model`, `response_id`, tokens, cost, latencia)
-- `mcp_tool_traces`
-- `mcp_enabled`
-- `mcp_server_label`
-- `mcp_server_url`
-- `mcp_allowed_tools`
-- `mcp_require_approval`
-- `mcp_errors`
-- `mcp_skipped_reason`
-- `openai_previous_response_id_invalid`
-- datos de contexto operativo como `tenant_id`, `entry_point_id`, `product_slug`, etc. cuando se agregan desde el runtime/decision engine
-
-`data_to_save` no equivale a guardar en CRM. Es contexto operativo para persistencia interna y trazabilidad.
-
-## 10. Fallos y fallback
-
-Comportamiento documentado cuando:
-
-- no hay commercial context: el runtime puede continuar con fallback local o heurístico según el caso
-- no hay MCP config: `McpRemoteConfig.enabled=false`
-- MCP está deshabilitado: se sigue sin MCP
-- MCP no responde: `BackendClient.fetch_mcp_config()` devuelve MCP deshabilitado
-- `allowed_tools` no contiene una tool: la guía no entra en el prompt y OpenAI no recibe esa tool en el allowlist
-- OpenAI falla: `LLMClient.generate_with_mcp()` devuelve un fallo estructurado del proveedor tras reintentos limitados
-- provider no es OpenAI: MCP remoto se omite
-- no hay downstream authorization: el MCP puede seguir sin `authorization` o con token ausente según configuración
-- CRM no está integrado: el flujo sigue con contexto local
-- no hay agenda: las reglas agenda/handoff siguen con fallback textual
-- no hay producto local: puede activarse fallback a MCP de servicios si está permitido
-
-## 11. Ejemplo resumido real
-
-Caso conceptual:
-
-WhatsApp lead pregunta por láser axilas
--> SA identifica tenant por `phone_number_id`
--> carga commercial context de Mary
--> carga MCP config `mary_main_mcp`
--> LLM usa `services_search` / `appointment_availability` / `crm_contact_submit`
--> CRM crea lead y nota
--> la respuesta persiste tool traces en `data_to_save`
-
-No se incluyen tokens reales.
-
-## 12. Checklist para futuras modificaciones
-
-- ¿La regla es global o condicional?
-- ¿Depende de `allowed_tools`?
-- ¿Funciona sin CRM?
-- ¿Funciona sin MCP?
-- ¿Está cubierta por test?
-- ¿Se evita exponer tokens?
-- ¿Se mantiene CRM como fuente de verdad?
-- ¿Se documentó si es hardcoded o configurable?
-
-## Dudas / TODO
-
-- `previous_response_id` depende de `openai_conversation_state_enabled`; no se documentó aquí dónde se configura ese flag en backend porque no fue necesario para el flujo principal.
-- El backend de summaries usa `GET /api/internal/conversations/{conversation_id}/summary-context`; si cambia la forma del contexto, este documento deberá actualizarse.
-- No se documenta aquí la semántica completa de `conversation.message.metadata` porque depende de la capa de persistencia y de futuras integraciones.
+Si quieres controlar la conversación o el archivo de salida, el script usa `CONV`, `TENANT_ID`, `CONTACT_PHONE`, `CONTACT_NAME` y `OUT_DIR` como variables de entorno opcionales.
+
+Salida del probe:
+
+- Directorio por defecto: `var/sa-llm/probe/`
+- Variable `OUT_DIR`: existe y por defecto apunta a `./var/sa-llm/probe`
+- Formato de archivo: `sa-<CONV>-<step>.json`
+- Un JSON por turno o paso
+- El probe es un resumen de conveniencia
+- Los artefactos de `var/sa-llm/context/` son la fuente principal para diagnóstico detallado
+
+### Mapa breve de artefactos
+
+`01-intent-request.json`
+
+- Revisar:
+  - payload real enviado a clasificación
+  - `backend_context`
+  - `conversation_context`
+  - `current_message`
+  - `history`
+  - contexto temporal
+  - metadata incluida
+
+`01-intent-system-prompt.txt`
+
+- Revisar:
+  - instrucciones exactas del clasificador
+  - reglas de `intent` y `action`
+  - reglas de contexto y razonamiento
+
+`01-intent-user-prompt.txt`
+
+- Revisar:
+  - prompt de usuario exacto para clasificación
+  - contexto serializado que vio el modelo
+
+`02-intent-response.json`
+
+- Revisar:
+  - `intent`
+  - `action`
+  - `confidence`
+  - `needs_tools`
+  - explicación o reason si existe
+
+`03-final-request.json`
+
+- Revisar:
+  - `backend_context`
+  - `conversation_context`
+  - `intent_plan`
+  - `tool_plan`
+  - `tool_plan.allowed_tools`
+  - `response_format`
+  - `bootstrap_tool`
+
+`03-final-system-prompt.txt`
+
+- Revisar:
+  - reglas operativas del turno final
+  - gating de tools
+  - reglas de confirmación
+  - reglas de razonamiento abiertas
+
+`03-final-user-prompt.txt`
+
+- Revisar:
+  - prompt de usuario exacto para el turno final
+  - contexto serializado completo que vio el LLM
+
+`04-final-response.json`
+
+- Revisar:
+  - respuesta final del LLM
+  - `tool_traces`
+  - trazas MCP reales
+  - `structured_data`
+  - `data_to_save`
+  - resultado confirmado o fallido
+
+Reglas de seguridad:
+
+- No registrar tokens, bearer tokens ni secretos.
+- No usar el debug para repetir escrituras.
+- No confundir tools anunciadas con llamadas MCP realmente ejecutadas.
+- Si el diagnóstico necesita el estado real, revisar los requests y responses persistidos.
+
+## 12. Checklist de cambios futuros
+
+- ¿La regla depende de `allowed_tools`?
+- ¿La semántica viene del LLM y no de heurística SA?
+- ¿La lectura puede repetirse si el dato falta o está desactualizado?
+- ¿La escritura solo ocurre con confirmación explícita?
+- ¿Se preserva la trazabilidad y se redactan secretos?
+- ¿El cambio mantiene el flujo recuperable por corrección del usuario?
+
+## 13. Notas operativas
+
+- `conversation_context.history` debe seguir siendo el registro canónico de continuidad.
+- Los resultados estructurados pueden ir creciendo por turnos; no hace falta resolver todo de una sola vez.
+- `handoff` debe reservarse para política explícita, solicitud del usuario o imposibilidad real de continuar de forma autónoma.
