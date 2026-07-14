@@ -613,6 +613,7 @@ ResponseAction = Literal[
     "handoff_to_human",
     "create_or_update_crm_contact",
     "prepare_booking_confirmation",
+    "prepare_cancel",
     "appointment_confirmed",
     "appointment_failed",
 ]
