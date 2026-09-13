@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "name": "booking",
+  "goal": "Reservar una cita de láser axilas el próximo viernes por la tarde con María Gutiérrez.",
+  "defaults": {
+    "tenant_id": "019e4a9a-c85f-72d4-8748-b756073c324c",
+    "channel_type": "whatsapp",
+    "external_channel_id": "test-whatsapp-e2e",
+    "entrypoint_ref": "mary-main",
+    "contact_phone": "+34678180164",
+    "contact_name": "Federico Martín Peña",
+    "conversation_prefix": "autonomous-booking"
+  },
+  "initial_message": "Quiero reservar láser axilas el próximo viernes por la tarde con María Gutiérrez.",
+  "initial_data_fields": [
+    "service_name",
+    "preferred_day",
+    "time_of_day",
+    "owner_name"
+  ],
+  "max_turns": 6,
+  "customer_data": {
+    "service_name": "láser axilas",
+    "preferred_day": "el próximo viernes",
+    "time_of_day": "por la tarde",
+    "owner_name": "María Gutiérrez",
+    "contact_name": "Federico Martín Peña",
+    "contact_phone": "+34678180164"
+  },
+  "preferred_slot_strategy": "first",
+  "expected_write_tool": "appointment_confirm",
+  "ready_action": "prepare_booking_confirmation",
+  "requires_selected_slot": true,
+  "requires_existing_appointment": false,
+  "recommended_read_tools": [
+    "contact_context",
+    "services_search",
+    "appointment_availability"
+  ],
+  "preconditions": [
+    "El servicio y la agenda deben estar disponibles mediante tools de lectura."
+  ],
+  "documented_invariants": [
+    "No ejecutar ninguna write MCP.",
+    "No exponer appointment_confirm durante prepare_booking_confirmation.",
+    "Todo selected_slot debe proceder de offered_slots o appointment_availability.",
+    "Detenerse antes de enviar confirmación explícita."
+  ]
+}

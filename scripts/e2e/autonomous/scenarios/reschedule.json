@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "name": "reschedule",
+  "goal": "Reprogramar una cita existente al próximo viernes por la tarde con María Gutiérrez.",
+  "defaults": {
+    "tenant_id": "019e4a9a-c85f-72d4-8748-b756073c324c",
+    "channel_type": "whatsapp",
+    "external_channel_id": "test-whatsapp-e2e",
+    "entrypoint_ref": "mary-main",
+    "contact_phone": "+34678180164",
+    "contact_name": "Federico Martín Peña",
+    "conversation_prefix": "autonomous-reschedule"
+  },
+  "initial_message": "Quiero reprogramar mi cita existente al próximo viernes por la tarde con María Gutiérrez.",
+  "initial_data_fields": [
+    "preferred_day",
+    "time_of_day",
+    "owner_name"
+  ],
+  "max_turns": 7,
+  "customer_data": {
+    "preferred_day": "el próximo viernes",
+    "time_of_day": "por la tarde",
+    "owner_name": "María Gutiérrez",
+    "contact_name": "Federico Martín Peña",
+    "contact_phone": "+34678180164"
+  },
+  "preferred_slot_strategy": "first",
+  "expected_write_tool": "appointment_reschedule",
+  "ready_action": "prepare_reschedule",
+  "requires_selected_slot": true,
+  "requires_existing_appointment": true,
+  "recommended_read_tools": [
+    "contact_context",
+    "appointment_events",
+    "appointment_availability"
+  ],
+  "preconditions": [
+    "Debe existir una cita verificable mediante contact_context o appointment_events."
+  ],
+  "documented_invariants": [
+    "No ejecutar ninguna write MCP.",
+    "No exponer appointment_reschedule durante prepare_reschedule.",
+    "La cita debe proceder de evidencia estructurada fiable.",
+    "El nuevo slot debe proceder de offered_slots o appointment_availability.",
+    "Seleccionar un slot no equivale a confirmar la reprogramación."
+  ]
+}
