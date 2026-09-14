@@ -18,6 +18,7 @@ from app.services.agent_orchestration.schemas import (
     ConversationTemporalContext,
     CurrentMessage,
     ConversationTurn,
+    ServicesStructuredData,
     StructuredData,
 )
 from app.services.backend_client import BackendClient, CommercialContext
@@ -192,15 +193,22 @@ class OrchestrationContextBuilder:
         appointment = structured_data.appointment
         offered_slots = deepcopy(appointment.offered_slots) if isinstance(appointment.offered_slots, list) and appointment.offered_slots != [] else []
         selected_slot = deepcopy(appointment.selected_slot) if isinstance(appointment.selected_slot, dict) and appointment.selected_slot != {} else None
+        services = structured_data.services
+        selected_service = deepcopy(services.selected_service) if isinstance(services.selected_service, dict) and services.selected_service != {} else None
+        selected_services = deepcopy(services.selected_services) if isinstance(services.selected_services, list) and services.selected_services != [] else []
 
-        if offered_slots == [] and selected_slot is None:
+        if offered_slots == [] and selected_slot is None and selected_service is None and selected_services == []:
             return StructuredData()
 
         return StructuredData(
             appointment=AppointmentStructuredData(
                 offered_slots=offered_slots,
                 selected_slot=selected_slot,
-            )
+            ),
+            services=ServicesStructuredData(
+                selected_service=selected_service,
+                selected_services=selected_services,
+            ),
         )
 
     def _has_useful_history_structured_data(self, structured_data: StructuredData) -> bool:
@@ -208,10 +216,15 @@ class OrchestrationContextBuilder:
             return False
 
         appointment = structured_data.appointment
+        services = structured_data.services
         return (
             isinstance(appointment.offered_slots, list) and appointment.offered_slots != []
         ) or (
             isinstance(appointment.selected_slot, dict) and appointment.selected_slot != {}
+        ) or (
+            isinstance(services.selected_service, dict) and services.selected_service != {}
+        ) or (
+            isinstance(services.selected_services, list) and services.selected_services != []
         )
 
     def _structured_data_from_message(self, message: dict[str, Any]) -> StructuredData:

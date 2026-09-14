@@ -15,6 +15,9 @@ class WriteIntegrityGuard:
     """
 
     def apply(self, final: LLMFinalResponse, plan: IntentPlan, llm_result: Any | None) -> LLMFinalResponse:
+        if plan.intent == "request_booking_invitation" and plan.action == "create_booking_invitation":
+            final = self._guard_booking_invitation(final, llm_result)
+
         if plan.intent != "request_booking_confirmation" or plan.action != "prepare_booking_confirmation":
             return final
 
@@ -41,6 +44,68 @@ class WriteIntegrityGuard:
                 "structured_data": guarded_structured_data,
                 "data_to_save": guarded_data_to_save,
             }
+        )
+
+    def _guard_booking_invitation(
+        self,
+        final: LLMFinalResponse,
+        llm_result: Any | None,
+    ) -> LLMFinalResponse:
+        trace, parsed_output = self._latest_mcp_call_output(
+            llm_result,
+            "appointment_booking_invitation",
+        )
+
+        guarded_structured_data = (
+            final.structured_data.model_copy(deep=True)
+            if hasattr(final.structured_data, "model_copy")
+            else final.structured_data
+        )
+
+        if hasattr(guarded_structured_data, "appointment"):
+            appointment = guarded_structured_data.appointment
+            if hasattr(appointment, "booking_invitation"):
+                appointment.booking_invitation = (
+                    dict(parsed_output)
+                    if isinstance(parsed_output, dict)
+                    else None
+                )
+
+        guarded_data_to_save = dict(final.data_to_save or {})
+        guarded_data_to_save.pop("booking_invitation", None)
+        guarded_data_to_save.pop("booking_url", None)
+
+        if trace is None and final.action != "completed":
+            return final
+
+        if self._booking_invitation_succeeded(parsed_output):
+            return final.model_copy(
+                update={
+                    "structured_data": guarded_structured_data,
+                    "data_to_save": guarded_data_to_save,
+                }
+            )
+
+        return final.model_copy(
+            update={
+                "reply": "No he podido generar el enlace de reserva ahora mismo. Puedo intentarlo de nuevo o ayudarte a buscar un horario.",
+                "action": "appointment_failed",
+                "needs_human": False,
+                "required_next_action": None,
+                "structured_data": guarded_structured_data,
+                "data_to_save": guarded_data_to_save,
+            }
+        )
+
+    def _booking_invitation_succeeded(self, parsed_output: Any) -> bool:
+        if not isinstance(parsed_output, dict):
+            return False
+
+        booking_url = self._clean(parsed_output.get("booking_url"))
+        return (
+            self._is_truthy(parsed_output.get("ok"))
+            and self._is_truthy(parsed_output.get("created"))
+            and booking_url is not None
         )
 
     def _appointment_confirm_succeeded(self, llm_result: Any | None) -> bool:

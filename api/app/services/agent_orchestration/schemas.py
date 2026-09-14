@@ -127,6 +127,8 @@ class PlanningEntities(BaseModel):
     service_id: str | None = None
     service_name: str | None = None
     service_ref: str | None = None
+    service_ids: list[str] = Field(default_factory=list)
+    service_names: list[str] = Field(default_factory=list)
 
     owner_id: str | None = None
     owner_name: str | None = None
@@ -300,7 +302,20 @@ class IntentPlan(BaseModel):
     confidence: float = Field(default=0.5, ge=0.0, le=1.0)
     entities: PlanningEntities = Field(default_factory=PlanningEntities)
     needs_tools: bool = False
+    required_read_tool: str | None = None
     reason: str | None = None
+
+    @field_validator("required_read_tool", mode="before")
+    @classmethod
+    def _normalize_required_read_tool(cls, value: Any) -> str | None:
+        if not isinstance(value, str):
+            return None
+
+        candidate = value.strip()
+        if candidate == "":
+            return None
+
+        return candidate if candidate in LOOKUP_TOOL_NAMES else None
 
 
 class ToolPlan(BaseModel):
@@ -447,6 +462,7 @@ class ServicesStructuredData(BaseModel):
 
     service_candidates: list[dict[str, Any]] = Field(default_factory=list)
     selected_service: dict[str, Any] | None = None
+    selected_services: list[dict[str, Any]] = Field(default_factory=list)
     last_query: str | None = None
 
 

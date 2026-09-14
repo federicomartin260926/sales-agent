@@ -451,13 +451,37 @@ class AgentRuntime:
         }
 
     def _intent_contact_context_summary(self, contact_context: dict[str, Any]) -> dict[str, Any]:
-        return {
+        summary: dict[str, Any] = {
             "found": self._is_truthy(contact_context.get("found")),
             "timezone": self._clean(contact_context.get("timezone")),
             "timezone_source": self._clean(contact_context.get("timezone_source")),
             "has_existing_appointments": self._is_truthy(contact_context.get("has_existing_appointments")),
             "appointments_count": self._int_value(contact_context.get("appointments_count")),
         }
+
+        next_appointment = contact_context.get("next")
+        if isinstance(next_appointment, dict):
+            compact_next = {
+                key: next_appointment.get(key)
+                for key in (
+                    "id",
+                    "title",
+                    "status",
+                    "startAt",
+                    "endAt",
+                    "timezone",
+                    "localStartAt",
+                    "localEndAt",
+                    "localDate",
+                    "localStartTime",
+                    "localEndTime",
+                )
+                if next_appointment.get(key) is not None
+            }
+            if compact_next:
+                summary["next"] = compact_next
+
+        return summary
 
     # Second LLM call: provide context/tools and let the LLM reason or call MCP tools.
     async def _execute_llm_turn(
@@ -485,7 +509,7 @@ class AgentRuntime:
         effective_mcp_config = self._filtered_mcp_config(mcp_config, tool_plan.allowed_tools)
         tool_choice = None
         if effective_mcp_config.enabled and effective_mcp_config.allowed_tools:
-            tool_choice = self._contact_context_bootstrap_tool_choice(tool_plan, effective_mcp_config)
+            tool_choice = self._bootstrap_tool_choice(tool_plan, effective_mcp_config)
         self._write_llm_context_debug_request(
             stage="final",
             payload=payload,
@@ -556,12 +580,14 @@ class AgentRuntime:
         )
         return final_response, result
 
-    def _contact_context_bootstrap_tool_choice(self, tool_plan: ToolPlan, mcp_config: McpRemoteConfig) -> dict[str, Any] | None:
+    def _bootstrap_tool_choice(self, tool_plan: ToolPlan, mcp_config: McpRemoteConfig) -> dict[str, Any] | None:
         bootstrap_tool = self._clean(tool_plan.bootstrap_tool)
         server_label = self._clean(mcp_config.server_label)
-        if bootstrap_tool != "contact_context" or server_label is None:
+        if bootstrap_tool is None or server_label is None:
             return None
         if bootstrap_tool not in tool_plan.allowed_tools:
+            return None
+        if bootstrap_tool not in tool_plan.read_tools:
             return None
 
         return {"type": "mcp", "server_label": server_label, "name": bootstrap_tool}

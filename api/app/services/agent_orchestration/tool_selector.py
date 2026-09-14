@@ -43,7 +43,7 @@ class ToolSelector:
 
         supported_read_tools = self._supported_read_tools(configured)
         write_tools = self._write_tools(plan, configured)
-        bootstrap_tool = self._bootstrap_tool(configured, backend_context)
+        bootstrap_tool = self._bootstrap_tool(plan, configured, backend_context)
 
         allowed_tools = list(dict.fromkeys([*supported_read_tools, *write_tools]))
         return ToolPlan(
@@ -72,7 +72,20 @@ class ToolSelector:
 
         return [tool_name]
 
-    def _bootstrap_tool(self, configured: list[str], backend_context: BackendContext | None) -> str | None:
+    def _bootstrap_tool(
+        self,
+        plan: IntentPlan,
+        configured: list[str],
+        backend_context: BackendContext | None,
+    ) -> str | None:
+        required_read_tool = getattr(plan, "required_read_tool", None)
+        if (
+            isinstance(required_read_tool, str)
+            and required_read_tool in SUPPORTED_READ_TOOLS
+            and required_read_tool in configured
+        ):
+            return required_read_tool
+
         if "contact_context" not in configured:
             return None
         if backend_context is None:

@@ -4,6 +4,7 @@ import json
 import logging
 import re
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import httpx
 
@@ -213,6 +214,8 @@ class LLMClient:
             if payload_json is None:
                 raise ValueError("OpenAI responses payload did not include message content")
 
+            self._refresh_effective_timezone_from_contact_context(payload_json, mcp_config)
+
             approval_requests = self._extract_mcp_approval_requests(payload_json)
             if approval_requests != []:
                 approval_responses: list[dict[str, Any]] = []
@@ -249,6 +252,23 @@ class LLMClient:
                             )
                         else:
                             arguments = normalized_arguments
+
+                        if (
+                            approve
+                            and tool_name == "appointment_confirm"
+                            and not self._appointment_confirm_has_service_reference(arguments)
+                        ):
+                            approve = False
+                            retry_notes.append(
+                                "The appointment_confirm tool call was rejected because it did not contain a valid service selection. "
+                                "Retry using the reliable service selection already present in conversation_context: "
+                                "use non-empty service_ids for multiple selected services, or service_id for one selected service. "
+                                "Do not send service_ids=null, an empty service_id, or an empty service_ref when a valid selection exists. "
+                                "If no reliable service selection exists, do not call appointment_confirm and ask the customer for clarification."
+                            )
+                            logger.info(
+                                "Rejected appointment_confirm before approval because service selection was empty"
+                            )
 
                     logger.info(
                         "MCP approval decision tool=%s approve=%s original_timezone=%s normalized_timezone=%s effective_timezone=%s",
@@ -515,6 +535,71 @@ class LLMClient:
             }
         ]
 
+    def _refresh_effective_timezone_from_contact_context(
+        self,
+        payload: Any,
+        mcp_config: McpRemoteConfig,
+    ) -> None:
+        traces = self._extract_tool_traces(payload)
+        if traces == []:
+            return
+
+        for trace in reversed(traces):
+            if self._string_or_none(getattr(trace, "type", None)) != "mcp_call":
+                continue
+            if self._string_or_none(getattr(trace, "tool_name", None)) != "contact_context":
+                continue
+
+            output = getattr(trace, "output", None)
+            if isinstance(output, str):
+                try:
+                    output = json.loads(output)
+                except Exception:
+                    continue
+
+            if not isinstance(output, dict):
+                continue
+
+            contact_context = output.get("contact_context")
+            if isinstance(contact_context, dict):
+                source = contact_context
+            else:
+                source = output
+
+            timezone = self._string_or_none(source.get("timezone"))
+            if timezone is None:
+                continue
+
+            try:
+                ZoneInfo(timezone)
+            except Exception:
+                logger.warning(
+                    "Ignored invalid timezone from contact_context timezone=%s",
+                    timezone,
+                )
+                continue
+
+            timezone_source = (
+                self._string_or_none(source.get("timezone_source"))
+                or "contact_context"
+            )
+
+            config = dict(mcp_config.config) if isinstance(mcp_config.config, dict) else {}
+            previous_timezone = self._string_or_none(config.get("effective_timezone"))
+
+            config["effective_timezone"] = timezone
+            config["effective_timezone_source"] = timezone_source
+            mcp_config.config = config
+
+            logger.info(
+                "Updated effective appointment timezone from contact_context "
+                "previous_timezone=%s effective_timezone=%s timezone_source=%s",
+                previous_timezone,
+                timezone,
+                timezone_source,
+            )
+            return
+
     def _effective_timezone_from_mcp_config(self, mcp_config: McpRemoteConfig) -> str | None:
         if not isinstance(mcp_config.config, dict):
             return None
@@ -553,6 +638,20 @@ class LLMClient:
             "normalized_timezone": normalized_timezone,
             "timezone_source": timezone_source,
         }
+
+    def _appointment_confirm_has_service_reference(self, arguments: dict[str, Any]) -> bool:
+        service_ids = arguments.get("service_ids")
+        if isinstance(service_ids, list):
+            for service_id in service_ids:
+                if isinstance(service_id, str) and service_id.strip() != "":
+                    return True
+
+        for key in ("service_id", "service_ref"):
+            value = arguments.get(key)
+            if isinstance(value, str) and value.strip() != "":
+                return True
+
+        return False
 
     def _iter_tool_trace_candidates(self, value: Any, visited: set[int]) -> list[dict[str, Any]]:
         if isinstance(value, dict):

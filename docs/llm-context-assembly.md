@@ -160,6 +160,15 @@ Reglas:
 
 ## 8. Agendas y citas
 
+### Selección de servicios
+
+- El contrato mantiene compatibilidad singular mediante `service_id`, `service_name`, `service_ref` y `structured_data.services.selected_service`.
+- Una selección de varios servicios se representa mediante `service_ids`, `service_names` y `structured_data.services.selected_services`.
+- Para una selección efectiva singular se usa `selected_service`; para una selección plural se usa la lista completa `selected_services`. Una selección plural nunca se reduce al primer elemento.
+- La proyección compacta de `conversation_context.history` conserva únicamente la continuidad estructurada necesaria de servicios seleccionados y slots ofrecidos/seleccionados; no crea un estado paralelo ni reconstruye semántica desde texto.
+- Varios servicios de una reserva representan una sola visita y una sola operación de agenda. Las tools compatibles reciben conjuntamente `service_ids`.
+- CRM/tool es la fuente de verdad para duración efectiva, buffers y disponibilidad. SA no suma duraciones de servicios ni inventa una duración agregada.
+
 ### Disponibilidad
 
 - Si el usuario pide reservar, agendar o consultar disponibilidad, puede usarse `appointment_availability` si está autorizada.

@@ -95,6 +95,17 @@ No top-level offered_slots, selected_slot, existing_appointment, existing_appoin
 * handoff
 * general
 
+### Service selection
+
+The service contract remains backward-compatible:
+
+* singular selection: planner `service_id` / `service_name` / `service_ref` and `structured_data.services.selected_service`;
+* multi-service selection: planner `service_ids` / `service_names` and `structured_data.services.selected_services`;
+* when a plural selection exists, the complete plural selection is authoritative and must never be reduced to its first element;
+* prompt-visible history keeps only the minimal structured continuity needed for selected service(s) and offered/selected appointment slots;
+* a multi-service booking is one visit and one agenda operation using the complete `service_ids`;
+* CRM/tool remains authoritative for combined duration, buffers and availability; SA must not calculate an aggregate duration.
+
 ## Tool flow
 
 The LLM decides which tools to use.
