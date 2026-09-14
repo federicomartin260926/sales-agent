@@ -23,6 +23,11 @@ Ya está cerrado y validado:
 - [x] Eliminada la integración directa `SA -> CRM` para `contact-context`; el contexto externo queda delegado a herramientas/MCP/n8n.
 - [x] Contrato MCP/n8n de `contact_context` ampliado con `business_context`, `timezone`, `timezone_source`, `branch`, `branches` y `needs_branch_selection`.
 - [x] `appointment_confirm` endurecido para exigir payload completo antes de confirmar citas.
+- [x] Flujo de agenda multiservicio validado E2E: selección singular/plural, disponibilidad conjunta, selección, confirmación y una única cita con todos los servicios.
+- [x] `appointment_booking_invitation` multiservicio validado con una única operación, timezone CRM y sin duración agregada calculada por SA.
+- [x] Guard de integridad de invitaciones: SA solo afirma éxito con evidencia estructurada `ok=true`, `created=true` y `booking_url` no vacío.
+- [x] Verificación explícita de citas en CRM mediante `appointment_events` y bootstrap de read tool con `required_read_tool`.
+- [x] Promoción de timezone efectiva desde `contact_context` dentro de la misma sesión MCP para tools posteriores de agenda.
 
 ## 1. Stripe
 
@@ -256,12 +261,6 @@ Objetivo: enriquecer conversación y permitir reservas sin duplicar en SA la fue
 Pendiente:
 
 - [ ] Revisar si queda algún `401` legacy real o si está desfasado.
-- [ ] Validar flujo completo:
-  - usuario pide cita.
-  - SA consulta disponibilidad.
-  - SA ofrece slots.
-  - usuario elige.
-  - SA confirma o genera link/invitación.
 - [ ] Integrar waitlist CRM como posible fallback cuando no hay huecos.
 - [ ] Registrar `lead_id`, `customer_id`, cita o booking invitation en conversación.
 - [ ] Añadir fallback a handoff si CRM/n8n falla.

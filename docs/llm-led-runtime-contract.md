@@ -110,14 +110,30 @@ The service contract remains backward-compatible:
 
 The LLM decides which tools to use.
 Sales Agent exposes context and tools.
-Sales Agent applies only minimal write guardrails.
+Sales Agent applies only minimal transport/write guardrails.
+
+Read-tool rules:
+
+* configured and authorized read tools remain available to the final LLM;
+* the planner may set `required_read_tool` when an external read is mandatory for the current answer;
+* `required_read_tool` may only resolve to an authorized read tool and can be used as the MCP bootstrap tool; it must never expose or force a write tool;
+* explicit verification of an existing CRM appointment uses `appointment_events`; `contact_context` may provide identity/contact/timezone context but does not replace that verification read.
+
+Appointment timezone rules:
+
+* the effective appointment timezone starts from reliable backend context;
+* a valid timezone returned by `contact_context` during the same MCP session may replace that fallback for subsequent appointment tools;
+* this promotion is structural transport logic, not interpretation of human text.
 
 ## Minimal write guardrails
 
-* appointment_confirm, appointment_reschedule and appointment_cancel are gated by planner intent/action and tool availability.
-* crm_contact_submit requires phone or email.
+* `appointment_booking_invitation`, `appointment_confirm`, `appointment_reschedule` and `appointment_cancel` are gated by planner intent/action and tool availability.
+* `appointment_confirm` must carry a valid service reference: a non-empty plural `service_ids` or a valid legacy singular service reference.
+* `appointment_booking_invitation` is only externally successful when tool evidence contains `ok=true`, `created=true` and a non-empty `booking_url`; otherwise SA must not claim that an invitation/link was created.
+* the normalized booking-invitation result is persisted in `structured_data.appointment.booking_invitation`; SA does not construct or rewrite the public URL returned by downstream.
+* `crm_contact_submit` requires phone or email.
 
-SA must not validate selected_slot against offered_slots or generate customer-facing conversational replies from guardrails. Tool/CRM results and the LLM final reply are authoritative.
+SA must not validate selected_slot against offered_slots or derive semantic decisions from natural-language text inside guardrails. Tool/CRM structured results remain authoritative for externally observable write success.
 
 ## Forbidden old patterns
 

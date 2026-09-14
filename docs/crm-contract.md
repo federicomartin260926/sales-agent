@@ -90,6 +90,20 @@ La integración CRM no debe acoplar a SA a decisiones como:
 
 Esas decisiones pertenecen al CRM.
 
+## Contrato de agenda externa
+
+Cuando SA usa tools de agenda a través de MCP/n8n/CRM, mantiene estas reglas:
+
+- el contrato conserva compatibilidad singular (`service_id` / `service_ref`) y usa `service_ids` cuando la visita incluye varios servicios;
+- una selección multiservicio representa una única visita, un único owner/intervalo y una única operación de agenda; SA nunca crea una operación por servicio;
+- CRM/tool es la fuente de verdad para duración conjunta, buffers, disponibilidad y validación temporal; SA no suma duraciones ni inventa una duración agregada;
+- la timezone autoritativa puede proceder de `contact_context`/CRM y prevalece sobre un fallback local del tenant cuando está disponible y es válida;
+- una petición explícita de verificar qué cita existe en CRM debe resolverse con una lectura actual de `appointment_events` cuando la tool está disponible, no únicamente con historial conversacional;
+- `appointment_booking_invitation` debe transportar todos los `service_ids` de la visita y SA solo considera utilizable el enlace cuando downstream devuelve un `booking_url` válido junto con evidencia estructurada de creación;
+- la generación del host/base pública de `booking_url` pertenece a CRM/infraestructura. SA no debe construir, corregir ni reescribir esa URL.
+
+Este contrato permite que SA siga siendo independiente: si no existe agenda integrada, debe usar una respuesta controlada o handoff en lugar de simular una reserva.
+
 ## Tool de sincronización CRM
 
 La tool de escritura comercial recomendada es `crm_contact_submit`.

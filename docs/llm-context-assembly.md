@@ -120,7 +120,8 @@ Reglas:
 - La ausencia temporal de un dato recuperable no bloquea la conversación.
 - El LLM puede volver a consultar una read tool en turnos posteriores si el usuario aporta nuevos datos o si necesita verificar el estado actual.
 - Una petición explícita de verificar o comprobar algo en un sistema externo prevalece sobre la regla general de no repetir consultas.
-- Para verificar una cita existente, prioriza `contact_context` o `appointment_events`.
+- El planner puede declarar `required_read_tool` para forzar como bootstrap una lectura concreta cuando la respuesta exige verificación externa. Solo puede apuntar a una read tool autorizada; nunca habilita una escritura.
+- Para verificar explícitamente en CRM qué cita tiene reservada el contacto, usa `appointment_events`; `contact_context` puede resolver antes identidad, contacto o timezone, pero no sustituye esa lectura.
 - No uses `appointment_availability` para comprobar una cita ya registrada.
 - `appointment_availability` y `appointment_events` pueden reconsultarse.
 - Cero resultados no es terminal; el LLM puede volver a preguntar o pedir datos.
@@ -132,6 +133,7 @@ Las tools de escritura se exponen solo cuando el plan estructurado lo permite.
 
 Combinaciones actuales:
 
+- `request_booking_invitation` + `create_booking_invitation` -> `appointment_booking_invitation`
 - `request_booking_confirmation` + `confirm_booking` -> `appointment_confirm`
 - `request_reschedule` + `confirm_reschedule` -> `appointment_reschedule`
 - `request_cancel` + `confirm_cancel` -> `appointment_cancel`
@@ -140,8 +142,8 @@ Reglas:
 
 - `prepare_*` no autoriza escrituras.
 - Seleccionar un slot, identificar una cita o pedir confirmación no ejecuta la escritura.
-- La escritura solo puede ejecutarse cuando el turno actual contiene una confirmación inequívoca y la tool está disponible.
-- Si una tool de escritura falla, la respuesta no debe afirmar éxito.
+- `appointment_confirm`, `appointment_reschedule` y `appointment_cancel` solo pueden ejecutarse cuando el turno actual contiene la confirmación inequívoca correspondiente y la tool está disponible. `appointment_booking_invitation` puede ejecutarse ante una petición explícita de enlace/invitación sin exigir `selected_slot`.
+- Si una tool de escritura falla o no existe evidencia estructurada de éxito, la respuesta no debe afirmar éxito.
 - La selección de un horario de reprogramación no es una reserva nueva.
 - La selección válida prepara la propuesta; la confirmación posterior autoriza la escritura.
 
@@ -175,9 +177,18 @@ Reglas:
 - `appointment_availability` devuelve contexto útil para conversación y seguimiento.
 - El hecho de tener slots ofrecidos no obliga a confirmar una escritura.
 
+### Invitación de reserva
+
+- Una invitación multiservicio se crea con una única llamada a `appointment_booking_invitation` y todos los `service_ids` seleccionados; SA no crea una invitación por servicio.
+- En multiservicio SA omite una duración agregada y deja que CRM/tool resuelva duración y buffers.
+- La timezone fiable del CRM/contacto prevalece sobre fallbacks locales. Si `contact_context` devuelve una timezone válida durante la misma sesión MCP, puede actualizar la timezone efectiva usada por las tools de agenda posteriores.
+- El resultado normalizado se conserva en `structured_data.appointment.booking_invitation`.
+- La invitación solo se considera utilizable cuando downstream aporta evidencia estructurada coherente de éxito: `ok=true`, `created=true` y `booking_url` no vacío.
+- SA transporta `booking_url` como dato autoritativo de downstream; no construye, corrige ni reescribe el host público.
+
 ### Citas existentes
 
-- Para consultar una cita ya registrada, usa `contact_context` o `appointment_events`.
+- Para contexto general puede usarse `contact_context`; para consultar o verificar explícitamente en CRM una cita ya registrada, usa `appointment_events`.
 - Si el usuario pide comprobar el estado o la fecha de una cita existente, consulta la fuente externa relevante aunque el historial ya tenga una pista fiable.
 - Si la lectura externa contradice el historial, prevalece el resultado actual de la tool.
 
