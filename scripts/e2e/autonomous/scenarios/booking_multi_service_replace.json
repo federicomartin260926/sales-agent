@@ -1,0 +1,42 @@
+{
+  "version": 2,
+  "name": "booking_multi_service_replace",
+  "goal": "Sustituir láser brazos por otro servicio canónico conservando láser axilas.",
+  "defaults": {
+    "tenant_id": "019e4a9a-c85f-72d4-8748-b756073c324c",
+    "channel_type": "whatsapp",
+    "external_channel_id": "test-whatsapp-e2e",
+    "entrypoint_ref": "mary-main",
+    "contact_phone": "+34678180164",
+    "contact_name": "Federico Martín Peña",
+    "conversation_prefix": "autonomous-booking-multi-replace"
+  },
+  "initial_message": "Quiero reservar láser axilas y láser brazos el viernes 18 de septiembre de 2026 por la mañana.",
+  "initial_data_fields": ["service_names", "preferred_day", "time_of_day"],
+  "customer_messages": [
+    {
+      "field": "replaced_service",
+      "message": "Mejor sustituye láser brazos por láser piernas completas, manteniendo láser axilas.",
+      "after_tools": ["appointment_availability"],
+      "minimum_selected_service_count": 2
+    }
+  ],
+  "max_turns": 10,
+  "customer_data": {},
+  "preferred_slot_strategy": "first",
+  "expected_write_tool": "appointment_confirm",
+  "ready_action": "prepare_booking_confirmation",
+  "requires_selected_slot": true,
+  "requires_existing_appointment": false,
+  "expected_service_count": 2,
+  "required_service_ids": ["019eb05e-5f68-74a7-8533-a8e6990833e6"],
+  "forbidden_final_service_ids": ["019eb05e-5f71-742d-95cf-9caf5628cc06"],
+  "allowed_removed_service_ids": ["019eb05e-5f71-742d-95cf-9caf5628cc06"],
+  "recommended_read_tools": ["contact_context", "services_search", "appointment_availability"],
+  "preconditions": ["Láser piernas completas debe existir como servicio canónico bookable."],
+  "documented_invariants": [
+    "Conservar láser axilas.",
+    "Eliminar láser brazos y añadir solo el reemplazo canónico.",
+    "Reconsultar disponibilidad sin dejar tres servicios."
+  ]
+}

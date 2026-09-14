@@ -1,0 +1,37 @@
+{
+  "version": 2,
+  "name": "booking_single_service_regression",
+  "goal": "Comprobar que una reserva monservicio mantiene el flujo dry-run previo.",
+  "defaults": {
+    "tenant_id": "019e4a9a-c85f-72d4-8748-b756073c324c",
+    "channel_type": "whatsapp",
+    "external_channel_id": "test-whatsapp-e2e",
+    "entrypoint_ref": "mary-main",
+    "contact_phone": "+34678180164",
+    "contact_name": "Federico Martín Peña",
+    "conversation_prefix": "autonomous-booking-single"
+  },
+  "initial_message": "Quiero reservar láser axilas el viernes 18 de septiembre de 2026 por la mañana con María Gutiérrez.",
+  "initial_data_fields": ["service_name", "preferred_day", "time_of_day", "owner_name"],
+  "max_turns": 6,
+  "customer_data": {
+    "service_name": "láser axilas",
+    "preferred_day": "el viernes 18 de septiembre de 2026",
+    "time_of_day": "por la mañana",
+    "owner_name": "María Gutiérrez"
+  },
+  "preferred_slot_strategy": "first",
+  "expected_write_tool": "appointment_confirm",
+  "ready_action": "prepare_booking_confirmation",
+  "requires_selected_slot": true,
+  "requires_existing_appointment": false,
+  "expected_service_count": 1,
+  "expected_service_ids": ["019eb05e-5f68-74a7-8533-a8e6990833e6"],
+  "recommended_read_tools": ["contact_context", "services_search", "appointment_availability"],
+  "preconditions": ["Láser axilas y su agenda deben existir en el tenant E2E."],
+  "documented_invariants": [
+    "Resolver exactamente un servicio canónico.",
+    "No ejecutar ni exponer appointment_confirm durante prepare_booking_confirmation.",
+    "Detenerse con selected_slot fiable y ready_to_write=true."
+  ]
+}

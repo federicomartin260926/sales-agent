@@ -1,0 +1,38 @@
+{
+  "version": 2,
+  "name": "booking_invitation_multi_service",
+  "goal": "Validar de forma segura el contrato de invitación multiservicio sin ejecutar el write.",
+  "defaults": {
+    "tenant_id": "019e4a9a-c85f-72d4-8748-b756073c324c",
+    "channel_type": "whatsapp",
+    "external_channel_id": "test-whatsapp-e2e",
+    "entrypoint_ref": "mary-main",
+    "contact_phone": "+34678180164",
+    "contact_name": "Federico Martín Peña",
+    "conversation_prefix": "autonomous-booking-invitation-multi"
+  },
+  "initial_message": "Quiero un enlace de reserva para láser axilas y láser brazos.",
+  "initial_data_fields": ["service_names", "booking_invitation_request"],
+  "max_turns": 1,
+  "customer_data": {},
+  "preferred_slot_strategy": "first",
+  "expected_write_tool": "appointment_booking_invitation",
+  "ready_action": "create_booking_invitation",
+  "requires_selected_slot": false,
+  "requires_existing_appointment": false,
+  "expected_service_count": 2,
+  "expected_service_ids": [
+    "019eb05e-5f68-74a7-8533-a8e6990833e6",
+    "019eb05e-5f71-742d-95cf-9caf5628cc06"
+  ],
+  "requires_booking_url": true,
+  "expected_timezone_source": "contact_context",
+  "skip_live_reason": "dry_run_write_precondition",
+  "recommended_read_tools": ["contact_context", "services_search"],
+  "preconditions": ["Hace falta un transporte controlado que no ejecute el write downstream para probar el output positivo."],
+  "documented_invariants": [
+    "No enviar el turno live que autorizaría appointment_booking_invitation.",
+    "Éxito exige ok=true, created=true y booking_url downstream no vacío.",
+    "Comparar booking_url literalmente y exigir provenance MCP."
+  ]
+}

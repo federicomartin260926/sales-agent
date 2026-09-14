@@ -1,0 +1,32 @@
+{
+  "version": 2,
+  "name": "appointment_existing_verification",
+  "goal": "Comprobar explícitamente una cita existente mediante appointment_events.",
+  "defaults": {
+    "tenant_id": "019e4a9a-c85f-72d4-8748-b756073c324c",
+    "channel_type": "whatsapp",
+    "external_channel_id": "test-whatsapp-e2e",
+    "entrypoint_ref": "mary-main",
+    "contact_phone": "+34678180164",
+    "contact_name": "Federico Martín Peña",
+    "conversation_prefix": "autonomous-appointment-verification"
+  },
+  "initial_message": "Comprueba en CRM qué cita tengo reservada entre el 1 de septiembre y el 31 de diciembre de 2026.",
+  "initial_data_fields": ["appointment_date_range"],
+  "max_turns": 4,
+  "customer_data": {},
+  "preferred_slot_strategy": "first",
+  "expected_write_tool": "appointment_confirm",
+  "ready_action": "answer_directly",
+  "terminal_state": "completed",
+  "requires_selected_slot": false,
+  "requires_existing_appointment": true,
+  "requires_appointment_events": true,
+  "recommended_read_tools": ["contact_context", "appointment_events"],
+  "preconditions": ["El contacto puede no tener una cita; en ese caso el resultado permitido es WARN missing_precondition."],
+  "documented_invariants": [
+    "Ejecutar appointment_events para la verificación explícita.",
+    "No sustituirla por appointment_availability.",
+    "No ejecutar ni exponer writes."
+  ]
+}

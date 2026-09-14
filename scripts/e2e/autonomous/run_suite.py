@@ -11,7 +11,19 @@ from typing import Any
 from run_scenario import DEFAULT_RESULTS_DIR, make_run_id, run_scenario, utc_now
 
 
-SCENARIOS = ("booking", "reschedule", "cancel")
+SCENARIOS = (
+    "booking",
+    "reschedule",
+    "cancel",
+    "booking_single_service_regression",
+    "booking_multi_service",
+    "booking_multi_service_ambiguous",
+    "booking_multi_service_add_later",
+    "booking_multi_service_replace",
+    "booking_multi_service_no_availability",
+    "booking_invitation_multi_service",
+    "appointment_existing_verification",
+)
 
 
 def render_suite_report(report: dict[str, Any]) -> str:
@@ -67,7 +79,7 @@ def render_suite_report(report: dict[str, Any]) -> str:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Run booking, reschedule and cancel sequentially in dry-run mode. "
+            "Run regression, multi-service and appointment-verification scenarios in dry-run mode. "
             "Exit codes: 0=no FAIL, 1=functional/technical scenario FAIL, 2=global runner failure."
         )
     )

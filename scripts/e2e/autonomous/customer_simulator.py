@@ -46,9 +46,17 @@ class CustomerSimulator:
         )
 
         if action == ready_action and ready_data:
+            terminal_state = str(scenario.get("terminal_state", "ready_to_write"))
             return CustomerDecision(
-                kind="ready_to_write",
+                kind=terminal_state,
                 reason=f"structured_action={ready_action}; required structured evidence is present",
+                evidence_refs=tuple(last.get("artifact_refs", [])),
+            )
+
+        if scenario.get("expects_no_availability") and self._explicit_no_availability(turns):
+            return CustomerDecision(
+                kind="completed",
+                reason="expected_no_availability",
                 evidence_refs=tuple(last.get("artifact_refs", [])),
             )
 
@@ -61,6 +69,16 @@ class CustomerSimulator:
                 kind="warn",
                 reason="missing_precondition",
                 evidence_refs=tuple(last.get("artifact_refs", [])),
+            )
+
+        follow_up = self._next_declarative_message(scenario, turns, action)
+        if follow_up is not None:
+            field, message = follow_up
+            return CustomerDecision(
+                kind="message",
+                reason=f"provide_declarative_scenario_data:{field}",
+                message=message,
+                data_fields=(field,),
             )
 
         offered_slots = self._reliable_slots(turns)
@@ -146,6 +164,60 @@ class CustomerSimulator:
                 continue
             return field, value.strip()
         return None
+
+    def _next_declarative_message(
+        self, scenario: dict[str, Any], turns: list[dict[str, Any]], action: str | None
+    ) -> tuple[str, str] | None:
+        already_sent = {
+            str(field)
+            for turn in turns
+            for field in turn.get("customer_data_fields", [])
+        }
+        executed_tools = {
+            str(call.get("tool_name"))
+            for turn in turns
+            for call in turn.get("executed_mcp_calls", [])
+        }
+        selected_count = len(self._latest_selected_service_ids(turns))
+        for item in scenario.get("customer_messages", []):
+            if not isinstance(item, dict):
+                continue
+            field = self._clean(item.get("field"))
+            message = self._clean(item.get("message"))
+            if field is None or message is None or field in already_sent:
+                continue
+            when_actions = item.get("when_actions")
+            if isinstance(when_actions, list) and action not in when_actions:
+                continue
+            after_tools = item.get("after_tools")
+            if isinstance(after_tools, list) and not set(map(str, after_tools)).issubset(executed_tools):
+                continue
+            minimum = item.get("minimum_selected_service_count")
+            if isinstance(minimum, int) and selected_count < minimum:
+                continue
+            return field, message
+        return None
+
+    def _latest_selected_service_ids(self, turns: list[dict[str, Any]]) -> list[str]:
+        for turn in reversed(turns):
+            services = turn.get("structured_data", {}).get("services", {})
+            if not isinstance(services, dict):
+                continue
+            selected_many = services.get("selected_services")
+            if isinstance(selected_many, list) and selected_many:
+                return [
+                    service_id
+                    for item in selected_many
+                    if isinstance(item, dict)
+                    for service_id in [self._clean(item.get("id") or item.get("service_id"))]
+                    if service_id is not None
+                ]
+            selected_one = services.get("selected_service")
+            if isinstance(selected_one, dict):
+                service_id = self._clean(selected_one.get("id") or selected_one.get("service_id"))
+                if service_id is not None:
+                    return [service_id]
+        return []
 
     def _reliable_slots(self, turns: list[dict[str, Any]]) -> list[tuple[dict[str, Any], str]]:
         slots: list[tuple[dict[str, Any], str]] = []
@@ -299,11 +371,25 @@ class CustomerSimulator:
             return False
         if output.get("count") == 0:
             return True
-        for key in ("appointments", "existing_appointments", "items"):
+        for key in ("appointments", "existing_appointments", "items", "slots"):
             if key in output and output.get(key) == []:
                 return True
         contact_context = output.get("contact_context")
         return isinstance(contact_context, dict) and self._read_output_explicitly_empty(contact_context)
+
+    def _explicit_no_availability(self, turns: list[dict[str, Any]]) -> bool:
+        calls = [
+            call
+            for turn in turns
+            for call in turn.get("executed_mcp_calls", [])
+            if call.get("tool_name") == "appointment_availability"
+        ]
+        if not calls:
+            return False
+        latest = calls[-1].get("decoded_output")
+        if self._walk_records(latest, record_kind="slot"):
+            return False
+        return self._read_output_explicitly_empty(latest)
 
     def _clean(self, value: Any) -> str | None:
         return value.strip() if isinstance(value, str) and value.strip() else None

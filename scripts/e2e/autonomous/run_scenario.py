@@ -291,6 +291,10 @@ def render_scenario_report(
         for ref in item.get("evidence_refs", []):
             lines.append(f"  - Evidence: `{ref}`")
         lines.append(f"  - Recommendation: {item['recommendation']}")
+        if item.get("evidence"):
+            lines.append(
+                f"  - Structured evidence: `{json.dumps(item['evidence'], ensure_ascii=False, sort_keys=True)}`"
+            )
         if item.get("severity") not in {"error", "critical"} or item.get("step") is None:
             continue
         turn = next((candidate for candidate in turns if candidate.get("step") == item["step"]), None)
@@ -307,6 +311,17 @@ def render_scenario_report(
                 f"    - Intent/action: `{turn.get('intent')}` / `{turn.get('action')}`",
                 f"    - Allowed tools: `{json.dumps(turn.get('allowed_tools', []), ensure_ascii=False)}`",
                 f"    - Real MCP calls: `{json.dumps(calls, ensure_ascii=False)}`",
+            ]
+        )
+    if evaluation.get("multiservice_evidence"):
+        lines.extend(
+            [
+                "",
+                "## Multi-service evidence",
+                "",
+                "```json",
+                json.dumps(evaluation["multiservice_evidence"], ensure_ascii=False, indent=2),
+                "```",
             ]
         )
     return "\n".join(lines) + "\n"
@@ -359,10 +374,16 @@ def run_scenario(
     ready_to_write = False
     stop_reason = "unknown"
 
+    if scenario.get("skip_live_reason"):
+        decision = CustomerDecision(
+            kind="completed",
+            reason=str(scenario["skip_live_reason"]),
+        )
+
     for step in range(1, max_turns + 1):
         if decision.kind != "message" or decision.message is None:
             ready_to_write = decision.kind == "ready_to_write"
-            stop_reason = decision.reason if ready_to_write else "simulator_inconclusive"
+            stop_reason = decision.reason
             break
         message_id = f"{external_conversation_id}-{step:02d}-{uuid.uuid4().hex[:12]}"
         payload = build_payload(scenario, external_conversation_id, message_id, decision.message)
@@ -402,6 +423,9 @@ def run_scenario(
         decision = simulator.decide(scenario, turns)
         if decision.kind == "ready_to_write":
             ready_to_write = True
+            stop_reason = decision.reason
+            break
+        if decision.kind == "completed":
             stop_reason = decision.reason
             break
         if decision.kind == "warn":

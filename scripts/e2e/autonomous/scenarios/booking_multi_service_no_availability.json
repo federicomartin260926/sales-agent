@@ -1,0 +1,36 @@
+{
+  "version": 2,
+  "name": "booking_multi_service_no_availability",
+  "goal": "Mantener recuperable un flujo multiservicio cuya disponibilidad conjunta está vacía.",
+  "defaults": {
+    "tenant_id": "019e4a9a-c85f-72d4-8748-b756073c324c",
+    "channel_type": "whatsapp",
+    "external_channel_id": "test-whatsapp-e2e",
+    "entrypoint_ref": "mary-main",
+    "contact_phone": "+34678180164",
+    "contact_name": "Federico Martín Peña",
+    "conversation_prefix": "autonomous-booking-multi-empty"
+  },
+  "initial_message": "Quiero reservar láser axilas y láser brazos el domingo 6 de enero de 2030 por la mañana.",
+  "initial_data_fields": ["service_names", "preferred_day", "time_of_day"],
+  "max_turns": 6,
+  "customer_data": {},
+  "preferred_slot_strategy": "first",
+  "expected_write_tool": "appointment_confirm",
+  "ready_action": "prepare_booking_confirmation",
+  "requires_selected_slot": false,
+  "requires_existing_appointment": false,
+  "expected_service_count": 2,
+  "expected_service_ids": [
+    "019eb05e-5f68-74a7-8533-a8e6990833e6",
+    "019eb05e-5f71-742d-95cf-9caf5628cc06"
+  ],
+  "expects_no_availability": true,
+  "recommended_read_tools": ["contact_context", "services_search", "appointment_availability"],
+  "preconditions": ["La fecha elegida no debe tener slots conjuntos."],
+  "documented_invariants": [
+    "No inventar selected_slot ni ejecutar writes.",
+    "No hacer handoff automático.",
+    "Dejar el flujo recuperable para otra fecha o franja."
+  ]
+}

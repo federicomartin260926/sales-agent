@@ -4,7 +4,13 @@ from collections import Counter
 from typing import Any
 
 
-WRITE_TOOLS = {"appointment_confirm", "appointment_reschedule", "appointment_cancel"}
+WRITE_TOOLS = {
+    "appointment_confirm",
+    "appointment_reschedule",
+    "appointment_cancel",
+    "appointment_booking_invitation",
+}
+AGENDA_TOOLS = WRITE_TOOLS | {"appointment_availability", "appointment_events"}
 SUCCESS_TOOL_BY_ACTION = {
     "appointment_confirmed": "appointment_confirm",
     "appointment_rescheduled": "appointment_reschedule",
@@ -38,6 +44,19 @@ RECOMMENDATIONS = {
     "turn_unverifiable_after_request": "Restore endpoint/debug availability before rerunning the scenario.",
     "unexpected_http_status": "Inspect the endpoint response and runtime availability.",
     "ready_to_write": "No action required; V1 intentionally stops before confirmation.",
+    "service_id_without_provenance": "Resolve every service through reliable structured MCP evidence before agenda use.",
+    "service_ids_incompatible": "Use the complete expected service set without additions, losses or duplicates.",
+    "service_selection_lost": "Preserve the complete structured service selection across turns unless the customer replaces one explicitly.",
+    "duplicate_service_ids": "Deduplicate the structured service selection and agenda arguments.",
+    "multiservice_derived_timing": "Leave combined duration and buffers to CRM/downstream for multi-service visits.",
+    "booking_url_without_provenance": "Only persist the literal booking_url returned by appointment_booking_invitation.",
+    "booking_url_mismatch": "Copy booking_url literally from the downstream MCP result without normalization.",
+    "booking_invitation_contract_failed": "Require ok=true, created=true and a non-empty downstream booking_url before claiming success.",
+    "timezone_mismatch": "Use the latest valid contact_context timezone literally in subsequent agenda calls.",
+    "appointment_events_not_used": "Use appointment_events for an explicit existing-appointment verification.",
+    "availability_used_for_verification": "Do not use appointment_availability to verify an existing appointment.",
+    "expected_no_availability": "No slots were returned; keep the flow recoverable without inventing a slot or executing a write.",
+    "dry_run_write_precondition": "Run this scenario only against a controlled transport that can provide recorded write-tool evidence without a real downstream write.",
 }
 
 
@@ -47,6 +66,7 @@ def finding(
     message: str,
     step: int | None,
     evidence_refs: list[str] | tuple[str, ...] | None = None,
+    evidence: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "severity": severity,
@@ -55,6 +75,7 @@ def finding(
         "step": step,
         "evidence_refs": list(dict.fromkeys(evidence_refs or [])),
         "recommendation": RECOMMENDATIONS.get(code, "Review the cited structured evidence."),
+        "evidence": evidence or {},
     }
 
 
@@ -199,6 +220,10 @@ class Evaluator:
 
         findings.extend(self._slot_provenance_findings(turns))
         findings.extend(self._appointment_provenance_findings(turns))
+        findings.extend(self._service_contract_findings(scenario, turns))
+        findings.extend(self._booking_url_findings(scenario, turns))
+        findings.extend(self._timezone_findings(turns))
+        findings.extend(self._appointment_verification_findings(scenario, all_calls, turns))
         findings.extend(self._read_tool_findings(scenario, all_calls, turns))
 
         if not ready_to_write and not any(item["severity"] in {"error", "critical"} for item in findings):
@@ -224,6 +249,26 @@ class Evaluator:
                         turns[-1].get("artifact_refs", []) if turns else [],
                     )
                 )
+            elif stop_reason == "expected_no_availability":
+                findings.append(
+                    finding(
+                        "info",
+                        "expected_no_availability",
+                        "Joint availability returned no reliable slots and the scenario stopped without a write.",
+                        turns[-1].get("step") if turns else None,
+                    )
+                )
+            elif stop_reason == "dry_run_write_precondition":
+                findings.append(
+                    finding(
+                        "warning",
+                        "dry_run_write_precondition",
+                        "The live invitation turn was not sent because it could execute a real MCP write.",
+                        None,
+                    )
+                )
+            elif stop_reason.startswith("structured_action="):
+                pass
             else:
                 findings.append(
                     finding(
@@ -249,7 +294,11 @@ class Evaluator:
         severities = {item["severity"] for item in findings}
         if "critical" in severities or "error" in severities:
             result = "FAIL"
-        elif "warning" in severities or not ready_to_write:
+        elif "warning" in severities or (
+            not ready_to_write
+            and stop_reason not in {"expected_no_availability"}
+            and not stop_reason.startswith("structured_action=")
+        ):
             result = "WARN"
         else:
             result = "PASS"
@@ -263,6 +312,7 @@ class Evaluator:
             "writes_executed": len(writes),
             "tools_executed": dict(sorted(Counter(call.get("tool_name") for call in all_calls).items())),
             "findings": findings,
+            "multiservice_evidence": self._multiservice_evidence(scenario, turns),
         }
 
     def _artifact_findings(self, turn: dict[str, Any]) -> list[dict[str, Any]]:
@@ -399,6 +449,392 @@ class Evaluator:
                     )
         return findings
 
+    def _service_contract_findings(
+        self, scenario: dict[str, Any], turns: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        if not turns:
+            return []
+        findings: list[dict[str, Any]] = []
+        provenance: dict[str, str] = {}
+        previous_selection: list[str] = []
+        allowed_removed = set(self._string_list(scenario.get("allowed_removed_service_ids")))
+        expected_ids = self._string_list(scenario.get("expected_service_ids"))
+        required_ids = self._string_list(scenario.get("required_service_ids"))
+        forbidden_ids = self._string_list(scenario.get("forbidden_final_service_ids"))
+        expected_count = scenario.get("expected_service_count")
+        last_agenda_ids: list[str] = []
+
+        for turn in turns:
+            step = turn.get("step")
+            for call in turn.get("executed_mcp_calls", []):
+                tool_name = call.get("tool_name")
+                if tool_name in {"services_search", "contact_context", "appointment_events"}:
+                    for service_id in self._service_ids_from_output(call.get("decoded_output")):
+                        provenance.setdefault(service_id, f"turn:{step}:mcp:{tool_name}")
+                if tool_name not in AGENDA_TOOLS:
+                    continue
+                arguments = call.get("arguments")
+                if not isinstance(arguments, dict):
+                    continue
+                call_ids = self._argument_service_ids(arguments)
+                if call_ids:
+                    last_agenda_ids = call_ids
+                findings.extend(
+                    self._service_id_list_findings(
+                        call_ids,
+                        provenance,
+                        step,
+                        call.get("evidence_refs", []),
+                        f"MCP arguments for {tool_name}",
+                    )
+                )
+                if len(call_ids) > 1:
+                    forbidden = [
+                        key
+                        for key in (
+                            "duration_minutes",
+                            "duration_total",
+                            "total_duration",
+                            "buffer_before_minutes",
+                            "buffer_after_minutes",
+                            "buffer_minutes",
+                        )
+                        if arguments.get(key) is not None
+                    ]
+                    if forbidden:
+                        findings.append(
+                            finding(
+                                "error",
+                                "multiservice_derived_timing",
+                                f"Multi-service {tool_name} carries timing fields owned by downstream: {', '.join(forbidden)}.",
+                                step,
+                                call.get("evidence_refs", []),
+                                {"service_ids": call_ids, "timing_fields": forbidden},
+                            )
+                        )
+
+            selection = self._selected_service_ids(turn)
+            if selection:
+                findings.extend(
+                    self._service_id_list_findings(
+                        selection,
+                        provenance,
+                        step,
+                        turn.get("artifact_refs", []),
+                        "structured_data.services",
+                    )
+                )
+                removed = set(previous_selection).difference(selection).difference(allowed_removed)
+                if removed:
+                    findings.append(
+                        finding(
+                            "error",
+                            "service_selection_lost",
+                            f"Previously selected service IDs disappeared without a declared replacement: {sorted(removed)}.",
+                            step,
+                            turn.get("artifact_refs", []),
+                            {
+                                "previous_service_ids": previous_selection,
+                                "observed_service_ids": selection,
+                                "lost_service_ids": sorted(removed),
+                            },
+                        )
+                    )
+                previous_selection = selection
+            elif previous_selection and self._turn_uses_appointment_domain(turn):
+                findings.append(
+                    finding(
+                        "error",
+                        "service_selection_lost",
+                        "The appointment turn no longer persists the previously resolved structured service selection.",
+                        step,
+                        turn.get("artifact_refs", []),
+                        {"previous_service_ids": previous_selection, "observed_service_ids": []},
+                    )
+                )
+
+        observed = previous_selection or last_agenda_ids
+        if expected_count is not None and len(observed) != int(expected_count):
+            findings.append(
+                finding(
+                    "error",
+                    "service_ids_incompatible",
+                    f"Expected {expected_count} final service IDs, observed {len(observed)}.",
+                    turns[-1].get("step") if turns else None,
+                    turns[-1].get("artifact_refs", []) if turns else [],
+                    {"expected_service_count": expected_count, "observed_service_ids": observed},
+                )
+            )
+        if expected_ids and set(observed) != set(expected_ids):
+            findings.append(
+                finding(
+                    "error",
+                    "service_ids_incompatible",
+                    "The final service ID set differs from the scenario contract.",
+                    turns[-1].get("step") if turns else None,
+                    turns[-1].get("artifact_refs", []) if turns else [],
+                    {"expected_service_ids": expected_ids, "observed_service_ids": observed},
+                )
+            )
+        missing_required = sorted(set(required_ids).difference(observed))
+        forbidden_observed = sorted(set(forbidden_ids).intersection(observed))
+        if missing_required or forbidden_observed:
+            findings.append(
+                finding(
+                    "error",
+                    "service_ids_incompatible",
+                    "The final service selection violates required/replaced service constraints.",
+                    turns[-1].get("step") if turns else None,
+                    turns[-1].get("artifact_refs", []) if turns else [],
+                    {
+                        "required_service_ids": required_ids,
+                        "forbidden_service_ids": forbidden_ids,
+                        "observed_service_ids": observed,
+                    },
+                )
+            )
+        if expected_ids and last_agenda_ids and set(last_agenda_ids) != set(expected_ids):
+            findings.append(
+                finding(
+                    "error",
+                    "service_ids_incompatible",
+                    "The latest agenda call did not use the complete expected service set.",
+                    turns[-1].get("step") if turns else None,
+                    evidence={
+                        "expected_service_ids": expected_ids,
+                        "agenda_service_ids": last_agenda_ids,
+                    },
+                )
+            )
+        return findings
+
+    def _service_id_list_findings(
+        self,
+        service_ids: list[str],
+        provenance: dict[str, str],
+        step: Any,
+        refs: list[str],
+        location: str,
+    ) -> list[dict[str, Any]]:
+        findings: list[dict[str, Any]] = []
+        duplicates = sorted(service_id for service_id, count in Counter(service_ids).items() if count > 1)
+        if duplicates:
+            findings.append(
+                finding(
+                    "error",
+                    "duplicate_service_ids",
+                    f"{location} contains duplicate service IDs: {duplicates}.",
+                    step,
+                    refs,
+                    {"observed_service_ids": service_ids, "duplicate_service_ids": duplicates},
+                )
+            )
+        missing = sorted(set(service_ids).difference(provenance))
+        if missing:
+            findings.append(
+                finding(
+                    "error",
+                    "service_id_without_provenance",
+                    f"{location} contains service IDs without prior or same-turn MCP provenance: {missing}.",
+                    step,
+                    refs,
+                    {
+                        "observed_service_ids": service_ids,
+                        "missing_provenance": missing,
+                        "service_provenance": provenance,
+                    },
+                )
+            )
+        return findings
+
+    def _booking_url_findings(
+        self, scenario: dict[str, Any], turns: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        findings: list[dict[str, Any]] = []
+        latest_mcp_url: str | None = None
+        invitation_call_seen = False
+        for turn in turns:
+            step = turn.get("step")
+            calls = [
+                call
+                for call in turn.get("executed_mcp_calls", [])
+                if call.get("tool_name") == "appointment_booking_invitation"
+            ]
+            for call in calls:
+                invitation_call_seen = True
+                output = call.get("decoded_output")
+                mcp_url = self._clean(output.get("booking_url")) if isinstance(output, dict) else None
+                if mcp_url is not None:
+                    latest_mcp_url = mcp_url
+                succeeded = (
+                    isinstance(output, dict)
+                    and output.get("ok") is True
+                    and output.get("created") is True
+                    and mcp_url is not None
+                )
+                if not succeeded and self._claims_invitation_success(turn):
+                    findings.append(
+                        finding(
+                            "error",
+                            "booking_invitation_contract_failed",
+                            "Structured state claims invitation success without ok=true, created=true and a non-empty downstream booking_url.",
+                            step,
+                            call.get("evidence_refs", []),
+                            {"mcp_output": output},
+                        )
+                    )
+
+            invitation = self._booking_invitation(turn)
+            final_url = self._clean(invitation.get("booking_url")) if invitation else None
+            if final_url is not None and latest_mcp_url is None:
+                findings.append(
+                    finding(
+                        "critical",
+                        "booking_url_without_provenance",
+                        "structured_data contains booking_url without real MCP invitation provenance.",
+                        step,
+                        turn.get("artifact_refs", []),
+                        {"booking_url_final": final_url, "booking_url_mcp": None},
+                    )
+                )
+            elif final_url is not None and final_url != latest_mcp_url:
+                findings.append(
+                    finding(
+                        "error",
+                        "booking_url_mismatch",
+                        "The final booking_url differs literally from downstream MCP output.",
+                        step,
+                        turn.get("artifact_refs", []),
+                        {"booking_url_mcp": latest_mcp_url, "booking_url_final": final_url},
+                    )
+                )
+        if scenario.get("requires_booking_url") and turns and not invitation_call_seen:
+            findings.append(
+                finding(
+                    "warning",
+                    "dry_run_write_precondition",
+                    "booking_url cannot be proven without controlled appointment_booking_invitation output.",
+                    None,
+                )
+            )
+        return findings
+
+    def _timezone_findings(self, turns: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        findings: list[dict[str, Any]] = []
+        contact_timezone: str | None = None
+        contact_source: str | None = None
+        for turn in turns:
+            step = turn.get("step")
+            for call in turn.get("executed_mcp_calls", []):
+                if call.get("tool_name") == "contact_context":
+                    timezone, source = self._contact_timezone(call.get("decoded_output"))
+                    if timezone is not None:
+                        contact_timezone = timezone
+                        contact_source = source
+                    continue
+                if call.get("tool_name") not in AGENDA_TOOLS or contact_timezone is None:
+                    continue
+                arguments = call.get("arguments")
+                used = self._clean(arguments.get("timezone")) if isinstance(arguments, dict) else None
+                if used is not None and used != contact_timezone:
+                    findings.append(
+                        finding(
+                            "error",
+                            "timezone_mismatch",
+                            f"Agenda call uses timezone {used!r}, but latest contact_context returned {contact_timezone!r}.",
+                            step,
+                            call.get("evidence_refs", []),
+                            {
+                                "timezone_contact_context": contact_timezone,
+                                "timezone_source": contact_source,
+                                "timezone_mcp_call": used,
+                                "tool_name": call.get("tool_name"),
+                            },
+                        )
+                    )
+        return findings
+
+    def _appointment_verification_findings(
+        self, scenario: dict[str, Any], calls: list[dict[str, Any]], turns: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        if not scenario.get("requires_appointment_events"):
+            return []
+        names = [call.get("tool_name") for call in calls]
+        refs = [
+            ref
+            for turn in turns
+            for ref in turn.get("artifact_refs", [])
+            if ref.endswith("03-final-request.json")
+        ]
+        findings: list[dict[str, Any]] = []
+        if "appointment_events" not in names:
+            findings.append(
+                finding(
+                    "warning",
+                    "appointment_events_not_used",
+                    "Explicit existing-appointment verification did not execute appointment_events.",
+                    None,
+                    refs,
+                )
+            )
+        if "appointment_availability" in names:
+            findings.append(
+                finding(
+                    "error",
+                    "availability_used_for_verification",
+                    "appointment_availability was used during an explicit existing-appointment verification scenario.",
+                    None,
+                    refs,
+                )
+            )
+        return findings
+
+    def _multiservice_evidence(
+        self, scenario: dict[str, Any], turns: list[dict[str, Any]]
+    ) -> dict[str, Any]:
+        provenance: dict[str, str] = {}
+        agenda_calls: list[dict[str, Any]] = []
+        contact_timezone: str | None = None
+        timezone_source: str | None = None
+        booking_url_mcp: str | None = None
+        booking_url_final: str | None = None
+        for turn in turns:
+            step = turn.get("step")
+            for call in turn.get("executed_mcp_calls", []):
+                tool_name = call.get("tool_name")
+                if tool_name in {"services_search", "contact_context", "appointment_events"}:
+                    for service_id in self._service_ids_from_output(call.get("decoded_output")):
+                        provenance.setdefault(service_id, f"turn:{step}:mcp:{tool_name}")
+                if tool_name == "contact_context":
+                    timezone, source = self._contact_timezone(call.get("decoded_output"))
+                    if timezone is not None:
+                        contact_timezone, timezone_source = timezone, source
+                if tool_name in AGENDA_TOOLS:
+                    arguments = call.get("arguments")
+                    agenda_calls.append(
+                        {
+                            "step": step,
+                            "tool_name": tool_name,
+                            "service_ids": self._argument_service_ids(arguments) if isinstance(arguments, dict) else [],
+                            "timezone": self._clean(arguments.get("timezone")) if isinstance(arguments, dict) else None,
+                        }
+                    )
+                if tool_name == "appointment_booking_invitation" and isinstance(call.get("decoded_output"), dict):
+                    booking_url_mcp = self._clean(call["decoded_output"].get("booking_url"))
+            invitation = self._booking_invitation(turn)
+            if invitation:
+                booking_url_final = self._clean(invitation.get("booking_url"))
+        return {
+            "expected_service_ids": self._string_list(scenario.get("expected_service_ids")),
+            "observed_service_ids": self._selected_service_ids(turns[-1]) if turns else [],
+            "service_provenance": provenance,
+            "agenda_calls": agenda_calls,
+            "booking_url_mcp": booking_url_mcp,
+            "booking_url_final": booking_url_final,
+            "timezone_contact_context": contact_timezone,
+            "timezone_source": timezone_source,
+        }
+
     def _read_tool_findings(
         self, scenario: dict[str, Any], calls: list[dict[str, Any]], turns: list[dict[str, Any]]
     ) -> list[dict[str, Any]]:
@@ -446,7 +882,7 @@ class Evaluator:
         reads_to_check = recommended.difference(READ_APPOINTMENT_TOOLS)
         if not requires_existing:
             reads_to_check.update(recommended.intersection(READ_APPOINTMENT_TOOLS))
-        if not requires_slot:
+        if not requires_slot and not scenario.get("expects_no_availability"):
             reads_to_check.discard("appointment_availability")
         for tool_name in sorted(reads_to_check.difference(names)):
             findings.append(
@@ -569,6 +1005,100 @@ class Evaluator:
             or appointment.get("startAt")
         )
         return identifier if identifier is not None and start is not None else None
+
+    def _selected_service_ids(self, turn: dict[str, Any]) -> list[str]:
+        services = turn.get("structured_data", {}).get("services", {})
+        if not isinstance(services, dict):
+            return []
+        selected_many = services.get("selected_services")
+        if isinstance(selected_many, list) and selected_many:
+            return [
+                service_id
+                for item in selected_many
+                if isinstance(item, dict)
+                for service_id in [self._clean(item.get("id") or item.get("service_id"))]
+                if service_id is not None
+            ]
+        selected_one = services.get("selected_service")
+        if isinstance(selected_one, dict):
+            service_id = self._clean(selected_one.get("id") or selected_one.get("service_id"))
+            return [service_id] if service_id is not None else []
+        return []
+
+    def _argument_service_ids(self, arguments: dict[str, Any]) -> list[str]:
+        plural = self._string_list(arguments.get("service_ids"))
+        if plural:
+            return plural
+        singular = self._clean(arguments.get("service_id") or arguments.get("service_ref"))
+        return [singular] if singular is not None else []
+
+    def _service_ids_from_output(self, output: Any) -> list[str]:
+        result: list[str] = []
+        if isinstance(output, list):
+            for item in output:
+                result.extend(self._service_ids_from_output(item))
+        elif isinstance(output, dict):
+            looks_like_service = any(
+                key in output
+                for key in ("duration_minutes", "is_bookable", "bookable", "service_id", "serviceId")
+            )
+            if looks_like_service:
+                service_id = self._clean(
+                    output.get("service_id") or output.get("serviceId") or output.get("id")
+                )
+                if service_id is not None:
+                    result.append(service_id)
+            result.extend(self._string_list(output.get("service_ids")))
+            result.extend(self._string_list(output.get("serviceIds")))
+            services = output.get("services")
+            if isinstance(services, list):
+                for service in services:
+                    if not isinstance(service, dict):
+                        continue
+                    service_id = self._clean(
+                        service.get("id") or service.get("service_id") or service.get("serviceId")
+                    )
+                    if service_id is not None:
+                        result.append(service_id)
+            for child in output.values():
+                if isinstance(child, (dict, list)):
+                    result.extend(self._service_ids_from_output(child))
+        return list(dict.fromkeys(result))
+
+    def _contact_timezone(self, output: Any) -> tuple[str | None, str | None]:
+        if not isinstance(output, dict):
+            return None, None
+        nested = output.get("contact_context")
+        source = nested if isinstance(nested, dict) else output
+        return self._clean(source.get("timezone")), self._clean(source.get("timezone_source")) or "contact_context"
+
+    def _booking_invitation(self, turn: dict[str, Any]) -> dict[str, Any] | None:
+        appointment = turn.get("structured_data", {}).get("appointment", {})
+        value = appointment.get("booking_invitation") if isinstance(appointment, dict) else None
+        return value if isinstance(value, dict) else None
+
+    def _claims_invitation_success(self, turn: dict[str, Any]) -> bool:
+        invitation = self._booking_invitation(turn)
+        return bool(
+            turn.get("action") == "completed"
+            or (
+                invitation
+                and (invitation.get("ok") is True or invitation.get("created") is True)
+            )
+        )
+
+    def _turn_uses_appointment_domain(self, turn: dict[str, Any]) -> bool:
+        return turn.get("intent") in {
+            "request_availability",
+            "select_offered_slot",
+            "request_booking_confirmation",
+            "request_booking_invitation",
+        } or turn.get("intent_plan", {}).get("domain") == "appointment"
+
+    def _string_list(self, value: Any) -> list[str]:
+        if not isinstance(value, list):
+            return []
+        return [clean for item in value for clean in [self._clean(item)] if clean is not None]
 
     def _turn_by_step(self, turns: list[dict[str, Any]], step: Any) -> dict[str, Any] | None:
         return next((turn for turn in turns if turn.get("step") == step), None)

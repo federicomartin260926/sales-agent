@@ -1,0 +1,42 @@
+{
+  "version": 2,
+  "name": "booking_multi_service_ambiguous",
+  "goal": "Conservar el primer servicio mientras se aclara un segundo servicio ambiguo.",
+  "defaults": {
+    "tenant_id": "019e4a9a-c85f-72d4-8748-b756073c324c",
+    "channel_type": "whatsapp",
+    "external_channel_id": "test-whatsapp-e2e",
+    "entrypoint_ref": "mary-main",
+    "contact_phone": "+34678180164",
+    "contact_name": "Federico Martín Peña",
+    "conversation_prefix": "autonomous-booking-multi-ambiguous"
+  },
+  "initial_message": "Quiero reservar láser axilas y también otra zona de láser el viernes 18 de septiembre de 2026 por la mañana.",
+  "initial_data_fields": ["service_name", "ambiguous_service", "preferred_day", "time_of_day"],
+  "customer_messages": [
+    {
+      "field": "ambiguous_service_resolution",
+      "message": "El segundo servicio exacto es láser brazos.",
+      "when_actions": ["ask_clarification", "ask_question"]
+    }
+  ],
+  "max_turns": 9,
+  "customer_data": {},
+  "preferred_slot_strategy": "first",
+  "expected_write_tool": "appointment_confirm",
+  "ready_action": "prepare_booking_confirmation",
+  "requires_selected_slot": true,
+  "requires_existing_appointment": false,
+  "expected_service_count": 2,
+  "expected_service_ids": [
+    "019eb05e-5f68-74a7-8533-a8e6990833e6",
+    "019eb05e-5f71-742d-95cf-9caf5628cc06"
+  ],
+  "recommended_read_tools": ["contact_context", "services_search", "appointment_availability"],
+  "preconditions": ["La búsqueda amplia de láser debe requerir aclaración o resolución adicional."],
+  "documented_invariants": [
+    "No perder láser axilas durante la aclaración.",
+    "No consultar disponibilidad conjunta hasta resolver el segundo ID.",
+    "No inventar servicios, hacer handoff ni exponer writes."
+  ]
+}
