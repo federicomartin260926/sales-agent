@@ -327,6 +327,9 @@ final class InternalAiUsageController extends AbstractApiController
             'gpt-4o' => ['input' => 2.5, 'output' => 10.0, 'cached_input' => 0.625],
             'gpt-4o-mini' => ['input' => 0.15, 'output' => 0.6, 'cached_input' => 0.0375],
             'gpt-5.4-mini' => ['input' => 0.75, 'output' => 4.5, 'cached_input' => 0.075],
+            'gpt-5.6-luna' => ['input' => 0.20, 'output' => 1.20, 'cached_input' => 0.02],
+            'gpt-5.6-terra' => ['input' => 2.00, 'output' => 12.00, 'cached_input' => 0.20],
+            'gpt-5.6-sol' => ['input' => 4.00, 'output' => 20.00, 'cached_input' => 0.40],
         ];
 
         if (isset($pricingTable[$normalized])) {

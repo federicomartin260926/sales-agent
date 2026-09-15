@@ -159,11 +159,12 @@ class LLMClient:
                 "model": model,
                 "instructions": system_prompt,
                 "input": current_input,
-                "temperature": 0.2,
                 "text": {
                     "format": response_format if isinstance(response_format, dict) else {"type": "json_object"},
                 },
             }
+            if not model.lower().startswith("gpt-5.6"):
+                payload["temperature"] = 0.2
             if current_previous_response_id is not None:
                 payload["previous_response_id"] = current_previous_response_id
             if tools != []:
