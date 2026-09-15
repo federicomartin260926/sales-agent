@@ -214,7 +214,7 @@ Ejemplo confirmación:
 {{
   "domain": "appointment",
   "intent": "request_booking_confirmation",
-  "action": "prepare_booking_confirmation",
+  "action": "confirm_booking",
   "confidence": 0.94,
   "entities": {{}},
   "needs_tools": true,
