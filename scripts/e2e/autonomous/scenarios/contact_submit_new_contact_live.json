@@ -1,0 +1,63 @@
+{
+  "version": 1,
+  "name": "contact_submit_new_contact_live",
+  "scenario_type": "contact_submit",
+  "mode": "live",
+  "goal": "Validar de extremo a extremo el alta o actualización comercial de un contacto nuevo mediante crm_contact_submit y comprobar posteriormente que CRM ya lo devuelve mediante contact_context.",
+  "defaults": {
+    "tenant_id": "019e4a9a-c85f-72d4-8748-b756073c324c",
+    "channel_type": "whatsapp",
+    "external_channel_id": "test-whatsapp-e2e",
+    "entrypoint_ref": "mary-main",
+    "contact_phone": "",
+    "contact_name": "Contacto E2E Sales Agent",
+    "conversation_prefix": "autonomous-contact-submit-live"
+  },
+  "generate_unique_contact_email": true,
+  "requires_write_opt_in_before_start": true,
+  "write_occurs_on_ready_turn": true,
+  "initial_message": "Hola. Me interesa el servicio Láser axilas y quiero que me contactéis para ampliar información y valorar una cita.",
+  "initial_data_fields": [
+    "service_interest",
+    "contact_request"
+  ],
+  "max_turns": 6,
+  "customer_data": {
+    "service_interest": "Láser axilas",
+    "contact_request": true
+  },
+  "follow_up_messages": [
+    {
+      "field": "qualification_interest",
+      "message": "Sí, mi interés es Láser axilas y quiero recibir información para decidir si reservar."
+    },
+    {
+      "field": "qualification_followup",
+      "message": "Podéis contactarme usando los datos que ya os he facilitado. No tengo ninguna otra preferencia especial."
+    }
+  ],
+  "expected_write_tool": "crm_contact_submit",
+  "ready_action": "create_or_update_crm_contact",
+  "verification_message": "Comprueba ahora en vuestro CRM si mis datos ya constan realmente como contacto.",
+  "verify_with_tool": "contact_context",
+  "recommended_read_tools": [
+    "contact_context"
+  ],
+  "preconditions": [
+    "El tenant Mary debe tener contact_context y crm_contact_submit operativos.",
+    "El teléfono y el email E2E se generan específicamente para cada ejecución.",
+    "El contacto E2E no debe existir previamente en CRM."
+  ],
+  "documented_invariants": [
+    "Sin SA_E2E_ALLOW_WRITES=1 no enviar ni siquiera el primer turno.",
+    "Usar una identidad E2E aislada con teléfono y email de prueba.",
+    "Verificar found=false mediante contact_context antes del write.",
+    "Ejecutar crm_contact_submit exactamente una vez.",
+    "Aceptar el write solo con ok=true, submitted=true y status=accepted.",
+    "Verificar posteriormente found=true mediante contact_context.",
+    "No duplicar en el escenario las reglas de cualificación configuradas en backend.",
+    "No ejecutar ninguna write adicional."
+  ],
+  "generate_unique_contact_phone": true,
+  "expected_pre_write_contact_found": false
+}

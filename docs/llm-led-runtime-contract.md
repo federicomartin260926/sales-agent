@@ -143,3 +143,7 @@ SA must not validate selected_slot against offered_slots or derive semantic deci
 * appointment_events_required_but_not_called
 * runtime_context as main LLM contract
 * top-level appointment boxes as primary contract
+
+## Validación E2E del runtime
+
+Los escenarios autónomos que validan este contrato y sus reglas de seguridad se describen en [`docs/autonomous-e2e.md`](autonomous-e2e.md).

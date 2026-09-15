@@ -433,3 +433,7 @@ Consideramos que la app está en la dirección correcta si:
 - el runtime devuelve una decisión estructurada
 - el envío final lo hace `wa-gateway-api`
 - el CRM sigue siendo la fuente maestra del negocio
+
+## E2E autónomos
+
+La estrategia operativa, perfiles, guardrails y criterios de evaluación de los E2E conversacionales se documentan en [`docs/autonomous-e2e.md`](autonomous-e2e.md).

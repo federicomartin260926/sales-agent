@@ -1,0 +1,42 @@
+{
+  "version": 1,
+  "name": "handoff_explicit_request_live",
+  "scenario_type": "handoff",
+  "mode": "live",
+  "goal": "Validar que una petición explícita de hablar con una persona genera exactamente un handoff_request real y aceptado.",
+  "defaults": {
+    "tenant_id": "019e4a9a-c85f-72d4-8748-b756073c324c",
+    "channel_type": "whatsapp",
+    "external_channel_id": "test-whatsapp-e2e",
+    "entrypoint_ref": "mary-main",
+    "contact_phone": "+447700900444",
+    "contact_email": "sa-e2e-418e2f64fb874f0aad6e@example.com",
+    "contact_name": "Contacto E2E Sales Agent",
+    "conversation_prefix": "autonomous-handoff-explicit-live"
+  },
+  "requires_write_opt_in_before_start": true,
+  "write_occurs_on_ready_turn": true,
+  "initial_message": "Prefiero hablar directamente con una persona. ¿Puedes derivarme con Mary, por favor?",
+  "initial_data_fields": [
+    "explicit_handoff_request"
+  ],
+  "max_turns": 3,
+  "customer_data": {
+    "explicit_handoff_request": true
+  },
+  "expected_write_tool": "handoff_request",
+  "ready_action": "handoff_to_human",
+  "recommended_read_tools": [],
+  "preconditions": [
+    "Mary tiene handoff habilitado.",
+    "La estrategia configurada permite n8n/webhook.",
+    "handoff_request está autorizada en la ExternalTool MCP."
+  ],
+  "documented_invariants": [
+    "Sin SA_E2E_ALLOW_WRITES=1 no enviar ni siquiera el primer turno.",
+    "La petición explícita del cliente puede autorizar el handoff en ese mismo turno.",
+    "Ejecutar handoff_request exactamente una vez.",
+    "Aceptar el write solo con ok=true, handoff_requested=true y status=accepted.",
+    "No ejecutar crm_contact_submit ni ninguna write de agenda."
+  ]
+}

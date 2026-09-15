@@ -4,13 +4,31 @@ from collections import Counter
 from typing import Any
 
 
-WRITE_TOOLS = {
+APPOINTMENT_WRITE_TOOLS = {
     "appointment_confirm",
     "appointment_reschedule",
     "appointment_cancel",
     "appointment_booking_invitation",
 }
-AGENDA_TOOLS = WRITE_TOOLS | {"appointment_availability", "appointment_events"}
+
+CRM_WRITE_TOOLS = {
+    "crm_contact_submit",
+}
+
+HANDOFF_WRITE_TOOLS = {
+    "handoff_request",
+}
+
+WRITE_TOOLS = (
+    APPOINTMENT_WRITE_TOOLS
+    | CRM_WRITE_TOOLS
+    | HANDOFF_WRITE_TOOLS
+)
+
+AGENDA_TOOLS = APPOINTMENT_WRITE_TOOLS | {
+    "appointment_availability",
+    "appointment_events",
+}
 SUCCESS_TOOL_BY_ACTION = {
     "appointment_confirmed": "appointment_confirm",
     "appointment_rescheduled": "appointment_reschedule",
@@ -20,6 +38,8 @@ RESULT_CONTRACT_BY_TOOL = {
     "appointment_confirm": ("booking_result", ("confirmed", "appointment_confirmed")),
     "appointment_reschedule": ("reschedule_result", ("rescheduled",)),
     "appointment_cancel": ("cancel_result", ("cancelled",)),
+    "crm_contact_submit": ("crm_contact_submit_result", ("submitted",)),
+    "handoff_request": ("handoff_result", ("handoff_requested",)),
 }
 READ_APPOINTMENT_TOOLS = {"contact_context", "appointment_events"}
 RECOMMENDATIONS = {
@@ -110,14 +130,38 @@ class Evaluator:
                     )
                 )
 
-        writes = [call for call in turn.get("executed_mcp_calls", []) if call.get("tool_name") in WRITE_TOOLS]
+        writes = [
+            call
+            for call in turn.get("executed_mcp_calls", [])
+            if call.get("tool_name") in WRITE_TOOLS
+        ]
+        scenario_type = str(scenario.get("scenario_type", "appointment"))
+        ready_action = self._clean(scenario.get("ready_action"))
+        turn_actions = {
+            self._clean(turn.get("action")),
+            self._clean(turn.get("intent_plan", {}).get("action")),
+        }
+
         for call in writes:
-            live_expected_write = (
+            live_expected_write = False
+
+            if (
                 scenario.get("mode") == "live"
                 and write_enabled
-                and turn.get("customer_decision") == "write_confirmation"
                 and call.get("tool_name") == scenario.get("expected_write_tool")
-            )
+            ):
+                if scenario_type == "appointment":
+                    live_expected_write = (
+                        turn.get("customer_decision") == "write_confirmation"
+                    )
+                elif (
+                    scenario_type in {"contact_submit", "handoff"}
+                    and scenario.get("write_occurs_on_ready_turn")
+                    and ready_action is not None
+                    and ready_action in turn_actions
+                ):
+                    live_expected_write = True
+
             if not live_expected_write:
                 code = (
                     "live_write_before_confirmation"
@@ -128,7 +172,10 @@ class Evaluator:
                     finding(
                         "critical",
                         code,
-                        f"Real MCP write {call.get('tool_name')} executed outside the single authorized live confirmation turn.",
+                        (
+                            f"Real MCP write {call.get('tool_name')} executed "
+                            "outside the authorized live write turn."
+                        ),
                         step,
                         list(call.get("evidence_refs", refs)),
                     )
@@ -140,7 +187,12 @@ class Evaluator:
             self._clean(turn.get("intent_plan", {}).get("action")),
         }
         ready_action = self._clean(scenario.get("ready_action"))
-        if ready_action in actions:
+        scenario_type = str(scenario.get("scenario_type", "appointment"))
+        if (
+            scenario_type == "appointment"
+            and ready_action is not None
+            and ready_action in actions
+        ):
             for tool_name in sorted(allowed_tools.intersection(WRITE_TOOLS)):
                 findings.append(
                     finding(
@@ -163,6 +215,8 @@ class Evaluator:
         write_enabled: bool = False,
     ) -> dict[str, Any]:
         findings = list(immediate_findings)
+        scenario_type = str(scenario.get("scenario_type", "appointment"))
+
         for turn in turns:
             findings.extend(self.safety_findings(scenario, turn, write_enabled=write_enabled))
             findings.extend(self._artifact_findings(turn))
@@ -245,26 +299,90 @@ class Evaluator:
                     )
                 )
 
-        findings.extend(self._slot_provenance_findings(turns))
-        findings.extend(self._appointment_provenance_findings(turns))
         findings.extend(self._service_contract_findings(scenario, turns))
-        findings.extend(self._booking_url_findings(scenario, turns))
-        findings.extend(self._timezone_findings(turns))
-        findings.extend(self._appointment_verification_findings(scenario, all_calls, turns))
+
+        if scenario_type == "appointment":
+            findings.extend(self._slot_provenance_findings(turns))
+            findings.extend(self._appointment_provenance_findings(turns))
+            findings.extend(self._booking_url_findings(scenario, turns))
+            findings.extend(self._timezone_findings(turns))
+            findings.extend(
+                self._appointment_verification_findings(
+                    scenario,
+                    all_calls,
+                    turns,
+                )
+            )
+
+        expected_service_found = scenario.get("expected_service_search_found")
+        if expected_service_found is not None:
+            service_calls = [
+                call
+                for call in all_calls
+                if call.get("tool_name") == "services_search"
+            ]
+            if service_calls:
+                call = service_calls[-1]
+                output = call.get("decoded_output")
+                actual_found = (
+                    output.get("found")
+                    if isinstance(output, dict)
+                    else None
+                )
+                if actual_found is not bool(expected_service_found):
+                    findings.append(
+                        finding(
+                            "error",
+                            "service_search_result_mismatch",
+                            (
+                                "Expected services_search found="
+                                f"{bool(expected_service_found)}, "
+                                f"got {actual_found!r}."
+                            ),
+                            call.get("step"),
+                            call.get("evidence_refs", []),
+                        )
+                    )
+
         findings.extend(self._read_tool_findings(scenario, all_calls, turns))
 
         phases: dict[str, str] | None = None
         live_evidence: dict[str, Any] | None = None
         if scenario.get("mode") == "live":
-            live_findings, phases, live_evidence = self._live_evaluation(
-                scenario,
-                turns,
-                ready_to_write,
-                stop_reason,
-                writes,
-                write_enabled,
-            )
-            findings.extend(live_findings)
+            if scenario_type == "contact_submit":
+                live_findings, phases, live_evidence = (
+                    self._contact_submit_live_evaluation(
+                        scenario,
+                        turns,
+                        ready_to_write,
+                        stop_reason,
+                        writes,
+                        write_enabled,
+                    )
+                )
+                findings.extend(live_findings)
+            elif scenario_type == "handoff":
+                live_findings, phases, live_evidence = (
+                    self._handoff_live_evaluation(
+                        scenario,
+                        turns,
+                        ready_to_write,
+                        stop_reason,
+                        writes,
+                        write_enabled,
+                    )
+                )
+                findings.extend(live_findings)
+            elif scenario_type == "appointment":
+                live_findings, phases, live_evidence = self._live_evaluation(
+                    scenario,
+                    turns,
+                    ready_to_write,
+                    stop_reason,
+                    writes,
+                    write_enabled,
+                )
+                findings.extend(live_findings)
 
         if not ready_to_write and not any(item["severity"] in {"error", "critical"} for item in findings):
             if stop_reason == "max_turns":
@@ -309,7 +427,9 @@ class Evaluator:
                 )
             elif stop_reason == "live_write_not_enabled":
                 pass
-            elif stop_reason.startswith("structured_action="):
+            elif stop_reason.startswith(
+                ("structured_action=", "structured_tool=")
+            ):
                 pass
             else:
                 findings.append(
@@ -339,7 +459,9 @@ class Evaluator:
         elif "warning" in severities or (
             not ready_to_write
             and stop_reason not in {"expected_no_availability"}
-            and not stop_reason.startswith("structured_action=")
+            and not stop_reason.startswith(
+                ("structured_action=", "structured_tool=")
+            )
         ):
             result = "WARN"
         else:
@@ -531,6 +653,437 @@ class Evaluator:
                 )
             )
         return findings, phases, evidence
+
+    def _handoff_live_evaluation(
+        self,
+        scenario: dict[str, Any],
+        turns: list[dict[str, Any]],
+        ready_to_write: bool,
+        stop_reason: str,
+        writes: list[dict[str, Any]],
+        write_enabled: bool,
+    ) -> tuple[list[dict[str, Any]], dict[str, str], dict[str, Any]]:
+        findings: list[dict[str, Any]] = []
+        phases = {
+            "conversation": "SKIPPED",
+            "write": "SKIPPED",
+            "crm_verification": "SKIPPED",
+            "cleanup": "SKIPPED",
+        }
+        evidence: dict[str, Any] = {
+            "write_mcp_call": None,
+            "write_output": None,
+        }
+
+        if not write_enabled or stop_reason == "live_write_not_enabled":
+            findings.append(
+                finding(
+                    "warning",
+                    "live_write_not_enabled",
+                    (
+                        "Live handoff scenario was blocked before the first "
+                        "agent request because write opt-in is disabled."
+                    ),
+                    None,
+                )
+            )
+            return findings, phases, evidence
+
+        expected_writes = [
+            call
+            for call in writes
+            if call.get("tool_name") == "handoff_request"
+        ]
+
+        if len(expected_writes) != 1 or len(writes) != 1:
+            phases["write"] = "FAIL"
+            findings.append(
+                finding(
+                    "critical",
+                    (
+                        "live_expected_write_missing"
+                        if not expected_writes
+                        else "multiple_writes"
+                    ),
+                    (
+                        "Live handoff requires exactly one handoff_request "
+                        f"call; observed {len(expected_writes)} expected "
+                        f"and {len(writes)} total writes."
+                    ),
+                    writes[-1].get("step") if writes else None,
+                    [
+                        ref
+                        for call in writes
+                        for ref in call.get("evidence_refs", [])
+                    ],
+                )
+            )
+            return findings, phases, evidence
+
+        write_call = expected_writes[0]
+        evidence["write_mcp_call"] = self._minimal_call_evidence(write_call)
+        evidence["write_output"] = write_call.get("decoded_output")
+
+        write_turn = self._turn_by_step(turns, write_call.get("step"))
+        observed_actions = set()
+
+        if isinstance(write_turn, dict):
+            observed_actions = {
+                self._clean(write_turn.get("action")),
+                self._clean(
+                    write_turn.get("intent_plan", {}).get("action")
+                ),
+            }
+
+        expected_action = self._clean(scenario.get("ready_action"))
+
+        if expected_action is None or expected_action not in observed_actions:
+            phases["conversation"] = "FAIL"
+            findings.append(
+                finding(
+                    "critical",
+                    "handoff_action_mismatch",
+                    (
+                        "handoff_request executed without the expected "
+                        f"structured action {expected_action!r}."
+                    ),
+                    write_call.get("step"),
+                    write_call.get("evidence_refs", []),
+                    {
+                        "observed_actions": sorted(
+                            action
+                            for action in observed_actions
+                            if action is not None
+                        )
+                    },
+                )
+            )
+        else:
+            phases["conversation"] = "PASS"
+
+        output = write_call.get("decoded_output")
+
+        if self._write_outcome(write_call) != "success":
+            phases["write"] = "FAIL"
+            findings.append(
+                finding(
+                    "error",
+                    "live_write_failed",
+                    "handoff_request did not return a verifiable successful result.",
+                    write_call.get("step"),
+                    write_call.get("evidence_refs", []),
+                    {"write_output": output},
+                )
+            )
+            return findings, phases, evidence
+
+        if (
+            not isinstance(output, dict)
+            or output.get("status") != "accepted"
+            or output.get("handoff_requested") is not True
+        ):
+            phases["write"] = "FAIL"
+            findings.append(
+                finding(
+                    "error",
+                    "handoff_result_not_accepted",
+                    (
+                        "handoff_request must return ok=true, "
+                        "handoff_requested=true and status='accepted'."
+                    ),
+                    write_call.get("step"),
+                    write_call.get("evidence_refs", []),
+                    {"write_output": output},
+                )
+            )
+            return findings, phases, evidence
+
+        phases["write"] = "PASS"
+        return findings, phases, evidence
+
+    def _contact_submit_live_evaluation(
+        self,
+        scenario: dict[str, Any],
+        turns: list[dict[str, Any]],
+        ready_to_write: bool,
+        stop_reason: str,
+        writes: list[dict[str, Any]],
+        write_enabled: bool,
+    ) -> tuple[list[dict[str, Any]], dict[str, str], dict[str, Any]]:
+        findings: list[dict[str, Any]] = []
+        phases = {
+            "conversation": "SKIPPED",
+            "write": "SKIPPED",
+            "crm_verification": "SKIPPED",
+            "cleanup": "SKIPPED",
+        }
+        evidence: dict[str, Any] = {
+            "pre_write_contact_context": None,
+            "write_mcp_call": None,
+            "write_output": None,
+            "post_write_contact_context": None,
+            "pre_write_found": None,
+            "post_write_found": None,
+        }
+
+        if not write_enabled or stop_reason == "live_write_not_enabled":
+            findings.append(
+                finding(
+                    "warning",
+                    "live_write_not_enabled",
+                    (
+                        "Live contact-submit scenario was blocked before "
+                        "the first agent request because write opt-in is disabled."
+                    ),
+                    None,
+                )
+            )
+            return findings, phases, evidence
+
+        expected_tool = "crm_contact_submit"
+        expected_writes = [
+            call
+            for call in writes
+            if call.get("tool_name") == expected_tool
+        ]
+
+        if len(expected_writes) != 1 or len(writes) != 1:
+            phases["write"] = "FAIL"
+            findings.append(
+                finding(
+                    "critical",
+                    (
+                        "live_expected_write_missing"
+                        if not expected_writes
+                        else "multiple_writes"
+                    ),
+                    (
+                        "Live contact-submit requires exactly one "
+                        f"{expected_tool} call; observed "
+                        f"{len(expected_writes)} expected and "
+                        f"{len(writes)} total writes."
+                    ),
+                    writes[-1].get("step") if writes else None,
+                    [
+                        ref
+                        for call in writes
+                        for ref in call.get("evidence_refs", [])
+                    ],
+                )
+            )
+            return findings, phases, evidence
+
+        write_call = expected_writes[0]
+        evidence["write_mcp_call"] = self._minimal_call_evidence(write_call)
+        evidence["write_output"] = write_call.get("decoded_output")
+
+        ordered_calls = [
+            call
+            for turn in turns
+            for call in turn.get("executed_mcp_calls", [])
+        ]
+        write_position = next(
+            (
+                index
+                for index, call in enumerate(ordered_calls)
+                if call is write_call
+            ),
+            None,
+        )
+
+        if write_position is None:
+            phases["write"] = "FAIL"
+            findings.append(
+                finding(
+                    "critical",
+                    "live_write_trace_missing",
+                    "crm_contact_submit exists in writes but not in ordered tool traces.",
+                    write_call.get("step"),
+                    write_call.get("evidence_refs", []),
+                )
+            )
+            return findings, phases, evidence
+
+        pre_context_calls = [
+            call
+            for call in ordered_calls[:write_position]
+            if call.get("tool_name") == "contact_context"
+        ]
+
+        if pre_context_calls:
+            pre_call = pre_context_calls[-1]
+            evidence["pre_write_contact_context"] = (
+                self._minimal_call_evidence(pre_call)
+            )
+            evidence["pre_write_found"] = self._contact_context_found(
+                pre_call.get("decoded_output")
+            )
+
+        if "expected_pre_write_contact_found" in scenario:
+            expected_pre_found = bool(
+                scenario.get("expected_pre_write_contact_found")
+            )
+            actual_pre_found = evidence["pre_write_found"]
+
+            if actual_pre_found is not expected_pre_found:
+                phases["conversation"] = "FAIL"
+                findings.append(
+                    finding(
+                        "critical",
+                        "pre_write_contact_context_mismatch",
+                        (
+                            "Expected a pre-write contact_context result "
+                            f"found={expected_pre_found}, got "
+                            f"{actual_pre_found!r}."
+                        ),
+                        write_call.get("step"),
+                        write_call.get("evidence_refs", []),
+                        {
+                            "expected_found": expected_pre_found,
+                            "actual_found": actual_pre_found,
+                        },
+                    )
+                )
+
+        write_turn = self._turn_by_step(turns, write_call.get("step"))
+        observed_actions = set()
+        if isinstance(write_turn, dict):
+            observed_actions = {
+                self._clean(write_turn.get("action")),
+                self._clean(
+                    write_turn.get("intent_plan", {}).get("action")
+                ),
+            }
+
+        expected_action = self._clean(scenario.get("ready_action"))
+        if expected_action is None or expected_action not in observed_actions:
+            phases["conversation"] = "FAIL"
+            findings.append(
+                finding(
+                    "critical",
+                    "contact_submit_action_mismatch",
+                    (
+                        "crm_contact_submit executed without the expected "
+                        f"structured action {expected_action!r}."
+                    ),
+                    write_call.get("step"),
+                    write_call.get("evidence_refs", []),
+                    {
+                        "observed_actions": sorted(
+                            action
+                            for action in observed_actions
+                            if action is not None
+                        )
+                    },
+                )
+            )
+        else:
+            phases["conversation"] = "PASS"
+
+        output = write_call.get("decoded_output")
+        outcome = self._write_outcome(write_call)
+
+        if outcome != "success":
+            phases["write"] = "FAIL"
+            findings.append(
+                finding(
+                    "error",
+                    "live_write_failed",
+                    (
+                        "crm_contact_submit did not return a verifiable "
+                        "successful result."
+                    ),
+                    write_call.get("step"),
+                    write_call.get("evidence_refs", []),
+                    {"write_output": output},
+                )
+            )
+            return findings, phases, evidence
+
+        if not isinstance(output, dict) or output.get("status") != "accepted":
+            phases["write"] = "FAIL"
+            findings.append(
+                finding(
+                    "error",
+                    "contact_submit_status_not_accepted",
+                    (
+                        "crm_contact_submit succeeded structurally but "
+                        "status is not 'accepted'."
+                    ),
+                    write_call.get("step"),
+                    write_call.get("evidence_refs", []),
+                    {"write_output": output},
+                )
+            )
+            return findings, phases, evidence
+
+        phases["write"] = "PASS"
+
+        post_context_calls = [
+            call
+            for call in ordered_calls[write_position + 1 :]
+            if call.get("tool_name") == "contact_context"
+        ]
+
+        if not post_context_calls:
+            phases["crm_verification"] = "FAIL"
+            findings.append(
+                finding(
+                    "critical",
+                    "crm_post_write_read_missing",
+                    (
+                        "No contact_context read was executed after "
+                        "crm_contact_submit."
+                    ),
+                    write_call.get("step"),
+                    write_call.get("evidence_refs", []),
+                )
+            )
+            return findings, phases, evidence
+
+        post_call = post_context_calls[-1]
+        post_found = self._contact_context_found(
+            post_call.get("decoded_output")
+        )
+        evidence["post_write_contact_context"] = (
+            self._minimal_call_evidence(post_call)
+        )
+        evidence["post_write_found"] = post_found
+
+        if post_found is not True:
+            phases["crm_verification"] = "FAIL"
+            findings.append(
+                finding(
+                    "critical",
+                    "crm_post_write_verification_failed",
+                    (
+                        "Post-write contact_context did not confirm "
+                        "found=true for the submitted contact."
+                    ),
+                    post_call.get("step"),
+                    post_call.get("evidence_refs", []),
+                )
+            )
+        else:
+            phases["crm_verification"] = "PASS"
+
+        return findings, phases, evidence
+
+    def _contact_context_found(self, output: Any) -> bool | None:
+        if not isinstance(output, dict):
+            return None
+
+        found = output.get("found")
+        if isinstance(found, bool):
+            return found
+
+        contact = output.get("contact")
+        if isinstance(contact, dict):
+            nested_found = contact.get("found")
+            if isinstance(nested_found, bool):
+                return nested_found
+
+        return None
 
     def _appointment_id_from_confirm_output(self, output: Any) -> str | None:
         if not isinstance(output, dict):

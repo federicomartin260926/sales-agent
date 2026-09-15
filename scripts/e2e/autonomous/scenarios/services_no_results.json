@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "name": "services_no_results",
+  "scenario_type": "services",
+  "mode": "dry_run",
+  "goal": "Consultar un servicio inexistente y mantener una respuesta recuperable sin inventar productos o servicios.",
+  "defaults": {
+    "tenant_id": "019e4a9a-c85f-72d4-8748-b756073c324c",
+    "channel_type": "whatsapp",
+    "external_channel_id": "test-whatsapp-e2e",
+    "entrypoint_ref": "mary-main",
+    "contact_phone": "+34678180164",
+    "contact_name": "Federico Martín Peña",
+    "conversation_prefix": "autonomous-services-no-results"
+  },
+  "initial_message": "¿Tenéis un servicio de criogenización capilar cuántica?",
+  "initial_data_fields": [
+    "service_query"
+  ],
+  "max_turns": 3,
+  "customer_data": {
+    "service_query": "criogenización capilar cuántica"
+  },
+  "recommended_read_tools": [
+    "services_search"
+  ],
+  "terminal_tool": "services_search",
+  "expected_service_search_found": false,
+  "preconditions": [
+    "La consulta utilizada debe ser inexistente en el catálogo de Mary."
+  ],
+  "documented_invariants": [
+    "No ejecutar ninguna write MCP.",
+    "No inventar un servicio cuando services_search no encuentra resultados.",
+    "Mantener la conversación recuperable para otra consulta del cliente."
+  ]
+}

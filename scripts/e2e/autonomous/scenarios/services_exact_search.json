@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "name": "services_exact_search",
+  "scenario_type": "services",
+  "mode": "dry_run",
+  "goal": "Consultar un servicio concreto y responder usando información estructurada real del catálogo.",
+  "defaults": {
+    "tenant_id": "019e4a9a-c85f-72d4-8748-b756073c324c",
+    "channel_type": "whatsapp",
+    "external_channel_id": "test-whatsapp-e2e",
+    "entrypoint_ref": "mary-main",
+    "contact_phone": "+34678180164",
+    "contact_name": "Federico Martín Peña",
+    "conversation_prefix": "autonomous-services-exact"
+  },
+  "initial_message": "¿Qué información tenéis sobre el servicio Láser axilas? ¿Cuánto cuesta y cuánto dura?",
+  "initial_data_fields": [
+    "service_query"
+  ],
+  "max_turns": 3,
+  "customer_data": {
+    "service_query": "Láser axilas"
+  },
+  "recommended_read_tools": [
+    "services_search"
+  ],
+  "terminal_tool": "services_search",
+  "expected_service_search_found": true,
+  "preconditions": [
+    "El catálogo CRM de Mary debe contener el servicio de láser de axilas."
+  ],
+  "documented_invariants": [
+    "No ejecutar ninguna write MCP.",
+    "Usar services_search como fuente estructurada del catálogo.",
+    "No inventar precio, duración ni características ausentes del resultado."
+  ]
+}

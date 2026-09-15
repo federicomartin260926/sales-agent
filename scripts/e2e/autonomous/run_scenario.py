@@ -49,11 +49,6 @@ def load_scenario(name_or_path: str) -> tuple[dict[str, Any], Path, str]:
         "initial_message",
         "max_turns",
         "customer_data",
-        "preferred_slot_strategy",
-        "expected_write_tool",
-        "ready_action",
-        "requires_selected_slot",
-        "requires_existing_appointment",
         "recommended_read_tools",
         "preconditions",
         "documented_invariants",
@@ -61,23 +56,62 @@ def load_scenario(name_or_path: str) -> tuple[dict[str, Any], Path, str]:
     missing = sorted(required.difference(scenario))
     if missing:
         raise ValueError(f"Scenario {candidate} is missing fields: {', '.join(missing)}")
-    if scenario["expected_write_tool"] not in WRITE_TOOLS:
-        raise ValueError(f"Unsupported expected_write_tool: {scenario['expected_write_tool']}")
+    expected_write_tool = scenario.get("expected_write_tool")
+    if expected_write_tool is not None and expected_write_tool not in WRITE_TOOLS:
+        raise ValueError(f"Unsupported expected_write_tool: {expected_write_tool}")
+
+    scenario_type = str(scenario.get("scenario_type", "appointment"))
+    if scenario_type not in {"appointment", "services", "contact_submit", "handoff"}:
+        raise ValueError(f"Unsupported scenario_type: {scenario_type}")
+
+    if scenario_type == "appointment":
+        appointment_required = {
+            "preferred_slot_strategy",
+            "expected_write_tool",
+            "ready_action",
+            "requires_selected_slot",
+            "requires_existing_appointment",
+        }
+        appointment_missing = sorted(appointment_required.difference(scenario))
+        if appointment_missing:
+            raise ValueError(
+                f"Appointment scenario {candidate} is missing fields: "
+                + ", ".join(appointment_missing)
+            )
     mode = scenario.get("mode", "dry_run")
     if mode not in {"dry_run", "live"}:
         raise ValueError(f"Unsupported scenario mode: {mode}")
     if mode == "live":
-        live_required = {
-            "confirm_action",
-            "confirmation_message",
-            "verification_message",
-            "verify_with_tool",
-            "cleanup_with_tool",
-            "cleanup_required",
-        }
+        if scenario_type == "appointment":
+            live_required = {
+                "confirm_action",
+                "confirmation_message",
+                "verification_message",
+                "verify_with_tool",
+                "cleanup_with_tool",
+                "cleanup_required",
+            }
+        elif scenario_type == "contact_submit":
+            live_required = {
+                "expected_write_tool",
+                "verification_message",
+                "verify_with_tool",
+                "requires_write_opt_in_before_start",
+            }
+        elif scenario_type == "handoff":
+            live_required = {
+                "expected_write_tool",
+                "requires_write_opt_in_before_start",
+            }
+        else:
+            live_required = set()
+
         live_missing = sorted(live_required.difference(scenario))
         if live_missing:
-            raise ValueError(f"Live scenario {candidate} is missing fields: {', '.join(live_missing)}")
+            raise ValueError(
+                f"Live {scenario_type} scenario {candidate} is missing fields: "
+                + ", ".join(live_missing)
+            )
     return scenario, candidate, hashlib.sha256(raw).hexdigest()
 
 
@@ -112,19 +146,46 @@ def post_turn(api_url: str, token: str, payload: dict[str, Any], timeout: float)
 
 
 def build_payload(
-    scenario: dict[str, Any], conversation_id: str, message_id: str, message: str
+    scenario: dict[str, Any],
+    conversation_id: str,
+    message_id: str,
+    message: str,
+    contact_phone: str | None = None,
+    contact_email: str | None = None,
+    contact_name: str | None = None,
 ) -> dict[str, Any]:
     defaults = scenario["defaults"]
+
+    resolved_phone = (
+        defaults.get("contact_phone", "")
+        if contact_phone is None
+        else contact_phone
+    )
+    resolved_email = (
+        defaults.get("contact_email")
+        if contact_email is None
+        else contact_email
+    )
+    resolved_name = (
+        defaults.get("contact_name", "")
+        if contact_name is None
+        else contact_name
+    )
+
+    contact: dict[str, Any] = {
+        "phone": resolved_phone,
+        "name": resolved_name,
+    }
+    if resolved_email:
+        contact["email"] = resolved_email
+
     payload: dict[str, Any] = {
         "tenant_id": defaults["tenant_id"],
         "channel_type": defaults.get("channel_type", "whatsapp"),
         "external_channel_id": defaults.get("external_channel_id", "test-whatsapp-e2e"),
         "external_conversation_id": conversation_id,
         "message": {"id": message_id, "type": "text", "text": message},
-        "contact": {
-            "phone": defaults.get("contact_phone", ""),
-            "name": defaults.get("contact_name", ""),
-        },
+        "contact": contact,
     }
     if defaults.get("entrypoint_ref"):
         payload["entrypoint_ref"] = defaults["entrypoint_ref"]
@@ -374,6 +435,23 @@ def run_scenario(
     mode = str(scenario.get("mode", "dry_run"))
     writes_enabled = mode == "live" and os.environ.get("SA_E2E_ALLOW_WRITES") == "1"
     external_conversation_id = conversation_id or f"{defaults['conversation_prefix']}-{make_run_id('conv')}"
+
+    runtime_contact_phone = str(defaults.get("contact_phone") or "")
+    runtime_contact_email = defaults.get("contact_email")
+    runtime_contact_name = str(defaults.get("contact_name") or "")
+
+    if scenario.get("generate_unique_contact_email"):
+        runtime_contact_email = f"sa-e2e-{uuid.uuid4().hex[:20]}@example.com"
+
+    if scenario.get("generate_unique_contact_phone"):
+        # Ofcom drama/mobile test range: +44 7700 900000-900999.
+        # Valid-looking E.164 identity without using a normal subscriber number.
+        suffix = uuid.uuid4().int % 1000
+        runtime_contact_phone = f"+447700900{suffix:03d}"
+
+    if scenario.get("omit_contact_phone"):
+        runtime_contact_phone = ""
+
     max_turns = max_turns_override or int(scenario["max_turns"])
     api_url = api_url or os.environ.get("SA_E2E_API_URL") or f"http://localhost:{os.environ.get('API_PORT', '8000')}/agent/respond"
     token = os.environ.get("SALES_AGENT_BEARER_TOKEN", "sales-agent-bearer-token")
@@ -400,13 +478,33 @@ def run_scenario(
         "mode": mode,
         "dry_run": not writes_enabled,
         "writes_enabled": writes_enabled,
+        "runtime_contact": {
+            "phone": runtime_contact_phone,
+            "email": runtime_contact_email,
+            "name": runtime_contact_name,
+        },
         "git": git_metadata(),
     }
     turns: list[dict[str, Any]] = []
     simulator = CustomerSimulator()
     evaluator = Evaluator()
     immediate_findings: list[dict[str, Any]] = []
-    decision = simulator.decide(scenario, turns, allow_writes=writes_enabled)
+    if (
+        mode == "live"
+        and scenario.get("requires_write_opt_in_before_start")
+        and not writes_enabled
+    ):
+        decision = CustomerDecision(
+            kind="live_write_not_enabled",
+            reason="live_write_not_enabled",
+        )
+    else:
+        decision = simulator.decide(
+            scenario,
+            turns,
+            allow_writes=writes_enabled,
+        )
+
     ready_to_write = False
     stop_reason = "unknown"
 
@@ -430,7 +528,15 @@ def run_scenario(
             stop_reason = "live_write_not_enabled"
             break
         message_id = f"{external_conversation_id}-{step:02d}-{uuid.uuid4().hex[:12]}"
-        payload = build_payload(scenario, external_conversation_id, message_id, decision.message)
+        payload = build_payload(
+            scenario,
+            external_conversation_id,
+            message_id,
+            decision.message,
+            contact_phone=runtime_contact_phone,
+            contact_email=runtime_contact_email,
+            contact_name=runtime_contact_name,
+        )
         try:
             status, _raw, response = post_turn(api_url, token, payload, timeout)
         except Exception as exc:

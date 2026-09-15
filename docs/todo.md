@@ -252,7 +252,7 @@ Pendiente:
 - [ ] Evitar que SA siga contestando si la conversación quedó en estado humano pendiente.
 - [ ] Crear aviso/tarea en CRM cuando aplique.
 - [ ] Registrar motivo de handoff en conversación.
-- [ ] Añadir tests e2e con conversación persistente.
+- [x] Añadir tests e2e con conversación persistente mediante el runner autónomo (`docs/autonomous-e2e.md`).
 
 ## 9. CRM contact-context y agenda/citas
 

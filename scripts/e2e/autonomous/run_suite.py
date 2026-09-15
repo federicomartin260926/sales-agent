@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import traceback
 from collections import Counter
@@ -11,7 +12,10 @@ from typing import Any
 from run_scenario import DEFAULT_RESULTS_DIR, make_run_id, run_scenario, utc_now
 
 
-SCENARIOS = (
+DRY_SCENARIOS = (
+    "services_exact_search",
+    "services_refinement",
+    "services_no_results",
     "booking",
     "reschedule",
     "cancel",
@@ -25,12 +29,24 @@ SCENARIOS = (
     "appointment_existing_verification",
 )
 
+LIVE_INTEGRATION_SCENARIOS = (
+    "contact_submit_new_contact_live",
+    "handoff_explicit_request_live",
+)
+
+PROFILES = {
+    "dry": DRY_SCENARIOS,
+    "full-live": DRY_SCENARIOS + LIVE_INTEGRATION_SCENARIOS,
+}
+
 
 def render_suite_report(report: dict[str, Any]) -> str:
     summary = report["summary"]
     lines = [
         "# Sales Agent autonomous E2E suite",
         "",
+        f"PROFILE: {report.get('profile', 'dry')}",
+        f"WRITES ENABLED: {str(report.get('writes_enabled', False)).lower()}",
         f"SCENARIOS: {summary['SCENARIOS']}",
         f"PASS: {summary['PASS']}",
         f"WARN: {summary['WARN']}",
@@ -79,9 +95,18 @@ def render_suite_report(report: dict[str, Any]) -> str:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Run regression, multi-service and appointment-verification scenarios in dry-run mode. "
-            "Exit codes: 0=no FAIL, 1=functional/technical scenario FAIL, 2=global runner failure."
+            "Run autonomous Sales Agent E2E scenarios. "
+            "Profile dry executes only non-writing scenarios. "
+            "Profile full-live also executes explicitly gated live integration writes. "
+            "Exit codes: 0=no FAIL, 1=functional/technical scenario FAIL, "
+            "2=global runner/safety failure."
         )
+    )
+    parser.add_argument(
+        "--profile",
+        choices=tuple(PROFILES),
+        default="dry",
+        help="Suite profile (default: dry)",
     )
     parser.add_argument("--output-dir", type=Path, help="Suite result directory")
     parser.add_argument("--api-url", help="Agent respond URL")
@@ -92,7 +117,18 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    run_id = make_run_id("suite")
+    scenarios = PROFILES[args.profile]
+    writes_enabled = os.environ.get("SA_E2E_ALLOW_WRITES") == "1"
+
+    if args.profile == "full-live" and not writes_enabled:
+        print(
+            "Safety failure: --profile full-live requires "
+            "SA_E2E_ALLOW_WRITES=1 before any scenario is executed.",
+            file=sys.stderr,
+        )
+        return 2
+
+    run_id = make_run_id(f"suite-{args.profile}")
     suite_dir = args.output_dir or DEFAULT_RESULTS_DIR / run_id
     try:
         suite_dir.mkdir(parents=True, exist_ok=True)
@@ -100,7 +136,7 @@ def main() -> int:
         print(f"Global runner failure: {exc.__class__.__name__}: {exc}", file=sys.stderr)
         return 2
     results: list[dict[str, Any]] = []
-    for scenario in SCENARIOS:
+    for scenario in scenarios:
         scenario_dir = suite_dir / scenario
         try:
             evaluation, scenario_dir = run_scenario(
@@ -161,7 +197,9 @@ def main() -> int:
     report = {
         "run_id": run_id,
         "timestamp": utc_now(),
-        "dry_run": True,
+        "profile": args.profile,
+        "dry_run": args.profile == "dry",
+        "writes_enabled": writes_enabled,
         "summary": {
             "SCENARIOS": len(results),
             "PASS": counts["PASS"],

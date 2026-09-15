@@ -33,10 +33,19 @@ class CustomerSimulator:
                 data_fields=tuple(scenario.get("initial_data_fields", [])),
             )
 
-        if scenario.get("mode") == "live":
+        scenario_type = str(scenario.get("scenario_type", "appointment"))
+
+        if scenario_type == "appointment" and scenario.get("mode") == "live":
             live_decision = self._live_decision(scenario, turns, allow_writes)
             if live_decision is not None:
                 return live_decision
+
+        if scenario_type != "appointment":
+            return self._generic_decision(
+                scenario,
+                turns,
+                allow_writes=allow_writes,
+            )
 
         selected_slot = self._latest_structured_value(turns, "selected_slot")
         existing_appointment = self._latest_structured_value(turns, "existing_appointment")
@@ -151,6 +160,200 @@ class CustomerSimulator:
             kind="warn",
             reason="insufficient_structured_evidence",
             evidence_refs=tuple(last.get("artifact_refs", [])),
+        )
+
+    def _generic_decision(
+        self,
+        scenario: dict[str, Any],
+        turns: list[dict[str, Any]],
+        allow_writes: bool,
+    ) -> CustomerDecision:
+        """
+        Advance non-appointment scenarios from structured planner/tool evidence.
+
+        This branch intentionally does not inspect assistant reply text.
+        """
+
+        last = turns[-1]
+        action = self._clean(last.get("action"))
+        ready_action = self._clean(scenario.get("ready_action"))
+        expected_write = self._clean(scenario.get("expected_write_tool"))
+
+        write_calls = [
+            call
+            for turn in turns
+            for call in turn.get("executed_mcp_calls", [])
+            if call.get("tool_name") == expected_write
+        ]
+
+        if expected_write is not None and write_calls:
+            write_call = write_calls[-1]
+            verify_tool = self._clean(scenario.get("verify_with_tool"))
+
+            if verify_tool is None:
+                return CustomerDecision(
+                    kind="completed",
+                    reason=f"structured_tool={expected_write}",
+                    evidence_refs=tuple(write_call.get("evidence_refs", [])),
+                )
+
+            write_step = write_call.get("step")
+            verification_calls = [
+                call
+                for turn in turns
+                for call in turn.get("executed_mcp_calls", [])
+                if call.get("tool_name") == verify_tool
+                and isinstance(call.get("step"), int)
+                and isinstance(write_step, int)
+                and call.get("step") > write_step
+            ]
+
+            if verification_calls:
+                return CustomerDecision(
+                    kind="completed",
+                    reason=f"structured_tool={verify_tool}",
+                    evidence_refs=tuple(
+                        verification_calls[-1].get("evidence_refs", [])
+                    ),
+                )
+
+            verification_sent = any(
+                turn.get("customer_decision") == "verification_message"
+                for turn in turns
+            )
+            verification_message = scenario.get("verification_message")
+
+            if not verification_sent and verification_message:
+                return CustomerDecision(
+                    kind="verification_message",
+                    reason=f"verify_live_write:{verify_tool}",
+                    message=str(verification_message),
+                    data_fields=("post_write_verification",),
+                    evidence_refs=tuple(write_call.get("evidence_refs", [])),
+                )
+
+            return CustomerDecision(
+                kind="warn",
+                reason="post_write_verification_missing",
+                evidence_refs=tuple(write_call.get("evidence_refs", [])),
+            )
+
+        # Scenario-defined customer follow-ups are deterministic test input,
+        # not semantic interpretation of the assistant response.
+        followups = scenario.get("follow_up_messages", [])
+        if isinstance(followups, list):
+            already_sent = sum(
+                1
+                for turn in turns
+                if str(turn.get("customer_decision_reason", "")).startswith(
+                    "scripted_follow_up:"
+                )
+            )
+            if already_sent < len(followups):
+                item = followups[already_sent]
+                if isinstance(item, str):
+                    message = item
+                    field = f"follow_up_{already_sent + 1}"
+                elif isinstance(item, dict):
+                    message = str(item.get("message") or "")
+                    field = str(
+                        item.get("field")
+                        or f"follow_up_{already_sent + 1}"
+                    )
+                else:
+                    message = ""
+                    field = f"follow_up_{already_sent + 1}"
+
+                if message:
+                    return CustomerDecision(
+                        kind="message",
+                        reason=f"scripted_follow_up:{field}",
+                        message=message,
+                        data_fields=(field,),
+                        evidence_refs=tuple(last.get("artifact_refs", [])),
+                    )
+
+        # Read-only scenarios finish when their declared terminal action is
+        # observed after the scripted conversation has been exhausted.
+        if expected_write is None:
+            terminal_action = self._clean(
+                scenario.get("terminal_action") or ready_action
+            )
+            if terminal_action is not None and action == terminal_action:
+                return CustomerDecision(
+                    kind="completed",
+                    reason=f"structured_action={terminal_action}",
+                    evidence_refs=tuple(last.get("artifact_refs", [])),
+                )
+
+            terminal_tool = self._clean(scenario.get("terminal_tool"))
+            if terminal_tool is not None and self._tool_seen(turns, terminal_tool):
+                return CustomerDecision(
+                    kind="completed",
+                    reason=f"structured_tool={terminal_tool}",
+                    evidence_refs=tuple(last.get("artifact_refs", [])),
+                )
+
+            return CustomerDecision(
+                kind="warn",
+                reason="insufficient_structured_evidence",
+                evidence_refs=tuple(last.get("artifact_refs", [])),
+            )
+
+        # Write scenarios stop at the write boundary in dry-run.
+        if ready_action is not None and action == ready_action:
+            if scenario.get("write_occurs_on_ready_turn"):
+                return CustomerDecision(
+                    kind="warn",
+                    reason="expected_write_missing_on_ready_turn",
+                    evidence_refs=tuple(last.get("artifact_refs", [])),
+                )
+
+            if scenario.get("mode") == "live":
+                if not allow_writes:
+                    return CustomerDecision(
+                        kind="live_write_not_enabled",
+                        reason="live_write_not_enabled",
+                        evidence_refs=tuple(last.get("artifact_refs", [])),
+                    )
+
+                confirmation_message = scenario.get("confirmation_message")
+                if not confirmation_message:
+                    return CustomerDecision(
+                        kind="warn",
+                        reason="live_confirmation_message_missing",
+                        evidence_refs=tuple(last.get("artifact_refs", [])),
+                    )
+
+                return CustomerDecision(
+                    kind="write_confirmation",
+                    reason="confirm_live_write",
+                    message=str(confirmation_message),
+                    data_fields=("explicit_write_confirmation",),
+                    evidence_refs=tuple(last.get("artifact_refs", [])),
+                )
+
+            return CustomerDecision(
+                kind=str(scenario.get("terminal_state", "ready_to_write")),
+                reason=f"structured_action={ready_action}",
+                evidence_refs=tuple(last.get("artifact_refs", [])),
+            )
+
+        return CustomerDecision(
+            kind="warn",
+            reason="insufficient_structured_evidence",
+            evidence_refs=tuple(last.get("artifact_refs", [])),
+        )
+
+    def _tool_seen(
+        self,
+        turns: list[dict[str, Any]],
+        tool_name: str,
+    ) -> bool:
+        return any(
+            call.get("tool_name") == tool_name
+            for turn in turns
+            for call in turn.get("executed_mcp_calls", [])
         )
 
     def _live_decision(
