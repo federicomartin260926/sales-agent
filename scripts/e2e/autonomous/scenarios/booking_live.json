@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "name": "booking_live",
+  "mode": "live",
+  "goal": "Crear una reserva monoservicio real y verificarla posteriormente en CRM mediante appointment_events.",
+  "defaults": {
+    "tenant_id": "019e4a9a-c85f-72d4-8748-b756073c324c",
+    "channel_type": "whatsapp",
+    "external_channel_id": "test-whatsapp-e2e",
+    "entrypoint_ref": "mary-main",
+    "contact_phone": "+34678180164",
+    "contact_name": "Federico Martín Peña",
+    "conversation_prefix": "autonomous-booking-live"
+  },
+  "initial_message": "Quiero reservar láser axilas el próximo viernes por la mañana con María Gutiérrez.",
+  "initial_data_fields": [
+    "service_name",
+    "preferred_day",
+    "time_of_day",
+    "owner_name"
+  ],
+  "max_turns": 6,
+  "customer_data": {
+    "service_name": "láser axilas",
+    "preferred_day": "el próximo viernes",
+    "time_of_day": "por la mañana",
+    "owner_name": "María Gutiérrez"
+  },
+  "confirmation_message": "Sí, confirma esta cita.",
+  "verification_message": "Comprueba en CRM que la cita que acabas de confirmar existe realmente.",
+  "preferred_slot_strategy": "first",
+  "expected_write_tool": "appointment_confirm",
+  "ready_action": "prepare_booking_confirmation",
+  "confirm_action": "confirm_booking",
+  "requires_selected_slot": true,
+  "requires_existing_appointment": false,
+  "recommended_read_tools": [
+    "contact_context",
+    "services_search",
+    "appointment_availability"
+  ],
+  "verify_with_tool": "appointment_events",
+  "cleanup_with_tool": "appointment_cancel",
+  "cleanup_required": false,
+  "expected_service_count": 1,
+  "expected_service_ids": [
+    "019eb05e-5f68-74a7-8533-a8e6990833e6"
+  ],
+  "preconditions": [
+    "El servicio láser axilas y una agenda futura deben estar disponibles para el tenant E2E.",
+    "El contacto pertenece exclusivamente a pruebas E2E.",
+    "La cita creada debe limpiarse manualmente porque cleanup está SKIPPED en V1."
+  ],
+  "documented_invariants": [
+    "Sin SA_E2E_ALLOW_WRITES=1 detenerse antes de enviar la confirmación explícita.",
+    "Con opt-in ejecutar appointment_confirm exactamente una vez y sin reintentos.",
+    "Aceptar el write solo con output MCP real ok=true y confirmed=true.",
+    "Obtener appointment.id del output downstream y verificar el mismo ID mediante appointment_events posterior.",
+    "No calcular duración, buffers ni conversiones de timezone.",
+    "Mantener cleanup como SKIPPED en esta versión."
+  ]
+}

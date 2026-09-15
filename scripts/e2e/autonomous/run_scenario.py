@@ -63,6 +63,21 @@ def load_scenario(name_or_path: str) -> tuple[dict[str, Any], Path, str]:
         raise ValueError(f"Scenario {candidate} is missing fields: {', '.join(missing)}")
     if scenario["expected_write_tool"] not in WRITE_TOOLS:
         raise ValueError(f"Unsupported expected_write_tool: {scenario['expected_write_tool']}")
+    mode = scenario.get("mode", "dry_run")
+    if mode not in {"dry_run", "live"}:
+        raise ValueError(f"Unsupported scenario mode: {mode}")
+    if mode == "live":
+        live_required = {
+            "confirm_action",
+            "confirmation_message",
+            "verification_message",
+            "verify_with_tool",
+            "cleanup_with_tool",
+            "cleanup_required",
+        }
+        live_missing = sorted(live_required.difference(scenario))
+        if live_missing:
+            raise ValueError(f"Live scenario {candidate} is missing fields: {', '.join(live_missing)}")
     return scenario, candidate, hashlib.sha256(raw).hexdigest()
 
 
@@ -324,6 +339,23 @@ def render_scenario_report(
                 "```",
             ]
         )
+    if evaluation.get("phases"):
+        lines.extend(["", "## Live phases", ""])
+        lines.extend(
+            f"- {name}: {result}"
+            for name, result in evaluation["phases"].items()
+        )
+    if evaluation.get("live_evidence"):
+        lines.extend(
+            [
+                "",
+                "## Live evidence",
+                "",
+                "```json",
+                json.dumps(evaluation["live_evidence"], ensure_ascii=False, indent=2),
+                "```",
+            ]
+        )
     return "\n".join(lines) + "\n"
 
 
@@ -339,6 +371,8 @@ def run_scenario(
 ) -> tuple[dict[str, Any], Path]:
     scenario, scenario_path, scenario_hash = load_scenario(scenario_name)
     defaults = scenario["defaults"]
+    mode = str(scenario.get("mode", "dry_run"))
+    writes_enabled = mode == "live" and os.environ.get("SA_E2E_ALLOW_WRITES") == "1"
     external_conversation_id = conversation_id or f"{defaults['conversation_prefix']}-{make_run_id('conv')}"
     max_turns = max_turns_override or int(scenario["max_turns"])
     api_url = api_url or os.environ.get("SA_E2E_API_URL") or f"http://localhost:{os.environ.get('API_PORT', '8000')}/agent/respond"
@@ -363,14 +397,16 @@ def run_scenario(
         "api_url": api_url,
         "context_dir": str(context_dir),
         "container_context_prefix": container_context_prefix,
-        "dry_run": True,
+        "mode": mode,
+        "dry_run": not writes_enabled,
+        "writes_enabled": writes_enabled,
         "git": git_metadata(),
     }
     turns: list[dict[str, Any]] = []
     simulator = CustomerSimulator()
     evaluator = Evaluator()
     immediate_findings: list[dict[str, Any]] = []
-    decision = simulator.decide(scenario, turns)
+    decision = simulator.decide(scenario, turns, allow_writes=writes_enabled)
     ready_to_write = False
     stop_reason = "unknown"
 
@@ -381,9 +417,17 @@ def run_scenario(
         )
 
     for step in range(1, max_turns + 1):
-        if decision.kind != "message" or decision.message is None:
+        if decision.kind == "live_write_not_enabled":
+            ready_to_write = True
+            stop_reason = decision.reason
+            break
+        if decision.kind not in {"message", "write_confirmation", "verification_message"} or decision.message is None:
             ready_to_write = decision.kind == "ready_to_write"
             stop_reason = decision.reason
+            break
+        if decision.kind == "write_confirmation" and not writes_enabled:
+            ready_to_write = True
+            stop_reason = "live_write_not_enabled"
             break
         message_id = f"{external_conversation_id}-{step:02d}-{uuid.uuid4().hex[:12]}"
         payload = build_payload(scenario, external_conversation_id, message_id, decision.message)
@@ -407,7 +451,7 @@ def run_scenario(
             step, decision.message, decision, status, response, artifacts, artifact_status, artifact_refs
         )
         metadata["internal_conversation_id"] = (response.get("data_to_save") or {}).get("conversation_id")
-        safety = evaluator.safety_findings(scenario, turn)
+        safety = evaluator.safety_findings(scenario, turn, write_enabled=writes_enabled)
         turn["findings"] = safety
         turns.append(turn)
         if status < 200 or status >= 300:
@@ -420,7 +464,30 @@ def run_scenario(
             immediate_findings.extend(safety)
             stop_reason = "critical_safety_failure"
             break
-        decision = simulator.decide(scenario, turns)
+        write_calls = [
+            call
+            for candidate in turns
+            for call in candidate.get("executed_mcp_calls", [])
+            if call.get("tool_name") in WRITE_TOOLS
+        ]
+        if writes_enabled and len(write_calls) > 1:
+            immediate_findings.append(
+                finding(
+                    "critical",
+                    "multiple_writes",
+                    f"Live scenario executed {len(write_calls)} MCP writes; aborted immediately.",
+                    step,
+                    [ref for call in write_calls for ref in call.get("evidence_refs", [])],
+                )
+            )
+            stop_reason = "critical_safety_failure"
+            break
+        decision = simulator.decide(scenario, turns, allow_writes=writes_enabled)
+        if decision.kind in {"write_confirmation", "live_write_not_enabled"}:
+            ready_to_write = True
+        if decision.kind == "live_write_not_enabled":
+            stop_reason = decision.reason
+            break
         if decision.kind == "ready_to_write":
             ready_to_write = True
             stop_reason = decision.reason
@@ -442,7 +509,12 @@ def run_scenario(
         stop_reason = "missing_precondition"
 
     evaluation = evaluator.evaluate(
-        scenario, turns, ready_to_write, stop_reason, immediate_findings
+        scenario,
+        turns,
+        ready_to_write,
+        stop_reason,
+        immediate_findings,
+        write_enabled=writes_enabled,
     )
     transcript = {"metadata": metadata, "scenario": scenario, "turns": turns}
     evaluation_document = {"metadata": metadata, **evaluation}

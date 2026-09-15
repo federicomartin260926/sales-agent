@@ -57,6 +57,15 @@ RECOMMENDATIONS = {
     "availability_used_for_verification": "Do not use appointment_availability to verify an existing appointment.",
     "expected_no_availability": "No slots were returned; keep the flow recoverable without inventing a slot or executing a write.",
     "dry_run_write_precondition": "Run this scenario only against a controlled transport that can provide recorded write-tool evidence without a real downstream write.",
+    "live_write_not_enabled": "Set SA_E2E_ALLOW_WRITES=1 only after reviewing the live scenario and its isolated test data.",
+    "live_write_before_confirmation": "Allow the expected write only on the explicit simulator confirmation turn.",
+    "live_confirm_action_mismatch": "Require the planner confirm_action declared by the live scenario on the write turn.",
+    "live_write_failed": "Inspect the real appointment_confirm trace and downstream result; do not retry automatically.",
+    "live_expected_write_missing": "Inspect confirm intent/action gating and the real MCP traces without resending confirmation automatically.",
+    "live_appointment_id_missing": "Require the canonical appointment.id from the successful downstream confirmation output.",
+    "crm_post_write_read_missing": "Execute appointment_events in a later turn before accepting the live booking result.",
+    "crm_post_write_verification_failed": "Reconcile the potentially orphaned CRM write manually; do not retry appointment_confirm.",
+    "live_cleanup_not_implemented": "Keep cleanup SKIPPED until a separately gated, verified cancellation flow is implemented.",
 }
 
 
@@ -80,7 +89,12 @@ def finding(
 
 
 class Evaluator:
-    def safety_findings(self, scenario: dict[str, Any], turn: dict[str, Any]) -> list[dict[str, Any]]:
+    def safety_findings(
+        self,
+        scenario: dict[str, Any],
+        turn: dict[str, Any],
+        write_enabled: bool = False,
+    ) -> list[dict[str, Any]]:
         findings: list[dict[str, Any]] = []
         step = turn.get("step")
         refs = turn.get("artifact_refs", [])
@@ -98,15 +112,27 @@ class Evaluator:
 
         writes = [call for call in turn.get("executed_mcp_calls", []) if call.get("tool_name") in WRITE_TOOLS]
         for call in writes:
-            findings.append(
-                finding(
-                    "critical",
-                    "write_executed_in_dry_run",
-                    f"Real MCP write {call.get('tool_name')} executed in dry-run; scenario aborted immediately.",
-                    step,
-                    list(call.get("evidence_refs", refs)),
-                )
+            live_expected_write = (
+                scenario.get("mode") == "live"
+                and write_enabled
+                and turn.get("customer_decision") == "write_confirmation"
+                and call.get("tool_name") == scenario.get("expected_write_tool")
             )
+            if not live_expected_write:
+                code = (
+                    "live_write_before_confirmation"
+                    if scenario.get("mode") == "live" and write_enabled
+                    else "write_executed_in_dry_run"
+                )
+                findings.append(
+                    finding(
+                        "critical",
+                        code,
+                        f"Real MCP write {call.get('tool_name')} executed outside the single authorized live confirmation turn.",
+                        step,
+                        list(call.get("evidence_refs", refs)),
+                    )
+                )
 
         allowed_tools = set(turn.get("allowed_tools", []))
         actions = {
@@ -134,10 +160,11 @@ class Evaluator:
         ready_to_write: bool,
         stop_reason: str,
         immediate_findings: list[dict[str, Any]],
+        write_enabled: bool = False,
     ) -> dict[str, Any]:
         findings = list(immediate_findings)
         for turn in turns:
-            findings.extend(self.safety_findings(scenario, turn))
+            findings.extend(self.safety_findings(scenario, turn, write_enabled=write_enabled))
             findings.extend(self._artifact_findings(turn))
 
         all_calls = [call for turn in turns for call in turn.get("executed_mcp_calls", [])]
@@ -147,7 +174,7 @@ class Evaluator:
                 finding(
                     "critical",
                     "multiple_writes",
-                    f"Dry-run contains {len(writes)} real MCP writes.",
+                    f"Scenario contains {len(writes)} real MCP writes.",
                     writes[1].get("step"),
                     [ref for call in writes for ref in call.get("evidence_refs", [])],
                 )
@@ -226,6 +253,19 @@ class Evaluator:
         findings.extend(self._appointment_verification_findings(scenario, all_calls, turns))
         findings.extend(self._read_tool_findings(scenario, all_calls, turns))
 
+        phases: dict[str, str] | None = None
+        live_evidence: dict[str, Any] | None = None
+        if scenario.get("mode") == "live":
+            live_findings, phases, live_evidence = self._live_evaluation(
+                scenario,
+                turns,
+                ready_to_write,
+                stop_reason,
+                writes,
+                write_enabled,
+            )
+            findings.extend(live_findings)
+
         if not ready_to_write and not any(item["severity"] in {"error", "critical"} for item in findings):
             if stop_reason == "max_turns":
                 findings.append(finding("warning", "max_turns", "Maximum number of turns reached without a conclusive state.", None))
@@ -267,6 +307,8 @@ class Evaluator:
                         None,
                     )
                 )
+            elif stop_reason == "live_write_not_enabled":
+                pass
             elif stop_reason.startswith("structured_action="):
                 pass
             else:
@@ -279,7 +321,7 @@ class Evaluator:
                     )
                 )
 
-        if ready_to_write:
+        if ready_to_write and not (scenario.get("mode") == "live" and write_enabled):
             findings.append(
                 finding(
                     "info",
@@ -303,7 +345,7 @@ class Evaluator:
         else:
             result = "PASS"
 
-        return {
+        evaluation = {
             "scenario": scenario.get("name"),
             "result": result,
             "ready_to_write": ready_to_write,
@@ -314,6 +356,246 @@ class Evaluator:
             "findings": findings,
             "multiservice_evidence": self._multiservice_evidence(scenario, turns),
         }
+        if phases is not None:
+            evaluation["phases"] = phases
+            evaluation["live_evidence"] = live_evidence or {}
+        return evaluation
+
+    def _live_evaluation(
+        self,
+        scenario: dict[str, Any],
+        turns: list[dict[str, Any]],
+        ready_to_write: bool,
+        stop_reason: str,
+        writes: list[dict[str, Any]],
+        write_enabled: bool,
+    ) -> tuple[list[dict[str, Any]], dict[str, str], dict[str, Any]]:
+        findings: list[dict[str, Any]] = []
+        phases = {
+            "conversation": "PASS" if ready_to_write else "FAIL",
+            "write": "SKIPPED",
+            "crm_verification": "SKIPPED",
+            "cleanup": "SKIPPED",
+        }
+        evidence: dict[str, Any] = {
+            "write_mcp_call": None,
+            "appointment_id": None,
+            "selected_slot": self._latest_selected_slot(turns),
+            "service_ids": self._selected_service_ids(turns[-1]) if turns else [],
+            "timezone": self._latest_agenda_timezone(turns),
+            "verification_mcp_call": None,
+            "verification_match": False,
+            "cleanup_call": None,
+            "cleanup_result": "SKIPPED",
+        }
+
+        if not write_enabled or stop_reason == "live_write_not_enabled":
+            findings.append(
+                finding(
+                    "warning",
+                    "live_write_not_enabled",
+                    "Live booking reached the write boundary and stopped before sending explicit confirmation.",
+                    turns[-1].get("step") if turns else None,
+                    turns[-1].get("artifact_refs", []) if turns else [],
+                )
+            )
+            return findings, phases, evidence
+
+        expected_tool = self._clean(scenario.get("expected_write_tool"))
+        expected_writes = [call for call in writes if call.get("tool_name") == expected_tool]
+        if len(expected_writes) != 1 or len(writes) != 1:
+            phases["write"] = "FAIL"
+            findings.append(
+                finding(
+                    "critical",
+                    "live_expected_write_missing" if not expected_writes else "multiple_writes",
+                    f"Live booking requires exactly one {expected_tool} call; observed {len(expected_writes)} expected and {len(writes)} total writes.",
+                    writes[-1].get("step") if writes else None,
+                    [ref for call in writes for ref in call.get("evidence_refs", [])],
+                )
+            )
+            return findings, phases, evidence
+
+        write_call = expected_writes[0]
+        write_output = write_call.get("decoded_output")
+        evidence["write_mcp_call"] = self._minimal_call_evidence(write_call)
+        write_turn = self._turn_by_step(turns, write_call.get("step"))
+        observed_confirm_action = (
+            self._clean(write_turn.get("intent_plan", {}).get("action"))
+            if isinstance(write_turn, dict)
+            else None
+        )
+        confirm_action_valid = observed_confirm_action == self._clean(scenario.get("confirm_action"))
+        if not confirm_action_valid:
+            phases["write"] = "FAIL"
+            findings.append(
+                finding(
+                    "critical",
+                    "live_confirm_action_mismatch",
+                    f"Write turn planner action was {observed_confirm_action!r}, expected {scenario.get('confirm_action')!r}.",
+                    write_call.get("step"),
+                    write_call.get("evidence_refs", []),
+                )
+            )
+        arguments = write_call.get("arguments")
+        if isinstance(arguments, dict):
+            evidence["service_ids"] = self._argument_service_ids(arguments)
+            evidence["timezone"] = self._clean(arguments.get("timezone"))
+
+        if self._write_outcome(write_call) != "success":
+            phases["write"] = "FAIL"
+            findings.append(
+                finding(
+                    "error",
+                    "live_write_failed",
+                    "The single appointment_confirm call did not return a verifiable successful result.",
+                    write_call.get("step"),
+                    write_call.get("evidence_refs", []),
+                    {"write_output": write_output},
+                )
+            )
+            return findings, phases, evidence
+        if confirm_action_valid:
+            phases["write"] = "PASS"
+
+        appointment_id = self._appointment_id_from_confirm_output(write_output)
+        evidence["appointment_id"] = appointment_id
+        if appointment_id is None:
+            phases["crm_verification"] = "FAIL"
+            findings.append(
+                finding(
+                    "critical",
+                    "live_appointment_id_missing",
+                    "Successful appointment_confirm output did not include a canonical appointment.id.",
+                    write_call.get("step"),
+                    write_call.get("evidence_refs", []),
+                )
+            )
+            return findings, phases, evidence
+
+        verify_tool = self._clean(scenario.get("verify_with_tool"))
+        verification_calls = [
+            call
+            for turn in turns
+            for call in turn.get("executed_mcp_calls", [])
+            if call.get("tool_name") == verify_tool
+            and self._step_after(call.get("step"), write_call.get("step"))
+        ]
+        if not verification_calls:
+            phases["crm_verification"] = "FAIL"
+            findings.append(
+                finding(
+                    "critical",
+                    "crm_post_write_read_missing",
+                    f"No {verify_tool} read was executed after the successful write.",
+                    write_call.get("step"),
+                    write_call.get("evidence_refs", []),
+                )
+            )
+            return findings, phases, evidence
+
+        verification_call = verification_calls[-1]
+        verification_items = self._walk_records(verification_call.get("decoded_output"), "appointment")
+        matched = next(
+            (item for item in verification_items if self._appointment_id(item) == appointment_id),
+            None,
+        )
+        evidence["verification_mcp_call"] = self._minimal_call_evidence(verification_call)
+        evidence["verification_match"] = matched is not None
+        if matched is None:
+            phases["crm_verification"] = "FAIL"
+            findings.append(
+                finding(
+                    "critical",
+                    "crm_post_write_verification_failed",
+                    f"CRM verification did not return the canonical appointment id {appointment_id}.",
+                    verification_call.get("step"),
+                    verification_call.get("evidence_refs", []),
+                    {
+                        "appointment_id": appointment_id,
+                        "observed_appointment_ids": [self._appointment_id(item) for item in verification_items],
+                    },
+                )
+            )
+        else:
+            phases["crm_verification"] = "PASS"
+
+        if scenario.get("cleanup_required"):
+            phases["cleanup"] = "FAIL"
+            findings.append(
+                finding(
+                    "error",
+                    "live_cleanup_not_implemented",
+                    "This V1 runner does not implement a separately gated cleanup write.",
+                    None,
+                )
+            )
+        return findings, phases, evidence
+
+    def _appointment_id_from_confirm_output(self, output: Any) -> str | None:
+        if not isinstance(output, dict):
+            return None
+        appointment = output.get("appointment")
+        if not isinstance(appointment, dict):
+            return None
+        return self._clean(appointment.get("id"))
+
+    def _latest_selected_slot(self, turns: list[dict[str, Any]]) -> dict[str, Any] | None:
+        for turn in reversed(turns):
+            appointment = turn.get("structured_data", {}).get("appointment", {})
+            slot = appointment.get("selected_slot") if isinstance(appointment, dict) else None
+            if isinstance(slot, dict) and slot:
+                return slot
+        return None
+
+    def _latest_agenda_timezone(self, turns: list[dict[str, Any]]) -> str | None:
+        for turn in reversed(turns):
+            for call in reversed(turn.get("executed_mcp_calls", [])):
+                if call.get("tool_name") not in AGENDA_TOOLS:
+                    continue
+                arguments = call.get("arguments")
+                if isinstance(arguments, dict):
+                    timezone = self._clean(arguments.get("timezone"))
+                    if timezone is not None:
+                        return timezone
+        return None
+
+    def _minimal_call_evidence(self, call: dict[str, Any]) -> dict[str, Any]:
+        arguments = call.get("arguments")
+        output = call.get("decoded_output")
+        argument_summary = {
+            key: arguments.get(key)
+            for key in (
+                "tenant_id",
+                "start_at",
+                "end_at",
+                "date_from",
+                "date_to",
+                "timezone",
+                "service_id",
+                "service_ids",
+                "owner_id",
+                "status",
+            )
+            if isinstance(arguments, dict) and arguments.get(key) is not None
+        }
+        output_summary = {
+            key: output.get(key)
+            for key in ("ok", "confirmed", "appointment_confirmed", "found", "count", "error_code")
+            if isinstance(output, dict) and output.get(key) is not None
+        }
+        return {
+            "step": call.get("step"),
+            "type": call.get("type"),
+            "tool_name": call.get("tool_name"),
+            "status": call.get("status"),
+            "error_code": call.get("error_code"),
+            "arguments": argument_summary,
+            "output": output_summary,
+        }
+
+    def _step_after(self, candidate: Any, reference: Any) -> bool:
+        return isinstance(candidate, int) and isinstance(reference, int) and candidate > reference
 
     def _artifact_findings(self, turn: dict[str, Any]) -> list[dict[str, Any]]:
         findings: list[dict[str, Any]] = []
@@ -541,7 +823,11 @@ class Evaluator:
                         )
                     )
                 previous_selection = selection
-            elif previous_selection and self._turn_uses_appointment_domain(turn):
+            elif (
+                previous_selection
+                and turn.get("customer_decision") != "verification_message"
+                and self._turn_uses_appointment_domain(turn)
+            ):
                 findings.append(
                     finding(
                         "error",

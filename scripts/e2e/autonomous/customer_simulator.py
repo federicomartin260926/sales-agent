@@ -19,7 +19,12 @@ READ_APPOINTMENT_TOOLS = {"contact_context", "appointment_events"}
 class CustomerSimulator:
     """Advances a scenario using structured evidence, never reply text."""
 
-    def decide(self, scenario: dict[str, Any], turns: list[dict[str, Any]]) -> CustomerDecision:
+    def decide(
+        self,
+        scenario: dict[str, Any],
+        turns: list[dict[str, Any]],
+        allow_writes: bool = False,
+    ) -> CustomerDecision:
         if not turns:
             return CustomerDecision(
                 kind="message",
@@ -27,6 +32,11 @@ class CustomerSimulator:
                 message=str(scenario["initial_message"]),
                 data_fields=tuple(scenario.get("initial_data_fields", [])),
             )
+
+        if scenario.get("mode") == "live":
+            live_decision = self._live_decision(scenario, turns, allow_writes)
+            if live_decision is not None:
+                return live_decision
 
         selected_slot = self._latest_structured_value(turns, "selected_slot")
         existing_appointment = self._latest_structured_value(turns, "existing_appointment")
@@ -46,6 +56,20 @@ class CustomerSimulator:
         )
 
         if action == ready_action and ready_data:
+            if scenario.get("mode") == "live":
+                if not allow_writes:
+                    return CustomerDecision(
+                        kind="live_write_not_enabled",
+                        reason="live_write_not_enabled",
+                        evidence_refs=tuple(last.get("artifact_refs", [])),
+                    )
+                return CustomerDecision(
+                    kind="write_confirmation",
+                    reason="confirm_live_write",
+                    message=str(scenario["confirmation_message"]),
+                    data_fields=("explicit_write_confirmation",),
+                    evidence_refs=tuple(last.get("artifact_refs", [])),
+                )
             terminal_state = str(scenario.get("terminal_state", "ready_to_write"))
             return CustomerDecision(
                 kind=terminal_state,
@@ -128,6 +152,70 @@ class CustomerSimulator:
             reason="insufficient_structured_evidence",
             evidence_refs=tuple(last.get("artifact_refs", [])),
         )
+
+    def _live_decision(
+        self,
+        scenario: dict[str, Any],
+        turns: list[dict[str, Any]],
+        allow_writes: bool,
+    ) -> CustomerDecision | None:
+        expected_write = self._clean(scenario.get("expected_write_tool"))
+        if expected_write is None:
+            return None
+        write_calls = [
+            call
+            for turn in turns
+            for call in turn.get("executed_mcp_calls", [])
+            if call.get("tool_name") == expected_write
+        ]
+        if not write_calls:
+            return None
+
+        latest_write = write_calls[-1]
+        write_step = latest_write.get("step")
+        if not self._write_succeeded(latest_write, expected_write):
+            return CustomerDecision(
+                kind="completed",
+                reason="live_write_failed",
+                evidence_refs=tuple(latest_write.get("evidence_refs", [])),
+            )
+
+        verify_tool = self._clean(scenario.get("verify_with_tool"))
+        verification_seen = any(
+            call.get("tool_name") == verify_tool and self._step_after(call.get("step"), write_step)
+            for turn in turns
+            for call in turn.get("executed_mcp_calls", [])
+        )
+        if verification_seen:
+            return CustomerDecision(
+                kind="completed",
+                reason="live_flow_complete",
+                evidence_refs=tuple(turns[-1].get("artifact_refs", [])),
+            )
+        if not allow_writes:
+            return CustomerDecision(kind="completed", reason="live_write_gate_lost")
+        return CustomerDecision(
+            kind="verification_message",
+            reason="verify_live_write",
+            message=str(scenario["verification_message"]),
+            data_fields=("crm_post_write_verification",),
+            evidence_refs=tuple(latest_write.get("evidence_refs", [])),
+        )
+
+    def _write_succeeded(self, call: dict[str, Any], tool_name: str) -> bool:
+        if self._clean(call.get("status")) not in {"completed", "success", "succeeded"}:
+            return False
+        if self._clean(call.get("error_code")) is not None:
+            return False
+        output = call.get("decoded_output")
+        if not isinstance(output, dict) or output.get("ok") is not True:
+            return False
+        if tool_name == "appointment_confirm":
+            return output.get("confirmed") is True or output.get("appointment_confirmed") is True
+        return False
+
+    def _step_after(self, candidate: Any, reference: Any) -> bool:
+        return isinstance(candidate, int) and isinstance(reference, int) and candidate > reference
 
     def _next_customer_datum(
         self, scenario: dict[str, Any], turns: list[dict[str, Any]], action: str | None
