@@ -5,7 +5,7 @@ import time
 from typing import Any
 
 from app.schemas.agent import AgentResponse
-from app.services.agent_orchestration.schemas import IntentPlan, LLMFinalResponse, ToolPlan
+from app.services.agent_orchestration.schemas import LLMFinalResponse, ToolPlan
 from app.services.agent_orchestration.write_integrity_guard import WriteIntegrityGuard
 from app.services.llm_provider_resilience import LlmProviderUnavailable
 from app.services.routing_resolver import RoutingContext
@@ -18,22 +18,43 @@ class AgentTurnResponseBuilder:
     def build_response(
         self,
         final: LLMFinalResponse,
-        plan: IntentPlan,
-        tool_plan: ToolPlan,
+        primary: LLMFinalResponse,
+        primary_tool_plan: ToolPlan,
+        write_tool_plan: ToolPlan | None,
+        authorized_write_tool: str | None,
         llm_result: Any | None,
         started_at: float,
         routing: RoutingContext | None = None,
         provider_failure: LlmProviderUnavailable | None = None,
     ) -> AgentResponse:
-        final = self.write_integrity_guard.apply(final, plan, llm_result)
+        final = self.write_integrity_guard.apply(final, primary, authorized_write_tool, llm_result)
         structured_data = final.structured_data.model_dump(exclude_none=True) if hasattr(final, "structured_data") else {}
         tool_results = [trace.model_dump(exclude_none=True) for trace in getattr(llm_result, "tool_traces", [])] if llm_result is not None else []
         technical_metadata = self.build_technical_metadata(provider_failure)
 
+        compatibility_intent_plan = {
+            "domain": primary.domain,
+            "intent": primary.intent,
+            "action": primary.action,
+            "confidence": primary.score,
+            "needs_tools": authorized_write_tool is not None,
+            "reason": "derived_from_primary_for_compatibility",
+        }
         data_to_save: dict[str, Any] = {
-            "orchestration_version": "llm_context_tools_v3",
-            "intent_plan": plan.model_dump(exclude_none=True),
-            "tool_plan": tool_plan.model_dump(exclude_none=True),
+            "orchestration_version": "llm_single_turn_v1",
+            "intent_plan": compatibility_intent_plan,
+            "tool_plan": (write_tool_plan or primary_tool_plan).model_dump(exclude_none=True),
+            "primary_tool_plan": primary_tool_plan.model_dump(exclude_none=True),
+            "write_tool_plan": write_tool_plan.model_dump(exclude_none=True) if write_tool_plan is not None and authorized_write_tool is not None else {},
+            "write_authorization": (
+                {
+                    "intent": primary.intent,
+                    "action": primary.action,
+                    "tool": authorized_write_tool,
+                }
+                if authorized_write_tool is not None
+                else {}
+            ),
             "mcp_tool_traces": tool_results,
             "tool_results": tool_results,
             "structured_data": structured_data,
@@ -56,7 +77,7 @@ class AgentTurnResponseBuilder:
 
         return AgentResponse(
             reply=reply,
-            intent=final.intent or plan.intent or "unknown",
+            intent=final.intent or primary.intent or "unknown",
             score=final.score,
             action=final.action,
             needs_human=bool(final.needs_human),

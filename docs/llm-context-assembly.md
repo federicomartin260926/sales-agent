@@ -14,12 +14,18 @@ No es una propuesta futura. Es una referencia operativa del comportamiento vigen
 -> `runtime_settings_client.effective_values()`
 -> persistencia de inbound
 -> carga de conversación y contexto
--> primera llamada LLM para clasificar intención
--> construcción del `tool_plan`
--> segunda llamada LLM con contexto y tools permitidas
--> ejecución MCP si aplica
+-> construcción de `backend_context` y `conversation_context`
+-> primary LLM con todas las read tools autorizadas y cero write tools
+-> respuesta final directa si no se autoriza ninguna escritura
+-> o gating mecánico por `intent` + `action`
+-> write continuation mediante `previous_response_id`, con reads y exactamente una write autorizada
 -> validación estructural mínima
 -> persistencia outbound y `data_to_save`
+
+La mayoría de los turnos requieren una sola llamada conversacional al LLM.
+Solo los turnos que autorizan una escritura requieren una continuación.
+
+Sales Agent no ejecuta una etapa LLM separada de clasificación antes del primary.
 
 ## 2. Archivos principales
 
@@ -64,12 +70,9 @@ Los bloques semánticos canónicos son:
 - `backend_context`
 - `conversation_context`
 
-El prompt final también incorpora:
+El primary recibe además un `tool_plan` de solo lectura.
 
-- `intent_plan`
-- `tool_plan`
-
-El prompt de clasificación usa los mismos nombres canónicos con menos carga.
+No existe un bloque semántico paralelo generado por un planner previo.
 
 ### Reglas de composición
 
@@ -79,6 +82,18 @@ El prompt de clasificación usa los mismos nombres canónicos con menos carga.
 - `history` solo contiene turnos previos a `current_message`.
 - `structured_data` y `tool_results` van pegados al turno en el que se produjeron.
 - `conversation_context.history` es la base de continuidad; no existe `runtime_context` ni `latest_structured_data` como tercera fuente de verdad.
+- La semántica del turno procede del `LLMFinalResponse` del primary: `domain`, `intent`, `action` y `structured_data`.
+
+### Compatibilidad temporal
+
+`data_to_save` puede conservar un `intent_plan` derivado mecánicamente del resultado del primary para compatibilidad y diagnóstico.
+
+Ese objeto:
+
+- no procede de una llamada LLM separada;
+- no es una etapa de razonamiento;
+- no es la autoridad para habilitar escrituras;
+- no debe tratarse como una tercera fuente semántica.
 
 ### Ventana actual
 
@@ -104,9 +119,7 @@ Reglas prácticas:
 
 ## 5. Tools de lectura
 
-Las tools de lectura configuradas y autorizadas están disponibles para el LLM en todos los turnos. El LLM decide si necesita utilizarlas.
-
-Puede consultarlas cuando falte información, exista ambigüedad, haya contradicción, el contexto previo pueda estar incompleto o desactualizado, o el usuario solicite verificar información externa.
+Las tools de lectura configuradas y autorizadas están disponibles para el primary LLM en todos los turnos. El LLM decide si necesita utilizarlas.
 
 Las read tools habituales son:
 
@@ -118,34 +131,46 @@ Las read tools habituales son:
 Reglas:
 
 - La ausencia temporal de un dato recuperable no bloquea la conversación.
-- El LLM puede volver a consultar una read tool en turnos posteriores si el usuario aporta nuevos datos o si necesita verificar el estado actual.
-- Una petición explícita de verificar o comprobar algo en un sistema externo prevalece sobre la regla general de no repetir consultas.
-- El planner puede declarar `required_read_tool` para forzar como bootstrap una lectura concreta cuando la respuesta exige verificación externa. Solo puede apuntar a una read tool autorizada; nunca habilita una escritura.
-- Para verificar explícitamente en CRM qué cita tiene reservada el contacto, usa `appointment_events`; `contact_context` puede resolver antes identidad, contacto o timezone, pero no sustituye esa lectura.
+- El LLM puede volver a consultar una read tool si el dato falta, está obsoleto, es contradictorio o necesita verificación externa.
+- Una petición explícita de verificar algo en un sistema externo prevalece sobre la regla general de no repetir consultas.
+- Para verificar explícitamente en CRM qué cita tiene reservada el contacto, usa `appointment_events`.
+- `contact_context` puede resolver identidad, contacto o timezone, pero no sustituye `appointment_events` cuando se pide verificar una cita.
 - No uses `appointment_availability` para comprobar una cita ya registrada.
-- `appointment_availability` y `appointment_events` pueden reconsultarse.
-- Cero resultados no es terminal; el LLM puede volver a preguntar o pedir datos.
-- `offered_slots` no es una lista cerrada de verdad absoluta; es contexto útil para seguir conversando.
+- Cero resultados no es terminal; el LLM puede preguntar o volver a consultar.
+- `offered_slots` es contexto de continuidad, no una lista cerrada de verdad absoluta.
+- Antes de solicitar una write continuation, el primary debe resolver mediante reads todos los prerrequisitos recuperables necesarios.
 
 ## 6. Tools de escritura
 
-Las tools de escritura se exponen solo cuando el plan estructurado lo permite.
+El primary LLM recibe cero write tools.
 
-Combinaciones actuales:
+Cuando su salida estructurada contiene un par `intent` + `action` autorizado, Sales Agent aplica únicamente gating mecánico y puede iniciar una write continuation con `previous_response_id`.
 
-- `request_booking_invitation` + `create_booking_invitation` -> `appointment_booking_invitation`
+Mappings actuales:
+
 - `request_booking_confirmation` + `confirm_booking` -> `appointment_confirm`
+- `request_booking_invitation` + `create_booking_invitation` -> `appointment_booking_invitation`
 - `request_reschedule` + `confirm_reschedule` -> `appointment_reschedule`
 - `request_cancel` + `confirm_cancel` -> `appointment_cancel`
+- `provide_contact_data` + `create_or_update_crm_contact` -> `crm_contact_submit`
+- `request_quote` + `create_or_update_crm_contact` -> `crm_contact_submit`
+- `request_handoff` + `handoff_to_human` -> `handoff_request`
+
+La continuación recibe:
+
+- las read tools configuradas y autorizadas;
+- exactamente una write tool autorizada;
+- el `previous_response_id` del primary.
 
 Reglas:
 
 - `prepare_*` no autoriza escrituras.
-- Seleccionar un slot, identificar una cita o pedir confirmación no ejecuta la escritura.
-- `appointment_confirm`, `appointment_reschedule` y `appointment_cancel` solo pueden ejecutarse cuando el turno actual contiene la confirmación inequívoca correspondiente y la tool está disponible. `appointment_booking_invitation` puede ejecutarse ante una petición explícita de enlace/invitación sin exigir `selected_slot`.
+- Seleccionar un slot, identificar una cita o pedir confirmación no ejecuta una escritura.
+- La confirmación explícita posterior es la que puede autorizar `appointment_confirm`, `appointment_reschedule` o `appointment_cancel`.
+- `appointment_booking_invitation` puede autorizarse ante una petición explícita de enlace/invitación sin exigir `selected_slot`.
 - Si una tool de escritura falla o no existe evidencia estructurada de éxito, la respuesta no debe afirmar éxito.
-- La selección de un horario de reprogramación no es una reserva nueva.
-- La selección válida prepara la propuesta; la confirmación posterior autoriza la escritura.
+- Autorización y ejecución son evidencias distintas: `write_authorization` demuestra gating y una traza MCP real demuestra ejecución.
+- Una continuación aceptada debe contener exactamente una llamada a la write autorizada y ninguna llamada a otra write.
 
 ## 7. Response contract
 
@@ -207,33 +232,36 @@ Reglas:
 
 ## 9. Llamadas LLM
 
-### Clasificación
+### Primary
 
-`AgentRuntime._classify_intent()` prepara el prompt de intención con:
-
-- contexto de backend;
-- contexto conversacional;
-- resumen temporal;
-- historial previo;
-- mensaje actual.
-
-### Ejecución final
-
-`AgentRuntime._execute_llm_turn()` construye:
+`AgentRuntime._execute_primary_turn()` recibe:
 
 - `backend_context`
 - `conversation_context`
-- `intent_plan`
-- `tool_plan`
-- `mcp_config` filtrada por tools permitidas
+- `tool_plan` de solo lectura
+- `mcp_config` filtrada a read tools autorizadas
 
-La segunda llamada puede usar `previous_response_id` cuando el flujo de OpenAI Responses lo permite.
+El primary interpreta el mensaje actual junto con el historial, puede usar reads y devuelve un `LLMFinalResponse`.
+
+Si su `intent` + `action` no autoriza ninguna write, ese resultado termina el turno.
+
+### Write continuation
+
+Cuando el primary autoriza una escritura, Sales Agent:
+
+1. aplica el mapping mecánico `intent` + `action` -> write tool;
+2. habilita las reads y exactamente esa write;
+3. continúa mediante `previous_response_id`;
+4. no expone la reply provisional del primary;
+5. devuelve al cliente el resultado final de la continuación.
+
+La continuación no puede solicitar otra autorización de escritura. Los prerrequisitos recuperables deben haber sido resueltos por el primary antes de autorizarla.
 
 ### OpenAI Responses y MCP
 
-`LLMClient.generate_with_mcp()` y `LLMClient.generate()` aceptan `response_format`, pero el runtime actual no impone schemas estrictos por intent.
+`LLMClient.generate_with_mcp()` y `LLMClient.generate()` aceptan `response_format`, pero el runtime no impone schemas estrictos por intent.
 
-`LLMClient._build_openai_mcp_tools()` arma el bloque MCP remoto con:
+`LLMClient._build_openai_mcp_tools()` construye el MCP remoto con:
 
 - `server_label`
 - `server_url`
@@ -242,6 +270,8 @@ La segunda llamada puede usar `previous_response_id` cuando el flujo de OpenAI R
 - `authorization`
 
 El token downstream no va al prompt ni a `data_to_save`.
+
+Cuando `contact_context` actualiza la timezone efectiva durante el primary, esa configuración MCP efectiva se propaga a una eventual write continuation.
 
 ## 10. Persistencia
 
@@ -259,210 +289,83 @@ El token downstream no va al prompt ni a `data_to_save`.
 
 ## 11. Debug y artefactos
 
-El sistema de debug existente se activa con `SA_LLM_CONTEXT_DEBUG`.
+El sistema de debug se activa con `SA_LLM_CONTEXT_DEBUG`.
 
-- Valor por defecto del setting: `false` en [api/app/config.py](/home/fede/www/sales-agent/api/app/config.py).
-- Sobrescritura local y Docker: `SA_LLM_CONTEXT_DEBUG=true` en [.env](/home/fede/www/sales-agent/.env) y en `docker-compose.yml`.
-- Ruta base del runtime: `SA_LLM_CONTEXT_DEBUG_DIR`.
-- Valor por defecto del path: `/tmp/sa-llm/context` en [api/app/config.py](/home/fede/www/sales-agent/api/app/config.py).
-- Valor Docker/local habitual: `/app/var/sa-llm/context` en [.env](/home/fede/www/sales-agent/.env) y `docker-compose.yml`.
-- Si el directorio no existe, el runtime lo crea con `mkdir(parents=True, exist_ok=True)`.
-- La nomenclatura por conversación y turno usa `conversation_id` o `external_conversation_id` y un `turn_slug` derivado de `message.id` o `message.timestamp`.
+Los artefactos se organizan por conversación y turno bajo `SA_LLM_CONTEXT_DEBUG_DIR`.
 
-Cuando el debug está habilitado, se guardan artefactos por turno en la ruta base configurada. Los nombres existentes son:
+### Primary
 
-- `01-intent-request.json`
-- `01-intent-system-prompt.txt`
-- `01-intent-user-prompt.txt`
-- `02-intent-response.json`
-- `03-final-request.json`
-- `03-final-system-prompt.txt`
-- `03-final-user-prompt.txt`
-- `04-final-response.json`
+Todos los turnos LLM normales generan:
 
-Cómo inspeccionarlo:
+- `01-primary-request.json`
+- `01-primary-system-prompt.txt`
+- `01-primary-user-prompt.txt`
+- `02-primary-response.json`
 
-- `01-intent-request.json`: contexto exacto enviado a la clasificación.
-- `02-intent-response.json`: intención y acción devueltas.
-- `03-final-request.json`: contexto final, tools permitidas y `response_format`.
-- `04-final-response.json`: respuesta final y `tool_traces`.
-- Los archivos `.txt` contienen los prompts exactos enviados a OpenAI.
-- El campo `llm_context_debug` en `data_to_save` referencia los archivos generados para ese turno.
+`01-primary-request.json` permite revisar `backend_context`, `conversation_context`, `primary_tool_plan`, tools MCP anunciadas y bootstrap read cuando aplica.
 
-El probe manual usa otro directorio distinto:
+`02-primary-response.json` contiene el `final_response` del primary y sus `tool_traces`.
 
-- `var/sa-llm/probe/`
-- `OUT_DIR` por defecto en `scripts/e2e/agent_conversation_probe.sh`: `./var/sa-llm/probe`
-- Cada turno se guarda como `sa-<CONV>-<step>.json`
-- El probe imprime la respuesta, el tool plan, el estado de agenda y las trazas MCP del turno
+El primary debe exponer cero write tools.
 
-### Available tools vs executed MCP calls
+### Write continuation
 
-- Una tool incluida en `tool_plan.allowed_tools` está disponible para el modelo.
-- Estar en `allowed_tools` no significa que se haya ejecutado.
-- Un catálogo o metadato con `status: null` o equivalente no demuestra una llamada MCP real.
-- Una llamada MCP real debe verse como una traza real con nombre de tool, tipo de llamada como `mcp_call` o equivalente real, argumentos, status final y output o error.
-- `04-final-response.json` y `tool_traces` son la referencia principal para confirmar ejecución real.
-- No asumir ejecución solo porque la tool aparezca anunciada en la request o en el catálogo.
+Solo existe cuando hay `write_authorization`.
 
-### Verifying an appointment write
+Artefactos:
 
-Para verificar una escritura real de agenda:
+- `03-write-continuation-request.json`
+- `03-write-continuation-system-prompt.txt`
+- `03-write-continuation-user-prompt.txt`
+- `04-write-continuation-response.json`
 
-1. Revisar `02-intent-response.json`.
-2. Confirmar que `intent` y `action` corresponden a una confirmación explícita: `confirm_booking`, `confirm_reschedule` o `confirm_cancel`.
-3. Revisar `03-final-request.json`.
-4. Confirmar que la write tool correspondiente aparece en `tool_plan.allowed_tools`.
-5. Revisar `04-final-response.json`.
-6. Confirmar que existe una llamada MCP real para `appointment_confirm`, `appointment_reschedule` o `appointment_cancel`.
-7. Revisar los argumentos exactos enviados.
-8. Revisar el status real de la llamada.
-9. Revisar el output real del MCP.
-10. Confirmar el flag de éxito correspondiente cuando exista: `confirmed=true`, `rescheduled=true` o `cancelled=true`.
-11. Confirmar que la respuesta final del LLM refleja el resultado real.
-12. Confirmar que el resultado queda disponible en `structured_data`, `tool_results` o `tool_traces`, según la forma real existente.
+`03-write-continuation-request.json` permite revisar autorización, write tool exacta, `write_tool_plan`, tools MCP anunciadas, `previous_response_id` y `tool_choice`.
 
-No repetir una escritura porque el probe no muestre `NORMALIZED RESULTS`.
-No repetir `appointment_confirm`, `appointment_reschedule` ni `appointment_cancel` solo porque un resumen esté vacío.
-Revisar siempre `04-final-response.json` y la trace MCP real antes de concluir que una escritura no ocurrió.
-Durante debug, una escritura exitosa no debe repetirse.
+`04-write-continuation-response.json` contiene la respuesta final y sus `tool_traces`.
 
-### Practical debug commands
+La ausencia de artifacts 03/04 es normal cuando el turno no autoriza ninguna write.
 
-Listar todos los artefactos de contexto:
+### Autorización vs ejecución
 
-```bash
-find var/sa-llm/context -type f | sort
-```
+Una tool anunciada no demuestra ejecución.
 
-Localizar los artefactos de una conversación:
+- `write_authorization` demuestra que SA autorizó una capability.
+- `write_tool_plan` demuestra qué capability fue expuesta.
+- `tool_traces` demuestra qué operación MCP se ejecutó realmente.
 
-```bash
-find var/sa-llm/context \
-  -path '*<conversation-id>*' \
-  -type f \
-  | sort
-```
+Estas evidencias no son intercambiables.
 
-Buscar una conversación en context y probe:
+### Verificar una escritura
 
-```bash
-grep -Rni '<conversation-id>' \
-  var/sa-llm/context \
-  var/sa-llm/probe
-```
+1. Revisar `02-primary-response.json`.
+2. Confirmar el `intent` + `action` que autorizó la operación.
+3. Revisar `data_to_save.write_authorization`.
+4. Revisar `03-write-continuation-request.json`.
+5. Confirmar que el primary no tenía writes.
+6. Confirmar que la continuación expuso exactamente la write autorizada.
+7. Revisar `04-write-continuation-response.json`.
+8. Confirmar exactamente una traza MCP de la write autorizada y ninguna otra write.
+9. Revisar argumentos, status y output reales.
+10. Confirmar que la respuesta final refleja el resultado downstream real.
 
-Inspeccionar los JSON principales:
+Nunca repetir una escritura únicamente porque un resumen auxiliar esté vacío. Ante un resultado incierto, revisar primero las trazas ya persistidas.
 
-```bash
-jq . <turn-dir>/01-intent-request.json
-jq . <turn-dir>/02-intent-response.json
-jq . <turn-dir>/03-final-request.json
-jq . <turn-dir>/04-final-response.json
-```
+### Orden recomendado de diagnóstico
 
-Inspeccionar los prompts exactos:
+1. `01-primary-request.json`
+2. `02-primary-response.json`
+3. `write_authorization`, si existe
+4. `03-write-continuation-request.json`, si hubo write
+5. `04-write-continuation-response.json`, si hubo write
+6. `tool_traces`
+7. persistencia del turno
 
-```bash
-sed -n '1,240p' <turn-dir>/01-intent-system-prompt.txt
-sed -n '1,240p' <turn-dir>/01-intent-user-prompt.txt
-sed -n '1,260p' <turn-dir>/03-final-system-prompt.txt
-sed -n '1,260p' <turn-dir>/03-final-user-prompt.txt
-```
-
-Ejecutar el probe actual:
-
-```bash
-scripts/e2e/agent_conversation_probe.sh "mensaje"
-```
-
-Si quieres controlar la conversación o el archivo de salida, el script usa `CONV`, `TENANT_ID`, `CONTACT_PHONE`, `CONTACT_NAME` y `OUT_DIR` como variables de entorno opcionales.
-
-Salida del probe:
-
-- Directorio por defecto: `var/sa-llm/probe/`
-- Variable `OUT_DIR`: existe y por defecto apunta a `./var/sa-llm/probe`
-- Formato de archivo: `sa-<CONV>-<step>.json`
-- Un JSON por turno o paso
-- El probe es un resumen de conveniencia
-- Los artefactos de `var/sa-llm/context/` son la fuente principal para diagnóstico detallado
-
-### Mapa breve de artefactos
-
-`01-intent-request.json`
-
-- Revisar:
-  - payload real enviado a clasificación
-  - `backend_context`
-  - `conversation_context`
-  - `current_message`
-  - `history`
-  - contexto temporal
-  - metadata incluida
-
-`01-intent-system-prompt.txt`
-
-- Revisar:
-  - instrucciones exactas del clasificador
-  - reglas de `intent` y `action`
-  - reglas de contexto y razonamiento
-
-`01-intent-user-prompt.txt`
-
-- Revisar:
-  - prompt de usuario exacto para clasificación
-  - contexto serializado que vio el modelo
-
-`02-intent-response.json`
-
-- Revisar:
-  - `intent`
-  - `action`
-  - `confidence`
-  - `needs_tools`
-  - explicación o reason si existe
-
-`03-final-request.json`
-
-- Revisar:
-  - `backend_context`
-  - `conversation_context`
-  - `intent_plan`
-  - `tool_plan`
-  - `tool_plan.allowed_tools`
-  - `response_format`
-  - `bootstrap_tool`
-
-`03-final-system-prompt.txt`
-
-- Revisar:
-  - reglas operativas del turno final
-  - gating de tools
-  - reglas de confirmación
-  - reglas de razonamiento abiertas
-
-`03-final-user-prompt.txt`
-
-- Revisar:
-  - prompt de usuario exacto para el turno final
-  - contexto serializado completo que vio el LLM
-
-`04-final-response.json`
-
-- Revisar:
-  - respuesta final del LLM
-  - `tool_traces`
-  - trazas MCP reales
-  - `structured_data`
-  - `data_to_save`
-  - resultado confirmado o fallido
-
-Reglas de seguridad:
+### Seguridad
 
 - No registrar tokens, bearer tokens ni secretos.
 - No usar el debug para repetir escrituras.
-- No confundir tools anunciadas con llamadas MCP realmente ejecutadas.
-- Si el diagnóstico necesita el estado real, revisar los requests y responses persistidos.
+- No confundir tools anunciadas con llamadas MCP ejecutadas.
+- Ante una write de resultado incierto, revisar primero la evidencia persistida.
 
 ## 12. Checklist de cambios futuros
 

@@ -192,7 +192,7 @@ class CustomerSimulator:
         allow_writes: bool,
     ) -> CustomerDecision:
         """
-        Advance non-appointment scenarios from structured planner/tool evidence.
+        Advance non-appointment scenarios from structured LLM/tool evidence.
 
         This branch intentionally does not inspect assistant reply text.
         """
@@ -487,9 +487,6 @@ class CustomerSimulator:
             for turn in turns
             for field in turn.get("customer_data_fields", [])
         }
-        entities = turns[-1].get("intent_plan", {}).get("entities", {})
-        if not isinstance(entities, dict):
-            entities = {}
         order = (
             "service_name",
             "preferred_day",
@@ -504,14 +501,30 @@ class CustomerSimulator:
             value = customer_data.get(field)
             if field in already_sent or not isinstance(value, str) or not value.strip():
                 continue
-            entity_field = {
-                "preferred_day": "date",
-                "time_of_day": "time_of_day",
-            }.get(field, field)
-            if self._clean(entities.get(entity_field)) is not None:
+            if self._structured_datum_present(turns, field):
                 continue
             return field, value.strip()
         return None
+
+    def _structured_datum_present(self, turns: list[dict[str, Any]], field: str) -> bool:
+        if field == "service_name":
+            return bool(self._latest_selected_service_ids(turns))
+        if field == "appointment_reference":
+            return bool(self._reliable_appointments(turns))
+        if field in {"preferred_day", "time_of_day", "owner_name"}:
+            return False
+
+        for turn in reversed(turns):
+            structured = turn.get("structured_data")
+            if not isinstance(structured, dict):
+                continue
+            crm_contact = structured.get("crm_contact")
+            lead_data = crm_contact.get("lead_data") if isinstance(crm_contact, dict) else None
+            if isinstance(lead_data, dict):
+                key = "name" if field == "contact_name" else "phone" if field == "contact_phone" else None
+                if key is not None and self._clean(lead_data.get(key)) is not None:
+                    return True
+        return False
 
     def _next_declarative_message(
         self, scenario: dict[str, Any], turns: list[dict[str, Any]], action: str | None

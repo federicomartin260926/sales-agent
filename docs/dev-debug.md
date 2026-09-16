@@ -22,11 +22,19 @@ El contenedor expone:
 3. Inicia el attach.
 4. Pon breakpoints en:
    - `api/app/services/runtime.py`
-   - `api/app/services/agent_orchestration/shadow/shadow_planning_service.py`
-   - `api/app/services/agent_orchestration/planning/intent_planner.py`
-   - `api/app/services/agent_orchestration/context/context_expansion_router.py`
-   - `api/app/services/agent_orchestration/tool_policy/tool_policy_service.py`
-   - `api/app/services/agent_orchestration/execution/catalog_execution_service.py`
+   - `api/app/services/agent_orchestration/context_builder.py`
+   - `api/app/services/agent_orchestration/tool_selector.py`
+   - `api/app/services/agent_orchestration/write_integrity_guard.py`
+   - `api/app/services/agent_turn_response_builder.py`
+   - `api/app/services/llm_client.py`
+
+Para seguir el flujo single-turn-first en `runtime.py`, los puntos principales son:
+
+- `_execute_primary_turn()`;
+- selección mecánica de write después del primary;
+- `_execute_write_continuation()` cuando existe autorización;
+- `_validate_write_continuation_traces()`;
+- persistencia final del turno.
 
 ## Pruebas rápidas
 

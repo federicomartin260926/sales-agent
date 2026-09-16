@@ -10,17 +10,19 @@ from zoneinfo import ZoneInfo
 
 from app.config import Settings
 from app.schemas.agent import AgentRequest, AgentResponse
-from app.schemas.llm import McpRemoteConfig
+from app.schemas.llm import LLMResponseResult, LLMUsage, McpRemoteConfig
 from app.services.ai_usage_guard import AiUsageGuard
 from app.services.agent_orchestration.context_builder import OrchestrationContextBuilder
 from app.services.agent_orchestration.prompts import (
     FINAL_SYSTEM_PROMPT,
     INTENT_SYSTEM_PROMPT,
+    WRITE_CONTINUATION_SYSTEM_PROMPT,
     build_final_user_prompt,
     build_intent_user_prompt,
+    build_write_continuation_user_prompt,
 )
 from app.services.agent_orchestration.schemas import BackendContext, ConversationContext, IntentPlan, LLMFinalResponse, ToolPlan
-from app.services.agent_orchestration.tool_selector import ToolSelector
+from app.services.agent_orchestration.tool_selector import ToolSelector, WRITE_TOOL_BY_PLAN
 from app.services.audio_clients import AudioGatewayClient, AudioTranscriptionClient, AudioTranscriptionResult
 from app.services.audio_preprocessor import AudioMessagePreprocessor
 from app.services.agent_turn_response_builder import AgentTurnResponseBuilder
@@ -57,9 +59,9 @@ class AgentRuntime:
     1. Resolve routing and tenant context.
     2. Normalize the incoming message, including optional audio transcription.
     3. Persist inbound/outbound messages.
-    4. Ask the LLM for structured intent.
-    5. Build structured context and tool permissions for that intent.
-    6. Let the LLM reason, select slots and call MCP tools.
+    4. Let the primary LLM reason with read-capable MCP tools.
+    5. Gate at most one write from the primary structured intent/action.
+    6. Continue the same LLM turn only when that write is authorized.
     7. Validate only hard consistency constraints before returning.
 
     Important: SA does not parse human phrases like "mañana a las 5" or
@@ -101,7 +103,7 @@ class AgentRuntime:
         )
         self.conversation_message_persistence = ConversationMessagePersistence(self.backend_client, self.audio_preprocessor)
 
-    # Main API entrypoint: route, normalize, persist, classify, build context, run LLM and persist reply.
+    # Main API entrypoint: route, normalize, persist, build context, run LLM and persist reply.
     async def respond(self, payload: AgentRequest) -> AgentResponse:
         started_at = time.monotonic()
         llm_context_debug_files: list[str] = []
@@ -162,57 +164,60 @@ class AgentRuntime:
         if backend_context is None:
             backend_context = await self._fetch_backend_context(payload, routing)
 
-        try:
-            intent_plan = await self._classify_intent(
-                payload,
-                routing,
-                backend_context,
-                conversation_messages,
-                llm_context_debug_files,
-            )
-        except LlmProviderUnavailable as exc:
-            response = self._build_llm_provider_failure_response(
-                payload=payload,
-                routing=routing,
-                backend_context=backend_context,
-                started_at=started_at,
-                audio_result=audio_result,
-                provider_failure=exc,
-                intent_plan=None,
-            )
-            self._attach_llm_context_debug_reference(response, llm_context_debug_files)
-            await self.conversation_message_persistence.persist_outbound(response, routing, None, mcp_config)
-            return response
-        except Exception as exc:
-            logger.warning("Intent classification failed: %s", exc, exc_info=True)
-            intent_plan = IntentPlan(
-                domain="general",
-                intent="unknown",
-                action="answer_directly",
-                confidence=0.3,
-                needs_tools=False,
-                reason="classification_failed",
-            )
-
         llm_backend_context, llm_conversation_context = self.context_builder.build(
             payload,
             routing,
             backend_context,
             conversation_messages,
         )
-        tool_plan = self.tool_selector.select(intent_plan, llm_backend_context, llm_conversation_context, mcp_config)
+        primary_tool_plan = self.tool_selector.select_reads(llm_backend_context, llm_conversation_context, mcp_config)
+        primary_response: LLMFinalResponse | None = None
+        primary_result: LLMResponseResult | None = None
+        llm_result: LLMResponseResult | None = None
+        write_tool_plan: ToolPlan | None = None
+        authorized_write_tool: str | None = None
 
         try:
-            final_response, llm_result = await self._execute_llm_turn(
+            primary_response, primary_result = await self._execute_primary_turn(
                 payload=payload,
-                plan=intent_plan,
                 backend_context=llm_backend_context,
                 conversation_context=llm_conversation_context,
-                tool_plan=tool_plan,
+                tool_plan=primary_tool_plan,
                 mcp_config=mcp_config,
                 routing=routing,
                 llm_context_debug_files=llm_context_debug_files,
             )
+            llm_result = primary_result
+            write_tool_plan = self.tool_selector.select_write(
+                primary_response,
+                llm_backend_context,
+                llm_conversation_context,
+                mcp_config,
+            )
+            authorized_write_tool = write_tool_plan.write_tools[0] if write_tool_plan.write_tools else None
+            if authorized_write_tool is None:
+                final_response, llm_result = primary_response, primary_result
+            else:
+                if self._clean(primary_result.response_id) is None:
+                    raise RuntimeError("Primary LLM response did not include response_id for write continuation")
+                continuation_result = await self._execute_write_continuation(
+                    payload=payload,
+                    primary_response=primary_response,
+                    primary_result=primary_result,
+                    write_tool_plan=write_tool_plan,
+                    authorized_write_tool=authorized_write_tool,
+                    mcp_config=mcp_config,
+                    routing=routing,
+                    llm_context_debug_files=llm_context_debug_files,
+                )
+                llm_result = self._combine_llm_results(primary_result, continuation_result)
+                final_response = self._finalize_write_continuation(
+                    payload=payload,
+                    routing=routing,
+                    continuation_result=continuation_result,
+                    authorized_write_tool=authorized_write_tool,
+                    llm_context_debug_files=llm_context_debug_files,
+                )
         except LlmProviderUnavailable as exc:
             response = self._build_llm_provider_failure_response(
                 payload=payload,
@@ -221,27 +226,30 @@ class AgentRuntime:
                 started_at=started_at,
                 audio_result=audio_result,
                 provider_failure=exc,
-                intent_plan=intent_plan,
+                intent_plan=self._compatibility_intent_plan(primary_response),
             )
             self._attach_llm_context_debug_reference(response, llm_context_debug_files)
-            await self.conversation_message_persistence.persist_outbound(response, routing, None, mcp_config)
+            await self.conversation_message_persistence.persist_outbound(response, routing, primary_result, mcp_config)
             return response
         except Exception as exc:
-            logger.warning("Final LLM turn failed: %s", exc, exc_info=True)
+            logger.warning("LLM conversational turn failed: %s", exc, exc_info=True)
             fallback = LLMFinalResponse(
                 reply="Ahora mismo no he podido completar la gestión automáticamente. Te derivo con una persona del equipo.",
-                intent=intent_plan.intent,
+                intent=primary_response.intent if primary_response is not None else "unknown",
                 action="handoff_to_human",
                 needs_human=True,
                 score=0.4,
                 data_to_save={"error_code": "llm_turn_failed", "error_type": exc.__class__.__name__},
             )
-            final_response, llm_result = fallback, None
+            final_response = fallback
+            llm_result = llm_result or primary_result
 
         response = self.response_builder.build_response(
             final_response,
-            intent_plan,
-            tool_plan,
+            primary_response or final_response,
+            primary_tool_plan,
+            write_tool_plan,
+            authorized_write_tool,
             llm_result,
             started_at,
             routing=routing,
@@ -483,20 +491,16 @@ class AgentRuntime:
 
         return summary
 
-    # Second LLM call: provide context/tools and let the LLM reason or call MCP tools.
-    async def _execute_llm_turn(
+    async def _execute_primary_turn(
         self,
         payload: AgentRequest,
-        plan: IntentPlan,
         backend_context: BackendContext,
         conversation_context: ConversationContext,
         tool_plan: ToolPlan,
         mcp_config: McpRemoteConfig,
         routing: RoutingContext,
         llm_context_debug_files: list[str] | None = None,
-    ) -> tuple[LLMFinalResponse, Any | None]:
-        # Second LLM call: the LLM receives full context and only the tools that
-        # SA has selected for the classified intent. Slot selection happens here.
+    ) -> LLMResponseResult:
         if hasattr(mcp_config, "config") and isinstance(mcp_config.config, dict):
             mcp_config.config = dict(mcp_config.config)
             effective_timezone, effective_timezone_source = self._backend_context_timezone(backend_context)
@@ -504,21 +508,20 @@ class AgentRuntime:
                 mcp_config.config["effective_timezone"] = effective_timezone
             if effective_timezone_source is not None:
                 mcp_config.config["effective_timezone_source"] = effective_timezone_source
-        prompt = build_final_user_prompt(payload.message.text or "", plan, backend_context, conversation_context, tool_plan)
+        prompt = build_final_user_prompt(payload.message.text or "", backend_context, conversation_context, tool_plan)
         response_format = None
         effective_mcp_config = self._filtered_mcp_config(mcp_config, tool_plan.allowed_tools)
         tool_choice = None
         if effective_mcp_config.enabled and effective_mcp_config.allowed_tools:
             tool_choice = self._bootstrap_tool_choice(tool_plan, effective_mcp_config)
         self._write_llm_context_debug_request(
-            stage="final",
+            stage="primary",
             payload=payload,
             routing=routing,
             request_context={
                 "backend_context": backend_context,
                 "conversation_context": conversation_context,
-                "intent_plan": plan,
-                "tool_plan": tool_plan,
+                "primary_tool_plan": tool_plan,
                 "mcp_allowed_tools": effective_mcp_config.allowed_tools,
                 "bootstrap_tool": tool_plan.bootstrap_tool,
                 "tool_choice": tool_choice,
@@ -528,7 +531,7 @@ class AgentRuntime:
             provider=self.settings.llm_provider,
             llm_context_debug_files=llm_context_debug_files,
         )
-        result: Any | None = None
+        result: LLMResponseResult | None = None
         try:
             if effective_mcp_config.enabled and effective_mcp_config.allowed_tools:
                 result = await self.llm_client.generate_with_mcp(
@@ -552,11 +555,11 @@ class AgentRuntime:
 
             decoded = self._json_dict(result.content)
             if decoded is None:
-                raise ValueError("Final LLM returned non JSON")
+                raise ValueError("Primary LLM returned non JSON")
             final_response = LLMFinalResponse.model_validate(decoded)
         except Exception as exc:
             self._write_llm_context_debug_response(
-                stage="final",
+                stage="primary",
                 payload=payload,
                 routing=routing,
                 provider=self.settings.llm_provider,
@@ -568,7 +571,7 @@ class AgentRuntime:
             raise
 
         self._write_llm_context_debug_response(
-            stage="final",
+            stage="primary",
             payload=payload,
             routing=routing,
             provider=result.provider,
@@ -578,7 +581,197 @@ class AgentRuntime:
             tool_traces=getattr(result, "tool_traces", None),
             llm_context_debug_files=llm_context_debug_files,
         )
+        if isinstance(effective_mcp_config.config, dict):
+            mcp_config.config = dict(effective_mcp_config.config)
         return final_response, result
+
+    async def _execute_write_continuation(
+        self,
+        payload: AgentRequest,
+        primary_response: LLMFinalResponse,
+        primary_result: LLMResponseResult,
+        write_tool_plan: ToolPlan,
+        authorized_write_tool: str,
+        mcp_config: McpRemoteConfig,
+        routing: RoutingContext,
+        llm_context_debug_files: list[str] | None = None,
+    ) -> tuple[LLMFinalResponse, LLMResponseResult]:
+        effective_mcp_config = self._filtered_mcp_config(mcp_config, write_tool_plan.allowed_tools)
+        server_label = self._clean(effective_mcp_config.server_label)
+        previous_response_id = self._clean(primary_result.response_id)
+        if not effective_mcp_config.enabled or authorized_write_tool not in effective_mcp_config.allowed_tools:
+            raise RuntimeError("Authorized write tool is not available in MCP configuration")
+        if server_label is None or previous_response_id is None:
+            raise RuntimeError("Write continuation requires server_label and previous_response_id")
+
+        prompt = build_write_continuation_user_prompt(
+            primary_response.intent,
+            primary_response.action,
+            authorized_write_tool,
+        )
+        tool_choice = {"type": "mcp", "server_label": server_label, "name": authorized_write_tool}
+        self._write_llm_context_debug_request(
+            stage="write_continuation",
+            payload=payload,
+            routing=routing,
+            request_context={
+                "authorized_intent": primary_response.intent,
+                "authorized_action": primary_response.action,
+                "authorized_write_tool": authorized_write_tool,
+                "write_tool_plan": write_tool_plan,
+                "mcp_allowed_tools": effective_mcp_config.allowed_tools,
+                "previous_response_id": previous_response_id,
+                "tool_choice": tool_choice,
+            },
+            system_prompt_exact=WRITE_CONTINUATION_SYSTEM_PROMPT,
+            user_prompt_exact=prompt,
+            provider=self.settings.llm_provider,
+            llm_context_debug_files=llm_context_debug_files,
+        )
+
+        result: LLMResponseResult | None = None
+        try:
+            result = await self.llm_client.generate_with_mcp(
+                self.settings.llm_provider,
+                WRITE_CONTINUATION_SYSTEM_PROMPT,
+                prompt,
+                effective_mcp_config,
+                previous_response_id=previous_response_id,
+                tool_choice=tool_choice,
+                parallel_tool_calls=False,
+                max_tool_rounds=4,
+                response_format=None,
+            )
+        except Exception as exc:
+            self._write_llm_context_debug_response(
+                stage="write_continuation",
+                payload=payload,
+                routing=routing,
+                provider=self.settings.llm_provider,
+                error=exc,
+                raw_response=getattr(result, "raw_payload", None),
+                tool_traces=getattr(result, "tool_traces", None),
+                llm_context_debug_files=llm_context_debug_files,
+            )
+            raise
+
+        return result
+
+    def _finalize_write_continuation(
+        self,
+        payload: AgentRequest,
+        routing: RoutingContext,
+        continuation_result: LLMResponseResult,
+        authorized_write_tool: str,
+        llm_context_debug_files: list[str] | None = None,
+    ) -> LLMFinalResponse:
+        try:
+            self._validate_write_continuation_traces(continuation_result, authorized_write_tool)
+            decoded = self._json_dict(continuation_result.content)
+            if decoded is None:
+                raise ValueError("Write continuation LLM returned non JSON")
+            final_response = LLMFinalResponse.model_validate(decoded)
+        except Exception as exc:
+            self._write_llm_context_debug_response(
+                stage="write_continuation",
+                payload=payload,
+                routing=routing,
+                provider=continuation_result.provider,
+                model=continuation_result.model,
+                error=exc,
+                raw_response=continuation_result.raw_payload,
+                tool_traces=continuation_result.tool_traces,
+                llm_context_debug_files=llm_context_debug_files,
+            )
+            raise
+
+        self._write_llm_context_debug_response(
+            stage="write_continuation",
+            payload=payload,
+            routing=routing,
+            provider=continuation_result.provider,
+            model=continuation_result.model,
+            parsed_response=final_response,
+            raw_response=continuation_result.raw_payload,
+            tool_traces=continuation_result.tool_traces,
+            llm_context_debug_files=llm_context_debug_files,
+        )
+        return final_response
+
+    def _validate_write_continuation_traces(
+        self,
+        result: LLMResponseResult,
+        authorized_write_tool: str,
+    ) -> None:
+        write_tools = set(WRITE_TOOL_BY_PLAN.values())
+        mcp_calls = [trace for trace in result.tool_traces if trace.type == "mcp_call"]
+        authorized_calls = [trace for trace in mcp_calls if trace.tool_name == authorized_write_tool]
+        other_write_calls = [
+            trace
+            for trace in mcp_calls
+            if trace.tool_name in write_tools and trace.tool_name != authorized_write_tool
+        ]
+        if len(authorized_calls) != 1 or other_write_calls:
+            raise RuntimeError(
+                "Write continuation must contain exactly one authorized write call and no other write calls"
+            )
+
+    def _combine_llm_results(
+        self,
+        primary: LLMResponseResult,
+        continuation: LLMResponseResult,
+    ) -> LLMResponseResult:
+        return LLMResponseResult(
+            provider=continuation.provider,
+            model=continuation.model,
+            content=continuation.content,
+            response_id=continuation.response_id or primary.response_id,
+            usage=self._combine_llm_usage(primary.usage, continuation.usage),
+            estimated_cost=self._sum_optional_numbers(primary.estimated_cost, continuation.estimated_cost),
+            raw_payload=continuation.raw_payload,
+            tool_traces=[*primary.tool_traces, *continuation.tool_traces],
+        )
+
+    def _combine_llm_usage(self, primary: LLMUsage | None, continuation: LLMUsage | None) -> LLMUsage | None:
+        if primary is None and continuation is None:
+            return None
+
+        combined: dict[str, Any] = {
+            "provider": continuation.provider if continuation is not None else primary.provider,
+            "model": continuation.model if continuation is not None else primary.model,
+        }
+        for field_name in (
+            "input_tokens",
+            "output_tokens",
+            "cached_tokens",
+            "audio_tokens",
+            "total_tokens",
+            "prompt_tokens",
+            "completion_tokens",
+            "estimated_cost",
+        ):
+            combined[field_name] = self._sum_optional_numbers(
+                getattr(primary, field_name, None),
+                getattr(continuation, field_name, None),
+            )
+        return LLMUsage.model_validate(combined)
+
+    def _sum_optional_numbers(self, first: int | float | None, second: int | float | None) -> int | float | None:
+        if first is None and second is None:
+            return None
+        return (first or 0) + (second or 0)
+
+    def _compatibility_intent_plan(self, final: LLMFinalResponse | None) -> IntentPlan | None:
+        if final is None:
+            return None
+        return IntentPlan(
+            domain=final.domain,
+            intent=final.intent,
+            action=final.action,
+            confidence=final.score,
+            needs_tools=False,
+            reason="derived_from_primary_for_compatibility",
+        )
 
     def _bootstrap_tool_choice(self, tool_plan: ToolPlan, mcp_config: McpRemoteConfig) -> dict[str, Any] | None:
         bootstrap_tool = self._clean(tool_plan.bootstrap_tool)
@@ -678,9 +871,7 @@ class AgentRuntime:
             "raw_response": raw_response,
             "tool_traces": [trace.model_dump(exclude_none=True) for trace in tool_traces or []],
         }
-        if stage == "intent":
-            snapshot["intent_plan"] = parsed_response.model_dump(exclude_none=True) if hasattr(parsed_response, "model_dump") else parsed_response
-        if stage == "final":
+        if stage in {"primary", "write_continuation"}:
             snapshot["final_response"] = parsed_response.model_dump(exclude_none=True) if hasattr(parsed_response, "model_dump") else parsed_response
         if error is not None:
             snapshot["error"] = {
@@ -724,10 +915,10 @@ class AgentRuntime:
         self._append_llm_context_debug_file(llm_context_debug_files, str(user_path))
 
     def _llm_context_debug_prompt_filenames(self, stage: str) -> tuple[str, str]:
-        if stage == "intent":
-            return "01-intent-system-prompt.txt", "01-intent-user-prompt.txt"
-        if stage == "final":
-            return "03-final-system-prompt.txt", "03-final-user-prompt.txt"
+        if stage == "primary":
+            return "01-primary-system-prompt.txt", "01-primary-user-prompt.txt"
+        if stage == "write_continuation":
+            return "03-write-continuation-system-prompt.txt", "03-write-continuation-user-prompt.txt"
         safe_stage = self._sanitize_llm_context_debug_component(stage)
         return f"{safe_stage}-system-prompt.txt", f"{safe_stage}-user-prompt.txt"
 
@@ -761,14 +952,14 @@ class AgentRuntime:
             llm_context_debug_files.append(path)
 
     def _llm_context_debug_filename(self, stage: str, direction: str) -> str:
-        if stage == "intent" and direction == "request":
-            return "01-intent-request.json"
-        if stage == "intent" and direction == "response":
-            return "02-intent-response.json"
-        if stage == "final" and direction == "request":
-            return "03-final-request.json"
-        if stage == "final" and direction == "response":
-            return "04-final-response.json"
+        if stage == "primary" and direction == "request":
+            return "01-primary-request.json"
+        if stage == "primary" and direction == "response":
+            return "02-primary-response.json"
+        if stage == "write_continuation" and direction == "request":
+            return "03-write-continuation-request.json"
+        if stage == "write_continuation" and direction == "response":
+            return "04-write-continuation-response.json"
         return f"{self._sanitize_llm_context_debug_component(stage)}-{self._sanitize_llm_context_debug_component(direction)}.json"
 
     def _redact_llm_context_debug_value(self, value: Any) -> Any:
@@ -1076,6 +1267,9 @@ class AgentRuntime:
             model=None,
             latency_ms=int((time.monotonic() - started_at) * 1000),
         )
+        if intent_plan is not None:
+            response.data_to_save["orchestration_version"] = "llm_single_turn_v1"
+            response.data_to_save["intent_plan"] = intent_plan.model_dump(exclude_none=True)
         response.data_to_save["technical_metadata"] = self.response_builder.build_technical_metadata(provider_failure)
         return response
 

@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from app.services.agent_orchestration.schemas import IntentPlan, LLMFinalResponse
+from app.services.agent_orchestration.schemas import LLMFinalResponse
 
 
 class WriteIntegrityGuard:
@@ -14,11 +14,21 @@ class WriteIntegrityGuard:
     unless there is direct tool evidence that the write actually succeeded.
     """
 
-    def apply(self, final: LLMFinalResponse, plan: IntentPlan, llm_result: Any | None) -> LLMFinalResponse:
-        if plan.intent == "request_booking_invitation" and plan.action == "create_booking_invitation":
+    def apply(
+        self,
+        final: LLMFinalResponse,
+        primary: LLMFinalResponse,
+        authorized_write_tool: str | None,
+        llm_result: Any | None,
+    ) -> LLMFinalResponse:
+        if authorized_write_tool == "appointment_booking_invitation":
             final = self._guard_booking_invitation(final, llm_result)
 
-        if plan.intent != "request_booking_confirmation" or plan.action != "prepare_booking_confirmation":
+        baseline_booking_prepare = (
+            primary.intent == "request_booking_confirmation"
+            and primary.action == "prepare_booking_confirmation"
+        )
+        if not baseline_booking_prepare and authorized_write_tool != "appointment_confirm":
             return final
 
         if self._appointment_confirm_succeeded(llm_result):
@@ -27,7 +37,11 @@ class WriteIntegrityGuard:
         guarded_structured_data = self._clean_booking_confirmation_structured_data(final.structured_data)
         guarded_data_to_save = self._clean_booking_confirmation_data_to_save(final.data_to_save)
 
-        if final.action != "completed":
+        success_actions = {"completed"}
+        if authorized_write_tool == "appointment_confirm":
+            success_actions.add("appointment_confirmed")
+
+        if final.action not in success_actions:
             return final.model_copy(
                 update={
                     "structured_data": guarded_structured_data,

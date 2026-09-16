@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.schemas.llm import McpRemoteConfig
-from app.services.agent_orchestration.schemas import BackendContext, ConversationContext, IntentPlan, ToolPlan
+from app.services.agent_orchestration.schemas import BackendContext, ConversationContext, IntentPlan, LLMFinalResponse, ToolPlan
 
 
 SUPPORTED_READ_TOOLS = [
@@ -29,6 +29,44 @@ class ToolSelector:
 
     It exposes supported read tools and maps plan-controlled writes directly.
     """
+
+    def select_reads(
+        self,
+        backend_context: BackendContext | None,
+        conversation_context: ConversationContext | None,
+        mcp_config: McpRemoteConfig | None,
+    ) -> ToolPlan:
+        configured = list(mcp_config.allowed_tools) if mcp_config is not None and mcp_config.enabled else []
+        if not configured:
+            return ToolPlan(reason="mcp_disabled_or_no_tools")
+
+        read_tools = self._supported_read_tools(configured)
+        bootstrap_tool = self._contact_context_bootstrap(configured, backend_context)
+        return ToolPlan(
+            allowed_tools=read_tools,
+            read_tools=read_tools,
+            bootstrap_tool=bootstrap_tool,
+            reason="primary_read_tools",
+        )
+
+    def select_write(
+        self,
+        final: LLMFinalResponse,
+        backend_context: BackendContext | None,
+        conversation_context: ConversationContext | None,
+        mcp_config: McpRemoteConfig | None,
+    ) -> ToolPlan:
+        read_plan = self.select_reads(backend_context, conversation_context, mcp_config)
+        configured = list(mcp_config.allowed_tools) if mcp_config is not None and mcp_config.enabled else []
+        write_tool = WRITE_TOOL_BY_PLAN.get((final.intent, final.action))
+        write_tools = [write_tool] if write_tool is not None and write_tool in configured else []
+        return ToolPlan(
+            allowed_tools=list(dict.fromkeys([*read_plan.read_tools, *write_tools])),
+            read_tools=read_plan.read_tools,
+            write_tools=write_tools,
+            bootstrap_tool=None,
+            reason=f"intent={final.intent};action={final.action};write_authorized={bool(write_tools)}",
+        )
 
     def select(
         self,
@@ -86,6 +124,13 @@ class ToolSelector:
         ):
             return required_read_tool
 
+        return self._contact_context_bootstrap(configured, backend_context)
+
+    def _contact_context_bootstrap(
+        self,
+        configured: list[str],
+        backend_context: BackendContext | None,
+    ) -> str | None:
         if "contact_context" not in configured:
             return None
         if backend_context is None:

@@ -82,7 +82,11 @@ RECOMMENDATIONS = {
     "dry_run_write_precondition": "Run this scenario only against a controlled transport that can provide recorded write-tool evidence without a real downstream write.",
     "live_write_not_enabled": "Set SA_E2E_ALLOW_WRITES=1 only after reviewing the live scenario and its isolated test data.",
     "live_write_before_confirmation": "Allow the expected write only on the explicit simulator confirmation turn.",
-    "live_confirm_action_mismatch": "Require the planner confirm_action declared by the live scenario on the write turn.",
+    "live_confirm_action_mismatch": "Require the structured write authorization action declared by the live scenario on the write turn.",
+    "primary_write_exposed": "Keep every write capability out of the primary LLM request.",
+    "write_continuation_incomplete": "Preserve both request and response artifacts for every authorized write continuation.",
+    "write_authorization_mismatch": "Align persisted write authorization, continuation configuration and the scenario expectation.",
+    "write_without_authorization": "Do not execute or expose a write without a coherent persisted write authorization.",
     "live_write_failed": "Inspect the real appointment_confirm trace and downstream result; do not retry automatically.",
     "live_expected_write_missing": "Inspect confirm intent/action gating and the real MCP traces without resending confirmation automatically.",
     "live_appointment_id_missing": "Require the canonical appointment.id from the successful downstream confirmation output.",
@@ -133,6 +137,8 @@ class Evaluator:
                     )
                 )
 
+        findings.extend(self._single_turn_architecture_findings(scenario, turn))
+
         writes = [
             call
             for call in turn.get("executed_mcp_calls", [])
@@ -142,7 +148,7 @@ class Evaluator:
         ready_action = self._clean(scenario.get("ready_action"))
         turn_actions = {
             self._clean(turn.get("action")),
-            self._clean(turn.get("intent_plan", {}).get("action")),
+            self._clean(turn.get("primary_response", {}).get("action")),
         }
 
         for call in writes:
@@ -190,10 +196,10 @@ class Evaluator:
                     )
                 )
 
-        allowed_tools = set(turn.get("allowed_tools", []))
+        allowed_tools = set(turn.get("primary_allowed_tools", []))
         actions = {
             self._clean(turn.get("action")),
-            self._clean(turn.get("intent_plan", {}).get("action")),
+            self._clean(turn.get("primary_response", {}).get("action")),
         }
         ready_action = self._clean(scenario.get("ready_action"))
         scenario_type = str(scenario.get("scenario_type", "appointment"))
@@ -586,12 +592,15 @@ class Evaluator:
 
         write_turn = self._turn_by_step(turns, write_call.get("step"))
         observed_actions: set[str | None] = set()
+        authorization_action: str | None = None
         if isinstance(write_turn, dict):
+            authorization_action = self._clean(
+                write_turn.get("write_authorization", {}).get("action")
+            )
             observed_actions = {
                 self._clean(write_turn.get("action")),
-                self._clean(
-                    write_turn.get("intent_plan", {}).get("action")
-                ),
+                self._clean(write_turn.get("primary_response", {}).get("action")),
+                authorization_action,
             }
 
         direct_write = bool(scenario.get("write_occurs_on_ready_turn"))
@@ -604,12 +613,7 @@ class Evaluator:
             )
         else:
             expected_action = self._clean(scenario.get("confirm_action"))
-            planner_action = (
-                self._clean(write_turn.get("intent_plan", {}).get("action"))
-                if isinstance(write_turn, dict)
-                else None
-            )
-            authorization_valid = planner_action == expected_action
+            authorization_valid = authorization_action == expected_action
 
         if not authorization_valid:
             phases["conversation"] = "FAIL"
@@ -959,9 +963,8 @@ class Evaluator:
         if isinstance(write_turn, dict):
             observed_actions = {
                 self._clean(write_turn.get("action")),
-                self._clean(
-                    write_turn.get("intent_plan", {}).get("action")
-                ),
+                self._clean(write_turn.get("primary_response", {}).get("action")),
+                self._clean(write_turn.get("write_authorization", {}).get("action")),
             }
 
         expected_action = self._clean(scenario.get("ready_action"))
@@ -1179,9 +1182,8 @@ class Evaluator:
         if isinstance(write_turn, dict):
             observed_actions = {
                 self._clean(write_turn.get("action")),
-                self._clean(
-                    write_turn.get("intent_plan", {}).get("action")
-                ),
+                self._clean(write_turn.get("primary_response", {}).get("action")),
+                self._clean(write_turn.get("write_authorization", {}).get("action")),
             }
 
         expected_action = self._clean(scenario.get("ready_action"))
@@ -1379,11 +1381,189 @@ class Evaluator:
     def _step_after(self, candidate: Any, reference: Any) -> bool:
         return isinstance(candidate, int) and isinstance(reference, int) and candidate > reference
 
+    def _single_turn_architecture_findings(
+        self,
+        scenario: dict[str, Any],
+        turn: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        findings: list[dict[str, Any]] = []
+        step = turn.get("step")
+        refs = turn.get("artifact_refs", [])
+        if not turn.get("primary_response"):
+            findings.append(
+                finding(
+                    "critical",
+                    "critical_artifact_unverifiable",
+                    "Primary response artifact does not contain final_response.",
+                    step,
+                    refs,
+                )
+            )
+        primary_allowed = set(turn.get("primary_allowed_tools", []))
+        primary_plan = turn.get("primary_tool_plan")
+        primary_plan_allowed = (
+            primary_plan.get("allowed_tools")
+            if isinstance(primary_plan, dict)
+            and isinstance(primary_plan.get("allowed_tools"), list)
+            else []
+        )
+        primary_write_tools = (
+            primary_plan.get("write_tools")
+            if isinstance(primary_plan, dict)
+            and isinstance(primary_plan.get("write_tools"), list)
+            else []
+        )
+        exposed_primary_writes = primary_allowed.intersection(WRITE_TOOLS)
+        exposed_primary_plan_writes = set(primary_plan_allowed).intersection(WRITE_TOOLS)
+        if exposed_primary_writes or exposed_primary_plan_writes or primary_write_tools:
+            findings.append(
+                finding(
+                    "critical",
+                    "primary_write_exposed",
+                    "Primary LLM request exposed one or more write tools.",
+                    step,
+                    refs,
+                    {
+                        "primary_allowed_writes": sorted(exposed_primary_writes),
+                        "primary_tool_plan_allowed_writes": sorted(exposed_primary_plan_writes),
+                        "primary_tool_plan_write_tools": primary_write_tools,
+                    },
+                )
+            )
+
+        statuses = {
+            item.get("name"): item.get("status")
+            for item in turn.get("artifact_status", [])
+            if isinstance(item, dict)
+        }
+        continuation_request_exists = statuses.get("03-write-continuation-request.json") == "ok"
+        continuation_response_exists = statuses.get("04-write-continuation-response.json") == "ok"
+        if continuation_request_exists != continuation_response_exists:
+            findings.append(
+                finding(
+                    "critical",
+                    "write_continuation_incomplete",
+                    "Write continuation has only one of its request/response artifacts.",
+                    step,
+                    refs,
+                )
+            )
+
+        authorization = turn.get("write_authorization")
+        authorization = authorization if isinstance(authorization, dict) else {}
+        authorized_tool = self._clean(authorization.get("tool"))
+        writes = [
+            call
+            for call in turn.get("executed_mcp_calls", [])
+            if call.get("tool_name") in WRITE_TOOLS
+        ]
+        if authorized_tool is None:
+            if writes:
+                findings.append(
+                    finding(
+                        "critical",
+                        "write_without_authorization",
+                        "A write MCP call was observed without coherent persisted write authorization.",
+                        step,
+                        [ref for call in writes for ref in call.get("evidence_refs", [])] or refs,
+                    )
+                )
+            if continuation_request_exists or continuation_response_exists:
+                findings.append(
+                    finding(
+                        "critical",
+                        "write_authorization_mismatch",
+                        "Write continuation artifacts exist without persisted write authorization.",
+                        step,
+                        refs,
+                    )
+                )
+            return findings
+
+        if not turn.get("continuation_response"):
+            findings.append(
+                finding(
+                    "critical",
+                    "critical_artifact_unverifiable",
+                    "Write continuation response artifact does not contain final_response.",
+                    step,
+                    refs,
+                )
+            )
+
+        expected_tool = self._clean(scenario.get("expected_write_tool"))
+        request = turn.get("continuation_request")
+        request = request if isinstance(request, dict) else {}
+        write_plan = request.get("write_tool_plan") or turn.get("write_tool_plan") or {}
+        write_plan_tools = write_plan.get("write_tools") if isinstance(write_plan, dict) else None
+        continuation_allowed = request.get("mcp_allowed_tools")
+        continuation_allowed = continuation_allowed if isinstance(continuation_allowed, list) else []
+        continuation_writes = {tool for tool in continuation_allowed if tool in WRITE_TOOLS}
+        tool_choice = request.get("tool_choice")
+        tool_choice_name = tool_choice.get("name") if isinstance(tool_choice, dict) else None
+        primary_response = turn.get("primary_response")
+        primary_response = primary_response if isinstance(primary_response, dict) else {}
+        primary_intent = primary_response.get("intent")
+        primary_action = primary_response.get("action")
+        coherent = (
+            (expected_tool is None or expected_tool == authorized_tool)
+            and authorization.get("intent") == primary_intent
+            and authorization.get("action") == primary_action
+            and request.get("authorized_intent") == authorization.get("intent")
+            and request.get("authorized_action") == authorization.get("action")
+            and request.get("authorized_write_tool") == authorized_tool
+            and write_plan_tools == [authorized_tool]
+            and continuation_writes == {authorized_tool}
+            and self._clean(request.get("previous_response_id")) is not None
+            and tool_choice_name == authorized_tool
+        )
+        if not coherent:
+            findings.append(
+                finding(
+                    "critical",
+                    "write_authorization_mismatch",
+                    "Persisted write authorization and continuation configuration are not coherent.",
+                    step,
+                    refs,
+                    {
+                        "expected_tool": expected_tool,
+                        "primary_intent": primary_intent,
+                        "primary_action": primary_action,
+                        "write_authorization_intent": authorization.get("intent"),
+                        "write_authorization_action": authorization.get("action"),
+                        "write_authorization": authorization,
+                        "authorized_write_tool": request.get("authorized_write_tool"),
+                        "write_tool_plan_write_tools": write_plan_tools,
+                        "continuation_allowed_writes": sorted(continuation_writes),
+                        "tool_choice_name": tool_choice_name,
+                    },
+                )
+            )
+
+        observed_write_tools = [call.get("tool_name") for call in writes]
+        if observed_write_tools != [authorized_tool]:
+            findings.append(
+                finding(
+                    "critical",
+                    "write_without_authorization",
+                    "Observed write execution does not match the single authorized write capability.",
+                    step,
+                    [ref for call in writes for ref in call.get("evidence_refs", [])] or refs,
+                    {
+                        "authorized_write_tool": authorized_tool,
+                        "observed_write_tools": observed_write_tools,
+                    },
+                )
+            )
+        return findings
+
     def _artifact_findings(self, turn: dict[str, Any]) -> list[dict[str, Any]]:
         findings: list[dict[str, Any]] = []
         for artifact in turn.get("artifact_status", []):
             status = artifact.get("status")
             if status == "ok" or artifact.get("critical"):
+                continue
+            if artifact.get("optional") and status == "missing":
                 continue
             findings.append(
                 finding(
@@ -2022,7 +2202,7 @@ class Evaluator:
             ref
             for turn in turns
             for ref in turn.get("artifact_refs", [])
-            if ref.endswith("03-final-request.json")
+            if ref.endswith("01-primary-request.json")
         ]
         findings: list[dict[str, Any]] = []
         if "appointment_events" not in names:
@@ -2098,11 +2278,11 @@ class Evaluator:
     ) -> list[dict[str, Any]]:
         names = {call.get("tool_name") for call in calls}
         findings: list[dict[str, Any]] = []
-        final_request_refs = [
+        primary_request_refs = [
             ref
             for turn in turns
             for ref in turn.get("artifact_refs", [])
-            if ref.endswith("03-final-request.json")
+            if ref.endswith("01-primary-request.json")
         ]
         appointment_read_refs = [
             ref
@@ -2122,7 +2302,7 @@ class Evaluator:
                     "recommended_read_not_executed",
                     "No recommended appointment read was executed to verify an existing appointment.",
                     None,
-                    final_request_refs,
+                    primary_request_refs,
                 )
             )
         if requires_existing and not reliable_appointment:
@@ -2149,7 +2329,7 @@ class Evaluator:
                     "recommended_read_not_executed",
                     f"Recommended read {tool_name} was not executed.",
                     None,
-                    final_request_refs,
+                    primary_request_refs,
                 )
             )
         return findings
@@ -2379,7 +2559,7 @@ class Evaluator:
             "select_offered_slot",
             "request_booking_confirmation",
             "request_booking_invitation",
-        } or turn.get("intent_plan", {}).get("domain") == "appointment"
+        } or turn.get("primary_response", {}).get("domain") == "appointment"
 
     def _string_list(self, value: Any) -> list[str]:
         if not isinstance(value, list):

@@ -3,9 +3,9 @@
 ## Objetivo
 
 Los E2E autónomos validan el comportamiento conversacional real de Sales Agent
-contra `/agent/respond`, incluyendo planificación LLM, tools MCP, persistencia,
-contexto estructurado y, cuando se habilita expresamente, integraciones de
-escritura reales.
+contra `/agent/respond`, incluyendo razonamiento del primary LLM, tools MCP,
+persistencia, contexto estructurado y, cuando se habilita expresamente,
+integraciones de escritura reales.
 
 El runner está en:
 
@@ -31,6 +31,12 @@ sistema conversacional integrado con evidencia estructurada.
 - Durante debug se continúa desde el último punto válido siempre que sea
   posible, en lugar de repetir un flujo completo.
 
+- El primary LLM recibe reads y cero writes.
+- Una write solo puede aparecer después de una autorización estructurada del primary.
+- Autorización y ejecución son evidencias distintas: `write_authorization` valida gating y las trazas MCP reales validan ejecución.
+- Un turno sin write no requiere artifacts de continuación.
+- Un turno con write requiere artifacts de request/response de continuación coherentes con la única write autorizada.
+
 ## Perfiles
 
 ### `dry`
@@ -42,6 +48,8 @@ python3 scripts/e2e/autonomous/run_suite.py --profile dry
 ```
 
 Incluye escenarios de catálogo y agenda que no ejecutan writes reales.
+
+El perfil `dry` sigue ejecutando `/agent/respond` y necesita un provider LLM operativo; `dry` significa sin writes reales, no ejecución offline.
 
 Actualmente cubre:
 
@@ -115,13 +123,15 @@ La mera selección de un slot no autoriza la escritura.
 ### Contact Submit
 
 `crm_contact_submit` puede ejecutarse en el mismo turno en el que el cliente
-pide ser contactado cuando el plan estructurado autoriza
+pide ser contactado cuando el primary devuelve el `intent` + `action` estructurado que autoriza
 `create_or_update_crm_contact`.
 
 No se añade una confirmación artificial específica para guardar el contacto.
 
-Cuando `tool_plan.bootstrap_tool=contact_context`, debe consultarse primero ese
-contexto antes del write.
+Cuando el primary necesita `contact_context` para resolver identidad, contacto o
+timezone, esa lectura ocurre antes de autorizar la write. La write continuation
+no usa un bootstrap de contacto propio: sus prerrequisitos recuperables deben
+haber quedado resueltos en el primary.
 
 El escenario de contacto nuevo usa identidad E2E aislada y verifica el contrato
 de la respuesta real:
@@ -180,12 +190,26 @@ La suite genera además:
 Las trazas incluyen:
 
 - conversación;
-- acción/intención estructurada;
-- tools permitidas;
+- `primary_response` estructurado;
+- `primary_tool_plan` y tools anunciadas al primary;
+- `write_authorization` cuando existe;
+- `write_tool_plan` y configuración de continuation cuando existe;
 - llamadas MCP reales;
 - outputs decodificados;
 - referencias a artifacts del contexto LLM;
 - findings de seguridad y contrato.
+
+Los artifacts mínimos de todo turno LLM son:
+
+- `01-primary-request.json`;
+- `02-primary-response.json`.
+
+Solo un turno con write autorizada requiere además:
+
+- `03-write-continuation-request.json`;
+- `04-write-continuation-response.json`.
+
+El evaluator comprueba que el primary no exponga ninguna write capability y que una ejecución write esté respaldada por una autorización coherente.
 
 ## Resultados
 

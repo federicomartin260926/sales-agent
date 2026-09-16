@@ -224,27 +224,41 @@ def read_artifacts(
     internal_conversation_id = data.get("conversation_id")
     reported_files = ((data.get("llm_context_debug") or {}).get("files") or [])
     by_name = {Path(item).name: item for item in reported_files if isinstance(item, str)}
-    public_tool_plan = data.get("tool_plan")
-    public_traces = data.get("mcp_tool_traces")
+    write_authorization = data.get("write_authorization")
+    has_write_authorization = (
+        isinstance(write_authorization, dict)
+        and isinstance(write_authorization.get("tool"), str)
+        and bool(write_authorization["tool"].strip())
+    )
     specs = {
-        "02-intent-response.json": False,
-        "03-final-request.json": not (
-            isinstance(public_tool_plan, dict) and isinstance(public_tool_plan.get("allowed_tools"), list)
-        ),
-        "04-final-response.json": not isinstance(public_traces, list),
+        "01-primary-request.json": (True, True, False),
+        "01-primary-system-prompt.txt": (False, False, True),
+        "01-primary-user-prompt.txt": (False, False, True),
+        "02-primary-response.json": (True, True, False),
+        "03-write-continuation-request.json": (has_write_authorization, True, not has_write_authorization),
+        "03-write-continuation-system-prompt.txt": (False, False, True),
+        "03-write-continuation-user-prompt.txt": (False, False, True),
+        "04-write-continuation-response.json": (has_write_authorization, True, not has_write_authorization),
     }
     loaded: dict[str, Any] = {}
     statuses: list[dict[str, Any]] = []
     refs: list[str] = []
-    for name, critical in specs.items():
+    for name, (critical, parse_json, optional) in specs.items():
         reported = by_name.get(name, name)
         path = resolve_debug_path(
             reported, context_dir, container_prefix, internal_conversation_id, message_id
         )
         refs.append(str(path))
-        status = {"name": name, "path": str(path), "critical": critical, "status": "ok"}
+        status = {
+            "name": name,
+            "path": str(path),
+            "critical": critical,
+            "optional": optional,
+            "status": "ok",
+        }
         try:
-            loaded[name] = json.loads(path.read_text(encoding="utf-8"))
+            content = path.read_text(encoding="utf-8")
+            loaded[name] = json.loads(content) if parse_json else content
         except FileNotFoundError:
             status["status"] = "missing"
         except (json.JSONDecodeError, UnicodeDecodeError):
@@ -276,17 +290,38 @@ def normalize_turn(
     artifact_refs: list[str],
 ) -> dict[str, Any]:
     data = response.get("data_to_save") or {}
-    intent_artifact = artifacts.get("02-intent-response.json") or {}
-    request_artifact = artifacts.get("03-final-request.json") or {}
-    final_artifact = artifacts.get("04-final-response.json") or {}
-    intent_plan = intent_artifact.get("intent_plan") or data.get("intent_plan") or {}
-    request_context = request_artifact.get("request_context") or {}
-    tool_plan = request_context.get("tool_plan") or data.get("tool_plan") or {}
-    final_response = final_artifact.get("final_response") or {}
-    structured_data = final_response.get("structured_data") or data.get("structured_data") or {}
-    traces = final_artifact.get("tool_traces")
+    primary_request_artifact = artifacts.get("01-primary-request.json") or {}
+    primary_response_artifact = artifacts.get("02-primary-response.json") or {}
+    continuation_request_artifact = artifacts.get("03-write-continuation-request.json") or {}
+    continuation_response_artifact = artifacts.get("04-write-continuation-response.json") or {}
+    primary_request_context = primary_request_artifact.get("request_context") or {}
+    continuation_request_context = continuation_request_artifact.get("request_context") or {}
+    primary_response = primary_response_artifact.get("final_response") or {}
+    continuation_response = continuation_response_artifact.get("final_response") or {}
+    primary_request_context = primary_request_context if isinstance(primary_request_context, dict) else {}
+    continuation_request_context = continuation_request_context if isinstance(continuation_request_context, dict) else {}
+    primary_response = primary_response if isinstance(primary_response, dict) else {}
+    continuation_response = continuation_response if isinstance(continuation_response, dict) else {}
+    primary_tool_plan = primary_request_context.get("primary_tool_plan") or data.get("primary_tool_plan") or {}
+    write_authorization = data.get("write_authorization") or {}
+    write_tool_plan = continuation_request_context.get("write_tool_plan") or data.get("write_tool_plan") or {}
+    primary_tool_plan = primary_tool_plan if isinstance(primary_tool_plan, dict) else {}
+    write_authorization = write_authorization if isinstance(write_authorization, dict) else {}
+    write_tool_plan = write_tool_plan if isinstance(write_tool_plan, dict) else {}
+    intent_plan = data.get("intent_plan") or {}
+    final_response = continuation_response or primary_response
+    structured_data = data.get("structured_data") or final_response.get("structured_data") or {}
+    traces = data.get("mcp_tool_traces")
     if not isinstance(traces, list):
-        traces = data.get("mcp_tool_traces") or []
+        primary_traces = primary_response_artifact.get("tool_traces") or []
+        continuation_traces = continuation_response_artifact.get("tool_traces") or []
+        traces = [*primary_traces, *continuation_traces]
+    response_artifact_refs = [
+        ref
+        for ref in artifact_refs
+        if ref.endswith("02-primary-response.json")
+        or ref.endswith("04-write-continuation-response.json")
+    ]
     calls: list[dict[str, Any]] = []
     for trace in traces:
         if not isinstance(trace, dict) or trace.get("type") != "mcp_call":
@@ -302,7 +337,7 @@ def normalize_turn(
                 "arguments": trace.get("arguments"),
                 "decoded_output": decoded,
                 "output_json_decoded": decoded_ok,
-                "evidence_refs": [ref for ref in artifact_refs if ref.endswith("04-final-response.json")],
+                "evidence_refs": response_artifact_refs,
             }
         )
     return {
@@ -318,7 +353,14 @@ def normalize_turn(
         "intent": response.get("intent") or final_response.get("intent"),
         "action": response.get("action") or final_response.get("action"),
         "intent_plan": intent_plan,
-        "allowed_tools": tool_plan.get("allowed_tools") or request_context.get("mcp_allowed_tools") or [],
+        "primary_response": primary_response,
+        "primary_tool_plan": primary_tool_plan,
+        "primary_allowed_tools": primary_request_context.get("mcp_allowed_tools") or primary_tool_plan.get("allowed_tools") or [],
+        "write_authorization": write_authorization,
+        "write_tool_plan": write_tool_plan,
+        "continuation_response": continuation_response,
+        "continuation_request": continuation_request_context,
+        "allowed_tools": write_tool_plan.get("allowed_tools") or primary_tool_plan.get("allowed_tools") or [],
         "executed_mcp_calls": calls,
         "structured_data": structured_data,
         "artifact_refs": artifact_refs,

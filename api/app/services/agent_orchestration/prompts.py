@@ -31,6 +31,17 @@ WRITE_TOOL_VALUES = [
 
 FINAL_ACTION_VALUES = list(get_args(ResponseAction))
 
+WRITE_AUTHORIZATION_ACTION_VALUES = [
+    "confirm_booking",
+    "create_booking_invitation",
+    "confirm_reschedule",
+    "confirm_cancel",
+    "create_or_update_crm_contact",
+    "handoff_to_human",
+]
+
+PRIMARY_ACTION_VALUES = list(dict.fromkeys([*FINAL_ACTION_VALUES, *WRITE_AUTHORIZATION_ACTION_VALUES]))
+
 NEXT_ACTION_VALUES = [
     "none",
     "ask_clarification",
@@ -226,8 +237,8 @@ Ejemplo confirmación:
 FINAL_SYSTEM_PROMPT = f"""
 Eres el agente comercial conversacional de Sales Agent.
 
-Esta es la segunda llamada LLM.
-Puedes responder al cliente y usar tools MCP cuando Sales Agent las habilite en tool_plan.
+Esta es la llamada conversacional principal del turno.
+Puedes responder al cliente y usar las tools MCP de lectura que Sales Agent habilite en tool_plan.
 
 Arquitectura:
 - Los bloques principales de contexto son backend_context y conversation_context.
@@ -243,8 +254,9 @@ Arquitectura:
 Responsabilidades:
 - El LLM interpreta el lenguaje natural, lee el historial, decide el siguiente paso, usa tools si hace falta y redacta la respuesta final.
 - Sales Agent solo prepara contexto, limita tools, transporta, persiste y configura.
-- `intent_plan.action` pertenece al planificador interno y puede incluir valores como `get_availability`.
-- `action` en esta respuesta final pertenece solo al contrato de `LLMFinalResponse` y nunca debe copiar `intent_plan.action`.
+- Produce directamente el intent y action estructurados del turno junto con la respuesta conversacional.
+- En esta llamada principal no hay tools de escritura. Si el turno requiere una escritura, devuelve exactamente el intent/action que la autoriza; Sales Agent podrá continuar el mismo turno con esa única capability.
+- No afirmes que una escritura ocurrió desde esta llamada principal.
 - Si algo es ambiguo, contradictorio o insuficiente, pregunta al cliente o usa tools disponibles.
 - Si el cliente corrige una interpretación anterior, reconduce la conversación de forma natural.
 - Si una tool devuelve éxito, responde según ese éxito.
@@ -258,7 +270,7 @@ Responsabilidades:
 - Nunca llames una tool de escritura para responder una pregunta meramente informativa, aunque esté disponible por una clasificación imperfecta.
 
 Valores finales permitidos para action:
-{", ".join(FINAL_ACTION_VALUES)}
+{", ".join(PRIMARY_ACTION_VALUES)}
 
 Valores permitidos para required_next_action:
 {", ".join(NEXT_ACTION_VALUES)}
@@ -292,7 +304,16 @@ Tools:
 - Nunca uses una tool que no esté en tool_plan.allowed_tools.
 - Que una tool esté en tool_plan.allowed_tools no significa que debas usarla. Úsala solo si hace falta para responder correctamente.
 - Usa tools de lectura solo cuando los datos necesarios no estén ya disponibles en backend_context o conversation_context, o cuando necesites verificar datos externos actualizados.
-- Usa tools de acción solo cuando estén permitidas y la intención conversacional lo justifique.
+- En la llamada principal no hay tools de acción. Para solicitar una continuación de escritura usa exclusivamente estos pares de autorización:
+  - confirmación explícita de reserva: intent=request_booking_confirmation, action=confirm_booking.
+  - petición explícita de enlace/invitación: intent=request_booking_invitation, action=create_booking_invitation.
+  - confirmación explícita de reprogramación: intent=request_reschedule, action=confirm_reschedule.
+  - confirmación explícita de cancelación: intent=request_cancel, action=confirm_cancel.
+  - petición de contacto/lead: intent=provide_contact_data o intent=request_quote, action=create_or_update_crm_contact.
+  - petición explícita de humano: intent=request_handoff, action=handoff_to_human.
+- prepare_booking_confirmation, prepare_reschedule y prepare_cancel nunca autorizan escritura. Seleccionar un slot o identificar una cita tampoco equivale a confirmar una escritura.
+- Antes de devolver un intent/action que solicite una write continuation, usa las read tools disponibles para resolver todo dato recuperable necesario y verificar el estado externo cuando corresponda. Si todavía falta información o existe ambigüedad, pregunta o lee; no solicites la continuación hasta tener datos suficientes y fiables para ejecutar la operación.
+- Si solicitas una continuación, no inventes resultados ni afirmes que la operación ya ocurrió. Sales Agent podrá continuar el mismo turno tras autorizar exactamente una write tool.
 - Si una tool falla, explica el problema de forma breve y ofrece siguiente paso.
 
 Catálogo y servicios:
@@ -327,7 +348,7 @@ Agenda:
 - No llames appointment_availability sin date_from y date_to fiables.
 - Si falta fecha o rango, pregunta al cliente antes de usar appointment_availability.
 - Para un único día concreto, usa el mismo día en date_from y date_to.
-- Usa temporal_context e intent_plan para resolver expresiones relativas antes de llamar appointment_availability.
+- Usa temporal_context y el historial para resolver expresiones relativas antes de llamar appointment_availability.
 - Para una selección multiservicio resuelta, llama appointment_availability, appointment_booking_invitation o appointment_confirm una sola vez para la visita conjunta y pasa service_ids con todos los IDs en orden. Nunca hagas una operación de agenda por servicio. Cuando service_ids contenga varios servicios, no envíes duration_minutes: ni una duración individual, ni una suma, ni un valor por defecto; CRM debe determinar la duración conjunta.
 - Para una única selección, conserva la compatibilidad legacy: si selected_service contiene un id UUID canónico, pásalo como service_id; no como service_ref. No fuerces el flujo singular a usar arrays.
 - Antes de disponibilidad o reserva, resuelve suficientemente todos los servicios; usa services_search si falta algún ID o hay ambigüedad. Varias búsquedas de catálogo no implican varias operaciones de agenda.
@@ -358,7 +379,7 @@ Agenda:
 - Para verificar el estado o la fecha de una cita existente, usa appointment_events; no uses appointment_availability.
 - contact_context puede usarse antes para resolver identidad, contacto o timezone, pero no sustituye appointment_events cuando el usuario pide explícitamente comprobar, verificar o consultar en CRM qué cita tiene reservada. En ese caso, si appointment_events está disponible y existe un rango temporal fiable, debes llamarla antes de responder, aunque el historial ya contenga una cita aparentemente fiable.
 - appointment_events requiere un rango temporal explícito y fiable. Si el usuario pide comprobar su cita actual, reservada o próxima sin indicar una fecha concreta y el historial o backend_context.contact_context.next contienen una cita previamente seleccionada, confirmada o conocida con fechas exactas fiables, usa ese rango de la cita para appointment_events.
-- Si intent_plan.required_read_tool="appointment_events" y intent_plan.entities.date_from/date_to contienen un rango fiable, úsalo directamente en appointment_events. No lo recalcules desde palabras como "actualmente", "ahora" o desde temporal_context.current_date salvo que el usuario haya especificado un rango distinto.
+- Si el contexto estructurado contiene un rango fiable para consultar appointment_events, úsalo directamente. No lo recalcules desde palabras como "actualmente", "ahora" o desde temporal_context.current_date salvo que el usuario haya especificado un rango distinto.
 - No interpretes palabras como "actualmente", "ahora", "qué cita tengo" o "qué tengo reservado" como equivalentes a "hoy". Solo limites la búsqueda al día actual cuando el usuario se refiera explícitamente a hoy.
 - Si necesitas verificar una cita con appointment_events pero no existe en el mensaje ni en el historial un rango temporal fiable, pregunta la fecha o el rango necesario en vez de inventarlo.
 - Una cita multiservicio es un único CalendarEvent. Si una lectura representa sus servicios como services, serviceIds o service_ids, interpreta todos para responder, por ejemplo, qué servicios incluye la cita.
@@ -409,6 +430,19 @@ Cierre:
 """.strip()
 
 
+WRITE_CONTINUATION_SYSTEM_PROMPT = """
+Continúa el mismo turno conversacional usando el contexto de previous_response_id.
+Sales Agent ya autorizó exactamente la única tool de escritura visible para el intent/action indicado.
+Ejecuta únicamente esa operación de escritura cuando corresponda y como máximo una vez; no cambies a otra operación de escritura.
+Las tools de lectura visibles siguen disponibles, pero el primary ya debió resolver todos los prerrequisitos recuperables antes de autorizar la escritura.
+No inventes datos faltantes ni dependas de una nueva lectura para completar un prerrequisito que faltaba antes de ejecutar la write.
+No afirmes éxito sin un resultado real de la tool. Si la tool falla, informa del fallo sin inventar éxito.
+No devuelvas otra acción de autorización de write. Después de la tool, devuelve únicamente el resultado conversacional final correspondiente a su resultado real.
+Devuelve un único JSON válido con el mismo contrato LLMFinalResponse, sin Markdown ni texto adicional.
+Conserva en structured_data la información relevante del turno y refleja únicamente resultados reales de tools.
+""".strip()
+
+
 def build_intent_user_prompt(context: dict[str, Any]) -> str:
     """Build the user prompt for the first LLM call.
 
@@ -428,73 +462,90 @@ def build_intent_user_prompt(context: dict[str, Any]) -> str:
 
 def build_final_user_prompt(
     message: Any,
-    plan: IntentPlan,
     backend_context: BackendContext,
     conversation_context: ConversationContext,
     tools: ToolPlan,
 ) -> str:
-    """Build the user prompt for the second LLM call.
+    """Build the user prompt for the primary conversational LLM call.
 
-    This call receives the structured intent, the full runtime context and the
-    tool plan. The LLM may answer, ask clarification, select slots or use MCP
-    tools when allowed.
+    The LLM receives the full runtime context and read-only tool plan. It may
+    answer, ask clarification, select slots or request one write continuation.
     """
     payload = {
         "task": "execute_conversation_turn",
-        "intent_plan": plan.model_dump(exclude_none=True),
         "backend_context": backend_context.model_dump(exclude_none=True, exclude_defaults=True) if backend_context is not None else {},
         "conversation_context": conversation_context.model_dump(exclude_none=True, exclude_defaults=True) if conversation_context is not None else {},
         "tool_plan": tools.model_dump(exclude_none=True, exclude_defaults=True),
-        "output_contract": {
-            "reply": "mensaje para el cliente",
-            "domain": "single string from allowed_values.domain",
-            "intent": "single string from allowed_values.intent",
-            "action": "single string from allowed_values.action",
-            "needs_human": False,
-            "score": 0.0,
-            "allowed_values": {
-                "domain": DOMAIN_VALUES,
-                "intent": INTENT_VALUES,
-                "action": FINAL_ACTION_VALUES,
-            },
-            "structured_data": {
-                "appointment": {
-                    "offered_slots": [],
-                    "selected_slot": None,
-                    "existing_appointments": [],
-                    "existing_appointment": None,
-                    "booking_invitation": None,
-                    "booking_result": None,
-                    "reschedule_result": None,
-                    "cancel_result": None,
-                },
-                "services": {
-                    "service_candidates": [],
-                    "selected_service": None,
-                    "selected_services": [],
-                    "last_query": None,
-                },
-                "crm_contact": {
-                    "lead_data": None,
-                    "submit_result": None,
-                },
-                "handoff": {
-                    "requested": False,
-                    "reason": None,
-                    "result": None,
-                },
-                "general": {
-                    "topic": None,
-                    "last_answer_summary": None,
-                },
-            },
-            "next_expected": {
-                "kind": "customer_reply",
-                "description": None,
-            },
-            "data_to_save": {},
-        },
+        "output_contract": _output_contract(PRIMARY_ACTION_VALUES),
         "final_instruction": "Return only one valid JSON object. Do not include Markdown or explanatory text.",
     }
 
     return json.dumps(payload, ensure_ascii=False, default=str, indent=2)
+
+
+def build_write_continuation_user_prompt(
+    authorized_intent: str,
+    authorized_action: str,
+    authorized_write_tool: str,
+) -> str:
+    payload = {
+        "task": "execute_authorized_write_continuation",
+        "authorized_intent": authorized_intent,
+        "authorized_action": authorized_action,
+        "authorized_write_tool": authorized_write_tool,
+        "output_contract": _output_contract(FINAL_ACTION_VALUES),
+        "final_instruction": "Return only one valid JSON object. Do not include Markdown or explanatory text.",
+    }
+    return json.dumps(payload, ensure_ascii=False, default=str, indent=2)
+
+
+def _output_contract(action_values: list[str]) -> dict[str, Any]:
+    return {
+        "reply": "mensaje para el cliente",
+        "domain": "single string from allowed_values.domain",
+        "intent": "single string from allowed_values.intent",
+        "action": "single string from allowed_values.action",
+        "needs_human": False,
+        "score": 0.0,
+        "allowed_values": {
+            "domain": DOMAIN_VALUES,
+            "intent": INTENT_VALUES,
+            "action": action_values,
+        },
+        "structured_data": {
+            "appointment": {
+                "offered_slots": [],
+                "selected_slot": None,
+                "existing_appointments": [],
+                "existing_appointment": None,
+                "booking_invitation": None,
+                "booking_result": None,
+                "reschedule_result": None,
+                "cancel_result": None,
+            },
+            "services": {
+                "service_candidates": [],
+                "selected_service": None,
+                "selected_services": [],
+                "last_query": None,
+            },
+            "crm_contact": {
+                "lead_data": None,
+                "submit_result": None,
+            },
+            "handoff": {
+                "requested": False,
+                "reason": None,
+                "result": None,
+            },
+            "general": {
+                "topic": None,
+                "last_answer_summary": None,
+            },
+        },
+        "next_expected": {
+            "kind": "customer_reply",
+            "description": None,
+        },
+        "data_to_save": {},
+    }
