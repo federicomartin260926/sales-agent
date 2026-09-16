@@ -12,7 +12,12 @@
     "conversation_prefix": "autonomous-booking-single"
   },
   "initial_message": "Quiero reservar láser axilas el viernes 18 de septiembre de 2026 por la mañana con María Gutiérrez.",
-  "initial_data_fields": ["service_name", "preferred_day", "time_of_day", "owner_name"],
+  "initial_data_fields": [
+    "service_name",
+    "preferred_day",
+    "time_of_day",
+    "owner_name"
+  ],
   "max_turns": 6,
   "customer_data": {
     "service_name": "láser axilas",
@@ -26,12 +31,20 @@
   "requires_selected_slot": true,
   "requires_existing_appointment": false,
   "expected_service_count": 1,
-  "expected_service_ids": ["019eb05e-5f68-74a7-8533-a8e6990833e6"],
-  "recommended_read_tools": ["contact_context", "services_search", "appointment_availability"],
-  "preconditions": ["Láser axilas y su agenda deben existir en el tenant E2E."],
+  "recommended_read_tools": [
+    "contact_context",
+    "services_search",
+    "appointment_availability"
+  ],
+  "preconditions": [
+    "Láser axilas y su agenda deben existir en el tenant E2E."
+  ],
   "documented_invariants": [
     "Resolver exactamente un servicio canónico.",
     "No ejecutar ni exponer appointment_confirm durante prepare_booking_confirmation.",
     "Detenerse con selected_slot fiable y ready_to_write=true."
+  ],
+  "expected_service_names": [
+    "Láser axilas"
   ]
 }

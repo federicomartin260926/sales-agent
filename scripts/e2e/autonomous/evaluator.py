@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 from collections import Counter
 from typing import Any
 
@@ -35,6 +37,7 @@ SUCCESS_TOOL_BY_ACTION = {
     "appointment_cancelled": "appointment_cancel",
 }
 RESULT_CONTRACT_BY_TOOL = {
+    "appointment_booking_invitation": ("booking_invitation", ("created",)),
     "appointment_confirm": ("booking_result", ("confirmed", "appointment_confirmed")),
     "appointment_reschedule": ("reschedule_result", ("rescheduled",)),
     "appointment_cancel": ("cancel_result", ("cancelled",)),
@@ -151,9 +154,15 @@ class Evaluator:
                 and call.get("tool_name") == scenario.get("expected_write_tool")
             ):
                 if scenario_type == "appointment":
-                    live_expected_write = (
-                        turn.get("customer_decision") == "write_confirmation"
-                    )
+                    if scenario.get("write_occurs_on_ready_turn"):
+                        live_expected_write = (
+                            ready_action is not None
+                            and ready_action in turn_actions
+                        )
+                    else:
+                        live_expected_write = (
+                            turn.get("customer_decision") == "write_confirmation"
+                        )
                 elif (
                     scenario_type in {"contact_submit", "handoff"}
                     and scenario.get("write_occurs_on_ready_turn")
@@ -190,6 +199,7 @@ class Evaluator:
         scenario_type = str(scenario.get("scenario_type", "appointment"))
         if (
             scenario_type == "appointment"
+            and not scenario.get("write_occurs_on_ready_turn")
             and ready_action is not None
             and ready_action in actions
         ):
@@ -494,16 +504,21 @@ class Evaluator:
     ) -> tuple[list[dict[str, Any]], dict[str, str], dict[str, Any]]:
         findings: list[dict[str, Any]] = []
         phases = {
-            "conversation": "PASS" if ready_to_write else "FAIL",
+            "conversation": "SKIPPED",
             "write": "SKIPPED",
             "crm_verification": "SKIPPED",
             "cleanup": "SKIPPED",
         }
         evidence: dict[str, Any] = {
             "write_mcp_call": None,
+            "write_output": None,
             "appointment_id": None,
             "selected_slot": self._latest_selected_slot(turns),
-            "service_ids": self._selected_service_ids(turns[-1]) if turns else [],
+            "service_ids": (
+                self._selected_service_ids(turns[-1])
+                if turns
+                else []
+            ),
             "timezone": self._latest_agenda_timezone(turns),
             "verification_mcp_call": None,
             "verification_match": False,
@@ -516,7 +531,10 @@ class Evaluator:
                 finding(
                     "warning",
                     "live_write_not_enabled",
-                    "Live booking reached the write boundary and stopped before sending explicit confirmation.",
+                    (
+                        "Live appointment scenario reached its write boundary "
+                        "but write opt-in is disabled."
+                    ),
                     turns[-1].get("step") if turns else None,
                     turns[-1].get("artifact_refs", []) if turns else [],
                 )
@@ -524,45 +542,99 @@ class Evaluator:
             return findings, phases, evidence
 
         expected_tool = self._clean(scenario.get("expected_write_tool"))
-        expected_writes = [call for call in writes if call.get("tool_name") == expected_tool]
+        expected_writes = [
+            call
+            for call in writes
+            if call.get("tool_name") == expected_tool
+        ]
+
         if len(expected_writes) != 1 or len(writes) != 1:
             phases["write"] = "FAIL"
             findings.append(
                 finding(
                     "critical",
-                    "live_expected_write_missing" if not expected_writes else "multiple_writes",
-                    f"Live booking requires exactly one {expected_tool} call; observed {len(expected_writes)} expected and {len(writes)} total writes.",
+                    (
+                        "live_expected_write_missing"
+                        if not expected_writes
+                        else "multiple_writes"
+                    ),
+                    (
+                        f"Live appointment scenario requires exactly one "
+                        f"{expected_tool} call; observed "
+                        f"{len(expected_writes)} expected and "
+                        f"{len(writes)} total writes."
+                    ),
                     writes[-1].get("step") if writes else None,
-                    [ref for call in writes for ref in call.get("evidence_refs", [])],
+                    [
+                        ref
+                        for call in writes
+                        for ref in call.get("evidence_refs", [])
+                    ],
                 )
             )
             return findings, phases, evidence
 
         write_call = expected_writes[0]
-        write_output = write_call.get("decoded_output")
+        output = write_call.get("decoded_output")
         evidence["write_mcp_call"] = self._minimal_call_evidence(write_call)
-        write_turn = self._turn_by_step(turns, write_call.get("step"))
-        observed_confirm_action = (
-            self._clean(write_turn.get("intent_plan", {}).get("action"))
-            if isinstance(write_turn, dict)
-            else None
-        )
-        confirm_action_valid = observed_confirm_action == self._clean(scenario.get("confirm_action"))
-        if not confirm_action_valid:
-            phases["write"] = "FAIL"
-            findings.append(
-                finding(
-                    "critical",
-                    "live_confirm_action_mismatch",
-                    f"Write turn planner action was {observed_confirm_action!r}, expected {scenario.get('confirm_action')!r}.",
-                    write_call.get("step"),
-                    write_call.get("evidence_refs", []),
-                )
-            )
+        evidence["write_output"] = output
+
         arguments = write_call.get("arguments")
         if isinstance(arguments, dict):
             evidence["service_ids"] = self._argument_service_ids(arguments)
             evidence["timezone"] = self._clean(arguments.get("timezone"))
+
+        write_turn = self._turn_by_step(turns, write_call.get("step"))
+        observed_actions: set[str | None] = set()
+        if isinstance(write_turn, dict):
+            observed_actions = {
+                self._clean(write_turn.get("action")),
+                self._clean(
+                    write_turn.get("intent_plan", {}).get("action")
+                ),
+            }
+
+        direct_write = bool(scenario.get("write_occurs_on_ready_turn"))
+
+        if direct_write:
+            expected_action = self._clean(scenario.get("ready_action"))
+            authorization_valid = (
+                expected_action is not None
+                and expected_action in observed_actions
+            )
+        else:
+            expected_action = self._clean(scenario.get("confirm_action"))
+            planner_action = (
+                self._clean(write_turn.get("intent_plan", {}).get("action"))
+                if isinstance(write_turn, dict)
+                else None
+            )
+            authorization_valid = planner_action == expected_action
+
+        if not authorization_valid:
+            phases["conversation"] = "FAIL"
+            findings.append(
+                finding(
+                    "critical",
+                    "live_confirm_action_mismatch",
+                    (
+                        "Appointment write executed without the expected "
+                        f"structured authorization action "
+                        f"{expected_action!r}."
+                    ),
+                    write_call.get("step"),
+                    write_call.get("evidence_refs", []),
+                    {
+                        "observed_actions": sorted(
+                            action
+                            for action in observed_actions
+                            if action is not None
+                        )
+                    },
+                )
+            )
+        else:
+            phases["conversation"] = "PASS"
 
         if self._write_outcome(write_call) != "success":
             phases["write"] = "FAIL"
@@ -570,46 +642,120 @@ class Evaluator:
                 finding(
                     "error",
                     "live_write_failed",
-                    "The single appointment_confirm call did not return a verifiable successful result.",
+                    (
+                        f"{expected_tool} did not return a verifiable "
+                        "successful result."
+                    ),
                     write_call.get("step"),
                     write_call.get("evidence_refs", []),
-                    {"write_output": write_output},
+                    {"write_output": output},
                 )
             )
             return findings, phases, evidence
-        if confirm_action_valid:
-            phases["write"] = "PASS"
 
-        appointment_id = self._appointment_id_from_confirm_output(write_output)
+        if expected_tool == "appointment_booking_invitation":
+            booking_url = (
+                self._clean(output.get("booking_url"))
+                if isinstance(output, dict)
+                else None
+            )
+            if booking_url is None:
+                phases["write"] = "FAIL"
+                findings.append(
+                    finding(
+                        "error",
+                        "booking_invitation_contract_failed",
+                        (
+                            "Successful appointment_booking_invitation "
+                            "did not return a non-empty booking_url."
+                        ),
+                        write_call.get("step"),
+                        write_call.get("evidence_refs", []),
+                        {"write_output": output},
+                    )
+                )
+                return findings, phases, evidence
+
+        phases["write"] = "PASS"
+
+        # Booking invitation has no CRM read-back contract today.
+        verify_tool = self._clean(scenario.get("verify_with_tool"))
+        if verify_tool is None:
+            return findings, phases, evidence
+
+        # Resolve canonical appointment id from output first and arguments
+        # second. Reschedule/cancel normally carry appointment_id in args.
+        appointment_id = None
+
+        if isinstance(output, dict):
+            appointment_id = self._clean(
+                output.get("appointment_id")
+                or output.get("appointmentId")
+            )
+
+            if appointment_id is None:
+                for key in ("appointment", "event"):
+                    candidate = output.get(key)
+                    if isinstance(candidate, dict):
+                        appointment_id = self._clean(
+                            candidate.get("id")
+                            or candidate.get("appointment_id")
+                            or candidate.get("appointmentId")
+                        )
+                        if appointment_id is not None:
+                            break
+
+        if appointment_id is None and isinstance(arguments, dict):
+            appointment_id = self._clean(
+                arguments.get("appointment_id")
+                or arguments.get("appointmentId")
+            )
+
+        if (
+            appointment_id is None
+            and expected_tool == "appointment_confirm"
+        ):
+            appointment_id = self._appointment_id_from_confirm_output(output)
+
         evidence["appointment_id"] = appointment_id
+
         if appointment_id is None:
             phases["crm_verification"] = "FAIL"
             findings.append(
                 finding(
                     "critical",
                     "live_appointment_id_missing",
-                    "Successful appointment_confirm output did not include a canonical appointment.id.",
+                    (
+                        f"Successful {expected_tool} did not expose a "
+                        "canonical appointment id in output or arguments."
+                    ),
                     write_call.get("step"),
                     write_call.get("evidence_refs", []),
                 )
             )
             return findings, phases, evidence
 
-        verify_tool = self._clean(scenario.get("verify_with_tool"))
         verification_calls = [
             call
             for turn in turns
             for call in turn.get("executed_mcp_calls", [])
             if call.get("tool_name") == verify_tool
-            and self._step_after(call.get("step"), write_call.get("step"))
+            and self._step_after(
+                call.get("step"),
+                write_call.get("step"),
+            )
         ]
+
         if not verification_calls:
             phases["crm_verification"] = "FAIL"
             findings.append(
                 finding(
                     "critical",
                     "crm_post_write_read_missing",
-                    f"No {verify_tool} read was executed after the successful write.",
+                    (
+                        f"No {verify_tool} read was executed after the "
+                        f"successful {expected_tool} write."
+                    ),
                     write_call.get("step"),
                     write_call.get("evidence_refs", []),
                 )
@@ -617,41 +763,124 @@ class Evaluator:
             return findings, phases, evidence
 
         verification_call = verification_calls[-1]
-        verification_items = self._walk_records(verification_call.get("decoded_output"), "appointment")
+        evidence["verification_mcp_call"] = (
+            self._minimal_call_evidence(verification_call)
+        )
+
+        verification_items = self._walk_records(
+            verification_call.get("decoded_output"),
+            "appointment",
+        )
+
         matched = next(
-            (item for item in verification_items if self._appointment_id(item) == appointment_id),
+            (
+                item
+                for item in verification_items
+                if self._appointment_id(item) == appointment_id
+            ),
             None,
         )
-        evidence["verification_mcp_call"] = self._minimal_call_evidence(verification_call)
+
+        if expected_tool == "appointment_cancel":
+            # Depending on CRM/read semantics, a cancelled appointment may
+            # disappear from active events or remain with cancelled status.
+            if matched is None:
+                evidence["verification_match"] = True
+                phases["crm_verification"] = "PASS"
+                return findings, phases, evidence
+
+            cancelled_status = self._clean(
+                matched.get("status")
+                or matched.get("state")
+            )
+            if cancelled_status in {"cancelled", "canceled"}:
+                evidence["verification_match"] = True
+                phases["crm_verification"] = "PASS"
+                return findings, phases, evidence
+
+            phases["crm_verification"] = "FAIL"
+            findings.append(
+                finding(
+                    "critical",
+                    "crm_post_write_verification_failed",
+                    (
+                        "Cancelled appointment is still returned as an "
+                        "active/non-cancelled event."
+                    ),
+                    verification_call.get("step"),
+                    verification_call.get("evidence_refs", []),
+                    {
+                        "appointment_id": appointment_id,
+                        "observed_status": cancelled_status,
+                    },
+                )
+            )
+            return findings, phases, evidence
+
         evidence["verification_match"] = matched is not None
+
         if matched is None:
             phases["crm_verification"] = "FAIL"
             findings.append(
                 finding(
                     "critical",
                     "crm_post_write_verification_failed",
-                    f"CRM verification did not return the canonical appointment id {appointment_id}.",
+                    (
+                        f"CRM verification did not return appointment "
+                        f"{appointment_id} after {expected_tool}."
+                    ),
                     verification_call.get("step"),
                     verification_call.get("evidence_refs", []),
                     {
                         "appointment_id": appointment_id,
-                        "observed_appointment_ids": [self._appointment_id(item) for item in verification_items],
+                        "observed_appointment_ids": [
+                            self._appointment_id(item)
+                            for item in verification_items
+                        ],
                     },
                 )
             )
-        else:
-            phases["crm_verification"] = "PASS"
+            return findings, phases, evidence
 
-        if scenario.get("cleanup_required"):
-            phases["cleanup"] = "FAIL"
-            findings.append(
-                finding(
-                    "error",
-                    "live_cleanup_not_implemented",
-                    "This V1 runner does not implement a separately gated cleanup write.",
-                    None,
-                )
+        # For confirm/reschedule, when the write arguments expose an exact
+        # new start, verify it as well.
+        expected_start = None
+        if isinstance(arguments, dict):
+            expected_start = self._clean(
+                arguments.get("start")
+                or arguments.get("start_at")
+                or arguments.get("startAt")
             )
+
+        if expected_start is not None:
+            observed_start = self._clean(
+                matched.get("start")
+                or matched.get("start_at")
+                or matched.get("startAt")
+            )
+
+            if not self._same_instant(observed_start, expected_start):
+                phases["crm_verification"] = "FAIL"
+                findings.append(
+                    finding(
+                        "critical",
+                        "crm_post_write_verification_failed",
+                        (
+                            "CRM returned the expected appointment id but "
+                            "with a different start time."
+                        ),
+                        verification_call.get("step"),
+                        verification_call.get("evidence_refs", []),
+                        {
+                            "appointment_id": appointment_id,
+                            "expected_start": expected_start,
+                            "observed_start": observed_start,
+                        },
+                    )
+                )
+                return findings, phases, evidence
+
+        phases["crm_verification"] = "PASS"
         return findings, phases, evidence
 
     def _handoff_live_evaluation(
@@ -1285,35 +1514,164 @@ class Evaluator:
         return findings
 
     def _service_contract_findings(
-        self, scenario: dict[str, Any], turns: list[dict[str, Any]]
+        self,
+        scenario: dict[str, Any],
+        turns: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         if not turns:
             return []
+
         findings: list[dict[str, Any]] = []
         provenance: dict[str, str] = {}
         previous_selection: list[str] = []
-        allowed_removed = set(self._string_list(scenario.get("allowed_removed_service_ids")))
-        expected_ids = self._string_list(scenario.get("expected_service_ids"))
-        required_ids = self._string_list(scenario.get("required_service_ids"))
-        forbidden_ids = self._string_list(scenario.get("forbidden_final_service_ids"))
         expected_count = scenario.get("expected_service_count")
         last_agenda_ids: list[str] = []
 
+        # Fixture UUIDs are not stable. Resolve scenario service-name
+        # contracts from the real services_search evidence of this run.
+        resolved_by_name: dict[str, set[str]] = {}
+
+        def collect_named_services(value: Any) -> None:
+            if isinstance(value, list):
+                for item in value:
+                    collect_named_services(item)
+                return
+
+            if not isinstance(value, dict):
+                return
+
+            service_id = self._clean(
+                value.get("id")
+                or value.get("service_id")
+                or value.get("serviceId")
+            )
+            service_name = self._clean(value.get("name"))
+
+            if service_id is not None and service_name is not None:
+                resolved_by_name.setdefault(
+                    service_name.casefold(),
+                    set(),
+                ).add(service_id)
+
+            for child in value.values():
+                if isinstance(child, (dict, list)):
+                    collect_named_services(child)
+
+        for turn in turns:
+            for call in turn.get("executed_mcp_calls", []):
+                if call.get("tool_name") == "services_search":
+                    collect_named_services(call.get("decoded_output"))
+
+        def resolve_names(field: str) -> tuple[list[str], list[str], list[str]]:
+            names = self._string_list(scenario.get(field))
+            ids: list[str] = []
+            unresolved: list[str] = []
+
+            for name in names:
+                matches = sorted(resolved_by_name.get(name.casefold(), set()))
+                if len(matches) == 1:
+                    ids.append(matches[0])
+                else:
+                    unresolved.append(name)
+
+            return names, ids, unresolved
+
+        expected_names, expected_name_ids, unresolved_expected = resolve_names(
+            "expected_service_names"
+        )
+        required_names, required_name_ids, unresolved_required = resolve_names(
+            "required_service_names"
+        )
+        forbidden_names, forbidden_name_ids, unresolved_forbidden = resolve_names(
+            "forbidden_final_service_names"
+        )
+        allowed_removed_names, allowed_removed_name_ids, _ = resolve_names(
+            "allowed_removed_service_names"
+        )
+
+        expected_ids = list(
+            dict.fromkeys(
+                self._string_list(scenario.get("expected_service_ids"))
+                + expected_name_ids
+            )
+        )
+        required_ids = list(
+            dict.fromkeys(
+                self._string_list(scenario.get("required_service_ids"))
+                + required_name_ids
+            )
+        )
+        forbidden_ids = list(
+            dict.fromkeys(
+                self._string_list(
+                    scenario.get("forbidden_final_service_ids")
+                )
+                + forbidden_name_ids
+            )
+        )
+        allowed_removed = set(
+            self._string_list(scenario.get("allowed_removed_service_ids"))
+            + allowed_removed_name_ids
+        )
+
+        unresolved_contract = list(
+            dict.fromkeys(
+                unresolved_expected
+                + unresolved_required
+                + unresolved_forbidden
+            )
+        )
+        if unresolved_contract:
+            findings.append(
+                finding(
+                    "error",
+                    "service_ids_incompatible",
+                    (
+                        "Scenario service-name contract could not be resolved "
+                        "from real services_search evidence."
+                    ),
+                    turns[-1].get("step"),
+                    turns[-1].get("artifact_refs", []),
+                    {
+                        "unresolved_service_names": unresolved_contract,
+                        "resolved_service_names": {
+                            name: sorted(ids)
+                            for name, ids in resolved_by_name.items()
+                        },
+                    },
+                )
+            )
+
         for turn in turns:
             step = turn.get("step")
+
             for call in turn.get("executed_mcp_calls", []):
                 tool_name = call.get("tool_name")
-                if tool_name in {"services_search", "contact_context", "appointment_events"}:
-                    for service_id in self._service_ids_from_output(call.get("decoded_output")):
-                        provenance.setdefault(service_id, f"turn:{step}:mcp:{tool_name}")
+
+                if tool_name in {
+                    "services_search",
+                    "contact_context",
+                    "appointment_events",
+                }:
+                    for service_id in self._service_ids_from_output(
+                        call.get("decoded_output")
+                    ):
+                        provenance.setdefault(
+                            service_id,
+                            f"turn:{step}:mcp:{tool_name}",
+                        )
+
                 if tool_name not in AGENDA_TOOLS:
                     continue
+
                 arguments = call.get("arguments")
                 if not isinstance(arguments, dict):
                     continue
+
                 call_ids = self._argument_service_ids(arguments)
                 if call_ids:
                     last_agenda_ids = call_ids
+
                 findings.extend(
                     self._service_id_list_findings(
                         call_ids,
@@ -1323,8 +1681,9 @@ class Evaluator:
                         f"MCP arguments for {tool_name}",
                     )
                 )
+
                 if len(call_ids) > 1:
-                    forbidden = [
+                    forbidden_timing = [
                         key
                         for key in (
                             "duration_minutes",
@@ -1336,19 +1695,29 @@ class Evaluator:
                         )
                         if arguments.get(key) is not None
                     ]
-                    if forbidden:
+
+                    if forbidden_timing:
                         findings.append(
                             finding(
                                 "error",
                                 "multiservice_derived_timing",
-                                f"Multi-service {tool_name} carries timing fields owned by downstream: {', '.join(forbidden)}.",
+                                (
+                                    f"Multi-service {tool_name} carries "
+                                    "timing fields owned by downstream: "
+                                    + ", ".join(forbidden_timing)
+                                    + "."
+                                ),
                                 step,
                                 call.get("evidence_refs", []),
-                                {"service_ids": call_ids, "timing_fields": forbidden},
+                                {
+                                    "service_ids": call_ids,
+                                    "timing_fields": forbidden_timing,
+                                },
                             )
                         )
 
             selection = self._selected_service_ids(turn)
+
             if selection:
                 findings.extend(
                     self._service_id_list_findings(
@@ -1359,23 +1728,38 @@ class Evaluator:
                         "structured_data.services",
                     )
                 )
-                removed = set(previous_selection).difference(selection).difference(allowed_removed)
+
+                removed = (
+                    set(previous_selection)
+                    .difference(selection)
+                    .difference(allowed_removed)
+                )
+
                 if removed:
                     findings.append(
                         finding(
                             "error",
                             "service_selection_lost",
-                            f"Previously selected service IDs disappeared without a declared replacement: {sorted(removed)}.",
+                            (
+                                "Previously selected service IDs disappeared "
+                                "without a declared replacement: "
+                                f"{sorted(removed)}."
+                            ),
                             step,
                             turn.get("artifact_refs", []),
                             {
                                 "previous_service_ids": previous_selection,
                                 "observed_service_ids": selection,
                                 "lost_service_ids": sorted(removed),
+                                "allowed_removed_service_names": (
+                                    allowed_removed_names
+                                ),
                             },
                         )
                     )
+
                 previous_selection = selection
+
             elif (
                 previous_selection
                 and turn.get("customer_decision") != "verification_message"
@@ -1385,66 +1769,101 @@ class Evaluator:
                     finding(
                         "error",
                         "service_selection_lost",
-                        "The appointment turn no longer persists the previously resolved structured service selection.",
+                        (
+                            "The appointment turn no longer persists the "
+                            "previously resolved structured service selection."
+                        ),
                         step,
                         turn.get("artifact_refs", []),
-                        {"previous_service_ids": previous_selection, "observed_service_ids": []},
+                        {
+                            "previous_service_ids": previous_selection,
+                            "observed_service_ids": [],
+                        },
                     )
                 )
 
         observed = previous_selection or last_agenda_ids
+
         if expected_count is not None and len(observed) != int(expected_count):
             findings.append(
                 finding(
                     "error",
                     "service_ids_incompatible",
-                    f"Expected {expected_count} final service IDs, observed {len(observed)}.",
-                    turns[-1].get("step") if turns else None,
-                    turns[-1].get("artifact_refs", []) if turns else [],
-                    {"expected_service_count": expected_count, "observed_service_ids": observed},
+                    (
+                        f"Expected {expected_count} final service IDs, "
+                        f"observed {len(observed)}."
+                    ),
+                    turns[-1].get("step"),
+                    turns[-1].get("artifact_refs", []),
+                    {
+                        "expected_service_count": expected_count,
+                        "observed_service_ids": observed,
+                    },
                 )
             )
+
         if expected_ids and set(observed) != set(expected_ids):
             findings.append(
                 finding(
                     "error",
                     "service_ids_incompatible",
-                    "The final service ID set differs from the scenario contract.",
-                    turns[-1].get("step") if turns else None,
-                    turns[-1].get("artifact_refs", []) if turns else [],
-                    {"expected_service_ids": expected_ids, "observed_service_ids": observed},
+                    "The final service set differs from the scenario contract.",
+                    turns[-1].get("step"),
+                    turns[-1].get("artifact_refs", []),
+                    {
+                        "expected_service_names": expected_names,
+                        "expected_service_ids": expected_ids,
+                        "observed_service_ids": observed,
+                    },
                 )
             )
+
         missing_required = sorted(set(required_ids).difference(observed))
         forbidden_observed = sorted(set(forbidden_ids).intersection(observed))
+
         if missing_required or forbidden_observed:
             findings.append(
                 finding(
                     "error",
                     "service_ids_incompatible",
-                    "The final service selection violates required/replaced service constraints.",
-                    turns[-1].get("step") if turns else None,
-                    turns[-1].get("artifact_refs", []) if turns else [],
+                    (
+                        "The final service selection violates "
+                        "required/replaced service constraints."
+                    ),
+                    turns[-1].get("step"),
+                    turns[-1].get("artifact_refs", []),
                     {
+                        "required_service_names": required_names,
                         "required_service_ids": required_ids,
+                        "forbidden_service_names": forbidden_names,
                         "forbidden_service_ids": forbidden_ids,
                         "observed_service_ids": observed,
                     },
                 )
             )
-        if expected_ids and last_agenda_ids and set(last_agenda_ids) != set(expected_ids):
+
+        if (
+            expected_ids
+            and last_agenda_ids
+            and set(last_agenda_ids) != set(expected_ids)
+        ):
             findings.append(
                 finding(
                     "error",
                     "service_ids_incompatible",
-                    "The latest agenda call did not use the complete expected service set.",
-                    turns[-1].get("step") if turns else None,
+                    (
+                        "The latest agenda call did not use the complete "
+                        "expected service set."
+                    ),
+                    turns[-1].get("step"),
                     evidence={
+                        "expected_service_names": expected_names,
                         "expected_service_ids": expected_ids,
                         "agenda_service_ids": last_agenda_ids,
                     },
                 )
             )
+
         return findings
 
     def _service_id_list_findings(
@@ -1741,6 +2160,34 @@ class Evaluator:
                 if call.get("tool_name") in READ_APPOINTMENT_TOOLS and self._walk_records(call.get("decoded_output"), "appointment"):
                     return True
         return False
+
+    def _same_instant(
+        self,
+        left: str | None,
+        right: str | None,
+    ) -> bool:
+        if left is None or right is None:
+            return False
+        if left == right:
+            return True
+
+        try:
+            left_dt = datetime.fromisoformat(
+                left.replace("Z", "+00:00")
+            )
+            right_dt = datetime.fromisoformat(
+                right.replace("Z", "+00:00")
+            )
+        except ValueError:
+            return False
+
+        if left_dt.tzinfo is None or right_dt.tzinfo is None:
+            return False
+
+        return (
+            left_dt.astimezone(timezone.utc)
+            == right_dt.astimezone(timezone.utc)
+        )
 
     def _write_outcome(self, call: dict[str, Any]) -> str:
         if self._clean(call.get("status")) not in {"completed", "success", "succeeded"}:

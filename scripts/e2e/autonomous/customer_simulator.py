@@ -116,14 +116,37 @@ class CustomerSimulator:
 
         offered_slots = self._reliable_slots(turns)
         if requires_selected_slot and selected_slot is None and offered_slots:
-            slot, source = self._select_slot(offered_slots, scenario.get("preferred_slot_strategy", "first"))
+            slot, source = self._select_slot(
+                offered_slots,
+                scenario.get("preferred_slot_strategy", "first"),
+            )
             message = self._slot_selection_message(slot)
+
             if message is None:
                 return CustomerDecision(
                     kind="warn",
-                    reason="A reliable slot exists, but it has no structured identifier or exact time usable by the customer simulator.",
+                    reason=(
+                        "A reliable slot exists, but it has no structured "
+                        "identifier or exact time usable by the customer "
+                        "simulator."
+                    ),
                     evidence_refs=(source,),
                 )
+
+            already_sent = any(
+                turn.get("customer_decision_reason")
+                == "select_reliable_slot"
+                and turn.get("user_message") == message
+                for turn in turns
+            )
+
+            if already_sent:
+                return CustomerDecision(
+                    kind="warn",
+                    reason="slot_selection_not_accepted",
+                    evidence_refs=(source,),
+                )
+
             return CustomerDecision(
                 kind="message",
                 reason="select_reliable_slot",
@@ -384,23 +407,45 @@ class CustomerSimulator:
             )
 
         verify_tool = self._clean(scenario.get("verify_with_tool"))
+
+        if verify_tool is None:
+            return CustomerDecision(
+                kind="completed",
+                reason=f"structured_tool={expected_write}",
+                evidence_refs=tuple(latest_write.get("evidence_refs", [])),
+            )
+
         verification_seen = any(
-            call.get("tool_name") == verify_tool and self._step_after(call.get("step"), write_step)
+            call.get("tool_name") == verify_tool
+            and self._step_after(call.get("step"), write_step)
             for turn in turns
             for call in turn.get("executed_mcp_calls", [])
         )
         if verification_seen:
             return CustomerDecision(
                 kind="completed",
-                reason="live_flow_complete",
+                reason=f"structured_tool={verify_tool}",
                 evidence_refs=tuple(turns[-1].get("artifact_refs", [])),
             )
+
         if not allow_writes:
-            return CustomerDecision(kind="completed", reason="live_write_gate_lost")
+            return CustomerDecision(
+                kind="completed",
+                reason="live_write_gate_lost",
+            )
+
+        verification_message = scenario.get("verification_message")
+        if not verification_message:
+            return CustomerDecision(
+                kind="warn",
+                reason="live_verification_message_missing",
+                evidence_refs=tuple(latest_write.get("evidence_refs", [])),
+            )
+
         return CustomerDecision(
             kind="verification_message",
             reason="verify_live_write",
-            message=str(scenario["verification_message"]),
+            message=str(verification_message),
             data_fields=("crm_post_write_verification",),
             evidence_refs=tuple(latest_write.get("evidence_refs", [])),
         )
@@ -414,7 +459,19 @@ class CustomerSimulator:
         if not isinstance(output, dict) or output.get("ok") is not True:
             return False
         if tool_name == "appointment_confirm":
-            return output.get("confirmed") is True or output.get("appointment_confirmed") is True
+            return (
+                output.get("confirmed") is True
+                or output.get("appointment_confirmed") is True
+            )
+        if tool_name == "appointment_reschedule":
+            return output.get("rescheduled") is True
+        if tool_name == "appointment_cancel":
+            return output.get("cancelled") is True
+        if tool_name == "appointment_booking_invitation":
+            return (
+                output.get("created") is True
+                and self._clean(output.get("booking_url")) is not None
+            )
         return False
 
     def _step_after(self, candidate: Any, reference: Any) -> bool:
@@ -510,21 +567,48 @@ class CustomerSimulator:
                     return [service_id]
         return []
 
-    def _reliable_slots(self, turns: list[dict[str, Any]]) -> list[tuple[dict[str, Any], str]]:
-        slots: list[tuple[dict[str, Any], str]] = []
-        for turn in turns:
+    def _reliable_slots(
+        self,
+        turns: list[dict[str, Any]],
+    ) -> list[tuple[dict[str, Any], str]]:
+        """
+        Return the latest reliable structured slot offer.
+
+        Raw appointment_availability traces are evidence for evaluation,
+        but are not customer-selectable conversational state. A slot can
+        only be selected when the agent persisted it in offered_slots.
+        """
+
+        for turn in reversed(turns):
             step = turn.get("step")
-            appointment = turn.get("structured_data", {}).get("appointment", {})
-            if isinstance(appointment, dict):
-                for slot in appointment.get("offered_slots", []) or []:
-                    if isinstance(slot, dict):
-                        slots.append((slot, f"turn:{step}:structured_data.appointment.offered_slots"))
-            for call in turn.get("executed_mcp_calls", []):
-                if call.get("tool_name") != "appointment_availability":
-                    continue
-                for slot in self._walk_records(call.get("decoded_output"), record_kind="slot"):
-                    slots.append((slot, f"turn:{step}:mcp:appointment_availability"))
-        return self._deduplicate_records(slots, "slot")
+            appointment = (
+                turn.get("structured_data", {}).get("appointment", {})
+            )
+
+            if not isinstance(appointment, dict):
+                continue
+
+            offered = appointment.get("offered_slots")
+
+            if not isinstance(offered, list) or not offered:
+                continue
+
+            slots = [
+                (
+                    slot,
+                    (
+                        f"turn:{step}:structured_data."
+                        "appointment.offered_slots"
+                    ),
+                )
+                for slot in offered
+                if isinstance(slot, dict)
+            ]
+
+            if slots:
+                return slots
+
+        return []
 
     def _reliable_appointments(self, turns: list[dict[str, Any]]) -> list[tuple[dict[str, Any], str]]:
         appointments: list[tuple[dict[str, Any], str]] = []
@@ -560,16 +644,57 @@ class CustomerSimulator:
             return slots[-1]
         return slots[0]
 
-    def _slot_selection_message(self, slot: dict[str, Any]) -> str | None:
-        slot_id = self._clean(slot.get("id") or slot.get("slot_id") or slot.get("slotId"))
-        start = self._clean(slot.get("start") or slot.get("start_at") or slot.get("startAt"))
-        end = self._clean(slot.get("end") or slot.get("end_at") or slot.get("endAt"))
+    def _slot_selection_message(
+        self,
+        slot: dict[str, Any],
+    ) -> str | None:
+        slot_id = self._clean(
+            slot.get("id")
+            or slot.get("slot_id")
+            or slot.get("slotId")
+        )
+        start = self._clean(
+            slot.get("start")
+            or slot.get("start_at")
+            or slot.get("startAt")
+        )
+        end = self._clean(
+            slot.get("end")
+            or slot.get("end_at")
+            or slot.get("endAt")
+        )
+
+        owner = slot.get("owner")
+        owner_name = (
+            self._clean(owner.get("name"))
+            if isinstance(owner, dict)
+            else None
+        )
+
+        owner_suffix = (
+            f" con {owner_name}"
+            if owner_name is not None
+            else ""
+        )
+
         if start is not None and end is not None:
-            return f"Elijo el horario con inicio exacto {start} y fin exacto {end}."
+            return (
+                f"Elijo el horario con inicio exacto {start} "
+                f"y fin exacto {end}{owner_suffix}."
+            )
+
         if start is not None:
-            return f"Elijo el horario con inicio exacto {start}."
+            return (
+                f"Elijo el horario con inicio exacto {start}"
+                f"{owner_suffix}."
+            )
+
         if slot_id is not None:
-            return f"Elijo el horario con identificador exacto {slot_id}."
+            return (
+                f"Elijo el horario con identificador exacto {slot_id}"
+                f"{owner_suffix}."
+            )
+
         return None
 
     def _appointment_selection_message(self, appointment: dict[str, Any]) -> str | None:

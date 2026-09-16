@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "name": "cancel_live",
+  "goal": "Cancelar una cita existente de forma real y comprobar posteriormente que ya no figura como cita activa.",
+  "defaults": {
+    "tenant_id": "019e4a9a-c85f-72d4-8748-b756073c324c",
+    "channel_type": "whatsapp",
+    "external_channel_id": "test-whatsapp-e2e",
+    "entrypoint_ref": "mary-main",
+    "contact_phone": "+34678180164",
+    "contact_name": "Federico Martín Peña",
+    "conversation_prefix": "autonomous-cancel"
+  },
+  "initial_message": "Quiero cancelar mi cita existente.",
+  "initial_data_fields": [],
+  "max_turns": 7,
+  "customer_data": {
+    "contact_name": "Federico Martín Peña",
+    "contact_phone": "+34678180164"
+  },
+  "preferred_slot_strategy": "first",
+  "expected_write_tool": "appointment_cancel",
+  "ready_action": "prepare_cancel",
+  "requires_selected_slot": false,
+  "requires_existing_appointment": true,
+  "recommended_read_tools": [
+    "contact_context",
+    "appointment_events"
+  ],
+  "preconditions": [
+    "Debe existir una cita verificable mediante contact_context o appointment_events."
+  ],
+  "documented_invariants": [
+    "No ejecutar appointment_cancel antes de una confirmación explícita.",
+    "Ejecutar appointment_cancel exactamente una vez.",
+    "El appointment_id debe proceder de evidencia estructurada fiable.",
+    "Éxito exige ok=true y cancelled=true.",
+    "Después del write, verificar mediante appointment_events que la cita desapareció de eventos activos o figura cancelada."
+  ],
+  "mode": "live",
+  "scenario_type": "appointment",
+  "confirm_action": "confirm_cancel",
+  "confirmation_message": "Sí, confirma la cancelación de esta cita.",
+  "verification_message": "Comprueba en CRM que la cita que acabas de cancelar ya no figura como una cita activa.",
+  "verify_with_tool": "appointment_events",
+  "cleanup_with_tool": null,
+  "cleanup_required": false
+}

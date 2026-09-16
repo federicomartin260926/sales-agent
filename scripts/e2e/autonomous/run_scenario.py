@@ -83,14 +83,20 @@ def load_scenario(name_or_path: str) -> tuple[dict[str, Any], Path, str]:
         raise ValueError(f"Unsupported scenario mode: {mode}")
     if mode == "live":
         if scenario_type == "appointment":
-            live_required = {
-                "confirm_action",
-                "confirmation_message",
-                "verification_message",
-                "verify_with_tool",
-                "cleanup_with_tool",
-                "cleanup_required",
-            }
+            if scenario.get("write_occurs_on_ready_turn"):
+                live_required = {
+                    "expected_write_tool",
+                    "requires_write_opt_in_before_start",
+                }
+            else:
+                live_required = {
+                    "confirm_action",
+                    "confirmation_message",
+                    "verification_message",
+                    "verify_with_tool",
+                    "cleanup_with_tool",
+                    "cleanup_required",
+                }
         elif scenario_type == "contact_submit":
             live_required = {
                 "expected_write_tool",

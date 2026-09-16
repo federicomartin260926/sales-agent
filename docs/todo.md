@@ -23,7 +23,6 @@ Ya está cerrado y validado:
 - [x] Eliminada la integración directa `SA -> CRM` para `contact-context`; el contexto externo queda delegado a herramientas/MCP/n8n.
 - [x] Contrato MCP/n8n de `contact_context` ampliado con `business_context`, `timezone`, `timezone_source`, `branch`, `branches` y `needs_branch_selection`.
 - [x] `appointment_confirm` endurecido para exigir payload completo antes de confirmar citas.
-- [x] Flujo de agenda multiservicio validado E2E: selección singular/plural, disponibilidad conjunta, selección, confirmación y una única cita con todos los servicios.
 - [x] `appointment_booking_invitation` multiservicio validado con una única operación, timezone CRM y sin duración agregada calculada por SA.
 - [x] Guard de integridad de invitaciones: SA solo afirma éxito con evidencia estructurada `ok=true`, `created=true` y `booking_url` no vacío.
 - [x] Verificación explícita de citas en CRM mediante `appointment_events` y bootstrap de read tool con `required_read_tool`.
@@ -252,7 +251,6 @@ Pendiente:
 - [ ] Evitar que SA siga contestando si la conversación quedó en estado humano pendiente.
 - [ ] Crear aviso/tarea en CRM cuando aplique.
 - [ ] Registrar motivo de handoff en conversación.
-- [x] Añadir tests e2e con conversación persistente mediante el runner autónomo (`docs/autonomous-e2e.md`).
 
 ## 9. CRM contact-context y agenda/citas
 

@@ -12,7 +12,12 @@
     "conversation_prefix": "autonomous-booking-multi"
   },
   "initial_message": "Quiero reservar láser axilas y láser brazos el viernes 18 de septiembre de 2026 por la mañana con María Gutiérrez.",
-  "initial_data_fields": ["service_names", "preferred_day", "time_of_day", "owner_name"],
+  "initial_data_fields": [
+    "service_names",
+    "preferred_day",
+    "time_of_day",
+    "owner_name"
+  ],
   "max_turns": 8,
   "customer_data": {
     "preferred_day": "el viernes 18 de septiembre de 2026",
@@ -25,17 +30,23 @@
   "requires_selected_slot": true,
   "requires_existing_appointment": false,
   "expected_service_count": 2,
-  "expected_service_ids": [
-    "019eb05e-5f68-74a7-8533-a8e6990833e6",
-    "019eb05e-5f71-742d-95cf-9caf5628cc06"
-  ],
   "expected_timezone_source": "contact_context",
-  "recommended_read_tools": ["contact_context", "services_search", "appointment_availability"],
-  "preconditions": ["Ambos servicios y disponibilidad conjunta deben existir en el tenant E2E."],
+  "recommended_read_tools": [
+    "contact_context",
+    "services_search",
+    "appointment_availability"
+  ],
+  "preconditions": [
+    "Ambos servicios y disponibilidad conjunta deben existir en el tenant E2E."
+  ],
   "documented_invariants": [
     "Persistir ambos servicios en selected_services.",
     "Usar ambos service_ids en una única llamada de disponibilidad.",
     "No transportar duración agregada ni buffers.",
     "Detenerse antes de appointment_confirm."
+  ],
+  "expected_service_names": [
+    "Láser axilas",
+    "Láser brazos"
   ]
 }

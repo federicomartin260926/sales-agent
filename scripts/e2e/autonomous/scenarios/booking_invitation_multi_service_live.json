@@ -1,7 +1,7 @@
 {
   "version": 2,
-  "name": "booking_invitation_multi_service",
-  "goal": "Validar de forma segura el contrato de invitación multiservicio sin ejecutar el write.",
+  "name": "booking_invitation_multi_service_live",
+  "goal": "Crear una invitación de reserva multiservicio real y validar el booking_url devuelto por MCP/CRM.",
   "defaults": {
     "tenant_id": "019e4a9a-c85f-72d4-8748-b756073c324c",
     "channel_type": "whatsapp",
@@ -16,7 +16,7 @@
     "service_names",
     "booking_invitation_request"
   ],
-  "max_turns": 1,
+  "max_turns": 3,
   "customer_data": {},
   "preferred_slot_strategy": "first",
   "expected_write_tool": "appointment_booking_invitation",
@@ -26,19 +26,28 @@
   "expected_service_count": 2,
   "requires_booking_url": true,
   "expected_timezone_source": "contact_context",
-  "skip_live_reason": "dry_run_write_precondition",
   "recommended_read_tools": [
     "contact_context",
     "services_search"
   ],
   "preconditions": [
-    "Hace falta un transporte controlado que no ejecute el write downstream para probar el output positivo."
+    "Láser axilas y láser brazos deben existir en el tenant E2E.",
+    "appointment_booking_invitation debe estar configurada en MCP/n8n."
   ],
   "documented_invariants": [
-    "No enviar el turno live que autorizaría appointment_booking_invitation.",
-    "Éxito exige ok=true, created=true y booking_url downstream no vacío.",
-    "Comparar booking_url literalmente y exigir provenance MCP."
+    "Sin SA_E2E_ALLOW_WRITES=1 no enviar siquiera el primer turno.",
+    "Resolver ambos servicios mediante evidencia MCP fiable.",
+    "Ejecutar appointment_booking_invitation exactamente una vez.",
+    "Enviar ambos service_ids en una única invitación.",
+    "Éxito exige ok=true, created=true y booking_url no vacío.",
+    "No ejecutar ninguna otra write MCP."
   ],
+  "mode": "live",
+  "scenario_type": "appointment",
+  "requires_write_opt_in_before_start": true,
+  "write_occurs_on_ready_turn": true,
+  "verify_with_tool": null,
+  "verification_message": null,
   "expected_service_names": [
     "Láser axilas",
     "Láser brazos"

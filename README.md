@@ -25,6 +25,7 @@ El proyecto está preparado para integrarse más adelante con:
 - [Handoff humano](docs/handoff.md)
 - [Ensamblado de contexto LLM](docs/llm-context-assembly.md)
 - [MCP - n8n contact context](docs/mcp-n8n-contact-context.md)
+- [E2E autónomos](docs/autonomous-e2e.md)
 
 ## Arquitectura
 

@@ -12,7 +12,11 @@
     "conversation_prefix": "autonomous-booking-multi-empty"
   },
   "initial_message": "Quiero reservar láser axilas y láser brazos el domingo 6 de enero de 2030 por la mañana.",
-  "initial_data_fields": ["service_names", "preferred_day", "time_of_day"],
+  "initial_data_fields": [
+    "service_names",
+    "preferred_day",
+    "time_of_day"
+  ],
   "max_turns": 6,
   "customer_data": {},
   "preferred_slot_strategy": "first",
@@ -21,16 +25,22 @@
   "requires_selected_slot": false,
   "requires_existing_appointment": false,
   "expected_service_count": 2,
-  "expected_service_ids": [
-    "019eb05e-5f68-74a7-8533-a8e6990833e6",
-    "019eb05e-5f71-742d-95cf-9caf5628cc06"
-  ],
   "expects_no_availability": true,
-  "recommended_read_tools": ["contact_context", "services_search", "appointment_availability"],
-  "preconditions": ["La fecha elegida no debe tener slots conjuntos."],
+  "recommended_read_tools": [
+    "contact_context",
+    "services_search",
+    "appointment_availability"
+  ],
+  "preconditions": [
+    "La fecha elegida no debe tener slots conjuntos."
+  ],
   "documented_invariants": [
     "No inventar selected_slot ni ejecutar writes.",
     "No hacer handoff automático.",
     "Dejar el flujo recuperable para otra fecha o franja."
+  ],
+  "expected_service_names": [
+    "Láser axilas",
+    "Láser brazos"
   ]
 }

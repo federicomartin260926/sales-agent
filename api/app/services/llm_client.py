@@ -26,6 +26,12 @@ APPOINTMENT_TOOL_NAMES = {
     "appointment_booking_invitation",
 }
 
+# appointment_cancel intentionally has no timezone argument in the MCP
+# contract. Timezone normalization only applies to tools that expose one.
+APPOINTMENT_TIMEZONE_TOOL_NAMES = APPOINTMENT_TOOL_NAMES - {
+    "appointment_cancel",
+}
+
 
 class LLMClient:
     def __init__(self, settings: Settings, runtime_settings_client: RuntimeSettingsClient | None = None, transport: httpx.AsyncBaseTransport | None = None) -> None:
@@ -151,6 +157,7 @@ class LLMClient:
         current_tool_choice = tool_choice
         payload_json: dict[str, Any] | None = None
         response_id: str | None = None
+        all_tool_traces: list[LLMToolTrace] = []
 
         max_rounds = max_tool_rounds if isinstance(max_tool_rounds, int) and max_tool_rounds > 0 else 4
         retry_count = 0
@@ -215,6 +222,11 @@ class LLMClient:
             if payload_json is None:
                 raise ValueError("OpenAI responses payload did not include message content")
 
+            # A single conversational turn may contain several Responses API
+            # rounds: bootstrap reads, write approval and final response.
+            # Keep tool evidence from every round, not only the last payload.
+            all_tool_traces.extend(self._extract_tool_traces(payload_json))
+
             self._refresh_effective_timezone_from_contact_context(payload_json, mcp_config)
 
             approval_requests = self._extract_mcp_approval_requests(payload_json)
@@ -230,7 +242,7 @@ class LLMClient:
                         continue
 
                     approve = True
-                    if tool_name in APPOINTMENT_TOOL_NAMES:
+                    if tool_name in APPOINTMENT_TIMEZONE_TOOL_NAMES:
                         normalized_arguments, normalization_meta = self._normalize_appointment_tool_arguments(
                             tool_name,
                             arguments,
@@ -302,7 +314,7 @@ class LLMClient:
                 )
                 raise ValueError("OpenAI responses payload did not include message content")
 
-            tool_traces = self._extract_tool_traces(payload_json)
+            tool_traces = list(all_tool_traces)
             self._log_openai_responses_tool_traces(model, tool_traces)
             if single_tool_call and len(tool_traces) > 1:
                 raise RuntimeError("Bounded single tool call violated: multiple tool traces returned")
@@ -630,7 +642,7 @@ class LLMClient:
         normalized_arguments = dict(arguments) if isinstance(arguments, dict) else {}
         original_timezone = self._string_or_none(normalized_arguments.get("timezone"))
         normalized_timezone = original_timezone
-        if tool_name in APPOINTMENT_TOOL_NAMES and effective_timezone is not None and effective_timezone.strip() != "":
+        if tool_name in APPOINTMENT_TIMEZONE_TOOL_NAMES and effective_timezone is not None and effective_timezone.strip() != "":
             normalized_timezone = effective_timezone.strip()
             normalized_arguments["timezone"] = normalized_timezone
 

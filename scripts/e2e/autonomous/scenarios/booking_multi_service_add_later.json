@@ -12,12 +12,18 @@
     "conversation_prefix": "autonomous-booking-multi-add"
   },
   "initial_message": "Quiero reservar láser axilas el viernes 18 de septiembre de 2026 por la mañana.",
-  "initial_data_fields": ["service_name", "preferred_day", "time_of_day"],
+  "initial_data_fields": [
+    "service_name",
+    "preferred_day",
+    "time_of_day"
+  ],
   "customer_messages": [
     {
       "field": "added_service",
       "message": "Y también quiero añadir láser brazos a la misma cita.",
-      "after_tools": ["appointment_availability"],
+      "after_tools": [
+        "appointment_availability"
+      ],
       "minimum_selected_service_count": 1
     }
   ],
@@ -29,15 +35,21 @@
   "requires_selected_slot": true,
   "requires_existing_appointment": false,
   "expected_service_count": 2,
-  "expected_service_ids": [
-    "019eb05e-5f68-74a7-8533-a8e6990833e6",
-    "019eb05e-5f71-742d-95cf-9caf5628cc06"
+  "recommended_read_tools": [
+    "contact_context",
+    "services_search",
+    "appointment_availability"
   ],
-  "recommended_read_tools": ["contact_context", "services_search", "appointment_availability"],
-  "preconditions": ["Debe existir disponibilidad para iniciar el flujo monservicio."],
+  "preconditions": [
+    "Debe existir disponibilidad para iniciar el flujo monservicio."
+  ],
   "documented_invariants": [
     "Conservar láser axilas al añadir láser brazos.",
     "Reconsultar disponibilidad con el conjunto final.",
     "No duplicar service_ids."
+  ],
+  "expected_service_names": [
+    "Láser axilas",
+    "Láser brazos"
   ]
 }

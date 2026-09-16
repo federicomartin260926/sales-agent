@@ -75,8 +75,12 @@ SA_E2E_ALLOW_WRITES=1 python3 scripts/e2e/autonomous/run_suite.py --profile full
 Si falta `SA_E2E_ALLOW_WRITES=1`, la suite termina antes de ejecutar el primer
 escenario.
 
-`full-live` produce efectos externos reales. No debe ejecutarse como una suite
-de regresión rutinaria.
+`full-live` produce efectos externos reales y está pensado exclusivamente
+para local/desarrollo. Los datos generados por las pruebas pueden permanecer en
+CRM: leads, citas, invitaciones y handoffs de test no requieren cleanup
+automático mientras no interfieran con la ejecución. Cuando se necesita volver
+a una base conocida se recargan los fixtures del CRM antes de ejecutar de nuevo
+la suite.
 
 ## Guardrail de writes
 
@@ -145,17 +149,20 @@ Se valida:
 Mientras no exista una lectura CRM específica de handoff, la evidencia live
 termina en MCP/n8n y `crm_verification` queda `SKIPPED`.
 
-## `booking_live`
+## Agenda live
 
-`scripts/e2e/autonomous/scenarios/booking_live.json` es un escenario live
-histórico/controlado de agenda.
+El perfil `full-live` incluye las operaciones reales de agenda actualmente
+soportadas:
 
-No forma parte de `dry` ni de `full-live`.
+- `appointment_booking_invitation`;
+- `appointment_confirm`;
+- `appointment_reschedule`;
+- `appointment_cancel`.
 
-Crea una cita real y actualmente no implementa cleanup automático. No debe
-repetirse como parte de una suite rutinaria. Cualquier futura cobertura live de
-agenda debería diseñarse como un flujo controlado create -> verify -> cleanup,
-con cada write protegida explícitamente.
+Las pruebas pueden dejar citas, invitaciones o registros cancelados en CRM.
+Esto es intencionado en desarrollo y no se considera un fallo. Si esos datos
+pueden volver ambiguas ejecuciones posteriores, se restauran los fixtures del
+CRM antes de lanzar otra suite completa.
 
 ## Evidencia generada
 
@@ -233,6 +240,6 @@ Durante desarrollo normal:
 python3 scripts/e2e/autonomous/run_suite.py --profile dry
 ```
 
-Usar `full-live` solo cuando se quiera verificar deliberadamente las
-integraciones externas con efectos reales y después de revisar los datos del
-tenant y de los escenarios.
+Usar `full-live` cuando se quiera verificar deliberadamente el circuito
+integrado completo con efectos reales en local/desarrollo. Para una ejecución
+final reproducible se recomienda partir de los fixtures CRM vigentes.

@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import sys
+import time
 import traceback
 from collections import Counter
 from pathlib import Path
@@ -32,11 +33,37 @@ DRY_SCENARIOS = (
 LIVE_INTEGRATION_SCENARIOS = (
     "contact_submit_new_contact_live",
     "handoff_explicit_request_live",
+    "booking_invitation_multi_service_live",
+    "booking_live",
+    "reschedule_live",
+    "cancel_live",
+)
+
+FULL_LIVE_SCENARIOS = (
+    "services_exact_search",
+    "services_refinement",
+    "services_no_results",
+    "booking",
+    "booking_single_service_regression",
+    "booking_multi_service",
+    "booking_multi_service_ambiguous",
+    "booking_multi_service_add_later",
+    "booking_multi_service_replace",
+    "booking_multi_service_no_availability",
+    "contact_submit_new_contact_live",
+    "handoff_explicit_request_live",
+    "booking_invitation_multi_service_live",
+    "booking_live",
+    "appointment_existing_verification",
+    "reschedule",
+    "reschedule_live",
+    "cancel",
+    "cancel_live",
 )
 
 PROFILES = {
     "dry": DRY_SCENARIOS,
-    "full-live": DRY_SCENARIOS + LIVE_INTEGRATION_SCENARIOS,
+    "full-live": FULL_LIVE_SCENARIOS,
 }
 
 
@@ -112,6 +139,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--api-url", help="Agent respond URL")
     parser.add_argument("--context-dir", type=Path, help="Host context artifact directory")
     parser.add_argument("--timeout", type=float, default=180.0, help="HTTP timeout per turn")
+    parser.add_argument(
+        "--scenario-delay",
+        type=float,
+        default=5.0,
+        help="Seconds to wait between scenarios (default: 5)",
+    )
     return parser.parse_args()
 
 
@@ -136,7 +169,7 @@ def main() -> int:
         print(f"Global runner failure: {exc.__class__.__name__}: {exc}", file=sys.stderr)
         return 2
     results: list[dict[str, Any]] = []
-    for scenario in scenarios:
+    for scenario_index, scenario in enumerate(scenarios):
         scenario_dir = suite_dir / scenario
         try:
             evaluation, scenario_dir = run_scenario(
@@ -192,6 +225,10 @@ def main() -> int:
             f"ready_to_write={str(result['ready_to_write']).lower()} "
             f"writes={result['writes_executed']}"
         )
+
+        scenario_delay = max(0.0, float(args.scenario_delay))
+        if scenario_delay > 0 and scenario_index < len(scenarios) - 1:
+            time.sleep(scenario_delay)
 
     counts = Counter(item["result"] for item in results)
     report = {

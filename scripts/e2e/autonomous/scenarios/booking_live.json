@@ -43,9 +43,6 @@
   "cleanup_with_tool": "appointment_cancel",
   "cleanup_required": false,
   "expected_service_count": 1,
-  "expected_service_ids": [
-    "019eb05e-5f68-74a7-8533-a8e6990833e6"
-  ],
   "preconditions": [
     "El servicio láser axilas y una agenda futura deben estar disponibles para el tenant E2E.",
     "El contacto pertenece exclusivamente a pruebas E2E.",
@@ -58,5 +55,8 @@
     "Obtener appointment.id del output downstream y verificar el mismo ID mediante appointment_events posterior.",
     "No calcular duración, buffers ni conversiones de timezone.",
     "Mantener cleanup como SKIPPED en esta versión."
+  ],
+  "expected_service_names": [
+    "Láser axilas"
   ]
 }

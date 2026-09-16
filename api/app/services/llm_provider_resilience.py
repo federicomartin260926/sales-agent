@@ -10,6 +10,18 @@ T = TypeVar("T")
 
 TRANSIENT_HTTP_STATUS_CODES = {429, 500, 502, 503, 504}
 
+NON_RETRYABLE_429_ERROR_TYPES = {
+    "insufficient_quota",
+}
+
+NON_RETRYABLE_429_ERROR_CODES = {
+    "credit_balance_exhausted",
+    "organization_usage_limit_exceeded",
+    "organization_spend_limit_exceeded",
+    "project_spend_limit_exceeded",
+    "billing_hard_limit_reached",
+}
+
 
 class LlmProviderUnavailable(RuntimeError):
     def __init__(self, kind: str, status_code: int | None = None, attempts: int = 1, retryable: bool = False) -> None:
@@ -26,6 +38,35 @@ class LlmProviderUnavailable(RuntimeError):
         return "LlmProviderUnavailable(" + ", ".join(parts) + ")"
 
 
+def _http_provider_error(exc: Exception) -> tuple[str | None, str | None]:
+    if not isinstance(exc, httpx.HTTPStatusError):
+        return None, None
+
+    response = exc.response
+    if response is None:
+        return None, None
+
+    try:
+        payload = response.json()
+    except Exception:
+        return None, None
+
+    if not isinstance(payload, dict):
+        return None, None
+
+    error = payload.get("error")
+    if not isinstance(error, dict):
+        return None, None
+
+    error_type = error.get("type")
+    error_code = error.get("code")
+
+    return (
+        error_type if isinstance(error_type, str) else None,
+        error_code if isinstance(error_code, str) else None,
+    )
+
+
 def classify_llm_provider_failure(exc: Exception) -> tuple[str, int | None, bool]:
     if isinstance(exc, LlmProviderUnavailable):
         return exc.kind, exc.status_code, exc.retryable
@@ -38,14 +79,59 @@ def classify_llm_provider_failure(exc: Exception) -> tuple[str, int | None, bool
 
     if isinstance(exc, httpx.HTTPStatusError):
         status_code = exc.response.status_code if exc.response is not None else None
+        error_type, error_code = _http_provider_error(exc)
+
+        if status_code == 429 and (
+            error_type in NON_RETRYABLE_429_ERROR_TYPES
+            or error_code in NON_RETRYABLE_429_ERROR_CODES
+        ):
+            kind = error_code or error_type or "http_429"
+            return kind, status_code, False
+
         retryable = status_code in TRANSIENT_HTTP_STATUS_CODES if status_code is not None else False
-        kind = f"http_{status_code}" if status_code is not None else "http_status_error"
+        kind = error_code or (f"http_{status_code}" if status_code is not None else "http_status_error")
         return kind, status_code, retryable
 
     if isinstance(exc, httpx.HTTPError):
         return "http_error", None, True
 
     return exc.__class__.__name__, None, False
+
+
+def _retry_after_seconds(exc: Exception) -> float | None:
+    if not isinstance(exc, httpx.HTTPStatusError):
+        return None
+
+    response = exc.response
+    if response is None:
+        return None
+
+    raw_value = response.headers.get("retry-after")
+    if raw_value is None:
+        return None
+
+    try:
+        value = float(raw_value.strip())
+    except (TypeError, ValueError):
+        return None
+
+    return max(0.0, value)
+
+
+def _retry_sleep_seconds(
+    exc: Exception,
+    *,
+    attempt: int,
+    base_delay_seconds: float,
+) -> float:
+    base_delay = max(0.0, float(base_delay_seconds))
+    exponential_delay = base_delay * (2 ** max(0, attempt - 1))
+
+    retry_after = _retry_after_seconds(exc)
+    if retry_after is not None:
+        return max(exponential_delay, retry_after)
+
+    return exponential_delay
 
 
 async def run_with_llm_provider_retries(
@@ -65,8 +151,13 @@ async def run_with_llm_provider_retries(
             kind, status_code, retryable = classify_llm_provider_failure(exc)
             if not retryable or attempt >= attempts:
                 raise LlmProviderUnavailable(kind=kind, status_code=status_code, attempts=attempt, retryable=retryable) from exc
-            if delay > 0:
-                await asyncio.sleep(delay)
+            retry_delay = _retry_sleep_seconds(
+                exc,
+                attempt=attempt,
+                base_delay_seconds=delay,
+            )
+            if retry_delay > 0:
+                await asyncio.sleep(retry_delay)
 
     if last_exc is not None:
         kind, status_code, retryable = classify_llm_provider_failure(last_exc)
