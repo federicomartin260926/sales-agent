@@ -223,6 +223,8 @@ Objetivo: usar MCP/n8n como capa de herramientas externas sin convertir SA en CR
 
 Pendiente:
 
+- [ ] Revisar `crm_contact_submit`: puede enviar `source="mary-main"` y CRM lo normaliza a `whatsapp`; alinear la semántica entre `source` y `origin`/`entrypoint_ref` sin alterar el contrato funcional.
+
 - [ ] Mantener verificación de arquitectura:
   - SA no debe reintroducir `crm_client.py`.
   - SA no debe reintroducir `CRM_BASE_URL` ni `CRM_INTEGRATIONS_BEARER_TOKEN`.
@@ -357,6 +359,8 @@ Pendiente:
 Objetivo: evitar regresiones conforme el runtime se vuelve multi-sistema.
 
 Pendiente:
+
+- [ ] Revisar la semántica de `READY_TO_WRITE=true` cuando una write ya fue ejecutada y verificada correctamente; es un ajuste del reporte E2E, no un fallo funcional.
 
 - [ ] Tests e2e de runtime por tenant.
 - [ ] Tests de resolución por `tenant_id`, `entrypoint_ref` y `phone_number_id`.
