@@ -311,19 +311,20 @@ def normalize_turn(
     intent_plan = data.get("intent_plan") or {}
     final_response = continuation_response or primary_response
     structured_data = data.get("structured_data") or final_response.get("structured_data") or {}
-    traces = data.get("mcp_tool_traces")
-    if not isinstance(traces, list):
-        primary_traces = primary_response_artifact.get("tool_traces") or []
-        continuation_traces = continuation_response_artifact.get("tool_traces") or []
-        traces = [*primary_traces, *continuation_traces]
-    response_artifact_refs = [
-        ref
-        for ref in artifact_refs
-        if ref.endswith("02-primary-response.json")
-        or ref.endswith("04-write-continuation-response.json")
+    primary_traces = primary_response_artifact.get("tool_traces") or []
+    continuation_traces = continuation_response_artifact.get("tool_traces") or []
+    phased_traces = [
+        *((trace, "primary") for trace in primary_traces),
+        *((trace, "write_continuation") for trace in continuation_traces),
     ]
+    if not phased_traces:
+        traces = data.get("mcp_tool_traces")
+        phased_traces = [
+            (trace, None)
+            for trace in (traces if isinstance(traces, list) else [])
+        ]
     calls: list[dict[str, Any]] = []
-    for trace in traces:
+    for trace, phase in phased_traces:
         if not isinstance(trace, dict) or trace.get("type") != "mcp_call":
             continue
         decoded, decoded_ok = decode_mcp_output(trace.get("output"))
@@ -337,7 +338,16 @@ def normalize_turn(
                 "arguments": trace.get("arguments"),
                 "decoded_output": decoded,
                 "output_json_decoded": decoded_ok,
-                "evidence_refs": response_artifact_refs,
+                "phase": phase,
+                "evidence_refs": [
+                    ref
+                    for ref in artifact_refs
+                    if (
+                        phase == "primary" and ref.endswith("02-primary-response.json")
+                    ) or (
+                        phase == "write_continuation" and ref.endswith("04-write-continuation-response.json")
+                    ) or phase is None
+                ],
             }
         )
     return {
@@ -355,7 +365,11 @@ def normalize_turn(
         "intent_plan": intent_plan,
         "primary_response": primary_response,
         "primary_tool_plan": primary_tool_plan,
-        "primary_allowed_tools": primary_request_context.get("mcp_allowed_tools") or primary_tool_plan.get("allowed_tools") or [],
+        "primary_declared_tools": primary_request_context.get("mcp_declared_tools") or primary_request_context.get("mcp_allowed_tools") or [],
+        "primary_invocable_tools": primary_request_context.get("primary_invocable_tools") or primary_tool_plan.get("allowed_tools") or [],
+        "primary_tool_choice": primary_request_context.get("tool_choice"),
+        "primary_post_approval_tool_choice": primary_request_context.get("post_approval_tool_choice"),
+        "primary_allowed_tools": primary_request_context.get("primary_invocable_tools") or primary_tool_plan.get("allowed_tools") or [],
         "write_authorization": write_authorization,
         "write_tool_plan": write_tool_plan,
         "continuation_response": continuation_response,

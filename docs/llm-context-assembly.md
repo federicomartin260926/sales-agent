@@ -15,7 +15,7 @@ No es una propuesta futura. Es una referencia operativa del comportamiento vigen
 -> persistencia de inbound
 -> carga de conversación y contexto
 -> construcción de `backend_context` y `conversation_context`
--> primary LLM con todas las read tools autorizadas y cero write tools
+-> primary LLM con catálogo MCP estable y capacidad de invocación limitada a las read tools autorizadas
 -> respuesta final directa si no se autoriza ninguna escritura
 -> o gating mecánico por `intent` + `action`
 -> write continuation mediante `previous_response_id`, con reads y exactamente una write autorizada
@@ -142,7 +142,7 @@ Reglas:
 
 ## 6. Tools de escritura
 
-El primary LLM recibe cero write tools.
+El catálogo MCP declarado al primary puede incluir writes configuradas para mantenerse estable durante una eventual continuación. El `tool_choice` del primary limita la capacidad invocable exclusivamente a reads autorizadas, por lo que ninguna write es ejecutable en esa fase.
 
 Cuando su salida estructurada contiene un par `intent` + `action` autorizado, Sales Agent aplica únicamente gating mecánico y puede iniciar una write continuation con `previous_response_id`.
 
@@ -239,9 +239,10 @@ Reglas:
 - `backend_context`
 - `conversation_context`
 - `tool_plan` de solo lectura
-- `mcp_config` filtrada a read tools autorizadas
+- `mcp_config` con el catálogo MCP configurado completo y estable
+- `tool_choice` limitado a las read tools autorizadas
 
-El primary interpreta el mensaje actual junto con el historial, puede usar reads y devuelve un `LLMFinalResponse`.
+El primary interpreta el mensaje actual junto con el historial, puede usar únicamente reads y devuelve un `LLMFinalResponse`.
 
 Si su `intent` + `action` no autoriza ninguna write, ese resultado termina el turno.
 
@@ -268,6 +269,8 @@ La continuación no puede solicitar otra autorización de escritura. Los prerreq
 - `allowed_tools`
 - `require_approval`
 - `authorization`
+
+El catálogo de `allowed_tools` del servidor MCP se mantiene igual entre primary y write continuation. La capacidad efectiva se acota con `tool_choice`: `allowed_tools` de solo lectura en primary, una MCP write exacta al iniciar la continuación y de nuevo solo reads después de aprobar esa write. Un retry rechazado puede volver a seleccionar únicamente esa misma write autorizada.
 
 El token downstream no va al prompt ni a `data_to_save`.
 
@@ -302,11 +305,11 @@ Todos los turnos LLM normales generan:
 - `01-primary-user-prompt.txt`
 - `02-primary-response.json`
 
-`01-primary-request.json` permite revisar `backend_context`, `conversation_context`, `primary_tool_plan`, tools MCP anunciadas y bootstrap read cuando aplica.
+`01-primary-request.json` permite revisar `backend_context`, `conversation_context`, `primary_tool_plan`, catálogo MCP declarado, `primary_invocable_tools`, `tool_choice`, `post_approval_tool_choice` y bootstrap read cuando aplica.
 
 `02-primary-response.json` contiene el `final_response` del primary y sus `tool_traces`.
 
-El primary debe exponer cero write tools.
+El primary puede declarar writes en el catálogo estable, pero debe mantener cero writes invocables.
 
 ### Write continuation
 

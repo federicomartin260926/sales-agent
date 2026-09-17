@@ -510,10 +510,10 @@ class AgentRuntime:
                 mcp_config.config["effective_timezone_source"] = effective_timezone_source
         prompt = build_final_user_prompt(payload.message.text or "", backend_context, conversation_context, tool_plan)
         response_format = None
-        effective_mcp_config = self._filtered_mcp_config(mcp_config, tool_plan.allowed_tools)
-        tool_choice = None
-        if effective_mcp_config.enabled and effective_mcp_config.allowed_tools:
-            tool_choice = self._bootstrap_tool_choice(tool_plan, effective_mcp_config)
+        effective_mcp_config = mcp_config
+        primary_invocable_tools = self._configured_tools(effective_mcp_config, tool_plan.allowed_tools)
+        read_only_tool_choice = self._allowed_tools_tool_choice(effective_mcp_config, primary_invocable_tools)
+        tool_choice = self._bootstrap_tool_choice(tool_plan, effective_mcp_config) or read_only_tool_choice
         self._write_llm_context_debug_request(
             stage="primary",
             payload=payload,
@@ -523,8 +523,11 @@ class AgentRuntime:
                 "conversation_context": conversation_context,
                 "primary_tool_plan": tool_plan,
                 "mcp_allowed_tools": effective_mcp_config.allowed_tools,
+                "mcp_declared_tools": effective_mcp_config.allowed_tools,
+                "primary_invocable_tools": primary_invocable_tools,
                 "bootstrap_tool": tool_plan.bootstrap_tool,
                 "tool_choice": tool_choice,
+                "post_approval_tool_choice": read_only_tool_choice,
             },
             system_prompt_exact=FINAL_SYSTEM_PROMPT,
             user_prompt_exact=prompt,
@@ -541,6 +544,7 @@ class AgentRuntime:
                     effective_mcp_config,
                     previous_response_id=None,
                     tool_choice=tool_choice,
+                    post_approval_tool_choice=read_only_tool_choice,
                     parallel_tool_calls=False,
                     max_tool_rounds=4,
                     response_format=response_format,
@@ -596,10 +600,12 @@ class AgentRuntime:
         routing: RoutingContext,
         llm_context_debug_files: list[str] | None = None,
     ) -> tuple[LLMFinalResponse, LLMResponseResult]:
-        effective_mcp_config = self._filtered_mcp_config(mcp_config, write_tool_plan.allowed_tools)
+        effective_mcp_config = mcp_config
+        continuation_invocable_tools = self._configured_tools(effective_mcp_config, write_tool_plan.allowed_tools)
+        continuation_read_tools = self._configured_tools(effective_mcp_config, write_tool_plan.read_tools)
         server_label = self._clean(effective_mcp_config.server_label)
         previous_response_id = self._clean(primary_result.response_id)
-        if not effective_mcp_config.enabled or authorized_write_tool not in effective_mcp_config.allowed_tools:
+        if not effective_mcp_config.enabled or authorized_write_tool not in continuation_invocable_tools:
             raise RuntimeError("Authorized write tool is not available in MCP configuration")
         if server_label is None or previous_response_id is None:
             raise RuntimeError("Write continuation requires server_label and previous_response_id")
@@ -610,6 +616,10 @@ class AgentRuntime:
             authorized_write_tool,
         )
         tool_choice = {"type": "mcp", "server_label": server_label, "name": authorized_write_tool}
+        post_approval_tool_choice = self._allowed_tools_tool_choice(
+            effective_mcp_config,
+            continuation_read_tools,
+        )
         self._write_llm_context_debug_request(
             stage="write_continuation",
             payload=payload,
@@ -620,8 +630,11 @@ class AgentRuntime:
                 "authorized_write_tool": authorized_write_tool,
                 "write_tool_plan": write_tool_plan,
                 "mcp_allowed_tools": effective_mcp_config.allowed_tools,
+                "mcp_declared_tools": effective_mcp_config.allowed_tools,
+                "continuation_invocable_tools": continuation_invocable_tools,
                 "previous_response_id": previous_response_id,
                 "tool_choice": tool_choice,
+                "post_approval_tool_choice": post_approval_tool_choice,
             },
             system_prompt_exact=WRITE_CONTINUATION_SYSTEM_PROMPT,
             user_prompt_exact=prompt,
@@ -638,6 +651,7 @@ class AgentRuntime:
                 effective_mcp_config,
                 previous_response_id=previous_response_id,
                 tool_choice=tool_choice,
+                post_approval_tool_choice=post_approval_tool_choice,
                 parallel_tool_calls=False,
                 max_tool_rounds=4,
                 response_format=None,
@@ -784,6 +798,23 @@ class AgentRuntime:
             return None
 
         return {"type": "mcp", "server_label": server_label, "name": bootstrap_tool}
+
+    def _allowed_tools_tool_choice(
+        self,
+        mcp_config: McpRemoteConfig,
+        allowed_tools: list[str],
+    ) -> dict[str, Any] | str:
+        server_label = self._clean(mcp_config.server_label)
+        if server_label is None or not allowed_tools:
+            return "none"
+        return {
+            "type": "allowed_tools",
+            "mode": "auto",
+            "tools": [
+                {"type": "mcp", "server_label": server_label, "name": tool_name}
+                for tool_name in allowed_tools
+            ],
+        }
 
     def _attach_llm_context_debug_reference(self, response: AgentResponse, llm_context_debug_files: list[str]) -> None:
         if not self.settings.llm_context_debug:
@@ -1194,7 +1225,13 @@ class AgentRuntime:
             return normalized
         return normalized[: max(0, limit - 1)].rstrip() + "…"
 
-    # Keep MCP filtering centralized so the LLM only sees tools selected for the current intent.
+    def _configured_tools(self, mcp_config: McpRemoteConfig, tools: list[str]) -> list[str]:
+        if not mcp_config.enabled:
+            return []
+        configured = set(mcp_config.allowed_tools)
+        return [tool for tool in tools if tool in configured]
+
+    # Kept for compatibility with non-continuation callers that need a reduced MCP declaration.
     def _filtered_mcp_config(self, mcp_config: McpRemoteConfig, allowed_tools: list[str]) -> McpRemoteConfig:
         if not mcp_config.enabled or not allowed_tools:
             return mcp_config.model_copy(update={"enabled": False, "allowed_tools": []})

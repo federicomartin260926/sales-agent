@@ -84,6 +84,7 @@ class LLMClient:
         configuration: dict[str, str] | None = None,
         previous_response_id: str | None = None,
         tool_choice: Any | None = None,
+        post_approval_tool_choice: Any | None = None,
         parallel_tool_calls: bool | None = None,
         single_tool_call: bool = False,
         max_tool_rounds: int | None = None,
@@ -102,6 +103,7 @@ class LLMClient:
                 mcp_config,
                 previous_response_id=previous_response_id,
                 tool_choice=tool_choice,
+                post_approval_tool_choice=post_approval_tool_choice,
                 parallel_tool_calls=parallel_tool_calls,
                 single_tool_call=single_tool_call,
                 max_tool_rounds=max_tool_rounds,
@@ -122,6 +124,7 @@ class LLMClient:
         mcp_config: McpRemoteConfig | None,
         previous_response_id: str | None = None,
         tool_choice: Any | None = None,
+        post_approval_tool_choice: Any | None = None,
         parallel_tool_calls: bool | None = None,
         single_tool_call: bool = False,
         max_tool_rounds: int | None = None,
@@ -299,7 +302,10 @@ class LLMClient:
                 else:
                     current_input = approval_responses
                 current_previous_response_id = response_id or self._extract_response_id(payload_json)
-                current_tool_choice = None
+                # A rejected request may retry only the originally selected tool.
+                # Once requests are approved, the follow-up round may select only
+                # the explicitly bounded post-approval capabilities.
+                current_tool_choice = tool_choice if retry_notes else post_approval_tool_choice
                 retry_count += 1
                 if retry_count >= max_rounds:
                     raise RuntimeError("MCP approval retry limit exceeded")

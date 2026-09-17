@@ -83,7 +83,7 @@ RECOMMENDATIONS = {
     "live_write_not_enabled": "Set SA_E2E_ALLOW_WRITES=1 only after reviewing the live scenario and its isolated test data.",
     "live_write_before_confirmation": "Allow the expected write only on the explicit simulator confirmation turn.",
     "live_confirm_action_mismatch": "Require the structured write authorization action declared by the live scenario on the write turn.",
-    "primary_write_exposed": "Keep every write capability out of the primary LLM request.",
+    "primary_write_exposed": "Keep every write capability non-invocable in the primary LLM request.",
     "write_continuation_incomplete": "Preserve both request and response artifacts for every authorized write continuation.",
     "write_authorization_mismatch": "Align persisted write authorization, continuation configuration and the scenario expectation.",
     "write_without_authorization": "Do not execute or expose a write without a coherent persisted write authorization.",
@@ -1399,7 +1399,7 @@ class Evaluator:
                     refs,
                 )
             )
-        primary_allowed = set(turn.get("primary_allowed_tools", []))
+        primary_invocable = set(turn.get("primary_invocable_tools", turn.get("primary_allowed_tools", [])))
         primary_plan = turn.get("primary_tool_plan")
         primary_plan_allowed = (
             primary_plan.get("allowed_tools")
@@ -1413,20 +1413,70 @@ class Evaluator:
             and isinstance(primary_plan.get("write_tools"), list)
             else []
         )
-        exposed_primary_writes = primary_allowed.intersection(WRITE_TOOLS)
+        primary_tool_choice = turn.get("primary_tool_choice")
+        tool_choice_tools = (
+            primary_tool_choice.get("tools")
+            if isinstance(primary_tool_choice, dict)
+            and primary_tool_choice.get("type") == "allowed_tools"
+            and isinstance(primary_tool_choice.get("tools"), list)
+            else []
+        )
+        primary_tool_choice_names = {
+            item.get("name")
+            for item in tool_choice_tools
+            if isinstance(item, dict) and isinstance(item.get("name"), str)
+        }
+        if isinstance(primary_tool_choice, dict) and primary_tool_choice.get("type") == "mcp":
+            primary_tool_choice_names.add(primary_tool_choice.get("name"))
+        primary_post_approval_tool_choice = turn.get("primary_post_approval_tool_choice")
+        primary_post_approval_tools = (
+            primary_post_approval_tool_choice.get("tools")
+            if isinstance(primary_post_approval_tool_choice, dict)
+            and primary_post_approval_tool_choice.get("type") == "allowed_tools"
+            and isinstance(primary_post_approval_tool_choice.get("tools"), list)
+            else []
+        )
+        primary_post_approval_names = {
+            item.get("name")
+            for item in primary_post_approval_tools
+            if isinstance(item, dict) and isinstance(item.get("name"), str)
+        }
+        if (
+            isinstance(primary_post_approval_tool_choice, dict)
+            and primary_post_approval_tool_choice.get("type") == "mcp"
+        ):
+            primary_post_approval_names.add(primary_post_approval_tool_choice.get("name"))
+        exposed_primary_writes = primary_invocable.intersection(WRITE_TOOLS)
+        exposed_primary_choice_writes = primary_tool_choice_names.intersection(WRITE_TOOLS)
+        exposed_primary_post_approval_writes = primary_post_approval_names.intersection(WRITE_TOOLS)
         exposed_primary_plan_writes = set(primary_plan_allowed).intersection(WRITE_TOOLS)
-        if exposed_primary_writes or exposed_primary_plan_writes or primary_write_tools:
+        primary_executed_writes = [
+            call.get("tool_name")
+            for call in turn.get("executed_mcp_calls", [])
+            if call.get("phase") == "primary" and call.get("tool_name") in WRITE_TOOLS
+        ]
+        if (
+            exposed_primary_writes
+            or exposed_primary_choice_writes
+            or exposed_primary_post_approval_writes
+            or exposed_primary_plan_writes
+            or primary_write_tools
+            or primary_executed_writes
+        ):
             findings.append(
                 finding(
                     "critical",
                     "primary_write_exposed",
-                    "Primary LLM request exposed one or more write tools.",
+                    "Primary LLM could invoke or executed one or more write tools.",
                     step,
                     refs,
                     {
-                        "primary_allowed_writes": sorted(exposed_primary_writes),
+                        "primary_invocable_writes": sorted(exposed_primary_writes),
+                        "primary_tool_choice_writes": sorted(exposed_primary_choice_writes),
+                        "primary_post_approval_writes": sorted(exposed_primary_post_approval_writes),
                         "primary_tool_plan_allowed_writes": sorted(exposed_primary_plan_writes),
                         "primary_tool_plan_write_tools": primary_write_tools,
+                        "primary_executed_writes": primary_executed_writes,
                     },
                 )
             )
@@ -1496,11 +1546,30 @@ class Evaluator:
         request = request if isinstance(request, dict) else {}
         write_plan = request.get("write_tool_plan") or turn.get("write_tool_plan") or {}
         write_plan_tools = write_plan.get("write_tools") if isinstance(write_plan, dict) else None
-        continuation_allowed = request.get("mcp_allowed_tools")
+        continuation_allowed = request.get("continuation_invocable_tools") or request.get("mcp_allowed_tools")
         continuation_allowed = continuation_allowed if isinstance(continuation_allowed, list) else []
         continuation_writes = {tool for tool in continuation_allowed if tool in WRITE_TOOLS}
         tool_choice = request.get("tool_choice")
         tool_choice_name = tool_choice.get("name") if isinstance(tool_choice, dict) else None
+        post_approval_tool_choice = request.get("post_approval_tool_choice")
+        post_approval_tools = (
+            post_approval_tool_choice.get("tools")
+            if isinstance(post_approval_tool_choice, dict)
+            and post_approval_tool_choice.get("type") == "allowed_tools"
+            and isinstance(post_approval_tool_choice.get("tools"), list)
+            else []
+        )
+        post_approval_write_tools = {
+            item.get("name")
+            for item in post_approval_tools
+            if isinstance(item, dict) and item.get("name") in WRITE_TOOLS
+        }
+        if (
+            isinstance(post_approval_tool_choice, dict)
+            and post_approval_tool_choice.get("type") == "mcp"
+            and post_approval_tool_choice.get("name") in WRITE_TOOLS
+        ):
+            post_approval_write_tools.add(post_approval_tool_choice.get("name"))
         primary_response = turn.get("primary_response")
         primary_response = primary_response if isinstance(primary_response, dict) else {}
         primary_intent = primary_response.get("intent")
@@ -1516,6 +1585,7 @@ class Evaluator:
             and continuation_writes == {authorized_tool}
             and self._clean(request.get("previous_response_id")) is not None
             and tool_choice_name == authorized_tool
+            and not post_approval_write_tools
         )
         if not coherent:
             findings.append(
@@ -1536,6 +1606,7 @@ class Evaluator:
                         "write_tool_plan_write_tools": write_plan_tools,
                         "continuation_allowed_writes": sorted(continuation_writes),
                         "tool_choice_name": tool_choice_name,
+                        "post_approval_write_tools": sorted(post_approval_write_tools),
                     },
                 )
             )
