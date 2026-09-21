@@ -76,20 +76,24 @@ Pendiente:
 
 Objetivo: cerrar el circuito real `WhatsApp Cloud API -> wa-gateway-api -> sales-agent -> WhatsApp`.
 
+Estado validado el 21/09/2026:
+
+- [x] Webhook público HTTPS de Meta apuntando al `wa-gateway-api` local vía ngrok.
+- [x] Routing inbound orgánico real por `phone_number_id`.
+- [x] Respuesta real enviada mediante Meta Graph API.
+- [x] Prueba de texto real desde teléfono con estados `sent`, `delivered` y `read`.
+- [x] Flujo `contact_context` observado E2E vía MCP -> n8n `T&I`.
+- [x] Entorno local documentado en `docs/whatsapp-local-development.md`.
+
 Pendiente:
 
-- [ ] Validar webhook público HTTPS de Meta apuntando a `wa-gateway-api`.
-- [ ] Resolver tenant por:
-  - `entrypoint_ref`.
-  - `phone_number_id`.
-  - tenant explícito si aplica.
-- [ ] Enviar respuesta real por `/messages/send`.
+- [ ] Revalidar routing real mediante `entrypoint_ref`.
+- [ ] Revalidar fallback por tenant explícito si aplica.
 - [ ] Manejar duplicados por `wamid`.
 - [ ] Manejar errores de Meta y de SA.
-- [ ] Loguear por `message_id`, tenant y conversación.
-- [ ] Probar texto real.
+- [ ] Revisar trazabilidad consolidada por `message_id`, tenant y conversación.
 - [ ] Probar audio real.
-- [ ] Documentar payload final.
+- [ ] Documentar payload final de WhatsApp.
 
 ## 4. Persistencia completa de conversación
 

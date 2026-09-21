@@ -26,6 +26,7 @@ El proyecto está preparado para integrarse más adelante con:
 - [Ensamblado de contexto LLM](docs/llm-context-assembly.md)
 - [MCP - n8n contact context](docs/mcp-n8n-contact-context.md)
 - [E2E autónomos](docs/autonomous-e2e.md)
+- [WhatsApp local / Meta / ngrok](docs/whatsapp-local-development.md)
 
 ## Arquitectura
 
@@ -296,6 +297,8 @@ El flujo esperado es:
 8. los productos importados desde CRM usan `slug` como fallback local y `externalReference` como clave estable
 
 Para WhatsApp real, cada tenant debe tener un `whatsappPhoneNumberId` único. En pruebas con un único número de Meta, la forma operativa es dejar el campo vacío en los tenants no usados y asignarlo manualmente solo al tenant que se esté probando.
+
+El procedimiento para exponer el entorno local a Meta, validar el callback y ejecutar pruebas E2E reales está documentado en [WhatsApp local / Meta / ngrok](docs/whatsapp-local-development.md).
 
 ## Documentación adicional
 
